@@ -34,6 +34,7 @@ export default function App() {
         path="/"
         element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
       />
+
       <Route
         path="/login"
         element={user ? <Navigate to="/dashboard" replace /> : <Login />}
@@ -48,14 +49,24 @@ export default function App() {
         }
       >
         <Route path="/dashboard" element={<Dashboard />} />
+
+        {/* ✅ Super Admin only (Admins cannot add clients) */}
+        <Route
+          path="/clients"
+          element={
+            <RoleRoute allow={["super_admin"]}>
+              <Clients />
+            </RoleRoute>
+          }
+        />
+
         <Route path="/inventory" element={<Inventory />} />
-        <Route path="/clients" element={<Clients />} />
         <Route path="/parties" element={<Parties />} />
         <Route path="/transactions" element={<Transactions />} />
         <Route path="/party-reports" element={<PartyReports />} />
         <Route path="/reports" element={<Reports />} />
 
-        {/* Super Admin */}
+        {/* ✅ Super Admin Console */}
         <Route
           path="/superadmin"
           element={

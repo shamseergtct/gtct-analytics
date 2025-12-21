@@ -14,12 +14,14 @@ import {
   UserCircle2,
   LogOut,
   Building2,
-  Shield, // ✅ for Super Admin link icon
+  Shield,
+  Package,
 } from "lucide-react";
 
 export default function Layout() {
-  // ✅ IMPORTANT: your AuthContext exports signOutUser (not logout) in my earlier code
-  const { user, role, isSuperAdmin, signOutUser } = useAuth();
+  // ✅ AuthContext updated exports
+  const { user, role, isSuperAdmin, logout, displayName } = useAuth();
+
   const { clients, activeClientId, activeClientData, setActiveClient, loadingClients } =
     useClient();
 
@@ -33,9 +35,12 @@ export default function Layout() {
   }, [mobileOpen]);
 
   const handleLogout = async () => {
-    await signOutUser();
-    // ✅ route after logout (change if you use a different login route)
-    nav("/login");
+    try {
+      await logout(); // ✅ correct function
+      nav("/login", { replace: true });
+    } catch (e) {
+      console.error("Logout failed:", e);
+    }
   };
 
   const linkClass = ({ isActive }) =>
@@ -57,14 +62,14 @@ export default function Layout() {
       </span>
     );
 
-  // ✅ Base nav items (unchanged)
+  // ✅ Base nav items
   const baseNavItems = useMemo(
     () => [
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { to: "/clients", label: "Clients", icon: Users },
       { to: "/parties", label: "Parties", icon: Building2 },
       { to: "/transactions", label: "Transactions", icon: ArrowLeftRight },
-      { to: "/inventory", label: "Inventory", icon: BarChart3 },
+      { to: "/inventory", label: "Inventory", icon: Package },
       { to: "/reports", label: "Reports", icon: BarChart3 },
       { to: "/party-reports", label: "Party Reports", icon: BarChart3 },
     ],
@@ -74,20 +79,18 @@ export default function Layout() {
   // ✅ Add Super Admin link only for super_admin
   const navItems = useMemo(() => {
     const items = [...baseNavItems];
-
     if (role === "super_admin") {
-      items.unshift({
-        to: "/superadmin",
-        label: "Super Admin",
-        icon: Shield,
-      });
+      items.unshift({ to: "/superadmin", label: "Super Admin", icon: Shield });
     }
-
     return items;
   }, [baseNavItems, role]);
 
-  // ✅ dropdown disabled state if no assigned shops (for admin/partner)
+  // ✅ dropdown disabled if no assigned shops (admin/partner)
   const noAccessibleShops = !isSuperAdmin && !loadingClients && clients.length === 0;
+
+  // ✅ Show a clean role label
+  const roleLabel =
+    role === "super_admin" ? "Super Admin" : role === "partner" ? "Partner" : "Admin";
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
@@ -105,15 +108,9 @@ export default function Layout() {
             </button>
 
             <div className="flex flex-col leading-tight">
-              <span className="text-lg font-bold tracking-tight">
-                GTCT Analytics
-              </span>
+              <span className="text-lg font-bold tracking-tight">GTCT Analytics</span>
               <span className="text-xs text-slate-400">
-                {role === "super_admin"
-                  ? "Super Admin Console"
-                  : role === "partner"
-                  ? "Partner (Reports only)"
-                  : "Remote Bookkeeping"}
+                {role === "super_admin" ? "Super Admin Console" : "Remote Bookkeeping"}
               </span>
             </div>
 
@@ -143,7 +140,7 @@ export default function Layout() {
 
                 {clients.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name}
+                    {c.name || c.id}
                   </option>
                 ))}
               </select>
@@ -159,10 +156,10 @@ export default function Layout() {
               <UserCircle2 className="h-5 w-5 text-slate-300" />
               <div className="leading-tight">
                 <div className="text-sm font-medium text-slate-100">
-                  {user?.email || "User"}
+                  {displayName || user?.email || "User"}
                 </div>
                 <div className="text-xs text-slate-400">
-                  {role ? `Role: ${role}` : "Signed in"}
+                  {role ? `Role: ${roleLabel}` : "Signed in"}
                 </div>
               </div>
             </div>
@@ -247,7 +244,7 @@ export default function Layout() {
 
                 {clients.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name}
+                    {c.name || c.id}
                   </option>
                 ))}
               </select>

@@ -48,17 +48,54 @@ export default function SuperAdmin() {
   const [creatingShop, setCreatingShop] = useState(false);
 
   // User creation form
+  const [newName, setNewName] = useState(""); // ✅ added
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState("admin"); // admin | partner
   const [selectedShopIds, setSelectedShopIds] = useState([]);
   const [creatingUser, setCreatingUser] = useState(false);
 
+  // ✅ Search
+  const [shopSearch, setShopSearch] = useState("");
+  const [assignShopSearch, setAssignShopSearch] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+
   const shopsById = useMemo(() => {
     const map = {};
     for (const s of shops) map[s.id] = s;
     return map;
   }, [shops]);
+
+  const filteredShopsForAll = useMemo(() => {
+    const q = String(shopSearch || "").trim().toLowerCase();
+    if (!q) return shops;
+    return shops.filter((s) => {
+      const name = String(s.name || "").toLowerCase();
+      const id = String(s.id || "").toLowerCase();
+      return name.includes(q) || id.includes(q);
+    });
+  }, [shops, shopSearch]);
+
+  const filteredShopsForAssign = useMemo(() => {
+    const q = String(assignShopSearch || "").trim().toLowerCase();
+    if (!q) return shops;
+    return shops.filter((s) => {
+      const name = String(s.name || "").toLowerCase();
+      const id = String(s.id || "").toLowerCase();
+      return name.includes(q) || id.includes(q);
+    });
+  }, [shops, assignShopSearch]);
+
+  const filteredUsers = useMemo(() => {
+    const q = String(userSearch || "").trim().toLowerCase();
+    if (!q) return allUsers;
+    return allUsers.filter((u) => {
+      const email = String(u.email || "").toLowerCase();
+      const name = String(u.name || "").toLowerCase();
+      const role = String(u.role || "").toLowerCase();
+      return email.includes(q) || name.includes(q) || role.includes(q);
+    });
+  }, [allUsers, userSearch]);
 
   async function loadShops() {
     setErr("");
@@ -143,7 +180,7 @@ export default function SuperAdmin() {
       setShopId("");
       setShopName("");
       setShopCurrency("INR");
-      setMsg(`✅ Shop created: ${id}`);
+      setMsg(`✅ Shop created: ${name}`);
       await loadShops();
     } catch (e2) {
       console.error(e2);
@@ -164,6 +201,7 @@ export default function SuperAdmin() {
     const email = String(newEmail || "").trim().toLowerCase();
     const password = String(newPassword || "");
     const roleToSet = newRole === "partner" ? "partner" : "admin";
+    const name = String(newName || "").trim();
 
     if (!email || !password) {
       setErr("Email and Password are required.");
@@ -191,6 +229,7 @@ export default function SuperAdmin() {
       await setDoc(doc(db, "users", uid), {
         uid,
         email,
+        name: name || email.split("@")[0], // ✅ clean display name
         role: roleToSet,
         assignedShops: selectedShopIds,
         createdBy: user?.uid || null,
@@ -200,6 +239,7 @@ export default function SuperAdmin() {
 
       await signOut(secondaryAuth);
 
+      setNewName("");
       setNewEmail("");
       setNewPassword("");
       setNewRole("admin");
@@ -216,7 +256,7 @@ export default function SuperAdmin() {
   }
 
   // -----------------------------
-  // ✅ Phase 2: Disable / Enable user (Firestore-only)
+  // Disable / Enable user (Firestore-only)
   // -----------------------------
   async function toggleUserActive(targetUid, nextActive) {
     setErr("");
@@ -234,7 +274,7 @@ export default function SuperAdmin() {
         updatedBy: user?.uid || null,
       });
 
-      setMsg(`✅ User ${nextActive ? "enabled" : "disabled"}: ${targetUid}`);
+      setMsg(`✅ User ${nextActive ? "enabled" : "disabled"}.`);
       await loadUsers();
     } catch (e) {
       console.error(e);
@@ -248,6 +288,11 @@ export default function SuperAdmin() {
       return [...prev, id];
     });
   }
+
+  const selectedShopNames = useMemo(() => {
+    if (!selectedShopIds.length) return "None";
+    return selectedShopIds.map((id) => shopsById[id]?.name || id).join(", ");
+  }, [selectedShopIds, shopsById]);
 
   return (
     <div className="p-4 md:p-6 text-slate-100">
@@ -293,6 +338,7 @@ export default function SuperAdmin() {
       {/* SHOPS TAB */}
       {tab === "shops" && (
         <div className="grid lg:grid-cols-2 gap-6">
+          {/* Create Shop */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
             <div className="font-semibold mb-3">Create New Shop</div>
             <form onSubmit={handleCreateShop} className="space-y-3">
@@ -335,8 +381,18 @@ export default function SuperAdmin() {
             </form>
           </div>
 
+          {/* Searchable Shops */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <div className="font-semibold mb-3">All Shops</div>
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold">Search Shops</div>
+              <input
+                className="w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                value={shopSearch}
+                onChange={(e) => setShopSearch(e.target.value)}
+                placeholder="Search by name / id…"
+              />
+            </div>
+
             {loadingShops ? (
               <div className="opacity-80">Loading…</div>
             ) : (
@@ -344,17 +400,29 @@ export default function SuperAdmin() {
                 {shops.length === 0 && (
                   <div className="opacity-70 text-sm">No shops yet.</div>
                 )}
-                {shops.map((s) => (
+
+                <div className="text-xs opacity-60">
+                  Showing {Math.min(filteredShopsForAll.length, 20)} of{" "}
+                  {filteredShopsForAll.length}
+                </div>
+
+                {filteredShopsForAll.slice(0, 20).map((s) => (
                   <div
                     key={s.id}
                     className="p-3 rounded border border-slate-800 bg-slate-950"
                   >
-                    <div className="font-semibold">{s.name || s.id}</div>
-                    <div className="text-xs opacity-80">
-                      ID: {s.id} • Currency: {s.currency || "-"}
+                    <div className="font-semibold">{s.name || "Unnamed Shop"}</div>
+                    <div className="text-xs opacity-70">
+                      Currency: {s.currency || "-"} • ID: {s.id}
                     </div>
                   </div>
                 ))}
+
+                {filteredShopsForAll.length > 20 ? (
+                  <div className="text-xs opacity-60">
+                    Too many results — refine your search.
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
@@ -368,6 +436,16 @@ export default function SuperAdmin() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
             <div className="font-semibold mb-3">Create New User</div>
             <form onSubmit={handleCreateUser} className="space-y-3">
+              <div>
+                <div className="text-xs opacity-80 mb-1">Name</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Eg: Manager / Accountant / Staff name"
+                />
+              </div>
+
               <div>
                 <div className="text-xs opacity-80 mb-1">Email</div>
                 <input
@@ -401,10 +479,18 @@ export default function SuperAdmin() {
                 </select>
               </div>
 
+              {/* Searchable Assign Shops */}
               <div>
-                <div className="text-xs opacity-80 mb-2">
-                  Assign Shops (multi-select)
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs opacity-80">Assign Shops</div>
+                  <input
+                    className="w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                    value={assignShopSearch}
+                    onChange={(e) => setAssignShopSearch(e.target.value)}
+                    placeholder="Search shops to assign…"
+                  />
                 </div>
+
                 <div className="max-h-56 overflow-auto rounded border border-slate-800 bg-slate-950 p-2 space-y-2">
                   {loadingShops ? (
                     <div className="opacity-70 text-sm p-2">Loading shops…</div>
@@ -413,7 +499,7 @@ export default function SuperAdmin() {
                       No shops found. Create a shop first.
                     </div>
                   ) : (
-                    shops.map((s) => (
+                    filteredShopsForAssign.slice(0, 50).map((s) => (
                       <label
                         key={s.id}
                         className="flex items-center gap-2 text-sm p-2 rounded hover:bg-slate-900 cursor-pointer"
@@ -424,10 +510,22 @@ export default function SuperAdmin() {
                           onChange={() => toggleShopSelection(s.id)}
                         />
                         <span className="font-medium">{s.name || s.id}</span>
-                        <span className="text-xs opacity-70">({s.id})</span>
+                        <span className="text-xs opacity-60">
+                          • {s.currency || ""}
+                        </span>
                       </label>
                     ))
                   )}
+                </div>
+
+                {filteredShopsForAssign.length > 50 ? (
+                  <div className="text-xs opacity-60 mt-2">
+                    Too many shops — refine search to assign.
+                  </div>
+                ) : null}
+
+                <div className="text-xs opacity-70 mt-2">
+                  Selected: <span className="opacity-90">{selectedShopNames}</span>
                 </div>
               </div>
 
@@ -439,7 +537,7 @@ export default function SuperAdmin() {
               </button>
             </form>
 
-            {/* Existing Users */}
+            {/* Existing Users (Searchable + Clean Names) */}
             <div className="mt-6 bg-slate-950 border border-slate-800 rounded-xl p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="font-semibold">Existing Users</div>
@@ -451,66 +549,90 @@ export default function SuperAdmin() {
                 </button>
               </div>
 
+              <input
+                className="w-full p-2 rounded bg-slate-900 border border-slate-800 text-sm mb-3"
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Search users by name / email / role…"
+              />
+
               {loadingUsers ? (
                 <div className="opacity-70 text-sm">Loading users…</div>
-              ) : allUsers.length === 0 ? (
+              ) : filteredUsers.length === 0 ? (
                 <div className="opacity-70 text-sm">No users found.</div>
               ) : (
                 <div className="space-y-3">
-                  {allUsers.map((u) => (
-                    <div
-                      key={u.id}
-                      className="p-3 rounded border border-slate-800 bg-slate-900 flex justify-between items-start"
-                    >
-                      <div>
-                        <div className="font-medium">{u.email || u.id}</div>
-                        <div className="text-xs opacity-80">
-                          Role: <b>{u.role || "-"}</b>
+                  {filteredUsers.slice(0, 20).map((u) => {
+                    const shopNames =
+                      Array.isArray(u.assignedShops) && u.assignedShops.length
+                        ? u.assignedShops
+                            .map((id) => shopsById[id]?.name || id)
+                            .join(", ")
+                        : "—";
+
+                    return (
+                      <div
+                        key={u.id}
+                        className="p-3 rounded border border-slate-800 bg-slate-900 flex justify-between items-start"
+                      >
+                        <div className="min-w-0">
+                          <div className="font-medium truncate">
+                            {u.name || u.email || u.id}
+                          </div>
+                          <div className="text-xs opacity-80 truncate">
+                            {u.email || ""}
+                          </div>
+                          <div className="text-xs opacity-80 mt-1">
+                            Role: <b>{u.role || "-"}</b>
+                          </div>
+                          <div className="text-xs opacity-70 mt-1 truncate">
+                            Shops: {shopNames}
+                          </div>
+                          <div className="text-xs mt-1">
+                            Status:{" "}
+                            <span
+                              className={
+                                u.isActive === false
+                                  ? "text-red-400"
+                                  : "text-emerald-400"
+                              }
+                            >
+                              {u.isActive === false ? "Disabled" : "Active"}
+                            </span>
+                          </div>
                         </div>
-                        <div className="text-xs opacity-70">
-                          Shops:{" "}
-                          {Array.isArray(u.assignedShops) && u.assignedShops.length
-                            ? u.assignedShops.join(", ")
-                            : "—"}
-                        </div>
-                        <div className="text-xs mt-1">
-                          Status:{" "}
-                          <span
-                            className={
-                              u.isActive === false
-                                ? "text-red-400"
-                                : "text-emerald-400"
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() =>
+                              toggleUserActive(u.id, u.isActive === false)
                             }
+                            className={`px-3 py-1 text-xs rounded ${
+                              u.isActive === false
+                                ? "bg-emerald-600 hover:bg-emerald-700"
+                                : "bg-red-600 hover:bg-red-700"
+                            }`}
                           >
-                            {u.isActive === false ? "Disabled" : "Active"}
-                          </span>
+                            {u.isActive === false ? "Enable" : "Disable"}
+                          </button>
+
+                          {/* Phase 3 later */}
+                          <button
+                            disabled
+                            className="px-3 py-1 text-xs rounded bg-slate-700 opacity-50 cursor-not-allowed"
+                          >
+                            Reset Password
+                          </button>
                         </div>
                       </div>
+                    );
+                  })}
 
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() =>
-                            toggleUserActive(u.id, u.isActive === false)
-                          }
-                          className={`px-3 py-1 text-xs rounded ${
-                            u.isActive === false
-                              ? "bg-emerald-600 hover:bg-emerald-700"
-                              : "bg-red-600 hover:bg-red-700"
-                          }`}
-                        >
-                          {u.isActive === false ? "Enable" : "Disable"}
-                        </button>
-
-                        {/* Phase 3 later */}
-                        <button
-                          disabled
-                          className="px-3 py-1 text-xs rounded bg-slate-700 opacity-50 cursor-not-allowed"
-                        >
-                          Reset Password
-                        </button>
-                      </div>
+                  {filteredUsers.length > 20 ? (
+                    <div className="text-xs opacity-60">
+                      Too many results — refine your user search.
                     </div>
-                  ))}
+                  ) : null}
                 </div>
               )}
 
@@ -524,7 +646,9 @@ export default function SuperAdmin() {
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
             <div className="font-semibold mb-2">Phase 2 Notes</div>
             <ul className="text-sm opacity-80 list-disc pl-5 space-y-2">
-              <li>Disable/Enable is stored in Firestore as <code>isActive</code>.</li>
+              <li>
+                Disable/Enable is stored in Firestore as <code>isActive</code>.
+              </li>
               <li>Firestore rules block disabled users completely.</li>
               <li>Next Phase 3: Reset password using Cloud Function (secure).</li>
             </ul>
