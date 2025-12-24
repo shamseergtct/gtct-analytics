@@ -1,10 +1,9 @@
 // src/pages/PartyReports.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { collection, getDocs, orderBy, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
 
-import { fetchPartyLedger, buildPartyReport } from "../utils/partyLedger";
 import { generatePartyPDF } from "../utils/partyPdfGenerator";
 
 function money(v) {
@@ -17,6 +16,33 @@ function toYYYYMMDD(d) {
   const day = String(x.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
+function startOfDay(dateStr) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  return new Date(y, m - 1, d, 0, 0, 0, 0);
+}
+function endOfDay(dateStr) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  return new Date(y, m - 1, d, 23, 59, 59, 999);
+}
+function asJSDate(v) {
+  if (!v) return null;
+  if (typeof v?.toDate === "function") return v.toDate();
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+function norm(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+// ✅ safer: supports amountIn/amountOut/totalAmount
+function txnTotal(t) {
+  const inAmt = Number(t?.amountIn || 0);
+  const outAmt = Number(t?.amountOut || 0);
+  if (inAmt > 0) return inAmt;
+  if (outAmt > 0) return outAmt;
+  const total = Number(t?.totalAmount || 0);
+  return total > 0 ? total : 0;
+}
 
 export default function PartyReports() {
   const { activeClientId, activeClientData } = useClient();
@@ -24,7 +50,12 @@ export default function PartyReports() {
 
   const [type, setType] = useState("Customer"); // Customer | Supplier
   const [parties, setParties] = useState([]);
-  const [partyId, setPartyId] = useState("");
+
+  // Searchable party picker
+  const [partyQuery, setPartyQuery] = useState("");
+  const [selectedParty, setSelectedParty] = useState(null); // {id,name,type}
+  const [showPartyList, setShowPartyList] = useState(false);
+  const blurTimer = useRef(null);
 
   const [fromDate, setFromDate] = useState(() => toYYYYMMDD(new Date()));
   const [toDate, setToDate] = useState(() => toYYYYMMDD(new Date()));
@@ -32,14 +63,19 @@ export default function PartyReports() {
   const [loadingParties, setLoadingParties] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+
+  // Ledger rows (raw txns)
   const [rows, setRows] = useState([]);
 
-  // Load parties for dropdown
+  // -------------------------
+  // Load parties
+  // -------------------------
   useEffect(() => {
     const run = async () => {
       setErr("");
       setRows([]);
-      setPartyId("");
+      setSelectedParty(null);
+      setPartyQuery("");
       setParties([]);
 
       if (!activeClientId) return;
@@ -64,33 +100,81 @@ export default function PartyReports() {
     run();
   }, [activeClientId]);
 
+  // ✅ Filter parties by type (include Both) — CASE INSENSITIVE
   const filteredParties = useMemo(() => {
-    if (!type) return parties;
-    return parties.filter((p) => p.type === type || p.type === "Both");
+    const want = norm(type);
+    return parties.filter((p) => {
+      const pt = norm(p?.type);
+      return pt === want || pt === "both";
+    });
   }, [parties, type]);
 
-  const selectedParty = useMemo(
-    () => parties.find((p) => p.id === partyId),
-    [parties, partyId]
-  );
+  // Search list
+  const visibleParties = useMemo(() => {
+    const q = partyQuery.trim().toLowerCase();
+    const base = filteredParties;
+    if (!q) return base.slice(0, 15);
+    return base
+      .filter((p) => String(p?.name || "").toLowerCase().includes(q))
+      .slice(0, 25);
+  }, [partyQuery, filteredParties]);
 
+  function pickParty(p) {
+    setSelectedParty(p);
+    setPartyQuery(p?.name || "");
+    setShowPartyList(false);
+    setRows([]);
+    setErr("");
+  }
+
+  // -------------------------
+  // ✅ Load ledger (COMPLETE)
+  // Fetch by clientId + date range, then filter by partyId OR partyName
+  // -------------------------
   const load = async () => {
     setErr("");
     setRows([]);
 
     if (!activeClientId) return setErr("Please select an active client.");
-    if (!partyId) return setErr("Please select a party.");
+    if (!selectedParty?.id && !selectedParty?.name)
+      return setErr("Please select a party.");
     if (!fromDate || !toDate) return setErr("Please choose From and To dates.");
+
+    const f = startOfDay(fromDate);
+    const t = endOfDay(toDate);
+    if (f > t) return setErr("From date must be before To date.");
 
     setLoading(true);
     try {
-      const txns = await fetchPartyLedger({
-        clientId: activeClientId,
-        partyId,
-        fromYYYYMMDD: fromDate,
-        toYYYYMMDD: toDate,
+      // ✅ Uses your existing enabled index: transactions → clientId + date
+      const qy = query(
+        collection(db, "transactions"),
+        where("clientId", "==", activeClientId),
+        where("date", ">=", f),
+        where("date", "<=", t),
+        orderBy("date", "desc")
+      );
+
+      const snap = await getDocs(qy);
+      const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      const pid = String(selectedParty?.id || "").trim();
+      const pname = norm(selectedParty?.name);
+
+      // ✅ local filter (partyId OR partyName)
+      const txns = all.filter((x) => {
+        if (pid && x?.partyId === pid) return true;
+        if (pname && norm(x?.partyName) === pname) return true;
+        return false;
       });
-      setRows(txns);
+
+      const normalized = txns.map((x) => ({
+        ...x,
+        _dateObj: asJSDate(x.date),
+        _total: txnTotal(x),
+      }));
+
+      setRows(normalized);
     } catch (e) {
       console.error(e);
       setErr(e?.message || "Failed to load party report.");
@@ -99,20 +183,54 @@ export default function PartyReports() {
     }
   };
 
-  // Build summary from loaded rows
+  // -------------------------
+  // Build summary (Customer/Supplier)
+  // -------------------------
   const report = useMemo(() => {
-    return buildPartyReport({
-      txns: rows,
-      partyType: type,
-    });
+    const txns = rows || [];
+    const isCustomer = norm(type) === "customer";
+
+    // CREDIT GIVEN:
+    // Customer => Sales (Credit)
+    // Supplier => Purchase (Credit)
+    const creditGiven = txns
+      .filter((t) => {
+        const tt = norm(t?.type);
+        const mm = norm(t?.mode);
+        if (mm !== "credit") return false;
+        if (isCustomer) return tt === "sales";
+        return tt === "purchase";
+      })
+      .reduce((s, t) => s + Number(txnTotal(t) || 0), 0);
+
+    // SETTLED:
+    // Customer => Receipt
+    // Supplier => Payment
+    const settled = txns
+      .filter((t) => {
+        const tt = norm(t?.type);
+        if (isCustomer) return tt === "receipt";
+        return tt === "payment";
+      })
+      .reduce((s, t) => s + Number(txnTotal(t) || 0), 0);
+
+    const pending = creditGiven - settled;
+
+    return {
+      count: txns.length,
+      creditGiven,
+      settled,
+      pending,
+      rows: txns,
+    };
   }, [rows, type]);
 
-  const canLoad = Boolean(activeClientId && partyId && fromDate && toDate);
+  const canLoad = Boolean(activeClientId && selectedParty?.name && fromDate && toDate);
   const canDownload = Boolean(canLoad && report?.rows?.length);
 
   const downloadPDF = () => {
     if (!activeClientId) return alert("Select active client first.");
-    if (!partyId) return alert("Select party first.");
+    if (!selectedParty?.name) return alert("Select party first.");
 
     const doc = generatePartyPDF({
       clientName: activeClientData?.name || "Client",
@@ -134,9 +252,7 @@ export default function PartyReports() {
       {/* Header + Download */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-xl font-bold text-white">
-            Customer / Vendor Reports
-          </h2>
+          <h2 className="text-xl font-bold text-white">Customer / Vendor Reports</h2>
           <p className="text-sm text-slate-400">
             Active Client:{" "}
             <span className="text-slate-200 font-semibold">
@@ -164,7 +280,8 @@ export default function PartyReports() {
               value={type}
               onChange={(e) => {
                 setType(e.target.value);
-                setPartyId("");
+                setSelectedParty(null);
+                setPartyQuery("");
                 setRows([]);
                 setErr("");
               }}
@@ -175,29 +292,50 @@ export default function PartyReports() {
             </select>
           </div>
 
-          <div>
+          {/* Searchable Party Picker */}
+          <div className="relative">
             <label className="text-sm text-slate-300">
               {type === "Customer" ? "Customer" : "Supplier"}
             </label>
-            <select
-              value={partyId}
+
+            <input
+              value={partyQuery}
               onChange={(e) => {
-                setPartyId(e.target.value);
+                setPartyQuery(e.target.value);
+                setSelectedParty(null);
+                setShowPartyList(true);
                 setRows([]);
-                setErr("");
+              }}
+              onFocus={() => setShowPartyList(true)}
+              onBlur={() => {
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                blurTimer.current = setTimeout(() => setShowPartyList(false), 150);
               }}
               disabled={!activeClientId || loadingParties}
+              placeholder={loadingParties ? "Loading..." : "Search party..."}
               className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
-            >
-              <option value="" disabled>
-                {loadingParties ? "Loading…" : "Select…"}
-              </option>
-              {filteredParties.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
+            />
+
+            {showPartyList && activeClientId ? (
+              <div className="absolute z-50 mt-2 w-full max-h-64 overflow-auto rounded-xl border border-slate-800 bg-slate-950 shadow-lg">
+                {visibleParties.length === 0 ? (
+                  <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
+                ) : (
+                  visibleParties.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => pickParty(p)}
+                      className="w-full text-left px-3 py-2 text-sm text-slate-200 hover:bg-slate-900"
+                    >
+                      <span className="font-medium">{p.name}</span>
+                      <span className="ml-2 text-xs text-slate-500">({p.type})</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            ) : null}
           </div>
 
           <div>
@@ -237,7 +375,8 @@ export default function PartyReports() {
           </button>
 
           <div className="text-xs text-slate-500">
-            Uses index: <span className="text-slate-300">transactions → clientId + partyId + date</span>
+            Ledger filter:{" "}
+            <span className="text-slate-300">clientId + date range + (partyId/partyName)</span>
           </div>
         </div>
 
@@ -277,8 +416,8 @@ export default function PartyReports() {
         </div>
 
         <div className="mt-2 text-xs text-slate-500">
-          Customer logic: <span className="text-slate-300">Credit Sales − Receipts</span>. Supplier logic:{" "}
-          <span className="text-slate-300">Credit Purchases − Payments</span>.
+          Customer: <span className="text-slate-300">Sales(Credit) − Receipts</span>. Supplier:{" "}
+          <span className="text-slate-300">Purchase(Credit) − Payments</span>.
         </div>
       </div>
 
@@ -306,8 +445,8 @@ export default function PartyReports() {
                 <div className="col-span-2 text-slate-300">
                   {t._dateObj ? toYYYYMMDD(t._dateObj) : "-"}
                 </div>
-                <div className="col-span-2 text-slate-100 font-medium">{t.type}</div>
-                <div className="col-span-2 text-slate-300">{t.mode}</div>
+                <div className="col-span-2 text-slate-100 font-medium">{t.type || "-"}</div>
+                <div className="col-span-2 text-slate-300">{t.mode || "-"}</div>
                 <div className="col-span-4 text-slate-400 truncate">
                   {t.description || "-"}
                 </div>

@@ -1,5 +1,5 @@
 // src/pages/SuperAdmin.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -27,6 +27,10 @@ function getSecondaryAuth() {
   return getAuth(secondaryApp);
 }
 
+function norm(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
 export default function SuperAdmin() {
   const { user, isSuperAdmin } = useAuth();
 
@@ -48,7 +52,7 @@ export default function SuperAdmin() {
   const [creatingShop, setCreatingShop] = useState(false);
 
   // User creation form
-  const [newName, setNewName] = useState(""); // ✅ added
+  const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState("admin"); // admin | partner
@@ -60,6 +64,20 @@ export default function SuperAdmin() {
   const [assignShopSearch, setAssignShopSearch] = useState("");
   const [userSearch, setUserSearch] = useState("");
 
+  // ✅ Edit user modal
+  const [editOpen, setEditOpen] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editingUser, setEditingUser] = useState(null); // {id,...}
+  const [editShopSearch, setEditShopSearch] = useState("");
+  const editModalRef = useRef(null);
+
+  const [editForm, setEditForm] = useState({
+    name: "",
+    role: "admin",
+    isActive: true,
+    assignedShops: [],
+  });
+
   const shopsById = useMemo(() => {
     const map = {};
     for (const s of shops) map[s.id] = s;
@@ -67,35 +85,41 @@ export default function SuperAdmin() {
   }, [shops]);
 
   const filteredShopsForAll = useMemo(() => {
-    const q = String(shopSearch || "").trim().toLowerCase();
+    const q = norm(shopSearch);
     if (!q) return shops;
     return shops.filter((s) => {
-      const name = String(s.name || "").toLowerCase();
-      const id = String(s.id || "").toLowerCase();
+      const name = norm(s.name);
+      const id = norm(s.id);
       return name.includes(q) || id.includes(q);
     });
   }, [shops, shopSearch]);
 
   const filteredShopsForAssign = useMemo(() => {
-    const q = String(assignShopSearch || "").trim().toLowerCase();
+    const q = norm(assignShopSearch);
     if (!q) return shops;
     return shops.filter((s) => {
-      const name = String(s.name || "").toLowerCase();
-      const id = String(s.id || "").toLowerCase();
+      const name = norm(s.name);
+      const id = norm(s.id);
       return name.includes(q) || id.includes(q);
     });
   }, [shops, assignShopSearch]);
 
   const filteredUsers = useMemo(() => {
-    const q = String(userSearch || "").trim().toLowerCase();
+    const q = norm(userSearch);
     if (!q) return allUsers;
     return allUsers.filter((u) => {
-      const email = String(u.email || "").toLowerCase();
-      const name = String(u.name || "").toLowerCase();
-      const role = String(u.role || "").toLowerCase();
+      const email = norm(u.email);
+      const name = norm(u.name);
+      const role = norm(u.role);
       return email.includes(q) || name.includes(q) || role.includes(q);
     });
   }, [allUsers, userSearch]);
+
+  const filteredShopsForEdit = useMemo(() => {
+    const q = norm(editShopSearch);
+    if (!q) return shops;
+    return shops.filter((s) => norm(s.name).includes(q) || norm(s.id).includes(q));
+  }, [shops, editShopSearch]);
 
   async function loadShops() {
     setErr("");
@@ -134,6 +158,15 @@ export default function SuperAdmin() {
   useEffect(() => {
     if (tab === "users") loadUsers();
   }, [tab]);
+
+  // Close edit modal on ESC
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape") setEditOpen(false);
+    }
+    if (editOpen) window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editOpen]);
 
   if (!isSuperAdmin) {
     return (
@@ -229,7 +262,7 @@ export default function SuperAdmin() {
       await setDoc(doc(db, "users", uid), {
         uid,
         email,
-        name: name || email.split("@")[0], // ✅ clean display name
+        name: name || email.split("@")[0],
         role: roleToSet,
         assignedShops: selectedShopIds,
         createdBy: user?.uid || null,
@@ -262,7 +295,6 @@ export default function SuperAdmin() {
     setErr("");
     setMsg("");
     try {
-      // prevent disabling yourself (safety)
       if (targetUid === user?.uid && nextActive === false) {
         setErr("You cannot disable your own super admin account.");
         return;
@@ -294,6 +326,84 @@ export default function SuperAdmin() {
     return selectedShopIds.map((id) => shopsById[id]?.name || id).join(", ");
   }, [selectedShopIds, shopsById]);
 
+  // -----------------------------
+  // EDIT USER
+  // -----------------------------
+  function openEditUser(u) {
+    setErr("");
+    setMsg("");
+    setEditingUser(u);
+
+    setEditForm({
+      name: String(u?.name || "").trim(),
+      role: u?.role || "admin",
+      isActive: u?.isActive === false ? false : true,
+      assignedShops: Array.isArray(u?.assignedShops) ? u.assignedShops : [],
+    });
+
+    setEditShopSearch("");
+    setEditOpen(true);
+  }
+
+  function toggleEditShop(id) {
+    setEditForm((prev) => {
+      const cur = Array.isArray(prev.assignedShops) ? prev.assignedShops : [];
+      if (cur.includes(id)) {
+        return { ...prev, assignedShops: cur.filter((x) => x !== id) };
+      }
+      return { ...prev, assignedShops: [...cur, id] };
+    });
+  }
+
+  async function saveUserEdits() {
+    if (!editingUser?.id) return;
+
+    setErr("");
+    setMsg("");
+
+    const uid = editingUser.id;
+    const name = String(editForm.name || "").trim();
+
+    // safety: prevent disabling yourself
+    if (uid === user?.uid && editForm.isActive === false) {
+      setErr("You cannot disable your own super admin account.");
+      return;
+    }
+
+    // optional safety: prevent changing your own role
+    if (uid === user?.uid && editForm.role !== editingUser.role) {
+      setErr("You cannot change your own role.");
+      return;
+    }
+
+    if (!Array.isArray(editForm.assignedShops) || editForm.assignedShops.length === 0) {
+      setErr("Assign at least 1 shop to this user.");
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      await updateDoc(doc(db, "users", uid), {
+        name: name || (editingUser.email ? editingUser.email.split("@")[0] : "User"),
+        role: editForm.role, // admin | partner | super_admin (if you want to keep super_admin editable)
+        isActive: editForm.isActive,
+        assignedShops: editForm.assignedShops,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || null,
+      });
+
+      setMsg("✅ User updated.");
+      setEditOpen(false);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to update user.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
   return (
     <div className="p-4 md:p-6 text-slate-100">
       <div className="text-2xl font-semibold mb-1">Super Admin</div>
@@ -301,7 +411,7 @@ export default function SuperAdmin() {
         Multi-tenant shop + user management (RBAC)
       </div>
 
-      <div className="flex gap-2 mb-5">
+      <div className="flex gap-2 mb-5 flex-wrap">
         <button
           className={`px-4 py-2 rounded border ${
             tab === "shops"
@@ -383,10 +493,10 @@ export default function SuperAdmin() {
 
           {/* Searchable Shops */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
               <div className="font-semibold">Search Shops</div>
               <input
-                className="w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                className="w-full sm:w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
                 value={shopSearch}
                 onChange={(e) => setShopSearch(e.target.value)}
                 placeholder="Search by name / id…"
@@ -481,10 +591,10 @@ export default function SuperAdmin() {
 
               {/* Searchable Assign Shops */}
               <div>
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between mb-2 gap-3 flex-wrap">
                   <div className="text-xs opacity-80">Assign Shops</div>
                   <input
-                    className="w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                    className="w-full sm:w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
                     value={assignShopSearch}
                     onChange={(e) => setAssignShopSearch(e.target.value)}
                     placeholder="Search shops to assign…"
@@ -510,9 +620,7 @@ export default function SuperAdmin() {
                           onChange={() => toggleShopSelection(s.id)}
                         />
                         <span className="font-medium">{s.name || s.id}</span>
-                        <span className="text-xs opacity-60">
-                          • {s.currency || ""}
-                        </span>
+                        <span className="text-xs opacity-60">• {s.currency || ""}</span>
                       </label>
                     ))
                   )}
@@ -537,9 +645,9 @@ export default function SuperAdmin() {
               </button>
             </form>
 
-            {/* Existing Users (Searchable + Clean Names) */}
+            {/* Existing Users (LIMIT 5) */}
             <div className="mt-6 bg-slate-950 border border-slate-800 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
                 <div className="font-semibold">Existing Users</div>
                 <button
                   onClick={loadUsers}
@@ -561,74 +669,81 @@ export default function SuperAdmin() {
               ) : filteredUsers.length === 0 ? (
                 <div className="opacity-70 text-sm">No users found.</div>
               ) : (
-                <div className="space-y-3">
-                  {filteredUsers.slice(0, 20).map((u) => {
+                <div className="space-y-2">
+                  <div className="text-xs opacity-60">
+                    Showing {Math.min(filteredUsers.length, 5)} of {filteredUsers.length}
+                  </div>
+
+                  {filteredUsers.slice(0, 5).map((u) => {
                     const shopNames =
                       Array.isArray(u.assignedShops) && u.assignedShops.length
-                        ? u.assignedShops
-                            .map((id) => shopsById[id]?.name || id)
-                            .join(", ")
+                        ? u.assignedShops.map((id) => shopsById[id]?.name || id).join(", ")
                         : "—";
 
                     return (
                       <div
                         key={u.id}
-                        className="p-3 rounded border border-slate-800 bg-slate-900 flex justify-between items-start"
+                        className="p-3 rounded border border-slate-800 bg-slate-900"
                       >
-                        <div className="min-w-0">
-                          <div className="font-medium truncate">
-                            {u.name || u.email || u.id}
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium truncate">
+                              {u.name || u.email || u.id}
+                            </div>
+                            <div className="text-xs opacity-80 truncate">{u.email || ""}</div>
+
+                            <div className="text-xs opacity-80 mt-1">
+                              Role: <b>{u.role || "-"}</b>
+                            </div>
+
+                            <div className="text-xs opacity-70 mt-1 truncate">
+                              Shops: {shopNames}
+                            </div>
+
+                            <div className="text-xs mt-1">
+                              Status:{" "}
+                              <span
+                                className={
+                                  u.isActive === false ? "text-red-400" : "text-emerald-400"
+                                }
+                              >
+                                {u.isActive === false ? "Disabled" : "Active"}
+                              </span>
+                            </div>
                           </div>
-                          <div className="text-xs opacity-80 truncate">
-                            {u.email || ""}
-                          </div>
-                          <div className="text-xs opacity-80 mt-1">
-                            Role: <b>{u.role || "-"}</b>
-                          </div>
-                          <div className="text-xs opacity-70 mt-1 truncate">
-                            Shops: {shopNames}
-                          </div>
-                          <div className="text-xs mt-1">
-                            Status:{" "}
-                            <span
-                              className={
-                                u.isActive === false
-                                  ? "text-red-400"
-                                  : "text-emerald-400"
-                              }
+
+                          <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+                            <button
+                              onClick={() => openEditUser(u)}
+                              className="px-3 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"
                             >
-                              {u.isActive === false ? "Disabled" : "Active"}
-                            </span>
+                              Edit
+                            </button>
+
+                            <button
+                              onClick={() => toggleUserActive(u.id, u.isActive === false)}
+                              className={`px-3 py-1 text-xs rounded ${
+                                u.isActive === false
+                                  ? "bg-emerald-600 hover:bg-emerald-700"
+                                  : "bg-red-600 hover:bg-red-700"
+                              }`}
+                            >
+                              {u.isActive === false ? "Enable" : "Disable"}
+                            </button>
+
+                            <button
+                              disabled
+                              className="px-3 py-1 text-xs rounded bg-slate-700 opacity-50 cursor-not-allowed"
+                            >
+                              Reset Password
+                            </button>
                           </div>
-                        </div>
-
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() =>
-                              toggleUserActive(u.id, u.isActive === false)
-                            }
-                            className={`px-3 py-1 text-xs rounded ${
-                              u.isActive === false
-                                ? "bg-emerald-600 hover:bg-emerald-700"
-                                : "bg-red-600 hover:bg-red-700"
-                            }`}
-                          >
-                            {u.isActive === false ? "Enable" : "Disable"}
-                          </button>
-
-                          {/* Phase 3 later */}
-                          <button
-                            disabled
-                            className="px-3 py-1 text-xs rounded bg-slate-700 opacity-50 cursor-not-allowed"
-                          >
-                            Reset Password
-                          </button>
                         </div>
                       </div>
                     );
                   })}
 
-                  {filteredUsers.length > 20 ? (
+                  {filteredUsers.length > 5 ? (
                     <div className="text-xs opacity-60">
                       Too many results — refine your user search.
                     </div>
@@ -644,17 +759,168 @@ export default function SuperAdmin() {
 
           {/* Notes */}
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
-            <div className="font-semibold mb-2">Phase 2 Notes</div>
+            <div className="font-semibold mb-2">Notes</div>
             <ul className="text-sm opacity-80 list-disc pl-5 space-y-2">
               <li>
                 Disable/Enable is stored in Firestore as <code>isActive</code>.
               </li>
               <li>Firestore rules block disabled users completely.</li>
-              <li>Next Phase 3: Reset password using Cloud Function (secure).</li>
+              <li>Edit user updates: name, role, assigned shops, status.</li>
+              <li>Next Phase: Reset password using Cloud Function (secure).</li>
             </ul>
           </div>
         </div>
       )}
+
+      {/* EDIT USER MODAL */}
+      {editOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setEditOpen(false)}
+          />
+
+          <div
+            ref={editModalRef}
+            className="relative w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl max-h-[85vh] overflow-auto"
+          >
+            <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold truncate">Edit User</div>
+                <div className="text-xs text-slate-400 truncate">
+                  {editingUser?.email || editingUser?.id || ""}
+                </div>
+              </div>
+
+              <button
+                onClick={() => setEditOpen(false)}
+                className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Name</div>
+                  <input
+                    className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                    value={editForm.name}
+                    onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="User name"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Role</div>
+                  <select
+                    className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                    value={editForm.role}
+                    onChange={(e) => setEditForm((p) => ({ ...p, role: e.target.value }))}
+                    disabled={editingUser?.id === user?.uid} // keep self safe
+                  >
+                    <option value="admin">admin</option>
+                    <option value="partner">partner</option>
+                    <option value="super_admin">super_admin</option>
+                  </select>
+                  {editingUser?.id === user?.uid ? (
+                    <div className="text-[11px] text-amber-300/80 mt-1">
+                      You cannot change your own role.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editForm.isActive}
+                    onChange={(e) =>
+                      setEditForm((p) => ({ ...p, isActive: e.target.checked }))
+                    }
+                    disabled={editingUser?.id === user?.uid} // keep self safe
+                  />
+                  Active (unchecked = Disabled)
+                </label>
+
+                {editingUser?.id === user?.uid ? (
+                  <div className="text-[11px] text-amber-300/80">
+                    You cannot disable your own account.
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Assign shops */}
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                  <div className="text-sm font-semibold">Assigned Shops</div>
+                  <input
+                    className="w-full sm:w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                    value={editShopSearch}
+                    onChange={(e) => setEditShopSearch(e.target.value)}
+                    placeholder="Search shops…"
+                  />
+                </div>
+
+                <div className="max-h-60 overflow-auto rounded border border-slate-800 bg-slate-950 p-2 space-y-2">
+                  {loadingShops ? (
+                    <div className="opacity-70 text-sm p-2">Loading shops…</div>
+                  ) : shops.length === 0 ? (
+                    <div className="opacity-70 text-sm p-2">No shops found.</div>
+                  ) : (
+                    filteredShopsForEdit.slice(0, 80).map((s) => (
+                      <label
+                        key={s.id}
+                        className="flex items-center gap-2 text-sm p-2 rounded hover:bg-slate-900 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editForm.assignedShops.includes(s.id)}
+                          onChange={() => toggleEditShop(s.id)}
+                        />
+                        <span className="font-medium">{s.name || s.id}</span>
+                        <span className="text-xs opacity-60">• {s.currency || ""}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+
+                <div className="text-xs opacity-70 mt-2">
+                  Selected:{" "}
+                  <span className="opacity-90">
+                    {editForm.assignedShops.length
+                      ? editForm.assignedShops.map((id) => shopsById[id]?.name || id).join(", ")
+                      : "None"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => setEditOpen(false)}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  disabled={savingEdit}
+                  onClick={saveUserEdits}
+                  className="rounded-xl bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {savingEdit ? "Saving…" : "Save Changes"}
+                </button>
+              </div>
+
+              <div className="text-[11px] text-slate-400">
+                Note: user must have at least 1 assigned shop.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

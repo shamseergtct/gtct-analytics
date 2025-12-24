@@ -19,7 +19,6 @@ import {
 } from "lucide-react";
 
 export default function Layout() {
-  // ✅ AuthContext updated exports
   const { user, role, isSuperAdmin, logout, displayName } = useAuth();
 
   const { clients, activeClientId, activeClientData, setActiveClient, loadingClients } =
@@ -27,6 +26,11 @@ export default function Layout() {
 
   const nav = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  const isPartner = role === "partner";
+  const partnerCanSwitchShop = isPartner && !loadingClients && clients.length >= 2;
+  const showClientDropdownDesktop = !isPartner || partnerCanSwitchShop; // partner: show only if 2+
+  const showClientDropdownMobile = !isPartner || partnerCanSwitchShop;
 
   useEffect(() => {
     if (mobileOpen) document.body.style.overflow = "hidden";
@@ -36,7 +40,7 @@ export default function Layout() {
 
   const handleLogout = async () => {
     try {
-      await logout(); // ✅ correct function
+      await logout();
       nav("/login", { replace: true });
     } catch (e) {
       console.error("Logout failed:", e);
@@ -76,19 +80,27 @@ export default function Layout() {
     []
   );
 
-  // ✅ Add Super Admin link only for super_admin
+  // ✅ Final nav items by role
   const navItems = useMemo(() => {
+    // Partner: only 2 report links
+    if (isPartner) {
+      return [
+        { to: "/reports", label: "Reports", icon: BarChart3 },
+        { to: "/party-reports", label: "Party Reports", icon: BarChart3 },
+      ];
+    }
+
+    // Admin/Super Admin: full items (+ superadmin link)
     const items = [...baseNavItems];
     if (role === "super_admin") {
       items.unshift({ to: "/superadmin", label: "Super Admin", icon: Shield });
     }
     return items;
-  }, [baseNavItems, role]);
+  }, [baseNavItems, role, isPartner]);
 
   // ✅ dropdown disabled if no assigned shops (admin/partner)
   const noAccessibleShops = !isSuperAdmin && !loadingClients && clients.length === 0;
 
-  // ✅ Show a clean role label
   const roleLabel =
     role === "super_admin" ? "Super Admin" : role === "partner" ? "Partner" : "Admin";
 
@@ -110,7 +122,11 @@ export default function Layout() {
             <div className="flex flex-col leading-tight">
               <span className="text-lg font-bold tracking-tight">GTCT Analytics</span>
               <span className="text-xs text-slate-400">
-                {role === "super_admin" ? "Super Admin Console" : "Remote Bookkeeping"}
+                {role === "super_admin"
+                  ? "Super Admin Console"
+                  : isPartner
+                  ? "Partner Reports"
+                  : "Remote Bookkeeping"}
               </span>
             </div>
 
@@ -119,38 +135,40 @@ export default function Layout() {
 
           {/* Right */}
           <div className="flex items-center gap-3">
-            {/* Client Dropdown */}
-            <div className="hidden md:block">
-              <select
-                className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
-                value={activeClientId || ""}
-                disabled={loadingClients || noAccessibleShops}
-                onChange={(e) => {
-                  setActiveClient(e.target.value);
-                  nav("/dashboard");
-                }}
-              >
-                <option value="" disabled>
-                  {loadingClients
-                    ? "Loading shops…"
-                    : noAccessibleShops
-                    ? "No shops assigned"
-                    : "Select client…"}
-                </option>
-
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name || c.id}
+            {/* ✅ Client Dropdown (partner only if 2+ shops) */}
+            {showClientDropdownDesktop ? (
+              <div className="hidden md:block">
+                <select
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
+                  value={activeClientId || ""}
+                  disabled={loadingClients || noAccessibleShops}
+                  onChange={(e) => {
+                    setActiveClient(e.target.value);
+                    nav(isPartner ? "/reports" : "/dashboard");
+                  }}
+                >
+                  <option value="" disabled>
+                    {loadingClients
+                      ? "Loading shops…"
+                      : noAccessibleShops
+                      ? "No shops assigned"
+                      : "Select client…"}
                   </option>
-                ))}
-              </select>
 
-              {noAccessibleShops ? (
-                <div className="mt-1 text-[11px] text-amber-300/80">
-                  Your account has no shops assigned. Contact Super Admin.
-                </div>
-              ) : null}
-            </div>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name || c.id}
+                    </option>
+                  ))}
+                </select>
+
+                {noAccessibleShops ? (
+                  <div className="mt-1 text-[11px] text-amber-300/80">
+                    Your account has no shops assigned. Contact Super Admin.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className="hidden sm:flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900 px-3 py-2">
               <UserCircle2 className="h-5 w-5 text-slate-300" />
@@ -205,10 +223,7 @@ export default function Layout() {
       {/* MOBILE SIDEBAR */}
       {mobileOpen ? (
         <div className="lg:hidden fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setMobileOpen(false)}
-          />
+          <div className="absolute inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
           <div className="absolute inset-y-0 left-0 w-72 bg-slate-950 border-r border-slate-800/70">
             <div className="h-16 border-b border-slate-800/70 px-4 flex items-center justify-between">
               <div className="font-bold">Menu</div>
@@ -221,40 +236,42 @@ export default function Layout() {
               </button>
             </div>
 
-            {/* Mobile client switcher */}
-            <div className="p-4 border-b border-slate-800/70">
-              <div className="text-xs text-slate-400 mb-2">Active Client</div>
-              <select
-                className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
-                value={activeClientId || ""}
-                disabled={loadingClients || noAccessibleShops}
-                onChange={(e) => {
-                  setActiveClient(e.target.value);
-                  nav("/dashboard");
-                  setMobileOpen(false);
-                }}
-              >
-                <option value="" disabled>
-                  {loadingClients
-                    ? "Loading shops…"
-                    : noAccessibleShops
-                    ? "No shops assigned"
-                    : "Select client…"}
-                </option>
-
-                {clients.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name || c.id}
+            {/* ✅ Mobile client switcher (partner only if 2+) */}
+            {showClientDropdownMobile ? (
+              <div className="p-4 border-b border-slate-800/70">
+                <div className="text-xs text-slate-400 mb-2">Active Client</div>
+                <select
+                  className="w-full rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
+                  value={activeClientId || ""}
+                  disabled={loadingClients || noAccessibleShops}
+                  onChange={(e) => {
+                    setActiveClient(e.target.value);
+                    nav(isPartner ? "/reports" : "/dashboard");
+                    setMobileOpen(false);
+                  }}
+                >
+                  <option value="" disabled>
+                    {loadingClients
+                      ? "Loading shops…"
+                      : noAccessibleShops
+                      ? "No shops assigned"
+                      : "Select client…"}
                   </option>
-                ))}
-              </select>
 
-              {noAccessibleShops ? (
-                <div className="mt-2 text-[11px] text-amber-300/80">
-                  No shops assigned. Contact Super Admin.
-                </div>
-              ) : null}
-            </div>
+                  {clients.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name || c.id}
+                    </option>
+                  ))}
+                </select>
+
+                {noAccessibleShops ? (
+                  <div className="mt-2 text-[11px] text-amber-300/80">
+                    No shops assigned. Contact Super Admin.
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <nav className="p-4 space-y-1">
               {navItems.map(({ to, label, icon: Icon }) => (

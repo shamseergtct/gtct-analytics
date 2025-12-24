@@ -36,6 +36,20 @@ function fmtTS(ts, fallbackMs) {
     return "-";
   }
 }
+function todayYYYYMMDD() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+// Use midday to avoid timezone shifting the date
+function dateStrToMsMidday(dateStr) {
+  if (!dateStr) return Date.now();
+  const d = new Date(`${dateStr}T12:00:00`);
+  const ms = d.getTime();
+  return Number.isFinite(ms) ? ms : Date.now();
+}
 
 export default function Inventory() {
   const { activeClientId, activeClientData } = useClient();
@@ -48,6 +62,17 @@ export default function Inventory() {
   const [vendors, setVendors] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+
+  // =========================
+  // ✅ Inventory Movement Intelligence (FAST / DEAD)
+  // =========================
+  const FAST_WINDOW_DAYS = 30; // count movements inside this window
+  const FAST_THRESHOLD = 5; // movements in window to be FAST
+  const DEAD_DAYS = 60; // no movement since this many days -> DEAD
+
+  // movementMap: { [itemId]: { fastCount, lastMs } }
+  const [movementMap, setMovementMap] = useState({});
+  const [loadingMovementMap, setLoadingMovementMap] = useState(false);
 
   // =========================
   // Add/Edit Item Modal
@@ -76,6 +101,7 @@ export default function Inventory() {
   // =========================
   // Purchase Module
   // =========================
+  const [purchaseDate, setPurchaseDate] = useState(todayYYYYMMDD()); // ✅ Date picker
   const [purchaseSearch, setPurchaseSearch] = useState("");
   const [purchaseItemId, setPurchaseItemId] = useState("");
   const [purchaseCurrentStock, setPurchaseCurrentStock] = useState(""); // optional manual base stock
@@ -161,6 +187,66 @@ export default function Inventory() {
   }, [activeClientId]);
 
   // =========================
+  // ✅ Load Movement Map (for FAST/DEAD badges) - NO INDEX NEEDED
+  // FAST/DEAD based on inventory_movements activity
+  // =========================
+  useEffect(() => {
+    async function loadMovementMap() {
+      if (!activeClientId) {
+        setMovementMap({});
+        return;
+      }
+
+      setLoadingMovementMap(true);
+      try {
+        const now = Date.now();
+        const deadFromMs = now - DEAD_DAYS * 24 * 60 * 60 * 1000;
+        const fastFromMs = now - FAST_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+
+        // ✅ Avoid orderBy + range filter to skip composite index issues
+        const qy = query(
+          collection(db, "inventory_movements"),
+          where("clientId", "==", activeClientId),
+          limit(5000)
+        );
+
+        const snap = await getDocs(qy);
+
+        const map = {};
+        snap.docs.forEach((d) => {
+          const row = d.data() || {};
+          const itemId = row.itemId;
+          if (!itemId) return;
+
+          const ms = num(row.dateMs) || (row.date?.toDate ? row.date.toDate().getTime() : 0);
+          if (!ms) return;
+
+          if (!map[itemId]) map[itemId] = { fastCount: 0, lastMs: ms };
+
+          // ✅ last movement inside DEAD window
+          if (ms >= deadFromMs && ms > num(map[itemId].lastMs)) {
+            map[itemId].lastMs = ms;
+          }
+
+          // ✅ fast movements only inside FAST window
+          if (ms >= fastFromMs) {
+            map[itemId].fastCount += 1;
+          }
+        });
+
+        setMovementMap(map);
+      } catch (e) {
+        console.error("❌ Movement map load error:", e);
+        setMovementMap({});
+      } finally {
+        setLoadingMovementMap(false);
+      }
+    }
+
+    loadMovementMap();
+  }, [activeClientId, FAST_WINDOW_DAYS, DEAD_DAYS]);
+
+  // =========================
   // Load Vendors from Parties (Supplier/Both)
   // =========================
   useEffect(() => {
@@ -212,18 +298,20 @@ export default function Inventory() {
 
     setLoadingMovements(true);
 
+    // ✅ No orderBy => avoids composite index requirement
     const qy = query(
       collection(db, "inventory_movements"),
       where("clientId", "==", activeClientId),
       where("itemId", "==", movementItem.id),
-      orderBy("dateMs", "desc"),
       limit(100)
     );
 
     const unsub = onSnapshot(
       qy,
       (snap) => {
-        setMovements(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => num(b.dateMs) - num(a.dateMs));
+        setMovements(list);
         setLoadingMovements(false);
       },
       (e) => {
@@ -250,14 +338,15 @@ export default function Inventory() {
     const qy = query(
       collection(db, "inventory_purchases"),
       where("clientId", "==", activeClientId),
-      orderBy("purchasedAtMs", "desc"),
       limit(200)
     );
 
     const unsub = onSnapshot(
       qy,
       (snap) => {
-        setPurchaseHistory(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+        const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        list.sort((a, b) => num(b.purchasedAtMs) - num(a.purchasedAtMs));
+        setPurchaseHistory(list);
         setLoadingHistory(false);
       },
       (e) => {
@@ -278,29 +367,45 @@ export default function Inventory() {
     return { totalValue, lowCount };
   }, [items]);
 
+  const movementCounters = useMemo(() => {
+    const now = Date.now();
+    const deadCutoff = now - DEAD_DAYS * 24 * 60 * 60 * 1000;
+
+    let fastCount = 0;
+    let deadCount = 0;
+
+    items.forEach((it) => {
+      const m = movementMap[it.id];
+      const count = num(m?.fastCount);
+      const lastMs = num(m?.lastMs);
+
+      const isFast = count >= FAST_THRESHOLD;
+      const isDead = !lastMs || lastMs <= deadCutoff;
+
+      if (isFast) fastCount += 1;
+      if (isDead) deadCount += 1;
+    });
+
+    return { fastCount, deadCount };
+  }, [items, movementMap, DEAD_DAYS, FAST_THRESHOLD]);
+
   // ✅ Purchase search shows max 5 only (no full listing)
   const filteredForPurchase = useMemo(() => {
     const q = purchaseSearch.trim().toLowerCase();
     if (!q) return [];
-    return items
-      .filter((it) => (it.itemName || "").toLowerCase().includes(q))
-      .slice(0, 5);
+    return items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 5);
   }, [items, purchaseSearch]);
 
   const filteredForEntry = useMemo(() => {
     const q = entrySearch.trim().toLowerCase();
     if (!q) return [];
-    return items
-      .filter((it) => (it.itemName || "").toLowerCase().includes(q))
-      .slice(0, 10);
+    return items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 10);
   }, [items, entrySearch]);
 
   const filteredForAudit = useMemo(() => {
     const q = auditSearch.trim().toLowerCase();
     if (!q) return [];
-    return items
-      .filter((it) => (it.itemName || "").toLowerCase().includes(q))
-      .slice(0, 10);
+    return items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 10);
   }, [items, auditSearch]);
 
   const vendorsFiltered = useMemo(() => {
@@ -316,7 +421,6 @@ export default function Inventory() {
 
   const historyFiltered = useMemo(() => {
     let base = purchaseHistory;
-
     if (historyVendorId) base = base.filter((p) => p.vendorId === historyVendorId);
 
     const q = historySearch.trim().toLowerCase();
@@ -423,7 +527,7 @@ export default function Inventory() {
   }
 
   // =========================
-  // Purchase Save
+  // Purchase Save (with Date Picker)
   // =========================
   async function savePurchase(e) {
     e.preventDefault();
@@ -446,6 +550,8 @@ export default function Inventory() {
     const sp = purchaseSellingPrice === "" ? null : num(purchaseSellingPrice);
     const amount = qty * price;
 
+    const chosenMs = dateStrToMsMidday(purchaseDate); // ✅ uses selected date
+
     setSavingPurchase(true);
 
     try {
@@ -459,7 +565,6 @@ export default function Inventory() {
         const systemStock = num(it.currentStock);
         const baseStock = manualStockProvided ? manualStock : systemStock;
 
-        // ✅ User request: base stock + purchased qty
         const newStock = baseStock + qty;
 
         // avg cost update
@@ -471,12 +576,11 @@ export default function Inventory() {
           avgCostPrice: Number(newAvg.toFixed(4)),
           updatedAt: serverTimestamp(),
         };
-
         if (sp !== null && Number.isFinite(sp) && sp >= 0) updatePayload.sellingPrice = sp;
 
         tx.update(itemRef, updatePayload);
 
-        // ✅ Purchase record (uses purchasedAtMs for ordering)
+        // ✅ Purchase record
         const purchaseRef = doc(collection(db, "inventory_purchases"));
         tx.set(purchaseRef, {
           clientId: activeClientId,
@@ -499,13 +603,13 @@ export default function Inventory() {
           manualStockEntered: manualStockProvided ? manualStock : null,
           newStockAfterPurchase: newStock,
 
-          purchasedAtMs: Date.now(),
+          purchasedAtMs: chosenMs, // ✅ from date picker
           purchasedAt: serverTimestamp(),
           createdAtMs: Date.now(),
           createdAt: serverTimestamp(),
         });
 
-        // ✅ Movement record (uses dateMs for ordering)
+        // ✅ Movement record (this is what badges use now)
         const mvRef = doc(collection(db, "inventory_movements"));
         tx.set(mvRef, {
           clientId: activeClientId,
@@ -520,7 +624,7 @@ export default function Inventory() {
           vendorName: vendorName || "",
           note: purchaseNote || "",
 
-          dateMs: Date.now(),
+          dateMs: chosenMs, // ✅ from date picker
           date: serverTimestamp(),
           createdAt: serverTimestamp(),
         });
@@ -528,7 +632,7 @@ export default function Inventory() {
 
       setPurchaseMsg("✅ Purchase saved. Stock updated.");
 
-      // reset purchase form
+      // reset purchase form (keep date)
       setPurchaseItemId("");
       setPurchaseSearch("");
       setPurchaseCurrentStock("");
@@ -580,7 +684,7 @@ export default function Inventory() {
         let newStock = current;
         if (entryType === "IN") newStock = current + qty;
         if (entryType === "OUT") newStock = current - qty;
-        if (entryType === "ADJUST") newStock = current + qty; // allow negative qty in UI if needed
+        if (entryType === "ADJUST") newStock = current + qty;
 
         tx.update(itemRef, { currentStock: newStock, updatedAt: serverTimestamp() });
 
@@ -641,7 +745,6 @@ export default function Inventory() {
         const system = num(it.currentStock);
         const variance = physical - system;
 
-        // audit record subcollection
         const auditRef = doc(collection(db, "inventory", auditItemId, "stock_audits"));
         tx.set(auditRef, {
           clientId: activeClientId,
@@ -715,6 +818,16 @@ export default function Inventory() {
             </span>
             <span className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-200">
               Low Stock Alerts: <b>{stats.lowCount}</b>
+            </span>
+
+            {/* ✅ Movement-based chips */}
+            <span className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-200">
+              Fast Moving ({FAST_WINDOW_DAYS}d):{" "}
+              <b>{loadingMovementMap ? "…" : movementCounters.fastCount}</b>
+            </span>
+            <span className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-200">
+              Dead Stock ({DEAD_DAYS}d):{" "}
+              <b>{loadingMovementMap ? "…" : movementCounters.deadCount}</b>
             </span>
           </div>
         </div>
@@ -809,6 +922,16 @@ export default function Inventory() {
                     const total = num(it.currentStock) * num(it.avgCostPrice);
                     const stockNonZero = num(it.currentStock) !== 0;
 
+                    const m = movementMap[it.id];
+                    const count = num(m?.fastCount);
+                    const lastMs = num(m?.lastMs);
+
+                    const now = Date.now();
+                    const deadCutoff = now - DEAD_DAYS * 24 * 60 * 60 * 1000;
+
+                    const isFast = count >= FAST_THRESHOLD;
+                    const isDead = !lastMs || lastMs <= deadCutoff;
+
                     return (
                       <tr
                         key={it.id}
@@ -816,22 +939,49 @@ export default function Inventory() {
                       >
                         <td className="p-3 text-slate-100 font-medium">
                           {it.itemName}
+
                           {low ? (
                             <span className="ml-2 text-xs px-2 py-1 rounded-full border border-red-700 bg-red-900/30 text-red-200">
                               LOW
                             </span>
                           ) : null}
+
+                          {isFast ? (
+                            <span
+                              className="ml-2 text-xs px-2 py-1 rounded-full border border-emerald-700 bg-emerald-900/25 text-emerald-200"
+                              title={`FAST MOVING: ${count} movements in last ${FAST_WINDOW_DAYS} days`}
+                            >
+                              FAST
+                            </span>
+                          ) : null}
+
+                          {isDead ? (
+                            <span
+                              className="ml-2 text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900/40 text-slate-200"
+                              title={
+                                lastMs
+                                  ? `DEAD STOCK: No movement since ${new Date(lastMs).toLocaleDateString()}`
+                                  : "DEAD STOCK: No movements recorded"
+                              }
+                            >
+                              DEAD
+                            </span>
+                          ) : null}
+
+                          {!isDead && lastMs ? (
+                            <span className="ml-2 text-xs text-slate-500">
+                              Last move: {new Date(lastMs).toLocaleDateString()}
+                            </span>
+                          ) : null}
                         </td>
                         <td className="p-3 text-slate-300">{it.category}</td>
                         <td className="p-3 text-slate-200">
-                          {money(it.currentStock)}{" "}
-                          <span className="text-slate-500">{it.unit}</span>
+                          {money(it.currentStock)} <span className="text-slate-500">{it.unit}</span>
                         </td>
                         <td className="p-3 text-slate-200">{money(it.avgCostPrice)}</td>
                         <td className="p-3 text-slate-200">{money(total)}</td>
                         <td className="p-3 text-slate-300">
-                          {money(it.reorderLevel)}{" "}
-                          <span className="text-slate-500">{it.unit}</span>
+                          {money(it.reorderLevel)} <span className="text-slate-500">{it.unit}</span>
                         </td>
 
                         <td className="p-3">
@@ -1083,7 +1233,7 @@ export default function Inventory() {
         <div className="mt-6 max-w-3xl">
           <h2 className="text-slate-100 font-semibold">Purchase Module</h2>
           <p className="text-slate-400 text-sm mt-1">
-            Search item (max 5 results), select vendor, enter current stock (optional), qty & price.
+            Search item (max 5 results), select vendor, choose date, enter current stock (optional), qty & price.
           </p>
 
           {purchaseMsg ? (
@@ -1094,8 +1244,20 @@ export default function Inventory() {
 
           <form onSubmit={savePurchase} className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+              {/* ✅ Date Picker */}
+              <div className="md:col-span-4">
+                <label className="text-sm text-slate-300">Purchase Date</label>
+                <input
+                  type="date"
+                  value={purchaseDate}
+                  onChange={(e) => setPurchaseDate(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                  required
+                />
+              </div>
+
               {/* Item search */}
-              <div className="md:col-span-12">
+              <div className="md:col-span-8">
                 <label className="text-sm text-slate-300">Search Item</label>
                 <input
                   value={purchaseSearch}
@@ -1225,9 +1387,7 @@ export default function Inventory() {
                   className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                   placeholder="Optional (eg: 5)"
                 />
-                <div className="text-xs text-slate-500 mt-1">
-                  If entered: final stock = this + purchased qty
-                </div>
+                <div className="text-xs text-slate-500 mt-1">If entered: final stock = this + purchased qty</div>
               </div>
 
               {/* Qty */}
@@ -1299,6 +1459,7 @@ export default function Inventory() {
       {/* ================= STOCK ENTRY ================= */}
       {tab === "entry" ? (
         <div className="mt-6 max-w-3xl">
+          {/* (unchanged UI below — kept from your version) */}
           <h2 className="text-slate-100 font-semibold">Stock Entry</h2>
           <p className="text-slate-400 text-sm mt-1">IN / OUT / ADJUST (manual movements).</p>
 

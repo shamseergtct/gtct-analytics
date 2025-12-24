@@ -1,184 +1,206 @@
 // src/utils/reportCalculations.js
 
-function n(v) {
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
+function num(v) {
+  return Number(v || 0);
 }
 
-function isSameDay(tsOrDate, yyyymmdd) {
-  try {
-    const d =
-      tsOrDate?.toDate
-        ? tsOrDate.toDate()
-        : tsOrDate instanceof Date
-        ? tsOrDate
-        : new Date(tsOrDate);
-
-    const y = d.getFullYear();
-    const m = String(d.getMonth() + 1).padStart(2, "0");
-    const day = String(d.getDate()).padStart(2, "0");
-    return `${y}-${m}-${day}` === yyyymmdd;
-  } catch {
-    return false;
-  }
+function sum(arr, fn) {
+  return arr.reduce((s, x) => s + num(fn(x)), 0);
 }
 
-function groupSum(rows, keyFn, amountFn) {
-  const map = new Map();
-  for (const r of rows) {
-    const k = keyFn(r) || "Unknown";
-    const cur = map.get(k) || 0;
-    map.set(k, cur + amountFn(r));
-  }
-  return Array.from(map.entries()).map(([key, amount]) => ({ key, amount }));
+function modeKey(t) {
+  return String(t?.mode || "").trim().toLowerCase();
 }
 
-/**
- * ✅ Daily Pulse Logic (Fixed)
- * - Credit Sales are NOT cash revenue received today (they are pending receivable)
- * - Revenue Generated = (Cash Sales + Bank Sales) + (Credit Recovery receipts from credit customers)
- * - Credit Recovery rule: Receipt from Customer/Both => recovered amount
- */
-export function generateDailyPulseReport(
-  txns,
-  { selectedDate, openingCash = 0, openingBank = 0, actualCount = 0 } = {}
-) {
-  const dayTxns = selectedDate
-    ? txns.filter((t) => isSameDay(t.date, selectedDate))
-    : [...txns];
+function typeKey(t) {
+  return String(t?.type || "").trim().toLowerCase();
+}
 
-  // Prefer new fields, fallback to amountIn/amountOut
-  const getTotal = (t) => {
-    const total = n(t.totalAmount);
-    if (total > 0) return total;
-    // fallback:
-    return n(t.amountIn) > 0 ? n(t.amountIn) : n(t.amountOut);
-  };
+// Receipt from Customer/Both = credit recovery (old debts / receivable recovery)
+function isCreditRecovery(t) {
+  return (
+    typeKey(t) === "receipt" &&
+    (t?.partyType === "Customer" || t?.partyType === "Both") &&
+    num(t?.amountIn) > 0
+  );
+}
 
-  // -----------------------------
-  // 1) REVENUE & INFLOW (FIXED)
-  // -----------------------------
-  const sales = dayTxns.filter((t) => t.type === "Sales");
+// ✅ Expenses = ANY cash/bank out (regardless of type)
+function isExpenseOut(t) {
+  const m = modeKey(t);
+  return (m === "cash" || m === "bank") && num(t?.amountOut) > 0;
+}
 
-  // Total Gross Sales (Z-Report) = ALL sales value (cash+bank+credit)
-  const totalGrossSales = sales.reduce((s, t) => s + getTotal(t), 0);
+// ✅ Liability = Purchase with mode Credit (new payable created, not paid yet)
+function isCreditPurchase(t) {
+  const m = modeKey(t);
+  return typeKey(t) === "purchase" && m === "credit";
+}
 
-  // Real money received from sales (only Cash/Bank)
-  const cashSales = sales
-    .filter((t) => t.mode === "Cash")
-    .reduce((s, t) => s + getTotal(t), 0);
+function expenseKey(t) {
+  return String(t?.category || t?.description || "Expense").trim() || "Expense";
+}
 
-  const bankSales = sales
-    .filter((t) => t.mode === "Bank")
-    .reduce((s, t) => s + getTotal(t), 0);
+function liabilityKey(t) {
+  return String(t?.partyName || t?.description || "Supplier").trim() || "Supplier";
+}
 
-  // Credit Sales are pending receivable (NOT received today)
-  const creditSales = sales
-    .filter((t) => t.mode === "Credit")
-    .reduce((s, t) => s + getTotal(t), 0);
+export function generateDailyPulseReport(txns = [], inputs = {}) {
+  const {
+    selectedDate,
+    openingCash = 0,
+    openingBank = 0,
+    actualCount = 0,
+    analystNotesText = "",
+  } = inputs;
 
-  // ✅ Credit Recovery (Old Debts) rule:
-  // Any Receipt from Customer/Both is treated as recovered
-  const receipts = dayTxns.filter((t) => t.type === "Receipt");
+  // -------------------------
+  // 1) REVENUE & INFLOW
+  // -------------------------
+  const sales = txns.filter((t) => typeKey(t) === "sales");
 
-  const creditRecoveryRows = receipts.filter((t) => {
-    const pt = String(t.partyType || "").toLowerCase();
-    return pt === "customer" || pt === "both";
-  });
+  // Z-report style (shows all sales including credit)
+  const totalGrossSales = sum(sales, (t) => t?.amountIn);
 
-  const creditRecoveryTotal = creditRecoveryRows.reduce((s, t) => s + getTotal(t), 0);
+  const cashSales = sum(
+    sales.filter((t) => modeKey(t) === "cash"),
+    (t) => t?.amountIn
+  );
 
-  const creditRecoveryCash = creditRecoveryRows
-    .filter((t) => t.mode === "Cash")
-    .reduce((s, t) => s + getTotal(t), 0);
+  const bankSales = sum(
+    sales.filter((t) => modeKey(t) === "bank"),
+    (t) => t?.amountIn
+  );
 
-  const creditRecoveryBank = creditRecoveryRows
-    .filter((t) => t.mode === "Bank")
-    .reduce((s, t) => s + getTotal(t), 0);
+  const creditSales = sum(
+    sales.filter((t) => modeKey(t) === "credit"),
+    (t) => t?.amountIn
+  );
 
-  // ✅ FIX: Total Revenue Generated = MONEY RECEIVED TODAY
-  // (Cash Sales + Bank Sales) + Credit Recovery
-  // Credit Sales pending is NOT included
+  const creditRecoveryTxns = txns.filter(isCreditRecovery);
+
+  const creditRecoveryTotal = sum(creditRecoveryTxns, (t) => t?.amountIn);
+
+  const creditRecoveryCash = sum(
+    creditRecoveryTxns.filter((t) => modeKey(t) === "cash"),
+    (t) => t?.amountIn
+  );
+
+  const creditRecoveryBank = sum(
+    creditRecoveryTxns.filter((t) => modeKey(t) === "bank"),
+    (t) => t?.amountIn
+  );
+
+  /**
+   * ✅ IMPORTANT FIX:
+   * Total Revenue Generated must EXCLUDE credit sales (pending).
+   * So it is: Cash Sales + Bank Sales + Credit Recovery.
+   */
   const totalRevenueGenerated = cashSales + bankSales + creditRecoveryTotal;
 
-  // -----------------------------
+  // -------------------------
   // 2) EXPENSES (Verified)
-  // -----------------------------
-  // Verified = cash/bank only
-  const expensesVerifiedBase = dayTxns.filter(
-    (t) => t.type === "Expense" && (t.mode === "Cash" || t.mode === "Bank")
-  );
+  // -------------------------
+  const expenseTxns = txns.filter(isExpenseOut);
 
-  const expensesVerified = groupSum(
-    expensesVerifiedBase,
-    (t) => t.category || t.description || "Expense",
-    (t) => getTotal(t)
-  ).sort((a, b) => b.amount - a.amount);
+  const expenseMap = {};
+  for (const t of expenseTxns) {
+    const key = expenseKey(t);
+    expenseMap[key] = (expenseMap[key] || 0) + num(t?.amountOut);
+  }
 
-  const totalExpenseIncurred = expensesVerified.reduce((s, r) => s + n(r.amount), 0);
+  const expenseItems = Object.keys(expenseMap)
+    .sort()
+    .map((k) => ({ key: k, amount: num(expenseMap[k]) }));
 
-  // -----------------------------
+  const totalExpenseIncurred = sum(expenseTxns, (t) => t?.amountOut);
+
+  // -------------------------
   // 3) CREDIT PURCHASE / LIABILITY
-  // -----------------------------
-  const creditPurchases = dayTxns.filter(
-    (t) => (t.type === "Purchase" || t.type === "Expense") && t.mode === "Credit"
+  // -------------------------
+  const liabTxns = txns.filter(isCreditPurchase);
+
+  // credit purchase might be stored as amountIn or amountOut depending on your form
+  const liabValue = (t) => (num(t?.amountOut) > 0 ? t?.amountOut : t?.amountIn);
+
+  const liabMap = {};
+  for (const t of liabTxns) {
+    const key = liabilityKey(t);
+    liabMap[key] = (liabMap[key] || 0) + num(liabValue(t));
+  }
+
+  const liabilityItems = Object.keys(liabMap)
+    .sort()
+    .map((k) => ({ key: k, amount: num(liabMap[k]) }));
+
+  const totalNewLiability = sum(liabTxns, (t) => liabValue(t));
+
+  // -------------------------
+  // 4) LIQUIDITY (range movement + opening)
+  // -------------------------
+  const cashIn = sum(
+    txns.filter((t) => modeKey(t) === "cash"),
+    (t) => t?.amountIn
+  );
+  const cashOut = sum(
+    txns.filter((t) => modeKey(t) === "cash"),
+    (t) => t?.amountOut
   );
 
-  const liabilities = groupSum(
-    creditPurchases,
-    (t) => t.partyName || "Unknown",
-    (t) => getTotal(t)
-  ).sort((a, b) => b.amount - a.amount);
+  const bankIn = sum(
+    txns.filter((t) => modeKey(t) === "bank"),
+    (t) => t?.amountIn
+  );
+  const bankOut = sum(
+    txns.filter((t) => modeKey(t) === "bank"),
+    (t) => t?.amountOut
+  );
 
-  const totalNewLiability = liabilities.reduce((s, r) => s + n(r.amount), 0);
+  const totalCashBalance = num(openingCash) + (cashIn - cashOut);
+  const totalBankBalance = num(openingBank) + (bankIn - bankOut);
 
-  // -----------------------------
-  // Daily Cash / Bank flows
-  // (depends on amountIn/amountOut being correct)
-  // -----------------------------
-  const cashIn = dayTxns
-    .filter((t) => t.mode === "Cash")
-    .reduce((s, t) => s + n(t.amountIn || 0), 0);
+  /**
+   * ✅ Receivable (Asset)
+   * Without opening receivable balances, the most correct meaning for this report is:
+   * "new credit sales pending" within this period.
+   */
+  const totalReceivable = num(creditSales);
 
-  const cashOut = dayTxns
-    .filter((t) => t.mode === "Cash")
-    .reduce((s, t) => s + n(t.amountOut || 0), 0);
+  /**
+   * ✅ Payable (Liability)
+   * New credit purchases created in the period
+   */
+  const totalPayable = num(totalNewLiability);
 
-  const bankIn = dayTxns
-    .filter((t) => t.mode === "Bank")
-    .reduce((s, t) => s + n(t.amountIn || 0), 0);
+  const totalLiquidFunds =
+    totalCashBalance + totalBankBalance + totalReceivable - totalPayable;
 
-  const bankOut = dayTxns
-    .filter((t) => t.mode === "Bank")
-    .reduce((s, t) => s + n(t.amountOut || 0), 0);
+  // -------------------------
+  // 5) DAILY CASH CHECK (Range)
+  // -------------------------
+  const netCashPosition = cashIn - cashOut;
+  const expectedDrawer = num(openingCash) + netCashPosition;
+  const variance = num(actualCount) - expectedDrawer;
 
-  const expectedDrawer = n(openingCash) + (cashIn - cashOut);
-  const variance = n(actualCount) - expectedDrawer;
-
-  const closingCash = expectedDrawer;
-  const closingBank = n(openingBank) + (bankIn - bankOut);
-
-  // Simple receivable/payable placeholders
-  const totalReceivable = creditSales; // pending credit sales (today)
-  const totalPayable = totalNewLiability; // pending payables (today)
-
-  const totalLiquidFunds = closingCash + closingBank;
-
-  // Status
   const healthy = Math.abs(variance) < 0.01;
-  const statusText = healthy ? "HEALTHY" : "ACTION REQUIRED";
-  const statusSub = healthy
-    ? "Cash is balanced. Expenses are verified."
-    : "Variance detected or liabilities need review.";
 
   const notes = [];
-  if (Math.abs(variance) >= 0.01) notes.push(`Cash variance detected: ${variance.toFixed(2)}`);
-  if (totalNewLiability > 0) notes.push(`New credit liability: ${totalNewLiability.toFixed(2)}`);
-  if (!notes.length) notes.push("No alerts for today.");
+  if (Math.abs(variance) >= 0.01)
+    notes.push("Cash variance detected. Please recheck drawer count.");
+  if (creditSales > 0)
+    notes.push("Credit sales pending. Ensure recovery tracking is updated.");
+  if (totalNewLiability > 0) notes.push("New supplier liabilities added in this period.");
 
   return {
-    selectedDate,
-    status: { healthy, statusText, statusSub },
+    meta: { date: selectedDate, count: txns.length },
+
+    status: {
+      healthy,
+      statusText: healthy ? "HEALTHY" : "ACTION REQUIRED",
+      statusSub: healthy
+        ? "Cash is balanced. Expenses are verified."
+        : "Review variance / pending credits / liabilities.",
+    },
 
     revenue: {
       totalGrossSales,
@@ -192,32 +214,32 @@ export function generateDailyPulseReport(
     },
 
     expenses: {
-      items: expensesVerified,
+      items: expenseItems,
       totalExpenseIncurred,
     },
 
     liabilities: {
-      items: liabilities,
+      items: liabilityItems,
       totalNewLiability,
     },
 
     liquidity: {
-      totalCashBalance: closingCash,
-      totalBankBalance: closingBank,
+      totalCashBalance,
+      totalBankBalance,
       totalReceivable,
       totalPayable,
       totalLiquidFunds,
     },
 
     cashCheck: {
-      openingCash: n(openingCash),
-      netCashPosition: cashIn - cashOut,
+      openingCash: num(openingCash),
+      netCashPosition,
       expectedDrawer,
-      actualCount: n(actualCount),
+      actualCount: num(actualCount),
       variance,
     },
 
     notes,
-    meta: { count: dayTxns.length },
+    analystNotesText: String(analystNotesText || ""),
   };
 }
