@@ -24,18 +24,17 @@ function endOfDay(yyyyMMdd) {
   return new Date(y, m - 1, d, 23, 59, 59, 999);
 }
 function money(v) {
-  return Number(v || 0).toFixed(2);
+  const n = Number(v);
+  return Number.isFinite(n) ? n.toFixed(2) : "0.00";
 }
 
 export default function Reports() {
   const { activeClientId, activeClientData } = useClient();
   const currency = activeClientData?.currency || "BHD";
 
-  // ✅ range
   const [fromDate, setFromDate] = useState(toYYYYMMDD(new Date()));
   const [toDate, setToDate] = useState(toYYYYMMDD(new Date()));
 
-  // ✅ moved inputs (these were in Transactions earlier)
   const [openingCashFrom, setOpeningCashFrom] = useState("0");
   const [openingBankFrom, setOpeningBankFrom] = useState("0");
   const [actualCountTo, setActualCountTo] = useState("0");
@@ -47,6 +46,8 @@ export default function Reports() {
 
   const [sessionErr, setSessionErr] = useState("");
   const [generated, setGenerated] = useState(false);
+
+  const isSingleDay = fromDate === toDate;
 
   async function loadSessions() {
     setSessionErr("");
@@ -100,7 +101,6 @@ export default function Reports() {
     }
   }
 
-  // ✅ Save BOTH: opening values to From session + actual count & notes to To session
   async function saveNotesToToDate() {
     setSessionErr("");
     if (!activeClientId) return;
@@ -130,8 +130,9 @@ export default function Reports() {
       openingBank: Number(openingBankFrom || 0),
       actualCount: Number(actualCountTo || 0),
       analystNotesText: String(analystNotesText || ""),
+      isSingleDay,
     });
-  }, [txns, fromDate, toDate, openingCashFrom, openingBankFrom, actualCountTo, analystNotesText]);
+  }, [txns, fromDate, toDate, openingCashFrom, openingBankFrom, actualCountTo, analystNotesText, isSingleDay]);
 
   const downloadPDF = () => {
     if (!generated) return alert("Click Generate Report first.");
@@ -146,14 +147,11 @@ export default function Reports() {
       },
     });
 
-    doc.save(
-      `GTCT-DailyPulse-${activeClientData?.name || "Client"}-${fromDate}_to_${toDate}.pdf`
-    );
+    doc.save(`GTCT-DailyPulse-${activeClientData?.name || "Client"}-${fromDate}_to_${toDate}.pdf`);
   };
 
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-xl font-bold text-white">Reports</h2>
@@ -185,7 +183,6 @@ export default function Reports() {
         </div>
       </div>
 
-      {/* Inputs */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
           <div>
@@ -267,9 +264,7 @@ export default function Reports() {
         ) : null}
 
         <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3">
-          <div className="text-slate-200 font-semibold text-sm mb-2">
-            Analyst Notes & Alerts
-          </div>
+          <div className="text-slate-200 font-semibold text-sm mb-2">Analyst Notes & Alerts</div>
 
           <textarea
             value={analystNotesText}
@@ -294,10 +289,8 @@ export default function Reports() {
         </div>
       </div>
 
-      {/* Preview (only after generate) */}
       {!generated ? null : (
         <>
-          {/* Status */}
           <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
             <div className="flex items-center justify-between gap-3">
               <div className="text-white font-semibold">Status</div>
@@ -312,12 +305,9 @@ export default function Reports() {
                 {report?.status?.statusText || "STATUS"}
               </div>
             </div>
-            <div className="mt-2 text-sm text-slate-400">
-              {report?.status?.statusSub || ""}
-            </div>
+            <div className="mt-2 text-sm text-slate-400">{report?.status?.statusSub || ""}</div>
           </div>
 
-          {/* Sections */}
           <Section title="1. Revenue & Inflow">
             <TwoColRow label="Total Gross Sales (Z-Report)" value={`${money(report?.revenue?.totalGrossSales)} ${currency}`} />
             <TwoColRow label="Cash Sales" value={`${money(report?.revenue?.cashSales)} ${currency}`} />
@@ -325,6 +315,7 @@ export default function Reports() {
             <TwoColRow label="Credit Sales (Pending)" value={`${money(report?.revenue?.creditSales)} ${currency}`} />
             <div className="my-3 h-px bg-slate-800" />
             <TwoColRow label="Credit Recovery (Old Debts)" value={`${money(report?.revenue?.creditRecoveryTotal)} ${currency}`} />
+            <TwoColRow label="Income" value={`${money(report?.revenue?.totalIncome)} ${currency}`} />
             <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between">
               <div className="text-slate-300 font-semibold">TOTAL REVENUE GENERATED</div>
               <div className="text-white font-bold">{money(report?.revenue?.totalRevenueGenerated)} {currency}</div>
@@ -345,26 +336,61 @@ export default function Reports() {
             </div>
           </Section>
 
-          <Section title="3. Credit Purchase / Liability" danger>
-            {report?.liabilities?.items?.length ? (
-              report.liabilities.items.map((x) => (
-                <TwoColRow key={x.key} label={x.key} value={`${money(x.amount)} ${currency}`} />
-              ))
-            ) : (
-              <div className="text-slate-400 text-sm">No liabilities</div>
-            )}
-            <div className="mt-4 rounded-xl border border-red-900/40 bg-red-950/20 p-3 flex items-center justify-between">
-              <div className="text-red-200 font-semibold">TOTAL NEW LIABILITY</div>
-              <div className="text-red-100 font-bold">{money(report?.liabilities?.totalNewLiability)} {currency}</div>
-            </div>
-          </Section>
+          {/* ✅ RULE:
+              - If single day: show "Total New Liability"
+              - If range: DO NOT show "Total New Liability"
+              - But Total Payable must always show (it is in Liquidity section)
+          */}
+          {isSingleDay ? (
+            <Section title="3. Supplier Liability (Purchase / Expense CREDIT - Payment reduces)" danger>
+              {report?.liabilities?.itemsNet?.length ? (
+                report.liabilities.itemsNet.map((x) => (
+                  <TwoColRow
+                    key={x.key}
+                    label={`${x.key} (Created - Paid)`}
+                    value={`${money(x.balance)} ${currency}`}
+                  />
+                ))
+              ) : (
+                <div className="text-slate-400 text-sm">No supplier liability changes in this range</div>
+              )}
+
+              <TwoColRow label="Supplier Paid (This Period)" value={`${money(report?.liabilities?.totalSupplierPaid)} ${currency}`} />
+
+              <div className="mt-4 rounded-xl border border-red-900/40 bg-red-950/20 p-3 flex items-center justify-between">
+                <div className="text-red-200 font-semibold">TOTAL NEW LIABILITY (Single Day)</div>
+                <div className="text-red-100 font-bold">{money(report?.liabilities?.totalNewLiability)} {currency}</div>
+              </div>
+            </Section>
+          ) : (
+            <Section title="3. Supplier Liability (Purchase / Payment)" danger>
+              {report?.liabilities?.itemsNet?.length ? (
+                report.liabilities.itemsNet.map((x) => (
+                  <TwoColRow
+                    key={x.key}
+                    label={`${x.key} (Created - Paid)`}
+                    value={`${money(x.balance)} ${currency}`}
+                  />
+                ))
+              ) : (
+                <div className="text-slate-400 text-sm">No supplier liability changes in this range</div>
+              )}
+              <TwoColRow label="Supplier Paid (This Period)" value={`${money(report?.liabilities?.totalSupplierPaid)} ${currency}`} />
+              <div className="text-xs text-slate-500 mt-2">
+                Range report: Total New Liability is hidden. Total Payable is shown below in Liquidity.
+              </div>
+            </Section>
+          )}
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Section title="Liquidity & Balance (Till Date)">
               <TwoColRow label="Total Cash Balance" value={`${money(report?.liquidity?.totalCashBalance)} ${currency}`} />
               <TwoColRow label="Total Bank Balance" value={`${money(report?.liquidity?.totalBankBalance)} ${currency}`} />
               <TwoColRow label="Total Receivable (Asset)" value={`${money(report?.liquidity?.totalReceivable)} ${currency}`} />
+
+              {/* ✅ IMPORTANT: Payable is NET (created - paid) */}
               <TwoColRow label="Total Payable (Liability)" value={`${money(report?.liquidity?.totalPayable)} ${currency}`} />
+
               <div className="mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 flex items-center justify-between">
                 <div className="text-emerald-200 font-semibold">TOTAL LIQUID FUNDS</div>
                 <div className="text-white font-bold">{money(report?.liquidity?.totalLiquidFunds)} {currency}</div>
