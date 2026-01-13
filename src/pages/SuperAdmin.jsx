@@ -31,6 +31,42 @@ function norm(s) {
   return String(s || "").trim().toLowerCase();
 }
 
+function nowYear() {
+  return new Date().getFullYear();
+}
+
+// ✅ Client-level defaults: warehouses + invoice numbering + tax/discount
+function defaultClientSettings(currency = "INR") {
+  return {
+    currency: String(currency || "INR").trim().toUpperCase(),
+
+    warehouses: [{ id: "main", name: "Main Warehouse" }],
+
+    invoice: {
+      prefix: "INV-",
+      suffix: "",
+      padding: 4,
+      resetYearly: true, // per client, per year sequence
+      year: nowYear(),
+      nextNumber: 1,
+    },
+
+    tax: {
+      enabled: false,
+      type: "percent", // percent | fixed
+      rate: 0,
+      amount: 0,
+    },
+
+    discount: {
+      enabled: false,
+      type: "percent", // percent | fixed
+      rate: 0,
+      amount: 0,
+    },
+  };
+}
+
 export default function SuperAdmin() {
   const { user, isSuperAdmin } = useAuth();
 
@@ -189,7 +225,7 @@ export default function SuperAdmin() {
 
     const id = String(shopId || "").trim();
     const name = String(shopName || "").trim();
-    const currency = String(shopCurrency || "").trim() || "INR";
+    const currencyInput = String(shopCurrency || "").trim() || "INR";
 
     if (!id || !name) {
       setErr("Shop ID and Name are required.");
@@ -202,10 +238,19 @@ export default function SuperAdmin() {
 
     setCreatingShop(true);
     try {
+      const defaults = defaultClientSettings(currencyInput);
+
       await setDoc(doc(db, "clients", id), {
         clientId: id,
         name,
-        currency,
+        currency: defaults.currency,
+
+        // ✅ NEW DEFAULT SETTINGS
+        warehouses: defaults.warehouses,
+        invoice: defaults.invoice,
+        tax: defaults.tax,
+        discount: defaults.discount,
+
         createdAt: Date.now(),
         createdBy: user?.uid || null,
       });
@@ -385,7 +430,7 @@ export default function SuperAdmin() {
     try {
       await updateDoc(doc(db, "users", uid), {
         name: name || (editingUser.email ? editingUser.email.split("@")[0] : "User"),
-        role: editForm.role, // admin | partner | super_admin (if you want to keep super_admin editable)
+        role: editForm.role, // admin | partner | super_admin
         isActive: editForm.isActive,
         assignedShops: editForm.assignedShops,
         updatedAt: Date.now(),
@@ -482,6 +527,10 @@ export default function SuperAdmin() {
                 />
               </div>
 
+              <div className="text-xs opacity-70">
+                ✅ This will auto-create defaults: Warehouses + Invoice settings + Tax/Discount.
+              </div>
+
               <button
                 disabled={creatingShop}
                 className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded"
@@ -523,7 +572,8 @@ export default function SuperAdmin() {
                   >
                     <div className="font-semibold">{s.name || "Unnamed Shop"}</div>
                     <div className="text-xs opacity-70">
-                      Currency: {s.currency || "-"} • ID: {s.id}
+                      Currency: {s.currency || "-"} • ID: {s.id} • Warehouses:{" "}
+                      {Array.isArray(s.warehouses) ? s.warehouses.length : 0}
                     </div>
                   </div>
                 ))}
@@ -818,7 +868,7 @@ export default function SuperAdmin() {
                     className="w-full p-2 rounded bg-slate-900 border border-slate-800"
                     value={editForm.role}
                     onChange={(e) => setEditForm((p) => ({ ...p, role: e.target.value }))}
-                    disabled={editingUser?.id === user?.uid} // keep self safe
+                    disabled={editingUser?.id === user?.uid}
                   >
                     <option value="admin">admin</option>
                     <option value="partner">partner</option>
@@ -840,7 +890,7 @@ export default function SuperAdmin() {
                     onChange={(e) =>
                       setEditForm((p) => ({ ...p, isActive: e.target.checked }))
                     }
-                    disabled={editingUser?.id === user?.uid} // keep self safe
+                    disabled={editingUser?.id === user?.uid}
                   />
                   Active (unchecked = Disabled)
                 </label>

@@ -16,6 +16,7 @@ import {
   Building2,
   Shield,
   Package,
+  ShoppingCart, // ✅ NEW
 } from "lucide-react";
 
 export default function Layout() {
@@ -66,11 +67,12 @@ export default function Layout() {
       </span>
     );
 
-  // ✅ Base nav items
+  // ✅ Base nav items (Admin/Super Admin)
   const baseNavItems = useMemo(
     () => [
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { to: "/clients", label: "Clients", icon: Users },
+      { to: "/sales", label: "Sales", icon: ShoppingCart }, // ✅ NEW
       { to: "/parties", label: "Parties", icon: Building2 },
       { to: "/transactions", label: "Transactions", icon: ArrowLeftRight },
       { to: "/inventory", label: "Inventory", icon: Package },

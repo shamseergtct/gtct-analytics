@@ -12,6 +12,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   updateDoc,
   where,
 } from "firebase/firestore";
@@ -50,6 +51,85 @@ function dateStrToMsMidday(dateStr) {
   const ms = d.getTime();
   return Number.isFinite(ms) ? ms : Date.now();
 }
+function dateStrToDateMidday(dateStr) {
+  if (!dateStr) return new Date();
+  const d = new Date(`${dateStr}T12:00:00`);
+  return isNaN(d.getTime()) ? new Date() : d;
+}
+function makeItemCode(items) {
+  // ITM-000123 based on current list size (simple and works offline)
+  const next = (Array.isArray(items) ? items.length : 0) + 1;
+  return `ITM-${String(next).padStart(6, "0")}`;
+}
+function makeBarcode(items) {
+  // Unique inside current loaded items (no Firestore index needed)
+  const used = new Set();
+  (items || []).forEach((it) => {
+    if (it.barcode) used.add(String(it.barcode));
+    const vs = Array.isArray(it.variants) ? it.variants : [];
+    vs.forEach((v) => v?.barcode && used.add(String(v.barcode)));
+  });
+
+  let b = "";
+  for (let i = 0; i < 50; i++) {
+    b =
+      String(Date.now()) +
+      String(Math.floor(Math.random() * 1000)).padStart(3, "0");
+    if (!used.has(b)) return b;
+  }
+  return String(Date.now());
+}
+function makeVariantId() {
+  return `v-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+// ✅ Purchase cart helpers
+function makePurchaseLineId() {
+  return `pl-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+function clampPct(x) {
+  const v = num(x);
+  if (v < 0) return 0;
+  if (v > 100) return 100;
+  return v;
+}
+function calcLineTotals(line) {
+  const qty = num(line.qty);
+  const rate = num(line.rate);
+  const amountBeforeDiscount = qty * rate;
+
+  const discountType = line.discountType || "PCT"; // PCT | AMT
+  const discountValue = num(line.discountValue);
+
+  let discountAmount = 0;
+  if (discountType === "AMT") {
+    discountAmount = discountValue;
+  } else {
+    discountAmount = (amountBeforeDiscount * clampPct(discountValue)) / 100;
+  }
+  if (discountAmount < 0) discountAmount = 0;
+  if (discountAmount > amountBeforeDiscount) discountAmount = amountBeforeDiscount;
+
+  const taxableAmount = amountBeforeDiscount - discountAmount;
+
+  const taxPct = clampPct(line.taxPct);
+  const taxAmount = (taxableAmount * taxPct) / 100;
+
+  const lineTotal = taxableAmount + taxAmount;
+
+  return {
+    qty,
+    rate,
+    amountBeforeDiscount,
+    discountType,
+    discountValue,
+    discountAmount,
+    taxableAmount,
+    taxPct,
+    taxAmount,
+    lineTotal,
+  };
+}
 
 export default function Inventory() {
   const { activeClientId, activeClientData } = useClient();
@@ -66,9 +146,9 @@ export default function Inventory() {
   // =========================
   // ✅ Inventory Movement Intelligence (FAST / DEAD)
   // =========================
-  const FAST_WINDOW_DAYS = 30; // count movements inside this window
-  const FAST_THRESHOLD = 5; // movements in window to be FAST
-  const DEAD_DAYS = 60; // no movement since this many days -> DEAD
+  const FAST_WINDOW_DAYS = 30;
+  const FAST_THRESHOLD = 5;
+  const DEAD_DAYS = 60;
 
   // movementMap: { [itemId]: { fastCount, lastMs } }
   const [movementMap, setMovementMap] = useState({});
@@ -83,11 +163,17 @@ export default function Inventory() {
 
   const [addForm, setAddForm] = useState({
     itemName: "",
+    itemCode: "",
+    barcode: "",
     category: "Commodity",
+    productGroup: "General",
     unit: "pcs",
     avgCostPrice: "",
     sellingPrice: "",
+    mrp: "",
+    drp: "",
     reorderLevel: "",
+    variants: [], // [{id,name,mrp,drp,barcode,code}]
   });
 
   // =========================
@@ -99,15 +185,11 @@ export default function Inventory() {
   const [loadingMovements, setLoadingMovements] = useState(false);
 
   // =========================
-  // Purchase Module
+  // ✅ Purchase Cart Module
   // =========================
-  const [purchaseDate, setPurchaseDate] = useState(todayYYYYMMDD()); // ✅ Date picker
-  const [purchaseSearch, setPurchaseSearch] = useState("");
-  const [purchaseItemId, setPurchaseItemId] = useState("");
-  const [purchaseCurrentStock, setPurchaseCurrentStock] = useState(""); // optional manual base stock
-  const [purchaseQty, setPurchaseQty] = useState("");
-  const [purchasePrice, setPurchasePrice] = useState("");
-  const [purchaseSellingPrice, setPurchaseSellingPrice] = useState("");
+  const [purchaseDate, setPurchaseDate] = useState(todayYYYYMMDD());
+  const [supplierInvoiceNo, setSupplierInvoiceNo] = useState("");
+  const [purchaseMode, setPurchaseMode] = useState("cash"); // cash | bank | credit
   const [purchaseNote, setPurchaseNote] = useState("");
   const [savingPurchase, setSavingPurchase] = useState(false);
   const [purchaseMsg, setPurchaseMsg] = useState("");
@@ -115,9 +197,28 @@ export default function Inventory() {
   // Vendor selection from Parties
   const [vendorId, setVendorId] = useState("");
   const [vendorName, setVendorName] = useState("");
+  const [vendorPartyType, setVendorPartyType] = useState("Supplier"); // Supplier/Both
   const [vendorQuery, setVendorQuery] = useState("");
   const [vendorOpen, setVendorOpen] = useState(false);
   const vendorRef = useRef(null);
+
+  // Cart lines
+  const [purchaseLines, setPurchaseLines] = useState(() => [
+    {
+      id: makePurchaseLineId(),
+      search: "",
+      itemId: "",
+      itemName: "",
+      unit: "",
+      qty: "",
+      rate: "",
+      sellingPrice: "",
+      discountType: "PCT", // PCT | AMT
+      discountValue: "",
+      taxPct: "",
+      note: "",
+    },
+  ]);
 
   // =========================
   // Stock Entry (Manual IN/OUT/ADJUST)
@@ -188,7 +289,6 @@ export default function Inventory() {
 
   // =========================
   // ✅ Load Movement Map (for FAST/DEAD badges) - NO INDEX NEEDED
-  // FAST/DEAD based on inventory_movements activity
   // =========================
   useEffect(() => {
     async function loadMovementMap() {
@@ -203,7 +303,6 @@ export default function Inventory() {
         const deadFromMs = now - DEAD_DAYS * 24 * 60 * 60 * 1000;
         const fastFromMs = now - FAST_WINDOW_DAYS * 24 * 60 * 60 * 1000;
 
-        // ✅ Avoid orderBy + range filter to skip composite index issues
         const qy = query(
           collection(db, "inventory_movements"),
           where("clientId", "==", activeClientId),
@@ -218,17 +317,16 @@ export default function Inventory() {
           const itemId = row.itemId;
           if (!itemId) return;
 
-          const ms = num(row.dateMs) || (row.date?.toDate ? row.date.toDate().getTime() : 0);
+          const ms =
+            num(row.dateMs) ||
+            (row.date?.toDate ? row.date.toDate().getTime() : 0);
           if (!ms) return;
 
           if (!map[itemId]) map[itemId] = { fastCount: 0, lastMs: ms };
 
-          // ✅ last movement inside DEAD window
           if (ms >= deadFromMs && ms > num(map[itemId].lastMs)) {
             map[itemId].lastMs = ms;
           }
-
-          // ✅ fast movements only inside FAST window
           if (ms >= fastFromMs) {
             map[itemId].fastCount += 1;
           }
@@ -257,10 +355,16 @@ export default function Inventory() {
       }
       try {
         const ref = collection(db, "parties");
-        const qy = query(ref, where("clientId", "==", activeClientId), orderBy("name", "asc"));
+        const qy = query(
+          ref,
+          where("clientId", "==", activeClientId),
+          orderBy("name", "asc")
+        );
         const snap = await getDocs(qy);
         const all = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        const onlyVendors = all.filter((p) => p.type === "Supplier" || p.type === "Both");
+        const onlyVendors = all.filter(
+          (p) => p.type === "Supplier" || p.type === "Both"
+        );
         setVendors(onlyVendors);
       } catch (e) {
         console.error("❌ Vendor fetch error:", e);
@@ -298,7 +402,6 @@ export default function Inventory() {
 
     setLoadingMovements(true);
 
-    // ✅ No orderBy => avoids composite index requirement
     const qy = query(
       collection(db, "inventory_movements"),
       where("clientId", "==", activeClientId),
@@ -345,7 +448,7 @@ export default function Inventory() {
       qy,
       (snap) => {
         const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-        list.sort((a, b) => num(b.purchasedAtMs) - num(a.purchasedAtMs));
+        list.sort((a, b) => num(b.purchaseDateMs) - num(a.purchaseDateMs));
         setPurchaseHistory(list);
         setLoadingHistory(false);
       },
@@ -362,8 +465,13 @@ export default function Inventory() {
   // Computed
   // =========================
   const stats = useMemo(() => {
-    const totalValue = items.reduce((a, it) => a + num(it.currentStock) * num(it.avgCostPrice), 0);
-    const lowCount = items.filter((it) => num(it.currentStock) < num(it.reorderLevel)).length;
+    const totalValue = items.reduce(
+      (a, it) => a + num(it.currentStock) * num(it.avgCostPrice),
+      0
+    );
+    const lowCount = items.filter(
+      (it) => num(it.currentStock) < num(it.reorderLevel)
+    ).length;
     return { totalValue, lowCount };
   }, [items]);
 
@@ -389,35 +497,13 @@ export default function Inventory() {
     return { fastCount, deadCount };
   }, [items, movementMap, DEAD_DAYS, FAST_THRESHOLD]);
 
-  // ✅ Purchase search shows max 5 only (no full listing)
-  const filteredForPurchase = useMemo(() => {
-    const q = purchaseSearch.trim().toLowerCase();
-    if (!q) return [];
-    return items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 5);
-  }, [items, purchaseSearch]);
-
-  const filteredForEntry = useMemo(() => {
-    const q = entrySearch.trim().toLowerCase();
-    if (!q) return [];
-    return items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 10);
-  }, [items, entrySearch]);
-
-  const filteredForAudit = useMemo(() => {
-    const q = auditSearch.trim().toLowerCase();
-    if (!q) return [];
-    return items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 10);
-  }, [items, auditSearch]);
-
   const vendorsFiltered = useMemo(() => {
     const q = vendorQuery.trim().toLowerCase();
     if (!q) return vendors.slice(0, 10);
-    return vendors.filter((v) => (v.name || "").toLowerCase().includes(q)).slice(0, 10);
+    return vendors
+      .filter((v) => (v.name || "").toLowerCase().includes(q))
+      .slice(0, 10);
   }, [vendors, vendorQuery]);
-
-  const selectedPurchaseItem = useMemo(
-    () => items.find((x) => x.id === purchaseItemId) || null,
-    [items, purchaseItemId]
-  );
 
   const historyFiltered = useMemo(() => {
     let base = purchaseHistory;
@@ -427,37 +513,72 @@ export default function Inventory() {
     if (!q) return base;
 
     return base.filter((p) => {
-      const s = `${p.itemName || ""} ${p.vendorName || ""} ${p.note || ""}`.toLowerCase();
+      const s = `${p.supplierInvoiceNo || ""} ${p.vendorName || ""} ${p.note || ""}`.toLowerCase();
       return s.includes(q);
     });
   }, [purchaseHistory, historySearch, historyVendorId]);
+
+  const purchaseTotals = useMemo(() => {
+    const rows = (purchaseLines || []).map((ln) => ({
+      ...ln,
+      _calc: calcLineTotals(ln),
+    }));
+
+    const subtotal = rows.reduce((s, r) => s + num(r._calc.amountBeforeDiscount), 0);
+    const totalDiscount = rows.reduce((s, r) => s + num(r._calc.discountAmount), 0);
+    const totalTax = rows.reduce((s, r) => s + num(r._calc.taxAmount), 0);
+    const grandTotal = rows.reduce((s, r) => s + num(r._calc.lineTotal), 0);
+
+    return { rows, subtotal, totalDiscount, totalTax, grandTotal };
+  }, [purchaseLines]);
 
   // =========================
   // Modal helpers
   // =========================
   function openAddModal() {
     setEditingItem(null);
+
     setAddForm({
       itemName: "",
+      itemCode: makeItemCode(items),
+      barcode: "",
       category: "Commodity",
+      productGroup: "General",
       unit: "pcs",
+
       avgCostPrice: "",
       sellingPrice: "",
+      mrp: "",
+      drp: "",
+
       reorderLevel: "",
+      variants: [],
     });
+
     setShowAdd(true);
   }
 
   function openEditModal(it) {
     setEditingItem(it);
+
     setAddForm({
       itemName: it.itemName || "",
+      itemCode: it.itemCode || it.code || "",
+      barcode: it.barcode || "",
       category: it.category || "Commodity",
+      productGroup: it.productGroup || "General",
       unit: it.unit || "pcs",
+
       avgCostPrice: it.avgCostPrice ?? "",
       sellingPrice: it.sellingPrice ?? "",
+
+      mrp: it.mrp ?? it.sellingPrice ?? "",
+      drp: it.drp ?? it.sellingPrice ?? "",
+
       reorderLevel: it.reorderLevel ?? "",
+      variants: Array.isArray(it.variants) ? it.variants : [],
     });
+
     setShowAdd(true);
   }
 
@@ -474,23 +595,44 @@ export default function Inventory() {
       if (editingItem?.id) {
         await updateDoc(doc(db, "inventory", editingItem.id), {
           itemName: name,
+          itemCode: (addForm.itemCode || "").trim(),
+          barcode: (addForm.barcode || "").trim(),
           category: addForm.category || "Commodity",
+          productGroup: addForm.productGroup || "General",
           unit: (addForm.unit || "pcs").trim(),
+
           avgCostPrice: num(addForm.avgCostPrice),
           sellingPrice: num(addForm.sellingPrice),
+
+          mrp: addForm.mrp === "" ? null : num(addForm.mrp),
+          drp: addForm.drp === "" ? null : num(addForm.drp),
+
           reorderLevel: num(addForm.reorderLevel),
+          variants: Array.isArray(addForm.variants) ? addForm.variants : [],
           updatedAt: serverTimestamp(),
         });
       } else {
         await addDoc(collection(db, "inventory"), {
           clientId: activeClientId,
+
           itemName: name,
+          itemCode: (addForm.itemCode || "").trim() || makeItemCode(items),
+          barcode: (addForm.barcode || "").trim(),
           category: addForm.category || "Commodity",
+          productGroup: addForm.productGroup || "General",
           unit: (addForm.unit || "pcs").trim(),
+
           currentStock: 0,
+
           avgCostPrice: num(addForm.avgCostPrice),
           sellingPrice: num(addForm.sellingPrice),
+
+          mrp: addForm.mrp === "" ? null : num(addForm.mrp),
+          drp: addForm.drp === "" ? null : num(addForm.drp),
+
           reorderLevel: num(addForm.reorderLevel),
+          variants: Array.isArray(addForm.variants) ? addForm.variants : [],
+
           lastAuditDate: null,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
@@ -527,124 +669,237 @@ export default function Inventory() {
   }
 
   // =========================
-  // Purchase Save (with Date Picker)
+  // ✅ Purchase cart line helpers
   // =========================
-  async function savePurchase(e) {
+  function addPurchaseLine() {
+    setPurchaseLines((s) => [
+      ...(Array.isArray(s) ? s : []),
+      {
+        id: makePurchaseLineId(),
+        search: "",
+        itemId: "",
+        itemName: "",
+        unit: "",
+        qty: "",
+        rate: "",
+        sellingPrice: "",
+        discountType: "PCT",
+        discountValue: "",
+        taxPct: "",
+        note: "",
+      },
+    ]);
+  }
+  function removePurchaseLine(id) {
+    setPurchaseLines((s) => (s || []).filter((x) => x.id !== id));
+  }
+  function setLine(id, patch) {
+    setPurchaseLines((s) =>
+      (s || []).map((x) => (x.id === id ? { ...x, ...patch } : x))
+    );
+  }
+  function resetPurchaseFormKeepDate() {
+    setSupplierInvoiceNo("");
+    setPurchaseMode("cash");
+    setPurchaseNote("");
+    setVendorId("");
+    setVendorName("");
+    setVendorPartyType("Supplier");
+    setVendorQuery("");
+    setVendorOpen(false);
+    setPurchaseLines([
+      {
+        id: makePurchaseLineId(),
+        search: "",
+        itemId: "",
+        itemName: "",
+        unit: "",
+        qty: "",
+        rate: "",
+        sellingPrice: "",
+        discountType: "PCT",
+        discountValue: "",
+        taxPct: "",
+        note: "",
+      },
+    ]);
+  }
+
+  // =========================
+  // ✅ Save Purchase Cart:
+  // - updates stock & avg cost for each line
+  // - writes purchase header with lines
+  // - writes movements per line
+  // - writes ONE transaction into "transactions" (type: purchase, amountOut: grandTotal)
+  // =========================
+  async function savePurchaseCart(e) {
     e.preventDefault();
     setErr("");
     setPurchaseMsg("");
 
     if (!activeClientId) return;
-    if (!purchaseItemId) return setPurchaseMsg("Please select an item.");
-    if (!vendorId) return setPurchaseMsg("Please select a vendor.");
+    if (!vendorId) return setPurchaseMsg("Please select a supplier/vendor.");
+    if (!supplierInvoiceNo.trim())
+      return setPurchaseMsg("Supplier Invoice Number is required.");
 
-    const qty = num(purchaseQty);
-    const price = num(purchasePrice);
-    if (!qty || qty <= 0) return setPurchaseMsg("Quantity must be > 0.");
-    if (!price || price <= 0) return setPurchaseMsg("Purchase price must be > 0.");
+    const validLines = (purchaseLines || [])
+      .map((ln) => ({ ...ln, _calc: calcLineTotals(ln) }))
+      .filter((ln) => ln.itemId && num(ln._calc.qty) > 0 && num(ln._calc.rate) > 0);
 
-    const manualStockProvided = purchaseCurrentStock !== "";
-    const manualStock = num(purchaseCurrentStock);
-    if (manualStockProvided && manualStock < 0) return setPurchaseMsg("Current stock must be 0 or more.");
+    if (validLines.length === 0) {
+      return setPurchaseMsg("Add at least 1 line item (item + qty + rate).");
+    }
 
-    const sp = purchaseSellingPrice === "" ? null : num(purchaseSellingPrice);
-    const amount = qty * price;
+    // totals
+    const subtotal = validLines.reduce((s, r) => s + num(r._calc.amountBeforeDiscount), 0);
+    const totalDiscount = validLines.reduce((s, r) => s + num(r._calc.discountAmount), 0);
+    const totalTax = validLines.reduce((s, r) => s + num(r._calc.taxAmount), 0);
+    const grandTotal = validLines.reduce((s, r) => s + num(r._calc.lineTotal), 0);
 
-    const chosenMs = dateStrToMsMidday(purchaseDate); // ✅ uses selected date
+    if (grandTotal <= 0) return setPurchaseMsg("Grand total must be > 0.");
+
+    const chosenMs = dateStrToMsMidday(purchaseDate);
+    const chosenDateObj = dateStrToDateMidday(purchaseDate);
 
     setSavingPurchase(true);
-
     try {
-      const itemRef = doc(db, "inventory", purchaseItemId);
+      const purchaseRef = doc(collection(db, "inventory_purchases"));
+      const txnRef = doc(collection(db, "transactions"));
 
       await runTransaction(db, async (tx) => {
-        const snap = await tx.get(itemRef);
-        if (!snap.exists()) throw new Error("Item not found.");
+        // 1) Update each inventory item
+        for (const ln of validLines) {
+          const itemRef = doc(db, "inventory", ln.itemId);
+          const snap = await tx.get(itemRef);
+          if (!snap.exists()) throw new Error(`Item not found: ${ln.itemName || ln.itemId}`);
 
-        const it = snap.data();
-        const systemStock = num(it.currentStock);
-        const baseStock = manualStockProvided ? manualStock : systemStock;
+          const it = snap.data();
+          const systemStock = num(it.currentStock);
+          const qty = num(ln._calc.qty);
+          const rate = num(ln._calc.rate);
 
-        const newStock = baseStock + qty;
+          const newStock = systemStock + qty;
 
-        // avg cost update
-        const oldAvg = num(it.avgCostPrice);
-        const newAvg = newStock > 0 ? (baseStock * oldAvg + qty * price) / newStock : price;
+          // weighted avg cost update
+          const oldAvg = num(it.avgCostPrice);
+          const newAvg =
+            newStock > 0 ? (systemStock * oldAvg + qty * rate) / newStock : rate;
 
-        const updatePayload = {
-          currentStock: newStock,
-          avgCostPrice: Number(newAvg.toFixed(4)),
-          updatedAt: serverTimestamp(),
-        };
-        if (sp !== null && Number.isFinite(sp) && sp >= 0) updatePayload.sellingPrice = sp;
+          const payload = {
+            currentStock: newStock,
+            avgCostPrice: Number(newAvg.toFixed(4)),
+            updatedAt: serverTimestamp(),
+          };
 
-        tx.update(itemRef, updatePayload);
+          // optional selling price update
+          const sp = ln.sellingPrice === "" ? null : num(ln.sellingPrice);
+          if (sp !== null && Number.isFinite(sp) && sp >= 0) payload.sellingPrice = sp;
 
-        // ✅ Purchase record
-        const purchaseRef = doc(collection(db, "inventory_purchases"));
+          tx.update(itemRef, payload);
+
+          // 2) Movement record (per line)
+          const mvRef = doc(collection(db, "inventory_movements"));
+          tx.set(mvRef, {
+            clientId: activeClientId,
+            itemId: ln.itemId,
+            itemName: it.itemName || ln.itemName || "",
+            type: "IN",
+            qty,
+            rate,
+            amount: num(ln._calc.amountBeforeDiscount),
+
+            discountType: ln._calc.discountType,
+            discountValue: num(ln._calc.discountValue),
+            discountAmount: num(ln._calc.discountAmount),
+            taxableAmount: num(ln._calc.taxableAmount),
+            taxPct: num(ln._calc.taxPct),
+            taxAmount: num(ln._calc.taxAmount),
+            totalAmount: num(ln._calc.lineTotal),
+
+            vendorId,
+            vendorName: vendorName || "",
+            supplierInvoiceNo: supplierInvoiceNo.trim(),
+            purchaseId: purchaseRef.id,
+
+            note: ln.note || purchaseNote || "",
+
+            dateMs: chosenMs,
+            date: chosenDateObj, // ✅ important for range queries if you ever use it
+            createdAt: serverTimestamp(),
+          });
+        }
+
+        // 3) Purchase header doc (one)
         tx.set(purchaseRef, {
           clientId: activeClientId,
-          itemId: purchaseItemId,
-          itemName: it.itemName || "",
-          category: it.category || "",
-          unit: it.unit || "",
-
           vendorId,
           vendorName: vendorName || "",
+          supplierInvoiceNo: supplierInvoiceNo.trim(),
+          mode: purchaseMode,
 
-          qty,
-          purchasePrice: price,
-          sellingPrice: sp ?? null,
-          amount,
+          purchaseDateMs: chosenMs,
+          purchaseDate: chosenDateObj,
+
+          subtotal: Number(subtotal.toFixed(2)),
+          totalDiscount: Number(totalDiscount.toFixed(2)),
+          totalTax: Number(totalTax.toFixed(2)),
+          grandTotal: Number(grandTotal.toFixed(2)),
+
           note: purchaseNote || "",
 
-          systemStockAtTime: systemStock,
-          baseStockUsed: baseStock,
-          manualStockEntered: manualStockProvided ? manualStock : null,
-          newStockAfterPurchase: newStock,
+          lines: validLines.map((ln) => ({
+            itemId: ln.itemId,
+            itemName: ln.itemName || "",
+            unit: ln.unit || "",
+            qty: num(ln._calc.qty),
+            rate: num(ln._calc.rate),
 
-          purchasedAtMs: chosenMs, // ✅ from date picker
-          purchasedAt: serverTimestamp(),
+            amountBeforeDiscount: Number(ln._calc.amountBeforeDiscount.toFixed(2)),
+            discountType: ln._calc.discountType,
+            discountValue: num(ln._calc.discountValue),
+            discountAmount: Number(ln._calc.discountAmount.toFixed(2)),
+            taxableAmount: Number(ln._calc.taxableAmount.toFixed(2)),
+            taxPct: num(ln._calc.taxPct),
+            taxAmount: Number(ln._calc.taxAmount.toFixed(2)),
+            lineTotal: Number(ln._calc.lineTotal.toFixed(2)),
+
+            sellingPrice:
+              ln.sellingPrice === "" ? null : Number(num(ln.sellingPrice).toFixed(2)),
+            note: ln.note || "",
+          })),
+
           createdAtMs: Date.now(),
           createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
         });
 
-        // ✅ Movement record (this is what badges use now)
-        const mvRef = doc(collection(db, "inventory_movements"));
-        tx.set(mvRef, {
+        // 4) Transactions entry (one)
+        // Your Transactions.jsx expects fields: clientId, date, type, mode, partyName, partyType, description, amountIn, amountOut
+        tx.set(txnRef, {
           clientId: activeClientId,
-          itemId: purchaseItemId,
-          itemName: it.itemName || "",
-          type: "IN",
-          qty,
-          rate: price,
-          amount,
+          date: chosenDateObj, // ✅ this is what your Transactions page filters on
+          dateMs: chosenMs,
 
-          vendorId,
-          vendorName: vendorName || "",
-          note: purchaseNote || "",
+          type: "purchase",
+          mode: purchaseMode,
 
-          dateMs: chosenMs, // ✅ from date picker
-          date: serverTimestamp(),
+          partyName: vendorName || "",
+          partyType: vendorPartyType || "Supplier",
+
+          description: `Inventory Purchase • Inv: ${supplierInvoiceNo.trim()}${purchaseNote ? ` • ${purchaseNote}` : ""}`,
+          category: "Inventory Purchase",
+
+          amountIn: 0,
+          amountOut: Number(grandTotal.toFixed(2)),
+
+          linkedPurchaseId: purchaseRef.id,
+
           createdAt: serverTimestamp(),
         });
       });
 
-      setPurchaseMsg("✅ Purchase saved. Stock updated.");
-
-      // reset purchase form (keep date)
-      setPurchaseItemId("");
-      setPurchaseSearch("");
-      setPurchaseCurrentStock("");
-      setPurchaseQty("");
-      setPurchasePrice("");
-      setPurchaseSellingPrice("");
-      setPurchaseNote("");
-
-      setVendorId("");
-      setVendorName("");
-      setVendorQuery("");
-      setVendorOpen(false);
+      setPurchaseMsg("✅ Purchase saved. Stock updated. Transaction added.");
+      resetPurchaseFormKeepDate();
     } catch (e2) {
       console.error(e2);
       setErr(e2?.message || "Failed to save purchase.");
@@ -699,7 +954,7 @@ export default function Inventory() {
           amount,
           note: entryNote || "",
           dateMs: Date.now(),
-          date: serverTimestamp(),
+          date: new Date(),
           createdAt: serverTimestamp(),
         });
       });
@@ -773,7 +1028,7 @@ export default function Inventory() {
           amount: 0,
           note: `Audit adjustment. Physical=${physical}, System=${system}`,
           dateMs: Date.now(),
-          date: serverTimestamp(),
+          date: new Date(),
           createdAt: serverTimestamp(),
         });
       });
@@ -807,9 +1062,11 @@ export default function Inventory() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-semibold text-slate-100">Inventory Management</h1>
+          <h1 className="text-2xl font-semibold text-slate-100">
+            Inventory Management
+          </h1>
           <p className="text-slate-400 mt-1">
-            Separate module (not linked with Transactions). All data saved in Firestore.
+            Separate module (not linked with Transactions except Purchase posting).
           </p>
 
           <div className="mt-3 flex flex-wrap gap-2 text-sm">
@@ -820,7 +1077,6 @@ export default function Inventory() {
               Low Stock Alerts: <b>{stats.lowCount}</b>
             </span>
 
-            {/* ✅ Movement-based chips */}
             <span className="px-3 py-1 rounded-full bg-slate-900 border border-slate-800 text-slate-200">
               Fast Moving ({FAST_WINDOW_DAYS}d):{" "}
               <b>{loadingMovementMap ? "…" : movementCounters.fastCount}</b>
@@ -893,8 +1149,11 @@ export default function Inventory() {
             <table className="min-w-full text-sm">
               <thead className="bg-slate-900/50 border-b border-slate-800">
                 <tr className="text-left text-slate-200">
-                  <th className="p-3">Item Name</th>
+                  <th className="p-3">Item</th>
+                  <th className="p-3">Code</th>
+                  <th className="p-3">Barcode</th>
                   <th className="p-3">Category</th>
+                  <th className="p-3">Group</th>
                   <th className="p-3">Current Stock</th>
                   <th className="p-3">Avg Cost</th>
                   <th className="p-3">Total Value</th>
@@ -906,13 +1165,13 @@ export default function Inventory() {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td className="p-4 text-slate-400" colSpan={7}>
+                    <td className="p-4 text-slate-400" colSpan={10}>
                       Loading…
                     </td>
                   </tr>
                 ) : items.length === 0 ? (
                   <tr>
-                    <td className="p-4 text-slate-400" colSpan={7}>
+                    <td className="p-4 text-slate-400" colSpan={10}>
                       No items yet. Click “Add Item”.
                     </td>
                   </tr>
@@ -922,66 +1181,35 @@ export default function Inventory() {
                     const total = num(it.currentStock) * num(it.avgCostPrice);
                     const stockNonZero = num(it.currentStock) !== 0;
 
-                    const m = movementMap[it.id];
-                    const count = num(m?.fastCount);
-                    const lastMs = num(m?.lastMs);
-
-                    const now = Date.now();
-                    const deadCutoff = now - DEAD_DAYS * 24 * 60 * 60 * 1000;
-
-                    const isFast = count >= FAST_THRESHOLD;
-                    const isDead = !lastMs || lastMs <= deadCutoff;
-
                     return (
                       <tr
                         key={it.id}
-                        className={`border-b border-slate-900 ${low ? "bg-red-950/25" : ""}`}
+                        className={`border-b border-slate-900 ${
+                          low ? "bg-red-950/25" : ""
+                        }`}
                       >
                         <td className="p-3 text-slate-100 font-medium">
                           {it.itemName}
-
-                          {low ? (
-                            <span className="ml-2 text-xs px-2 py-1 rounded-full border border-red-700 bg-red-900/30 text-red-200">
-                              LOW
-                            </span>
-                          ) : null}
-
-                          {isFast ? (
-                            <span
-                              className="ml-2 text-xs px-2 py-1 rounded-full border border-emerald-700 bg-emerald-900/25 text-emerald-200"
-                              title={`FAST MOVING: ${count} movements in last ${FAST_WINDOW_DAYS} days`}
-                            >
-                              FAST
-                            </span>
-                          ) : null}
-
-                          {isDead ? (
-                            <span
-                              className="ml-2 text-xs px-2 py-1 rounded-full border border-slate-700 bg-slate-900/40 text-slate-200"
-                              title={
-                                lastMs
-                                  ? `DEAD STOCK: No movement since ${new Date(lastMs).toLocaleDateString()}`
-                                  : "DEAD STOCK: No movements recorded"
-                              }
-                            >
-                              DEAD
-                            </span>
-                          ) : null}
-
-                          {!isDead && lastMs ? (
-                            <span className="ml-2 text-xs text-slate-500">
-                              Last move: {new Date(lastMs).toLocaleDateString()}
-                            </span>
-                          ) : null}
+                          <div className="text-xs text-slate-500 mt-1">
+                            Variants:{" "}
+                            {Array.isArray(it.variants) ? it.variants.length : 0}
+                          </div>
                         </td>
-                        <td className="p-3 text-slate-300">{it.category}</td>
+
+                        <td className="p-3 text-slate-300">{it.itemCode || "-"}</td>
+                        <td className="p-3 text-slate-300">{it.barcode || "-"}</td>
+                        <td className="p-3 text-slate-300">{it.category || "-"}</td>
+                        <td className="p-3 text-slate-300">{it.productGroup || "General"}</td>
+
                         <td className="p-3 text-slate-200">
-                          {money(it.currentStock)} <span className="text-slate-500">{it.unit}</span>
+                          {money(it.currentStock)}{" "}
+                          <span className="text-slate-500">{it.unit}</span>
                         </td>
                         <td className="p-3 text-slate-200">{money(it.avgCostPrice)}</td>
                         <td className="p-3 text-slate-200">{money(total)}</td>
                         <td className="p-3 text-slate-300">
-                          {money(it.reorderLevel)} <span className="text-slate-500">{it.unit}</span>
+                          {money(it.reorderLevel)}{" "}
+                          <span className="text-slate-500">{it.unit}</span>
                         </td>
 
                         <td className="p-3">
@@ -1025,7 +1253,9 @@ export default function Inventory() {
                           </div>
 
                           {stockNonZero ? (
-                            <div className="mt-1 text-xs text-slate-500">Delete locked (stock ≠ 0)</div>
+                            <div className="mt-1 text-xs text-slate-500">
+                              Delete locked (stock ≠ 0)
+                            </div>
                           ) : null}
                         </td>
                       </tr>
@@ -1057,12 +1287,17 @@ export default function Inventory() {
                   </button>
                 </div>
 
-                <form onSubmit={addOrUpdateItem} className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3">
+                <form
+                  onSubmit={addOrUpdateItem}
+                  className="p-4 grid grid-cols-1 md:grid-cols-12 gap-3"
+                >
                   <div className="md:col-span-12">
                     <label className="text-sm text-slate-300">Item Name</label>
                     <input
                       value={addForm.itemName}
-                      onChange={(e) => setAddForm((s) => ({ ...s, itemName: e.target.value }))}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, itemName: e.target.value }))
+                      }
                       className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                       placeholder='e.g. "Tomato", "Red Bull"'
                       required
@@ -1070,10 +1305,54 @@ export default function Inventory() {
                   </div>
 
                   <div className="md:col-span-6">
+                    <label className="text-sm text-slate-300">Item Code</label>
+                    <input
+                      value={addForm.itemCode}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, itemCode: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                      placeholder="ITM-000001"
+                    />
+                  </div>
+
+                  <div className="md:col-span-6">
+                    <label className="text-sm text-slate-300">Barcode (Default)</label>
+                    <div className="mt-1 flex gap-2">
+                      <input
+                        value={addForm.barcode}
+                        onChange={(e) =>
+                          setAddForm((s) => ({ ...s, barcode: e.target.value }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") e.preventDefault();
+                        }}
+                        className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                        placeholder="Scan or enter barcode..."
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAddForm((s) => ({ ...s, barcode: makeBarcode(items) }))
+                        }
+                        className="shrink-0 rounded-lg border border-slate-700 text-slate-200 px-3 py-2 hover:bg-slate-900/50"
+                        title="Generate unique barcode"
+                      >
+                        Generate
+                      </button>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      If item has no barcode, use Generate.
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-6">
                     <label className="text-sm text-slate-300">Category</label>
                     <select
                       value={addForm.category}
-                      onChange={(e) => setAddForm((s) => ({ ...s, category: e.target.value }))}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, category: e.target.value }))
+                      }
                       className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                     >
                       <option>Commodity</option>
@@ -1082,10 +1361,32 @@ export default function Inventory() {
                   </div>
 
                   <div className="md:col-span-6">
+                    <label className="text-sm text-slate-300">Product Group (Printing)</label>
+                    <select
+                      value={addForm.productGroup}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, productGroup: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                    >
+                      <option>General</option>
+                      <option>Kitchen</option>
+                      <option>Juice Counter</option>
+                      <option>Warehouse</option>
+                      <option>Bakery</option>
+                    </select>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Later we’ll use this to print separate KOT slips.
+                    </div>
+                  </div>
+
+                  <div className="md:col-span-6">
                     <label className="text-sm text-slate-300">Unit</label>
                     <input
                       value={addForm.unit}
-                      onChange={(e) => setAddForm((s) => ({ ...s, unit: e.target.value }))}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, unit: e.target.value }))
+                      }
                       className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                       placeholder="kg / pcs / box"
                     />
@@ -1097,7 +1398,9 @@ export default function Inventory() {
                       type="number"
                       inputMode="decimal"
                       value={addForm.avgCostPrice}
-                      onChange={(e) => setAddForm((s) => ({ ...s, avgCostPrice: e.target.value }))}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, avgCostPrice: e.target.value }))
+                      }
                       className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                     />
                   </div>
@@ -1108,7 +1411,9 @@ export default function Inventory() {
                       type="number"
                       inputMode="decimal"
                       value={addForm.sellingPrice}
-                      onChange={(e) => setAddForm((s) => ({ ...s, sellingPrice: e.target.value }))}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, sellingPrice: e.target.value }))
+                      }
                       className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                     />
                   </div>
@@ -1119,9 +1424,173 @@ export default function Inventory() {
                       type="number"
                       inputMode="decimal"
                       value={addForm.reorderLevel}
-                      onChange={(e) => setAddForm((s) => ({ ...s, reorderLevel: e.target.value }))}
+                      onChange={(e) =>
+                        setAddForm((s) => ({ ...s, reorderLevel: e.target.value }))
+                      }
                       className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                     />
+                  </div>
+
+                  <div className="md:col-span-12">
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm text-slate-300">Variants (Optional)</label>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setAddForm((s) => ({
+                            ...s,
+                            variants: [
+                              ...(Array.isArray(s.variants) ? s.variants : []),
+                              {
+                                id: makeVariantId(),
+                                name: "Variant",
+                                mrp: "",
+                                drp: "",
+                                barcode: "",
+                                code: "",
+                              },
+                            ],
+                          }))
+                        }
+                        className="rounded-lg border border-slate-700 text-slate-200 px-3 py-1.5 hover:bg-slate-900/50 text-sm"
+                      >
+                        + Add Variant
+                      </button>
+                    </div>
+
+                    {Array.isArray(addForm.variants) && addForm.variants.length > 0 ? (
+                      <div className="mt-2 overflow-x-auto rounded-xl border border-slate-800">
+                        <table className="min-w-full text-sm">
+                          <thead className="bg-slate-900/50 border-b border-slate-800">
+                            <tr className="text-left text-slate-200">
+                              <th className="p-2">Name</th>
+                              <th className="p-2 text-right">MRP</th>
+                              <th className="p-2 text-right">DRP</th>
+                              <th className="p-2">Barcode</th>
+                              <th className="p-2">Code</th>
+                              <th className="p-2"></th>
+                            </tr>
+                          </thead>
+
+                          <tbody>
+                            {addForm.variants.map((v, idx) => (
+                              <tr key={v.id} className="border-b border-slate-900">
+                                <td className="p-2">
+                                  <input
+                                    value={v.name || ""}
+                                    onChange={(e) =>
+                                      setAddForm((s) => {
+                                        const next = [...(s.variants || [])];
+                                        next[idx] = { ...next[idx], name: e.target.value };
+                                        return { ...s, variants: next };
+                                      })
+                                    }
+                                    className="w-48 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+                                    placeholder="Small / Large"
+                                  />
+                                </td>
+
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    value={v.mrp ?? ""}
+                                    onChange={(e) =>
+                                      setAddForm((s) => {
+                                        const next = [...(s.variants || [])];
+                                        next[idx] = { ...next[idx], mrp: e.target.value };
+                                        return { ...s, variants: next };
+                                      })
+                                    }
+                                    className="w-24 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+                                  />
+                                </td>
+
+                                <td className="p-2">
+                                  <input
+                                    type="number"
+                                    inputMode="decimal"
+                                    value={v.drp ?? ""}
+                                    onChange={(e) =>
+                                      setAddForm((s) => {
+                                        const next = [...(s.variants || [])];
+                                        next[idx] = { ...next[idx], drp: e.target.value };
+                                        return { ...s, variants: next };
+                                      })
+                                    }
+                                    className="w-24 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+                                  />
+                                </td>
+
+                                <td className="p-2">
+                                  <div className="flex gap-2">
+                                    <input
+                                      value={v.barcode || ""}
+                                      onChange={(e) =>
+                                        setAddForm((s) => {
+                                          const next = [...(s.variants || [])];
+                                          next[idx] = { ...next[idx], barcode: e.target.value };
+                                          return { ...s, variants: next };
+                                        })
+                                      }
+                                      className="w-52 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+                                      placeholder="Scan barcode..."
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setAddForm((s) => {
+                                          const next = [...(s.variants || [])];
+                                          next[idx] = { ...next[idx], barcode: makeBarcode(items) };
+                                          return { ...s, variants: next };
+                                        })
+                                      }
+                                      className="rounded-lg border border-slate-700 text-slate-200 px-2 py-1 hover:bg-slate-900/50"
+                                    >
+                                      Gen
+                                    </button>
+                                  </div>
+                                </td>
+
+                                <td className="p-2">
+                                  <input
+                                    value={v.code || ""}
+                                    onChange={(e) =>
+                                      setAddForm((s) => {
+                                        const next = [...(s.variants || [])];
+                                        next[idx] = { ...next[idx], code: e.target.value };
+                                        return { ...s, variants: next };
+                                      })
+                                    }
+                                    className="w-36 rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
+                                    placeholder="Optional"
+                                  />
+                                </td>
+
+                                <td className="p-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setAddForm((s) => ({
+                                        ...s,
+                                        variants: (s.variants || []).filter((x) => x.id !== v.id),
+                                      }))
+                                    }
+                                    className="rounded-lg border border-red-800 text-red-200 px-2 py-1 hover:bg-red-950/30"
+                                  >
+                                    Remove
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="mt-2 text-xs text-slate-500">
+                        If no variants, Sales will use default price + barcode.
+                      </div>
+                    )}
                   </div>
 
                   <div className="md:col-span-12 flex justify-end gap-2 mt-2">
@@ -1152,7 +1621,7 @@ export default function Inventory() {
           {/* Movements Modal */}
           {showMovements ? (
             <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-              <div className="w-full max-w-4xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
+              <div className="w-full max-w-5xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
                 <div className="p-4 border-b border-slate-800 flex items-center justify-between">
                   <div>
                     <h3 className="text-slate-100 font-semibold">Item Movements</h3>
@@ -1188,7 +1657,12 @@ export default function Inventory() {
                             <th className="p-3">Qty</th>
                             <th className="p-3">Rate</th>
                             <th className="p-3">Amount</th>
+                            <th className="p-3">Disc</th>
+                            <th className="p-3">Tax%</th>
+                            <th className="p-3">Tax</th>
+                            <th className="p-3">Total</th>
                             <th className="p-3">Vendor</th>
+                            <th className="p-3">Invoice</th>
                             <th className="p-3">Note</th>
                           </tr>
                         </thead>
@@ -1200,7 +1674,12 @@ export default function Inventory() {
                               <td className="p-3 text-slate-200">{money(m.qty)}</td>
                               <td className="p-3 text-slate-200">{money(m.rate)}</td>
                               <td className="p-3 text-slate-200">{money(m.amount)}</td>
+                              <td className="p-3 text-slate-200">{money(m.discountAmount)}</td>
+                              <td className="p-3 text-slate-200">{money(m.taxPct)}</td>
+                              <td className="p-3 text-slate-200">{money(m.taxAmount)}</td>
+                              <td className="p-3 text-slate-200">{money(m.totalAmount)}</td>
                               <td className="p-3 text-slate-300">{m.vendorName || "-"}</td>
+                              <td className="p-3 text-slate-300">{m.supplierInvoiceNo || "-"}</td>
                               <td className="p-3 text-slate-300">{m.note || "-"}</td>
                             </tr>
                           ))}
@@ -1228,13 +1707,26 @@ export default function Inventory() {
         </div>
       ) : null}
 
-      {/* ================= PURCHASE ================= */}
+      {/* ================= PURCHASE (CART) ================= */}
       {tab === "purchase" ? (
-        <div className="mt-6 max-w-3xl">
-          <h2 className="text-slate-100 font-semibold">Purchase Module</h2>
-          <p className="text-slate-400 text-sm mt-1">
-            Search item (max 5 results), select vendor, choose date, enter current stock (optional), qty & price.
-          </p>
+        <div className="mt-6">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h2 className="text-slate-100 font-semibold">Purchase Cart</h2>
+              <p className="text-slate-400 text-sm mt-1">
+                Multi-item purchase → stock update per line → one transaction entry.
+              </p>
+            </div>
+
+            {/* ✅ FIX: Add New Item button works here */}
+            <button
+              type="button"
+              onClick={openAddModal}
+              className="rounded-lg bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 font-medium"
+            >
+              + Add New Item
+            </button>
+          </div>
 
           {purchaseMsg ? (
             <div className="mt-4 rounded-lg border border-green-800 bg-green-950/30 text-green-200 px-3 py-2 text-sm">
@@ -1242,10 +1734,13 @@ export default function Inventory() {
             </div>
           ) : null}
 
-          <form onSubmit={savePurchase} className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <form
+            onSubmit={savePurchaseCart}
+            className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 p-4"
+          >
+            {/* Header fields */}
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
-              {/* ✅ Date Picker */}
-              <div className="md:col-span-4">
+              <div className="md:col-span-3">
                 <label className="text-sm text-slate-300">Purchase Date</label>
                 <input
                   type="date"
@@ -1256,59 +1751,36 @@ export default function Inventory() {
                 />
               </div>
 
-              {/* Item search */}
-              <div className="md:col-span-8">
-                <label className="text-sm text-slate-300">Search Item</label>
-                <input
-                  value={purchaseSearch}
-                  onChange={(e) => {
-                    setPurchaseSearch(e.target.value);
-                    setPurchaseItemId("");
-                    setPurchaseCurrentStock("");
-                  }}
-                  placeholder="Type item name..."
+              <div className="md:col-span-3">
+                <label className="text-sm text-slate-300">Mode</label>
+                <select
+                  value={purchaseMode}
+                  onChange={(e) => setPurchaseMode(e.target.value)}
                   className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                >
+                  <option value="cash">Cash</option>
+                  <option value="bank">Bank</option>
+                  <option value="credit">Credit</option>
+                </select>
+                <div className="text-xs text-slate-500 mt-1">
+                  Credit purchase will appear as payable logic in reports.
+                </div>
+              </div>
+
+              <div className="md:col-span-6">
+                <label className="text-sm text-slate-300">Supplier Invoice Number</label>
+                <input
+                  value={supplierInvoiceNo}
+                  onChange={(e) => setSupplierInvoiceNo(e.target.value)}
+                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                  placeholder="Eg: INV-234 / Bill No..."
+                  required
                 />
-
-                {filteredForPurchase.length > 0 ? (
-                  <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-800">
-                    {filteredForPurchase.map((it) => (
-                      <button
-                        key={it.id}
-                        type="button"
-                        onClick={() => {
-                          setPurchaseItemId(it.id);
-                          setPurchaseSearch(it.itemName || "");
-                          setPurchaseCurrentStock(String(it.currentStock ?? ""));
-                        }}
-                        className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="text-slate-100 font-medium text-sm">{it.itemName}</div>
-                          <div className="text-slate-400 text-xs">
-                            Stock: {money(it.currentStock)} {it.unit}
-                          </div>
-                        </div>
-                        <div className="text-slate-500 text-xs">
-                          {it.category} • Avg Cost: {money(it.avgCostPrice)}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-
-                {purchaseItemId ? (
-                  <div className="mt-1 text-xs text-slate-400">
-                    Selected item:{" "}
-                    <span className="text-slate-200">{selectedPurchaseItem?.itemName || "-"}</span>
-                  </div>
-                ) : null}
               </div>
 
               {/* Vendor dropdown */}
               <div className="md:col-span-6" ref={vendorRef}>
-                <label className="text-sm text-slate-300">Vendor Name</label>
-
+                <label className="text-sm text-slate-300">Supplier (Party)</label>
                 <div className="relative mt-1">
                   <input
                     value={vendorQuery}
@@ -1317,9 +1789,10 @@ export default function Inventory() {
                       setVendorOpen(true);
                       setVendorId("");
                       setVendorName("");
+                      setVendorPartyType("Supplier");
                     }}
                     onFocus={() => setVendorOpen(true)}
-                    placeholder="Search vendor..."
+                    placeholder="Search supplier..."
                     className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
                   />
 
@@ -1327,7 +1800,7 @@ export default function Inventory() {
                     <div className="absolute z-20 mt-2 w-full rounded-xl border border-slate-800 bg-slate-950 shadow-xl max-h-60 overflow-auto">
                       {vendorsFiltered.length === 0 ? (
                         <div className="px-3 py-3 text-sm text-slate-400">
-                          No vendors found. Add from Parties page.
+                          No suppliers found. Add from Parties page.
                         </div>
                       ) : (
                         vendorsFiltered.map((v) => (
@@ -1337,6 +1810,7 @@ export default function Inventory() {
                             onClick={() => {
                               setVendorId(v.id);
                               setVendorName(v.name || "");
+                              setVendorPartyType(v.type || "Supplier");
                               setVendorQuery(v.name || "");
                               setVendorOpen(false);
                             }}
@@ -1358,92 +1832,271 @@ export default function Inventory() {
                 ) : null}
               </div>
 
-              {/* Category + Unit readonly */}
-              <div className="md:col-span-3">
-                <label className="text-sm text-slate-300">Category</label>
-                <input
-                  value={selectedPurchaseItem?.category || ""}
-                  readOnly
-                  className="mt-1 w-full rounded-lg bg-slate-900/60 border border-slate-800 px-3 py-2 text-slate-200"
-                />
-              </div>
-              <div className="md:col-span-3">
-                <label className="text-sm text-slate-300">Unit</label>
-                <input
-                  value={selectedPurchaseItem?.unit || ""}
-                  readOnly
-                  className="mt-1 w-full rounded-lg bg-slate-900/60 border border-slate-800 px-3 py-2 text-slate-200"
-                />
-              </div>
-
-              {/* Current stock */}
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Current Stock (before purchase)</label>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={purchaseCurrentStock}
-                  onChange={(e) => setPurchaseCurrentStock(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="Optional (eg: 5)"
-                />
-                <div className="text-xs text-slate-500 mt-1">If entered: final stock = this + purchased qty</div>
-              </div>
-
-              {/* Qty */}
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Purchased Qty</label>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={purchaseQty}
-                  onChange={(e) => setPurchaseQty(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="0"
-                  required
-                />
-              </div>
-
-              {/* Price */}
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Purchase Price (per unit)</label>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={purchasePrice}
-                  onChange={(e) => setPurchasePrice(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="0.00"
-                  required
-                />
-              </div>
-
-              {/* Selling price */}
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Selling Price (optional)</label>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={purchaseSellingPrice}
-                  onChange={(e) => setPurchaseSellingPrice(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="0.00"
-                />
-              </div>
-
-              {/* Note */}
               <div className="md:col-span-6">
                 <label className="text-sm text-slate-300">Note (optional)</label>
                 <input
                   value={purchaseNote}
                   onChange={(e) => setPurchaseNote(e.target.value)}
                   className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="Invoice no / remarks..."
+                  placeholder="Remarks..."
                 />
               </div>
             </div>
 
-            <div className="mt-4 flex justify-end">
+            {/* Lines */}
+            <div className="mt-4 overflow-x-auto rounded-2xl border border-slate-800">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-900/50 border-b border-slate-800">
+                  <tr className="text-left text-slate-200">
+                    <th className="p-3 w-[320px]">Item</th>
+                    <th className="p-3">Unit</th>
+                    <th className="p-3 text-right">Qty</th>
+                    <th className="p-3 text-right">Rate</th>
+                    <th className="p-3 text-right">Amount</th>
+                    <th className="p-3">Disc</th>
+                    <th className="p-3 text-right">Disc Amt</th>
+                    <th className="p-3 text-right">Tax%</th>
+                    <th className="p-3 text-right">Tax</th>
+                    <th className="p-3 text-right">Line Total</th>
+                    <th className="p-3">SP (opt)</th>
+                    <th className="p-3"></th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {purchaseTotals.rows.map((ln) => {
+                    const calc = ln._calc;
+                    const q = (ln.search || "").trim().toLowerCase();
+                    const suggestions =
+                      q.length === 0
+                        ? []
+                        : items
+                            .filter((it) =>
+                              (it.itemName || "").toLowerCase().includes(q)
+                            )
+                            .slice(0, 5);
+
+                    return (
+                      <tr key={ln.id} className="border-b border-slate-900 align-top">
+                        <td className="p-3">
+                          <input
+                            value={ln.search}
+                            onChange={(e) =>
+                              setLine(ln.id, {
+                                search: e.target.value,
+                                itemId: "",
+                                itemName: "",
+                                unit: "",
+                              })
+                            }
+                            className="w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+                            placeholder="Type item name..."
+                          />
+
+                          {suggestions.length > 0 && !ln.itemId ? (
+                            <div className="mt-2 rounded-xl border border-slate-800 overflow-hidden">
+                              {suggestions.map((it) => (
+                                <button
+                                  type="button"
+                                  key={it.id}
+                                  onClick={() =>
+                                    setLine(ln.id, {
+                                      itemId: it.id,
+                                      itemName: it.itemName || "",
+                                      unit: it.unit || "",
+                                      search: it.itemName || "",
+                                      // auto fill rate = avgCostPrice if empty
+                                      rate: ln.rate === "" ? String(it.avgCostPrice ?? "") : ln.rate,
+                                      sellingPrice:
+                                        ln.sellingPrice === ""
+                                          ? String(it.sellingPrice ?? "")
+                                          : ln.sellingPrice,
+                                    })
+                                  }
+                                  className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
+                                >
+                                  <div className="flex items-center justify-between">
+                                    <div className="text-slate-100 font-medium text-sm">
+                                      {it.itemName}
+                                    </div>
+                                    <div className="text-slate-400 text-xs">
+                                      Stock: {money(it.currentStock)} {it.unit}
+                                    </div>
+                                  </div>
+                                  <div className="text-slate-500 text-xs">
+                                    Avg Cost: {money(it.avgCostPrice)} • SP: {money(it.sellingPrice)}
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {ln.itemId ? (
+                            <div className="mt-1 text-xs text-slate-400">
+                              Selected: <span className="text-slate-200">{ln.itemName}</span>
+                            </div>
+                          ) : (
+                            <div className="mt-1 text-xs text-slate-500">
+                              Tip: type name and pick from list.
+                            </div>
+                          )}
+                        </td>
+
+                        <td className="p-3 text-slate-300">{ln.unit || "-"}</td>
+
+                        <td className="p-3">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={ln.qty}
+                            onChange={(e) => setLine(ln.id, { qty: e.target.value })}
+                            className="w-24 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-slate-100"
+                            placeholder="0"
+                          />
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={ln.rate}
+                            onChange={(e) => setLine(ln.id, { rate: e.target.value })}
+                            className="w-28 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-slate-100"
+                            placeholder="0.00"
+                          />
+                        </td>
+
+                        <td className="p-3 text-right text-slate-200">
+                          {money(calc.amountBeforeDiscount)}
+                        </td>
+
+                        <td className="p-3">
+                          <div className="flex gap-2">
+                            <select
+                              value={ln.discountType}
+                              onChange={(e) => setLine(ln.id, { discountType: e.target.value })}
+                              className="rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-slate-100"
+                            >
+                              <option value="PCT">%</option>
+                              <option value="AMT">₹</option>
+                            </select>
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              value={ln.discountValue}
+                              onChange={(e) => setLine(ln.id, { discountValue: e.target.value })}
+                              className="w-20 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-slate-100"
+                              placeholder="0"
+                            />
+                          </div>
+                        </td>
+
+                        <td className="p-3 text-right text-slate-200">
+                          {money(calc.discountAmount)}
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={ln.taxPct}
+                            onChange={(e) => setLine(ln.id, { taxPct: e.target.value })}
+                            className="w-20 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-slate-100"
+                            placeholder="0"
+                          />
+                        </td>
+
+                        <td className="p-3 text-right text-slate-200">
+                          {money(calc.taxAmount)}
+                        </td>
+
+                        <td className="p-3 text-right text-slate-100 font-semibold">
+                          {money(calc.lineTotal)}
+                        </td>
+
+                        <td className="p-3">
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={ln.sellingPrice}
+                            onChange={(e) => setLine(ln.id, { sellingPrice: e.target.value })}
+                            className="w-24 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-2 text-slate-100"
+                            placeholder="0.00"
+                          />
+                        </td>
+
+                        <td className="p-3">
+                          <button
+                            type="button"
+                            onClick={() => removePurchaseLine(ln.id)}
+                            disabled={purchaseLines.length <= 1}
+                            className={`rounded-lg border px-3 py-2 text-xs ${
+                              purchaseLines.length <= 1
+                                ? "border-slate-800 text-slate-500 cursor-not-allowed"
+                                : "border-red-800 text-red-200 hover:bg-red-950/30"
+                            }`}
+                          >
+                            Remove
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+
+                <tfoot className="bg-slate-950/60 border-t border-slate-800">
+                  <tr>
+                    <td className="p-3" colSpan={12}>
+                      <div className="flex items-center justify-between flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={addPurchaseLine}
+                          className="rounded-lg border border-slate-700 text-slate-200 px-4 py-2 hover:bg-slate-900/50"
+                        >
+                          + Add Line
+                        </button>
+
+                        <div className="flex gap-4 flex-wrap text-sm">
+                          <div className="text-slate-300">
+                            Subtotal:{" "}
+                            <span className="text-slate-100 font-semibold">
+                              {money(purchaseTotals.subtotal)}
+                            </span>
+                          </div>
+                          <div className="text-slate-300">
+                            Discount:{" "}
+                            <span className="text-slate-100 font-semibold">
+                              {money(purchaseTotals.totalDiscount)}
+                            </span>
+                          </div>
+                          <div className="text-slate-300">
+                            Tax:{" "}
+                            <span className="text-slate-100 font-semibold">
+                              {money(purchaseTotals.totalTax)}
+                            </span>
+                          </div>
+                          <div className="text-slate-200">
+                            Grand Total:{" "}
+                            <span className="text-white font-bold text-base">
+                              {money(purchaseTotals.grandTotal)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={resetPurchaseFormKeepDate}
+                className="rounded-lg border border-slate-700 text-slate-200 px-4 py-2 hover:bg-slate-900/50"
+              >
+                Clear
+              </button>
               <button
                 type="submit"
                 disabled={savingPurchase}
@@ -1459,7 +2112,6 @@ export default function Inventory() {
       {/* ================= STOCK ENTRY ================= */}
       {tab === "entry" ? (
         <div className="mt-6 max-w-3xl">
-          {/* (unchanged UI below — kept from your version) */}
           <h2 className="text-slate-100 font-semibold">Stock Entry</h2>
           <p className="text-slate-400 text-sm mt-1">IN / OUT / ADJUST (manual movements).</p>
 
@@ -1481,28 +2133,34 @@ export default function Inventory() {
               className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
             />
 
-            {filteredForEntry.length > 0 ? (
-              <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-800">
-                {filteredForEntry.map((it) => (
-                  <button
-                    key={it.id}
-                    type="button"
-                    onClick={() => {
-                      setEntryItemId(it.id);
-                      setEntrySearch(it.itemName || "");
-                    }}
-                    className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="text-slate-100 font-medium text-sm">{it.itemName}</div>
-                      <div className="text-slate-400 text-xs">
-                        Stock: {money(it.currentStock)} {it.unit}
+            {(() => {
+              const q = entrySearch.trim().toLowerCase();
+              const list =
+                !q ? [] : items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 10);
+
+              return list.length > 0 ? (
+                <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-800">
+                  {list.map((it) => (
+                    <button
+                      key={it.id}
+                      type="button"
+                      onClick={() => {
+                        setEntryItemId(it.id);
+                        setEntrySearch(it.itemName || "");
+                      }}
+                      className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="text-slate-100 font-medium text-sm">{it.itemName}</div>
+                        <div className="text-slate-400 text-xs">
+                          Stock: {money(it.currentStock)} {it.unit}
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })()}
 
             <div className="mt-3 grid grid-cols-1 md:grid-cols-12 gap-3">
               <div className="md:col-span-4">
@@ -1574,7 +2232,9 @@ export default function Inventory() {
       {tab === "audit" ? (
         <div className="mt-6 max-w-2xl">
           <h2 className="text-slate-100 font-semibold">Stock Audit</h2>
-          <p className="text-slate-400 text-sm mt-1">Physical count → variance saved → stock updated.</p>
+          <p className="text-slate-400 text-sm mt-1">
+            Physical count → variance saved → stock updated.
+          </p>
 
           {auditMsg ? (
             <div className="mt-4 rounded-lg border border-green-800 bg-green-950/30 text-green-200 px-3 py-2 text-sm">
@@ -1594,28 +2254,34 @@ export default function Inventory() {
               placeholder="Type item name..."
             />
 
-            {filteredForAudit.length > 0 ? (
-              <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-800">
-                {filteredForAudit.map((it) => (
-                  <button
-                    key={it.id}
-                    type="button"
-                    onClick={() => {
-                      setAuditItemId(it.id);
-                      setAuditSearch(it.itemName || "");
-                    }}
-                    className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="text-slate-100 font-medium text-sm">{it.itemName}</div>
-                      <div className="text-slate-400 text-xs">
-                        System: {money(it.currentStock)} {it.unit}
+            {(() => {
+              const q = auditSearch.trim().toLowerCase();
+              const list =
+                !q ? [] : items.filter((it) => (it.itemName || "").toLowerCase().includes(q)).slice(0, 10);
+
+              return list.length > 0 ? (
+                <div className="mt-2 max-h-56 overflow-auto rounded-xl border border-slate-800">
+                  {list.map((it) => (
+                    <button
+                      key={it.id}
+                      type="button"
+                      onClick={() => {
+                        setAuditItemId(it.id);
+                        setAuditSearch(it.itemName || "");
+                      }}
+                      className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="text-slate-100 font-medium text-sm">{it.itemName}</div>
+                        <div className="text-slate-400 text-xs">
+                          System: {money(it.currentStock)} {it.unit}
+                        </div>
                       </div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            ) : null}
+                    </button>
+                  ))}
+                </div>
+              ) : null;
+            })()}
 
             <div className="mt-3">
               <label className="text-sm text-slate-300">Physical Count</label>
@@ -1660,7 +2326,7 @@ export default function Inventory() {
                 onChange={(e) => setHistoryVendorId(e.target.value)}
                 className="rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100 text-sm"
               >
-                <option value="">All Vendors</option>
+                <option value="">All Suppliers</option>
                 {vendors.map((v) => (
                   <option key={v.id} value={v.id}>
                     {v.name}
@@ -1671,8 +2337,8 @@ export default function Inventory() {
               <input
                 value={historySearch}
                 onChange={(e) => setHistorySearch(e.target.value)}
-                placeholder="Search item / vendor / note..."
-                className="rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100 text-sm w-64"
+                placeholder="Search invoice / supplier / note..."
+                className="rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100 text-sm w-72"
               />
             </div>
           </div>
@@ -1682,12 +2348,13 @@ export default function Inventory() {
               <thead className="bg-slate-900/50 border-b border-slate-800">
                 <tr className="text-left text-slate-200">
                   <th className="p-3">Date</th>
-                  <th className="p-3">Item</th>
-                  <th className="p-3">Vendor</th>
-                  <th className="p-3">Qty</th>
-                  <th className="p-3">Rate</th>
-                  <th className="p-3">Amount</th>
-                  <th className="p-3">Stock Result</th>
+                  <th className="p-3">Invoice</th>
+                  <th className="p-3">Supplier</th>
+                  <th className="p-3">Mode</th>
+                  <th className="p-3 text-right">Subtotal</th>
+                  <th className="p-3 text-right">Discount</th>
+                  <th className="p-3 text-right">Tax</th>
+                  <th className="p-3 text-right">Grand Total</th>
                   <th className="p-3">Note</th>
                 </tr>
               </thead>
@@ -1695,30 +2362,27 @@ export default function Inventory() {
               <tbody>
                 {loadingHistory ? (
                   <tr>
-                    <td className="p-4 text-slate-400" colSpan={8}>
+                    <td className="p-4 text-slate-400" colSpan={9}>
                       Loading...
                     </td>
                   </tr>
                 ) : historyFiltered.length === 0 ? (
                   <tr>
-                    <td className="p-4 text-slate-400" colSpan={8}>
+                    <td className="p-4 text-slate-400" colSpan={9}>
                       No purchases found.
                     </td>
                   </tr>
                 ) : (
                   historyFiltered.map((p) => (
                     <tr key={p.id} className="border-b border-slate-900">
-                      <td className="p-3 text-slate-300">{fmtTS(p.purchasedAt, p.purchasedAtMs)}</td>
-                      <td className="p-3 text-slate-100 font-medium">{p.itemName || "-"}</td>
+                      <td className="p-3 text-slate-300">{fmtTS(p.purchaseDate, p.purchaseDateMs)}</td>
+                      <td className="p-3 text-slate-100 font-medium">{p.supplierInvoiceNo || "-"}</td>
                       <td className="p-3 text-slate-300">{p.vendorName || "-"}</td>
-                      <td className="p-3 text-slate-200">{money(p.qty)}</td>
-                      <td className="p-3 text-slate-200">{money(p.purchasePrice)}</td>
-                      <td className="p-3 text-slate-200">{money(p.amount)}</td>
-                      <td className="p-3 text-slate-300">
-                        {p.manualStockEntered !== null && p.manualStockEntered !== undefined
-                          ? `Base ${money(p.manualStockEntered)} → ${money(p.newStockAfterPurchase)}`
-                          : `System → ${money(p.newStockAfterPurchase)}`}
-                      </td>
+                      <td className="p-3 text-slate-300">{p.mode || "-"}</td>
+                      <td className="p-3 text-right text-slate-200">{money(p.subtotal)}</td>
+                      <td className="p-3 text-right text-slate-200">{money(p.totalDiscount)}</td>
+                      <td className="p-3 text-right text-slate-200">{money(p.totalTax)}</td>
+                      <td className="p-3 text-right text-white font-semibold">{money(p.grandTotal)}</td>
                       <td className="p-3 text-slate-300">{p.note || "-"}</td>
                     </tr>
                   ))
@@ -1726,6 +2390,8 @@ export default function Inventory() {
               </tbody>
             </table>
           </div>
+
+          {/* Optional: show lines for last purchase could be next enhancement */}
         </div>
       ) : null}
     </div>

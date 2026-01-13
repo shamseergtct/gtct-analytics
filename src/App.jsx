@@ -11,6 +11,7 @@ import Inventory from "./pages/Inventory";
 import Reports from "./pages/Reports";
 import PartyReports from "./pages/PartyReports";
 import SuperAdmin from "./pages/SuperAdmin";
+import Sales from "./pages/Sales"; // ✅ NEW
 
 import ProtectedRoute from "./components/ProtectedRoute";
 import RoleRoute from "./components/RoleRoute";
@@ -56,6 +57,16 @@ export default function App() {
           element={
             <RoleRoute allow={["super_admin"]}>
               <Clients />
+            </RoleRoute>
+          }
+        />
+
+        {/* ✅ Sales module (Admin + Super Admin only) */}
+        <Route
+          path="/sales"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <Sales />
             </RoleRoute>
           }
         />
