@@ -6,7 +6,6 @@ function money(v) {
   return Number(v || 0).toFixed(2);
 }
 
-// Avoid odd characters in PDF (safe for unicode issues)
 function safeText(s) {
   return String(s ?? "")
     .replace(/\u2192/g, "to") // → becomes "to"
@@ -14,7 +13,12 @@ function safeText(s) {
     .trim();
 }
 
-// ✅ Helpers to prevent section heading from being left at page bottom
+function fmtDateStr(s) {
+  const x = safeText(s);
+  return x;
+}
+
+// ✅ Helpers: keep section title with its table
 function getBottom(doc) {
   return doc.internal.pageSize.getHeight() - 14; // bottom margin
 }
@@ -26,32 +30,16 @@ function ensureSpace(doc, y, neededHeight) {
   return y;
 }
 
-// ✅ Common table options (right align Amount col)
-function tableCommon(currency) {
-  return {
-    theme: "plain",
-    styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: {
-      0: { halign: "left" },
-      1: { halign: "right" }, // ✅ amounts right aligned
-    },
-    headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
-    head: [["Metric", `Amount (${currency})`]],
-  };
-}
-
-// ✅ Special common for “Supplier” tables
-function supplierTableCommon(currency) {
-  return {
-    theme: "plain",
-    styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: {
-      0: { halign: "left" },
-      1: { halign: "right" }, // ✅ amounts right aligned
-    },
-    headStyles: { fillColor: [120, 0, 0], textColor: 255, fontStyle: "bold" },
-    head: [["Supplier", `Amount (${currency})`]],
-  };
+// ✅ Apply right-align to Amount header + values
+function applyRightAlignAmountHeader(data) {
+  // Head row is section === "head"
+  if (data.section === "head" && data.column.index === 1) {
+    data.cell.styles.halign = "right";
+  }
+  // Body amount column too
+  if (data.section === "body" && data.column.index === 1) {
+    data.cell.styles.halign = "right";
+  }
 }
 
 export function generateDailyPDF({ clientName, reportDate, currency, report }) {
@@ -59,7 +47,7 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   const pageWidth = doc.internal.pageSize.getWidth();
 
   // Header bar
-  doc.setFillColor(0, 51, 102); // #003366
+  doc.setFillColor(0, 51, 102);
   doc.rect(0, 0, pageWidth, 70, "F");
 
   doc.setTextColor(255, 255, 255);
@@ -100,8 +88,7 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   // -------------------------
   // 1) Revenue & Inflow
   // -------------------------
-  // heading + table min space
-  y = ensureSpace(doc, y, 80);
+  y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
@@ -123,9 +110,10 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     ],
     theme: "plain",
     styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } }, // ✅
     headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
+      applyRightAlignAmountHeader(data);
       if (data.row.index === 7) {
         data.cell.styles.fillColor = [0, 51, 102];
         data.cell.styles.textColor = 255;
@@ -137,29 +125,30 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   y = doc.lastAutoTable.finalY + 25;
 
   // -------------------------
-  // 2) Expenses
+  // 2) Expenses (Details with type + date)
   // -------------------------
-  y = ensureSpace(doc, y, 80);
+  y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.text("2. EXPENSES (VERIFIED)", 40, y);
   y += 10;
 
-  const expenseRows =
-    report?.expenses?.items?.length
-      ? report.expenses.items.map((x) => [safeText(x.key), money(x.amount)])
-      : [["No verified expenses", "0.00"]];
+  const expenseDetails = Array.isArray(report?.expenses?.details) ? report.expenses.details : [];
+  const expenseRows = expenseDetails.length
+    ? expenseDetails.map((x) => [safeText(x.label), money(x.amount)])
+    : [["No verified expenses", "0.00"]];
 
   autoTable(doc, {
     startY: y + 10,
-    head: [["Expense Item", `Amount (${currency})`]],
+    head: [["Expense (Type + Date)", `Amount (${currency})`]],
     body: [...expenseRows, ["TOTAL EXPENSE INCURRED", money(report?.expenses?.totalExpenseIncurred)]],
     theme: "plain",
     styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } }, // ✅
     headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
+      applyRightAlignAmountHeader(data);
       if (data.row.index === expenseRows.length) {
         data.cell.styles.fillColor = [0, 51, 102];
         data.cell.styles.textColor = 255;
@@ -171,38 +160,41 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   y = doc.lastAutoTable.finalY + 25;
 
   // -------------------------
-  // 3) Liability
-  // (Your Reports.jsx/reportCalculations uses report.liabilities.itemsNet now)
-  // We'll render itemsNet if available, else fallback.
+  // 3) Credit Purchase / Liability (ONLY credit purchases with date)
   // -------------------------
-  y = ensureSpace(doc, y, 80);
+  y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.text("3. CREDIT PURCHASE / LIABILITY", 40, y);
   y += 10;
 
-  const itemsNet = Array.isArray(report?.liabilities?.itemsNet) ? report.liabilities.itemsNet : [];
-  const liabRows =
-    itemsNet.length
-      ? itemsNet.map((x) => [safeText(`${x.key} (Created - Paid)`), money(x.balance)])
-      : [["No liabilities", "0.00"]];
+  const creditPurchases = Array.isArray(report?.liabilities?.creditPurchases)
+    ? report.liabilities.creditPurchases
+    : [];
+
+  const liabRows = creditPurchases.length
+    ? creditPurchases.map((x) => [
+        safeText(`${x.supplier}${x.date ? ` (${fmtDateStr(x.date)})` : ""}`),
+        money(x.amount),
+      ])
+    : [["No credit purchases", "0.00"]];
 
   autoTable(doc, {
     startY: y + 10,
-    head: [["Supplier", `Amount (${currency})`]],
+    head: [["Credit Purchase (Supplier + Date)", `Amount (${currency})`]],
     body: [
       ...liabRows,
       ["Supplier Paid (Range)", money(report?.liabilities?.totalSupplierPaid)],
-      ["TOTAL NEW LIABILITY", money(report?.liabilities?.totalNewLiability)],
+      ["TOTAL NEW LIABILITY (Created - Paid)", money(report?.liabilities?.totalNewLiability)],
     ],
     theme: "plain",
     styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } }, // ✅
     headStyles: { fillColor: [120, 0, 0], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
-      // last row = TOTAL NEW LIABILITY
-      const lastRowIndex = liabRows.length + 1;
+      applyRightAlignAmountHeader(data);
+      const lastRowIndex = liabRows.length + 1; // TOTAL row
       if (data.row.index === lastRowIndex) {
         data.cell.styles.fillColor = [120, 0, 0];
         data.cell.styles.textColor = 255;
@@ -216,7 +208,7 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   // -------------------------
   // Liquidity & Balance
   // -------------------------
-  y = ensureSpace(doc, y, 80);
+  y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
@@ -235,9 +227,10 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     ],
     theme: "plain",
     styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } }, // ✅
     headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
+      applyRightAlignAmountHeader(data);
       if (data.row.index === 4) {
         data.cell.styles.fillColor = [0, 120, 0];
         data.cell.styles.textColor = 255;
@@ -249,11 +242,9 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   y = doc.lastAutoTable.finalY + 25;
 
   // -------------------------
-  // DAILY CASH CHECK
-  // ✅ MUST stay with metrics table (never leave heading alone at bottom)
+  // DAILY CASH CHECK (must stay with table)
   // -------------------------
-  // Estimate required height: heading + gap + header + 5 rows
-  const dailyCashRequired = 10 + 10 + 60; // safe
+  const dailyCashRequired = 10 + 10 + 70; // heading + gap + table
   y = ensureSpace(doc, y, dailyCashRequired);
 
   doc.setFont("helvetica", "bold");
@@ -273,8 +264,11 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     ],
     theme: "plain",
     styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } }, // ✅
     headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
+    didParseCell: (data) => {
+      applyRightAlignAmountHeader(data);
+    },
   });
 
   y = doc.lastAutoTable.finalY + 20;
@@ -282,7 +276,6 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   // -------------------------
   // Notes
   // -------------------------
-  // ensure space for heading + a couple lines
   y = ensureSpace(doc, y, 80);
 
   doc.setFont("helvetica", "bold");
@@ -299,7 +292,6 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
 
   if (notesText) {
     const split = doc.splitTextToSize(notesText, pageWidth - 80);
-    // if notes block doesn't fit, move to next page
     notesY = ensureSpace(doc, notesY, split.length * 12 + 24);
     doc.text(split, 40, notesY);
     notesY += split.length * 12 + 8;
@@ -307,7 +299,6 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
 
   if (systemNotes.length) {
     notesY = ensureSpace(doc, notesY, 40);
-
     doc.setFont("helvetica", "bold");
     doc.text("System Alerts:", 40, notesY);
     notesY += 14;

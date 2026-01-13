@@ -41,8 +41,6 @@ export default function Reports() {
   const [analystNotesText, setAnalystNotesText] = useState("");
 
   const [loading, setLoading] = useState(false);
-
-  // ✅ Range + Till-date txns
   const [txnsRange, setTxnsRange] = useState([]);
   const [txnsTill, setTxnsTill] = useState([]);
 
@@ -85,7 +83,7 @@ export default function Reports() {
       const from = startOfDay(fromDate);
       const to = endOfDay(toDate);
 
-      // ✅ RANGE (From -> To)
+      // ✅ RANGE
       const qRange = query(
         collection(db, "transactions"),
         where("clientId", "==", activeClientId),
@@ -148,21 +146,9 @@ export default function Reports() {
       actualCount: Number(actualCountTo || 0),
       analystNotesText: String(analystNotesText || ""),
       isSingleDay,
-
-      // ✅ for Liquidity section
       txnsTillDate: txnsTill,
     });
-  }, [
-    txnsRange,
-    txnsTill,
-    fromDate,
-    toDate,
-    openingCashFrom,
-    openingBankFrom,
-    actualCountTo,
-    analystNotesText,
-    isSingleDay,
-  ]);
+  }, [txnsRange, txnsTill, fromDate, toDate, openingCashFrom, openingBankFrom, actualCountTo, analystNotesText, isSingleDay]);
 
   const downloadPDF = () => {
     if (!generated) return alert("Click Generate Report first.");
@@ -181,7 +167,7 @@ export default function Reports() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 pb-24">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2 className="text-xl font-bold text-white">Reports</h2>
@@ -213,6 +199,7 @@ export default function Reports() {
         </div>
       </div>
 
+      {/* Inputs */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
           <div>
@@ -321,23 +308,74 @@ export default function Reports() {
 
       {!generated ? null : (
         <>
+          {/* Status */}
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-white font-semibold">Status</div>
+              <div
+                className={[
+                  "rounded-full px-3 py-1 text-xs font-semibold border",
+                  report?.status?.healthy
+                    ? "bg-emerald-500/15 text-emerald-200 border-emerald-500/30"
+                    : "bg-red-500/15 text-red-200 border-red-500/30",
+                ].join(" ")}
+              >
+                {report?.status?.statusText || "STATUS"}
+              </div>
+            </div>
+            <div className="mt-2 text-sm text-slate-400">{report?.status?.statusSub || ""}</div>
+          </div>
+
+          {/* 1 Revenue */}
+          <Section title="1. Revenue & Inflow">
+            <TwoColRow label="Total Gross Sales (Z-Report)" value={`${money(report?.revenue?.totalGrossSales)} ${currency}`} />
+            <TwoColRow label="Cash Sales" value={`${money(report?.revenue?.cashSales)} ${currency}`} />
+            <TwoColRow label="Bank Sales" value={`${money(report?.revenue?.bankSales)} ${currency}`} />
+            <TwoColRow label="Credit Sales (Pending)" value={`${money(report?.revenue?.creditSales)} ${currency}`} />
+            <div className="my-3 h-px bg-slate-800" />
+            <TwoColRow label="Credit Recovery (Old Debts)" value={`${money(report?.revenue?.creditRecoveryTotal)} ${currency}`} />
+            <TwoColRow label="Income" value={`${money(report?.revenue?.totalIncome)} ${currency}`} />
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
+              <div className="text-slate-300 font-semibold">TOTAL REVENUE GENERATED</div>
+              <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
+                {money(report?.revenue?.totalRevenueGenerated)} {currency}
+              </div>
+            </div>
+          </Section>
+
+          {/* 2 Expenses (details with date) */}
+          <Section title="2. Expenses (Verified) — Details">
+            {report?.expenses?.details?.length ? (
+              report.expenses.details.map((x, idx) => (
+                <TwoColRow key={`${x.label}-${idx}`} label={x.label} value={`${money(x.amount)} ${currency}`} />
+              ))
+            ) : (
+              <div className="text-slate-400 text-sm">No verified expenses</div>
+            )}
+
+            <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
+              <div className="text-slate-300 font-semibold">TOTAL EXPENSE INCURRED</div>
+              <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
+                {money(report?.expenses?.totalExpenseIncurred)} {currency}
+              </div>
+            </div>
+          </Section>
+
+          {/* 3 Liability - credit purchases list with date */}
           <Section title="3. Credit Purchase / Liability (Range)" danger>
-            {report?.liabilities?.itemsNet?.length ? (
-              report.liabilities.itemsNet.map((x) => (
+            {report?.liabilities?.creditPurchases?.length ? (
+              report.liabilities.creditPurchases.map((x, idx) => (
                 <TwoColRow
-                  key={x.key}
-                  label={`${x.key} (Created - Paid)`}
-                  value={`${money(x.balance)} ${currency}`}
+                  key={`${x.supplier}-${x.date}-${idx}`}
+                  label={`${x.supplier}${x.date ? ` (${x.date})` : ""}`}
+                  value={`${money(x.amount)} ${currency}`}
                 />
               ))
             ) : (
-              <div className="text-slate-400 text-sm">No liabilities</div>
+              <div className="text-slate-400 text-sm">No credit purchases</div>
             )}
 
-            <TwoColRow
-              label="Supplier Paid (Range)"
-              value={`${money(report?.liabilities?.totalSupplierPaid)} ${currency}`}
-            />
+            <TwoColRow label="Supplier Paid (Range)" value={`${money(report?.liabilities?.totalSupplierPaid)} ${currency}`} />
 
             <div className="mt-4 rounded-xl border border-red-900/40 bg-red-950/20 p-3 flex items-center justify-between gap-3">
               <div className="text-red-200 font-semibold">TOTAL NEW LIABILITY (Range)</div>
@@ -347,7 +385,35 @@ export default function Reports() {
             </div>
           </Section>
 
-          {/* ✅ Your other sections can remain as you already have them */}
+          {/* Liquidity + Daily Cash */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <Section title="Liquidity & Balance (Till Date)">
+              <TwoColRow label="Total Cash Balance" value={`${money(report?.liquidity?.totalCashBalance)} ${currency}`} />
+              <TwoColRow label="Total Bank Balance" value={`${money(report?.liquidity?.totalBankBalance)} ${currency}`} />
+              <TwoColRow label="Total Receivable (Asset)" value={`${money(report?.liquidity?.totalReceivable)} ${currency}`} />
+              <TwoColRow label="Total Payable (Liability)" value={`${money(report?.liquidity?.totalPayable)} ${currency}`} />
+
+              <div className="mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 flex items-center justify-between gap-3">
+                <div className="text-emerald-200 font-semibold">TOTAL LIQUID FUNDS (Cash + Bank)</div>
+                <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
+                  {money(report?.liquidity?.totalLiquidFunds)} {currency}
+                </div>
+              </div>
+            </Section>
+
+            <Section title="Daily Cash Check (Range)">
+              <TwoColRow label="Opening Cash (From)" value={`${money(openingCashFrom)} ${currency}`} />
+              <TwoColRow label="Net Cash Position (Range)" value={`${money(report?.cashCheck?.netCashPosition)} ${currency}`} />
+              <TwoColRow label="Expected Drawer (To)" value={`${money(report?.cashCheck?.expectedDrawer)} ${currency}`} />
+              <TwoColRow label="Actual Count (To)" value={`${money(actualCountTo)} ${currency}`} />
+              <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
+                <div className="text-slate-300 font-semibold">VARIANCE</div>
+                <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
+                  {money(report?.cashCheck?.variance)} {currency}
+                </div>
+              </div>
+            </Section>
+          </div>
         </>
       )}
     </div>
@@ -372,7 +438,7 @@ function TwoColRow({ label, value }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2">
       <div className="text-sm text-slate-300 flex-1 pr-3">{label}</div>
-      <div className="text-sm font-semibold text-white text-right tabular-nums whitespace-nowrap min-w-[140px]">
+      <div className="text-sm font-semibold text-white text-right tabular-nums whitespace-nowrap min-w-[160px]">
         {value}
       </div>
     </div>

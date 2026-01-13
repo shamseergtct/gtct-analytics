@@ -21,7 +21,6 @@ function normalizeMode(m) {
 function normalizeType(t) {
   const x = String(t || "").trim().toLowerCase();
   if (!x) return "";
-
   if (x.startsWith("sal")) return "sales";
   if (x.startsWith("rec")) return "receipt";
   if (x.startsWith("inc")) return "income";
@@ -59,14 +58,34 @@ function inValue(t) {
   return num(t?.amountIn);
 }
 
-function partyKey(t) {
-  return String(t?.partyName || t?.description || "Party").trim() || "Party";
+function safeName(v, fallback) {
+  const s = String(v || "").trim();
+  return s || fallback;
+}
+
+function expenseKey(t) {
+  return safeName(t?.category || t?.description || t?.partyName, "Expense");
 }
 function supplierKey(t) {
-  return String(t?.partyName || t?.description || "Supplier").trim() || "Supplier";
+  return safeName(t?.partyName || t?.description, "Supplier");
 }
-function expenseKey(t) {
-  return String(t?.category || t?.description || "Expense").trim() || "Expense";
+
+function fmtDate(t) {
+  try {
+    const d =
+      t?.date?.toDate?.() instanceof Date
+        ? t.date.toDate()
+        : t?.date instanceof Date
+        ? t.date
+        : null;
+    if (!d) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const dd = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${dd}`;
+  } catch {
+    return "";
+  }
 }
 
 // Receipt from Customer/Both = credit recovery
@@ -83,10 +102,7 @@ function isExpenseIncurred_RANGE(t) {
   const ty = typeKey(t);
   const m = modeKey(t);
   if (!(ty === "purchase" || ty === "payment" || ty === "expense")) return false;
-
-  // ✅ exclude CREDIT PURCHASE
-  if (ty === "purchase" && m === "credit") return false;
-
+  if (ty === "purchase" && m === "credit") return false; // ✅ exclude credit purchase
   return outValue(t) > 0;
 }
 
@@ -109,23 +125,28 @@ function isSupplierPayment(t) {
 }
 
 // ---------- Party-based receivables (TILL DATE) ----------
-function computeReceivablesParty(txns) {
-  const creditSales = txns.filter(
-    (t) => typeKey(t) === "sales" && modeKey(t) === "credit" && isCustomerParty(t) && inValue(t) > 0
+function computeReceivablesTillDate(txnsTill) {
+  const creditSales = txnsTill.filter(
+    (t) =>
+      typeKey(t) === "sales" &&
+      modeKey(t) === "credit" &&
+      isCustomerParty(t) &&
+      inValue(t) > 0
   );
-  const receipts = txns.filter(
+
+  const receipts = txnsTill.filter(
     (t) => typeKey(t) === "receipt" && isCustomerParty(t) && inValue(t) > 0
   );
 
   const createdMap = {};
   for (const t of creditSales) {
-    const k = partyKey(t);
+    const k = safeName(t?.partyName || t?.description, "Customer");
     createdMap[k] = (createdMap[k] || 0) + inValue(t);
   }
 
   const settledMap = {};
   for (const t of receipts) {
-    const k = partyKey(t);
+    const k = safeName(t?.partyName || t?.description, "Customer");
     settledMap[k] = (settledMap[k] || 0) + inValue(t);
   }
 
@@ -144,25 +165,39 @@ function computeReceivablesParty(txns) {
   return { itemsNet, totalReceivable };
 }
 
-// ---------- Party-based liabilities (works for range OR till-date) ----------
-function computeLiabilitiesParty(txns) {
-  const createdTxns = txns.filter(isSupplierCreditLiability);
-  const paidTxns = txns.filter(isSupplierPayment);
+// ---------- Party-based liabilities (TILL DATE or RANGE) ----------
+function computeLiabilities(txns) {
+  const creditCreate = txns.filter(isSupplierCreditLiability);
+  const supplierPay = txns.filter(isSupplierPayment);
 
+  const totalCreated = sum(creditCreate, (t) => outValue(t));
+  const totalPaid = sum(supplierPay, (t) => outValue(t));
+  const net = totalCreated - totalPaid;
+
+  // ✅ For list display: ONLY credit purchases/credit expenses (created)
+  const creditPurchasesList = creditCreate
+    .map((t) => ({
+      supplier: supplierKey(t),
+      date: fmtDate(t),
+      amount: outValue(t),
+      type: typeKey(t), // purchase/expense
+    }))
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+
+  // ✅ Till-date payable = sum of positive net per supplier (optional, for liquidity)
+  // We'll compute per-supplier created/paid for payable (till-date)
   const createdMap = {};
-  for (const t of createdTxns) {
+  for (const t of creditCreate) {
     const k = supplierKey(t);
     createdMap[k] = (createdMap[k] || 0) + outValue(t);
   }
-
   const paidMap = {};
-  for (const t of paidTxns) {
+  for (const t of supplierPay) {
     const k = supplierKey(t);
     paidMap[k] = (paidMap[k] || 0) + outValue(t);
   }
 
   const keys = Array.from(new Set([...Object.keys(createdMap), ...Object.keys(paidMap)])).sort();
-
   const itemsNet = keys
     .map((k) => ({
       key: k,
@@ -172,13 +207,16 @@ function computeLiabilitiesParty(txns) {
     }))
     .filter((x) => Math.abs(x.created) > 0.0001 || Math.abs(x.paid) > 0.0001);
 
-  // Total payable = sum of positive balances
   const totalPayable = itemsNet.reduce((s, x) => s + (x.balance > 0 ? x.balance : 0), 0);
 
-  const totalCreated = sum(createdTxns, (t) => outValue(t));
-  const totalPaid = sum(paidTxns, (t) => outValue(t));
-
-  return { itemsNet, totalPayable, totalCreated, totalPaid };
+  return {
+    creditPurchasesList,
+    totalCreated,
+    totalPaid,
+    net,
+    itemsNet,
+    totalPayable,
+  };
 }
 
 export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
@@ -190,7 +228,7 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     analystNotesText = "",
     isSingleDay = false,
 
-    // ✅ transactions till To-date for Liquidity section
+    // ✅ transactions till To-date for liquidity
     txnsTillDate = null,
   } = inputs;
 
@@ -207,6 +245,8 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
   const creditRecoveryTxns = txnsRange.filter(isCreditRecovery);
   const creditRecoveryTotal = sum(creditRecoveryTxns, (t) => inValue(t));
+  const creditRecoveryCash = sum(creditRecoveryTxns.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
+  const creditRecoveryBank = sum(creditRecoveryTxns.filter((t) => modeKey(t) === "bank"), (t) => inValue(t));
 
   const incomeTxns = txnsRange.filter((t) => typeKey(t) === "income" && inValue(t) > 0);
   const totalIncome = sum(incomeTxns, (t) => inValue(t));
@@ -214,41 +254,45 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const totalRevenueGenerated = cashSales + bankSales + creditRecoveryTotal + totalIncome;
 
   // -------------------------
-  // 2) EXPENSES (RANGE)
+  // 2) EXPENSES (RANGE) with DETAILS ✅ (type + date)
   // -------------------------
   const expenseTxns = txnsRange.filter(isExpenseIncurred_RANGE);
 
-  const expenseMap = {};
-  for (const t of expenseTxns) {
-    const key = expenseKey(t);
-    expenseMap[key] = (expenseMap[key] || 0) + outValue(t);
-  }
-
-  const expenseItems = Object.keys(expenseMap)
-    .sort()
-    .map((k) => ({ key: k, amount: num(expenseMap[k]) }));
+  const expenseDetails = expenseTxns
+    .map((t) => {
+      const ty = typeKey(t);
+      const dt = fmtDate(t);
+      const labelBase =
+        ty === "payment"
+          ? `Payment`
+          : ty === "purchase"
+          ? `Purchase`
+          : ty === "expense"
+          ? `Expense`
+          : "Expense";
+      const name = expenseKey(t);
+      const label = dt ? `${labelBase} - ${name} (${dt})` : `${labelBase} - ${name}`;
+      return { label, amount: outValue(t), type: ty, date: dt };
+    })
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
 
   const totalExpenseIncurred = sum(expenseTxns, (t) => outValue(t));
 
   // -------------------------
-  // 3) LIABILITY SECTION (RANGE) ✅ (as you asked now)
+  // 3) LIABILITY (RANGE) ✅ list ONLY credit purchases + date
+  // TOTAL NEW LIABILITY = created - paid
   // -------------------------
-  const liabRange = computeLiabilitiesParty(txnsRange);
-
-  // Total New Liability shown in section 3 = sum of positive (created - paid) per supplier within range
-  const totalNewLiability_RANGE = liabRange.itemsNet.reduce(
-    (s, x) => s + (x.balance > 0 ? x.balance : 0),
-    0
-  );
+  const liabRange = computeLiabilities(txnsRange);
 
   // -------------------------
-  // 4) RECEIVABLE / PAYABLE (TILL DATE) ✅ (Liquidity section)
+  // 4) RECEIVABLE / PAYABLE (TILL DATE) ✅ for Liquidity section
   // -------------------------
-  const recvTill = computeReceivablesParty(txnsTill);
-  const liabTill = computeLiabilitiesParty(txnsTill);
+  const recvTill = computeReceivablesTillDate(txnsTill);
+  const liabTill = computeLiabilities(txnsTill);
 
   // -------------------------
-  // 5) LIQUIDITY CASH+BANK (TILL DATE)
+  // 5) LIQUIDITY (TILL DATE)
+  // Total Liquid Funds = cash + bank only
   // -------------------------
   const cashInTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
   const cashOutTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => num(t?.amountOut));
@@ -258,8 +302,6 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
   const totalCashBalance = num(openingCash) + (cashInTill - cashOutTill);
   const totalBankBalance = num(openingBank) + (bankInTill - bankOutTill);
-
-  // ✅ Total Liquid Funds = cash + bank ONLY
   const totalLiquidFunds = totalCashBalance + totalBankBalance;
 
   // -------------------------
@@ -281,15 +323,12 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
   return {
     meta: { date: selectedDate, count: txnsRange.length },
-
     flags: { isSingleDay: !!isSingleDay },
 
     status: {
       healthy,
       statusText: healthy ? "HEALTHY" : "ACTION REQUIRED",
-      statusSub: healthy
-        ? "Cash is balanced. Key movements are verified."
-        : "Review variance / pending credits / liabilities.",
+      statusSub: healthy ? "Cash is balanced. Key movements are verified." : "Review variance / pending credits / liabilities.",
     },
 
     revenue: {
@@ -298,30 +337,30 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
       bankSales,
       creditSales,
       creditRecoveryTotal,
+      creditRecoveryCash,
+      creditRecoveryBank,
       totalIncome,
       totalRevenueGenerated,
     },
 
     expenses: {
-      items: expenseItems,
+      details: expenseDetails, // ✅ show type + date list
       totalExpenseIncurred,
     },
 
-    // ✅ Section 3 is RANGE
     liabilities: {
-      itemsNet: liabRange.itemsNet,
-      totalNewLiability: totalNewLiability_RANGE,
-      totalSupplierPaid: liabRange.totalPaid, // range paid
-      payableNet: liabRange.totalCreated - liabRange.totalPaid,
+      creditPurchases: liabRange.creditPurchasesList, // ✅ ONLY credit purchase/credit expense list + date
+      totalCreated: liabRange.totalCreated,
+      totalSupplierPaid: liabRange.totalPaid,
+      totalNewLiability: liabRange.net, // ✅ created - paid (range)
     },
 
-    // ✅ Liquidity is TILL DATE
     liquidity: {
       totalCashBalance,
       totalBankBalance,
       totalReceivable: recvTill.totalReceivable,
       totalPayable: liabTill.totalPayable,
-      totalLiquidFunds,
+      totalLiquidFunds, // ✅ cash + bank only
     },
 
     cashCheck: {
