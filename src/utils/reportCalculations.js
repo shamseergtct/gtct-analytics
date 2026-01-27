@@ -14,6 +14,8 @@ function normalizeMode(m) {
   if (!x) return "";
   if (x.startsWith("cas")) return "cash";
   if (x.startsWith("ban")) return "bank";
+  if (x.startsWith("car")) return "bank"; // card -> bank bucket
+  if (x.startsWith("upi")) return "bank";
   if (x.startsWith("cre")) return "credit";
   return x;
 }
@@ -88,13 +90,45 @@ function fmtDate(t) {
   }
 }
 
+function normalizeCategory(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  const x = s.toLowerCase();
+
+  // keep your real category text, but standardize common ones
+  if (x.includes("salary")) return "Salary";
+  if (x.includes("rent")) return "Rent";
+  if (x.includes("util")) return "Utility";
+  if (x.includes("bill")) return "Utility";
+  if (x.includes("trans")) return "Transport";
+  if (x.includes("comm")) return "Commodity";
+
+  // title-ish
+  return s;
+}
+
+function modeLabel(m) {
+  if (m === "cash") return "Cash";
+  if (m === "bank") return "Bank";
+  if (m === "credit") return "Credit";
+  return m ? m.toUpperCase() : "Unknown";
+}
+
+function typeLabel(ty) {
+  if (ty === "purchase") return "Purchase";
+  if (ty === "payment") return "Payment";
+  if (ty === "expense") return "Expense";
+  if (ty === "income") return "Other Income";
+  return ty ? ty.toUpperCase() : "Unknown";
+}
+
 // Receipt from Customer/Both = credit recovery
 function isCreditRecovery(t) {
   return typeKey(t) === "receipt" && isCustomerParty(t) && inValue(t) > 0;
 }
 
 /**
- * ✅ EXPENSE RULE (RANGE)
+ * ✅ EXPENSE VERIFIED LIST (RANGE)
  * Include: Payment + Expense + Purchase (ONLY cash/bank purchases)
  * Exclude: Credit Purchase
  */
@@ -102,7 +136,7 @@ function isExpenseIncurred_RANGE(t) {
   const ty = typeKey(t);
   const m = modeKey(t);
   if (!(ty === "purchase" || ty === "payment" || ty === "expense")) return false;
-  if (ty === "purchase" && m === "credit") return false; // ✅ exclude credit purchase
+  if (ty === "purchase" && m === "credit") return false; // exclude credit purchase from verified expense list
   return outValue(t) > 0;
 }
 
@@ -182,10 +216,9 @@ function computeLiabilities(txns) {
       amount: outValue(t),
       type: typeKey(t), // purchase/expense
     }))
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0)); // ascending
 
   // ✅ Till-date payable = sum of positive net per supplier (optional, for liquidity)
-  // We'll compute per-supplier created/paid for payable (till-date)
   const createdMap = {};
   for (const t of creditCreate) {
     const k = supplierKey(t);
@@ -219,6 +252,48 @@ function computeLiabilities(txns) {
   };
 }
 
+function buildExpenseSummaryDetailed(txnsRange) {
+  // Requirement:
+  // - Split by type + category + mode
+  // - Print only if exists (no "No data")
+  // - Examples:
+  //   Total Purchase Commodity by Cash
+  //   Total Purchase Commodity by Credit
+  //   Total Payment Supplier by Bank
+  //   Total Expense Salary by Cash
+
+  const map = {}; // key -> amount
+
+  for (const t of txnsRange) {
+    const ty = typeKey(t);
+    const m = modeKey(t);
+    const amount = outValue(t);
+    if (!(amount > 0)) continue;
+
+    if (!(ty === "purchase" || ty === "payment" || ty === "expense")) continue;
+
+    let category = normalizeCategory(t?.category);
+
+    // payment: show Supplier separately when partyType is Supplier/Both
+    if (ty === "payment" && isSupplierParty(t)) category = "Supplier";
+
+    // fallback category
+    if (!category) category = normalizeCategory(expenseKey(t)) || "Other";
+
+    const key = `Total ${typeLabel(ty)} ${category} by ${modeLabel(m)}`;
+    map[key] = (map[key] || 0) + amount;
+  }
+
+  // stable sorted output (ascending): type then category then mode label
+  const rows = Object.keys(map)
+    .sort((a, b) => a.localeCompare(b))
+    .map((k) => ({ label: k, amount: map[k] }));
+
+  const total = rows.reduce((s, r) => s + num(r.amount), 0);
+
+  return { rows, total };
+}
+
 export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const {
     selectedDate,
@@ -245,16 +320,40 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
   const creditRecoveryTxns = txnsRange.filter(isCreditRecovery);
   const creditRecoveryTotal = sum(creditRecoveryTxns, (t) => inValue(t));
-  const creditRecoveryCash = sum(creditRecoveryTxns.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
-  const creditRecoveryBank = sum(creditRecoveryTxns.filter((t) => modeKey(t) === "bank"), (t) => inValue(t));
+  const creditRecoveryCash = sum(
+    creditRecoveryTxns.filter((t) => modeKey(t) === "cash"),
+    (t) => inValue(t)
+  );
+  const creditRecoveryBank = sum(
+    creditRecoveryTxns.filter((t) => modeKey(t) === "bank"),
+    (t) => inValue(t)
+  );
 
+  // ✅ Other income list with description (so "Collected from MD" shows as a row)
   const incomeTxns = txnsRange.filter((t) => typeKey(t) === "income" && inValue(t) > 0);
+  const otherIncomeDetails = incomeTxns
+    .map((t) => {
+      const dt = fmtDate(t);
+      const desc = safeName(t?.description || t?.category || t?.partyName, "Other Income");
+      // example: "COLLECTED FROM MD"
+      const label = dt ? `Other Income - ${desc} (${dt})` : `Other Income - ${desc}`;
+      return { label, amount: inValue(t), date: dt };
+    })
+    .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : a.label.localeCompare(b.label)));
+
   const totalIncome = sum(incomeTxns, (t) => inValue(t));
 
   const totalRevenueGenerated = cashSales + bankSales + creditRecoveryTotal + totalIncome;
 
   // -------------------------
-  // 2) EXPENSES (RANGE) with DETAILS ✅ (type + date)
+  // 2) EXPENSE SUMMARY (DETAILED) (RANGE) ✅
+  // -------------------------
+  const expenseSummaryDetailed = buildExpenseSummaryDetailed(txnsRange);
+
+  // -------------------------
+  // 3) EXPENSES (VERIFIED LIST) (RANGE) ✅
+  // - add party name
+  // - ascending order
   // -------------------------
   const expenseTxns = txnsRange.filter(isExpenseIncurred_RANGE);
 
@@ -262,36 +361,42 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     .map((t) => {
       const ty = typeKey(t);
       const dt = fmtDate(t);
-      const labelBase =
-        ty === "payment"
-          ? `Payment`
-          : ty === "purchase"
-          ? `Purchase`
-          : ty === "expense"
-          ? `Expense`
-          : "Expense";
-      const name = expenseKey(t);
-      const label = dt ? `${labelBase} - ${name} (${dt})` : `${labelBase} - ${name}`;
+      const cat = normalizeCategory(t?.category) || normalizeCategory(expenseKey(t)) || "Other";
+      const party = safeName(t?.partyName, "");
+      const partyPart = party ? ` - ${party}` : "";
+      const labelBase = `${typeLabel(ty)} - ${cat}${partyPart}`;
+      const label = dt ? `${labelBase} (${dt})` : labelBase;
+
       return { label, amount: outValue(t), type: ty, date: dt };
     })
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    .sort((a, b) => {
+      // ascending date
+      if (a.date !== b.date) return (a.date || "9999-99-99").localeCompare(b.date || "9999-99-99");
+      // then type order: Purchase -> Payment -> Expense
+      const order = { purchase: 1, payment: 2, expense: 3 };
+      const oa = order[a.type] || 9;
+      const ob = order[b.type] || 9;
+      if (oa !== ob) return oa - ob;
+      // then label
+      return String(a.label).localeCompare(String(b.label));
+    });
 
   const totalExpenseIncurred = sum(expenseTxns, (t) => outValue(t));
 
   // -------------------------
-  // 3) LIABILITY (RANGE) ✅ list ONLY credit purchases + date
+  // 4) LIABILITY (RANGE) ✅ list ONLY credit purchases + date
   // TOTAL NEW LIABILITY = created - paid
   // -------------------------
   const liabRange = computeLiabilities(txnsRange);
 
   // -------------------------
-  // 4) RECEIVABLE / PAYABLE (TILL DATE) ✅ for Liquidity section
+  // 5) RECEIVABLE / PAYABLE (TILL DATE) ✅ for Liquidity section
   // -------------------------
   const recvTill = computeReceivablesTillDate(txnsTill);
   const liabTill = computeLiabilities(txnsTill);
 
   // -------------------------
-  // 5) LIQUIDITY (TILL DATE)
+  // 6) LIQUIDITY (TILL DATE)
   // Total Liquid Funds = cash + bank only
   // -------------------------
   const cashInTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
@@ -305,7 +410,7 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const totalLiquidFunds = totalCashBalance + totalBankBalance;
 
   // -------------------------
-  // 6) DAILY CASH CHECK (RANGE)
+  // 7) DAILY CASH CHECK (RANGE)
   // -------------------------
   const cashInRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
   const cashOutRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => num(t?.amountOut));
@@ -328,7 +433,9 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     status: {
       healthy,
       statusText: healthy ? "HEALTHY" : "ACTION REQUIRED",
-      statusSub: healthy ? "Cash is balanced. Key movements are verified." : "Review variance / pending credits / liabilities.",
+      statusSub: healthy
+        ? "Cash is balanced. Key movements are verified."
+        : "Review variance / pending credits / liabilities.",
     },
 
     revenue: {
@@ -339,12 +446,21 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
       creditRecoveryTotal,
       creditRecoveryCash,
       creditRecoveryBank,
+
+      // ✅ keep totals
       totalIncome,
+
+      // ✅ new: list rows for PDF (Collected from MD etc.)
+      otherIncomeDetails,
+
       totalRevenueGenerated,
     },
 
+    // ✅ new section
+    expenseSummaryDetailed, // { rows:[{label,amount}], total }
+
     expenses: {
-      details: expenseDetails, // ✅ show type + date list
+      details: expenseDetails, // ✅ type + category + party + date (ascending)
       totalExpenseIncurred,
     },
 

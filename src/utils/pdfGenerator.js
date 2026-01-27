@@ -32,11 +32,9 @@ function ensureSpace(doc, y, neededHeight) {
 
 // ✅ Apply right-align to Amount header + values
 function applyRightAlignAmountHeader(data) {
-  // Head row is section === "head"
   if (data.section === "head" && data.column.index === 1) {
     data.cell.styles.halign = "right";
   }
-  // Body amount column too
   if (data.section === "body" && data.column.index === 1) {
     data.cell.styles.halign = "right";
   }
@@ -88,33 +86,46 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   // -------------------------
   // 1) Revenue & Inflow
   // -------------------------
-  y = ensureSpace(doc, y, 90);
+  y = ensureSpace(doc, y, 100);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
   doc.text("1. REVENUE & INFLOW", 40, y);
   y += 10;
 
+  const otherIncomeDetails = Array.isArray(report?.revenue?.otherIncomeDetails)
+    ? report.revenue.otherIncomeDetails
+    : [];
+
+  const revenueRows = [
+    ["Total Gross Sales (Z-Report)", money(report?.revenue?.totalGrossSales)],
+    ["  - Cash Sales", money(report?.revenue?.cashSales)],
+    ["  - Bank Sales", money(report?.revenue?.bankSales)],
+    ["  - Credit Sales (Pending)", money(report?.revenue?.creditSales)],
+    ["Add: Credit Recovery (Old Debts)", money(report?.revenue?.creditRecoveryTotal)],
+    ["  - By Cash", money(report?.revenue?.creditRecoveryCash)],
+    ["  - By Bank/Card", money(report?.revenue?.creditRecoveryBank)],
+  ];
+
+  // ✅ Insert other income rows (Collected from MD etc.) without losing totals
+  for (const r of otherIncomeDetails) {
+    revenueRows.push([safeText(r?.label || "Other Income"), money(r?.amount)]);
+  }
+
+  revenueRows.push(["TOTAL REVENUE GENERATED", money(report?.revenue?.totalRevenueGenerated)]);
+
   autoTable(doc, {
     startY: y + 10,
     head: [["Metric", `Amount (${currency})`]],
-    body: [
-      ["Total Gross Sales (Z-Report)", money(report?.revenue?.totalGrossSales)],
-      ["  - Cash Sales", money(report?.revenue?.cashSales)],
-      ["  - Bank Sales", money(report?.revenue?.bankSales)],
-      ["  - Credit Sales (Pending)", money(report?.revenue?.creditSales)],
-      ["Add: Credit Recovery (Old Debts)", money(report?.revenue?.creditRecoveryTotal)],
-      ["  - By Cash", money(report?.revenue?.creditRecoveryCash)],
-      ["  - By Bank/Card", money(report?.revenue?.creditRecoveryBank)],
-      ["TOTAL REVENUE GENERATED", money(report?.revenue?.totalRevenueGenerated)],
-    ],
+    body: revenueRows,
     theme: "plain",
     styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
     headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
     columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
       applyRightAlignAmountHeader(data);
-      if (data.row.index === 7) {
+      // last row highlight
+      if (data.section === "body" && data.row.index === revenueRows.length - 1) {
         data.cell.styles.fillColor = [0, 51, 102];
         data.cell.styles.textColor = 255;
         data.cell.styles.fontStyle = "bold";
@@ -125,48 +136,96 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   y = doc.lastAutoTable.finalY + 25;
 
   // -------------------------
-  // 2) Expenses (Details with type + date)
+  // 2) Expense Summary (Detailed) ✅
   // -------------------------
   y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text("2. EXPENSES (VERIFIED)", 40, y);
+  doc.text("2. EXPENSE SUMMARY (DETAILED)", 40, y);
+  y += 10;
+
+  const summaryRowsRaw = Array.isArray(report?.expenseSummaryDetailed?.rows)
+    ? report.expenseSummaryDetailed.rows
+    : [];
+
+  const summaryRows = summaryRowsRaw
+    .filter((x) => Number(x?.amount || 0) !== 0)
+    .map((x) => [safeText(x.label), money(x.amount)]);
+
+  // only print if something exists; else skip table entirely
+  if (summaryRows.length) {
+    autoTable(doc, {
+      startY: y + 10,
+      head: [[`Expense Summary (Type + Category + Mode)`, `Amount (${currency})`]],
+      body: [...summaryRows, ["TOTAL EXPENSE INCURRED", money(report?.expenses?.totalExpenseIncurred)]],
+      theme: "plain",
+      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
+      headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+      columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
+      didParseCell: (data) => {
+        applyRightAlignAmountHeader(data);
+        if (data.section === "body" && data.row.index === summaryRows.length) {
+          data.cell.styles.fillColor = [0, 51, 102];
+          data.cell.styles.textColor = 255;
+          data.cell.styles.fontStyle = "bold";
+        }
+      },
+    });
+
+    y = doc.lastAutoTable.finalY + 25;
+  } else {
+    y += 10; // just a small gap if no summary rows in range
+  }
+
+  // -------------------------
+  // 3) Expenses Verified (List) ✅ party + ascending order
+  // -------------------------
+  y = ensureSpace(doc, y, 90);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text("3. EXPENSES (VERIFIED)", 40, y);
   y += 10;
 
   const expenseDetails = Array.isArray(report?.expenses?.details) ? report.expenses.details : [];
-  const expenseRows = expenseDetails.length
-    ? expenseDetails.map((x) => [safeText(x.label), money(x.amount)])
-    : [["No verified expenses", "0.00"]];
 
-  autoTable(doc, {
-    startY: y + 10,
-    head: [["Expense (Type + Date)", `Amount (${currency})`]],
-    body: [...expenseRows, ["TOTAL EXPENSE INCURRED", money(report?.expenses?.totalExpenseIncurred)]],
-    theme: "plain",
-    styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
-    didParseCell: (data) => {
-      applyRightAlignAmountHeader(data);
-      if (data.row.index === expenseRows.length) {
-        data.cell.styles.fillColor = [0, 51, 102];
-        data.cell.styles.textColor = 255;
-        data.cell.styles.fontStyle = "bold";
-      }
-    },
-  });
+  const expenseRows = expenseDetails
+    .filter((x) => Number(x?.amount || 0) !== 0)
+    .map((x) => [safeText(x.label), money(x.amount)]);
 
-  y = doc.lastAutoTable.finalY + 25;
+  if (expenseRows.length) {
+    autoTable(doc, {
+      startY: y + 10,
+      head: [["Expense (Type + Category + Party + Date)", `Amount (${currency})`]],
+      body: [...expenseRows, ["TOTAL EXPENSE INCURRED", money(report?.expenses?.totalExpenseIncurred)]],
+      theme: "plain",
+      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
+      headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+      columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
+      didParseCell: (data) => {
+        applyRightAlignAmountHeader(data);
+        if (data.section === "body" && data.row.index === expenseRows.length) {
+          data.cell.styles.fillColor = [0, 51, 102];
+          data.cell.styles.textColor = 255;
+          data.cell.styles.fontStyle = "bold";
+        }
+      },
+    });
+
+    y = doc.lastAutoTable.finalY + 25;
+  } else {
+    y += 10;
+  }
 
   // -------------------------
-  // 3) Credit Purchase / Liability (ONLY credit purchases with date)
+  // 4) Credit Purchase / Liability (ONLY credit purchases with date)
   // -------------------------
   y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
-  doc.text("3. CREDIT PURCHASE / LIABILITY", 40, y);
+  doc.text("4. CREDIT PURCHASE / LIABILITY", 40, y);
   y += 10;
 
   const creditPurchases = Array.isArray(report?.liabilities?.creditPurchases)
@@ -178,32 +237,36 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
         safeText(`${x.supplier}${x.date ? ` (${fmtDateStr(x.date)})` : ""}`),
         money(x.amount),
       ])
-    : [["No credit purchases", "0.00"]];
+    : [];
 
-  autoTable(doc, {
-    startY: y + 10,
-    head: [["Credit Purchase (Supplier + Date)", `Amount (${currency})`]],
-    body: [
-      ...liabRows,
-      ["Supplier Paid (Range)", money(report?.liabilities?.totalSupplierPaid)],
-      ["TOTAL NEW LIABILITY (Created - Paid)", money(report?.liabilities?.totalNewLiability)],
-    ],
-    theme: "plain",
-    styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-    headStyles: { fillColor: [120, 0, 0], textColor: 255, fontStyle: "bold" },
-    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
-    didParseCell: (data) => {
-      applyRightAlignAmountHeader(data);
-      const lastRowIndex = liabRows.length + 1; // TOTAL row
-      if (data.row.index === lastRowIndex) {
-        data.cell.styles.fillColor = [120, 0, 0];
-        data.cell.styles.textColor = 255;
-        data.cell.styles.fontStyle = "bold";
-      }
-    },
-  });
+  if (liabRows.length) {
+    autoTable(doc, {
+      startY: y + 10,
+      head: [["Credit Purchase (Supplier + Date)", `Amount (${currency})`]],
+      body: [
+        ...liabRows,
+        ["Supplier Paid (Range)", money(report?.liabilities?.totalSupplierPaid)],
+        ["TOTAL NEW LIABILITY (Created - Paid)", money(report?.liabilities?.totalNewLiability)],
+      ],
+      theme: "plain",
+      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
+      headStyles: { fillColor: [120, 0, 0], textColor: 255, fontStyle: "bold" },
+      columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
+      didParseCell: (data) => {
+        applyRightAlignAmountHeader(data);
+        const lastRowIndex = liabRows.length + 1;
+        if (data.section === "body" && data.row.index === lastRowIndex) {
+          data.cell.styles.fillColor = [120, 0, 0];
+          data.cell.styles.textColor = 255;
+          data.cell.styles.fontStyle = "bold";
+        }
+      },
+    });
 
-  y = doc.lastAutoTable.finalY + 25;
+    y = doc.lastAutoTable.finalY + 25;
+  } else {
+    y += 10;
+  }
 
   // -------------------------
   // Liquidity & Balance
@@ -231,7 +294,7 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
       applyRightAlignAmountHeader(data);
-      if (data.row.index === 4) {
+      if (data.section === "body" && data.row.index === 4) {
         data.cell.styles.fillColor = [0, 120, 0];
         data.cell.styles.textColor = 255;
         data.cell.styles.fontStyle = "bold";
@@ -242,9 +305,9 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   y = doc.lastAutoTable.finalY + 25;
 
   // -------------------------
-  // DAILY CASH CHECK (must stay with table)
+  // DAILY CASH CHECK
   // -------------------------
-  const dailyCashRequired = 10 + 10 + 70; // heading + gap + table
+  const dailyCashRequired = 10 + 10 + 70;
   y = ensureSpace(doc, y, dailyCashRequired);
 
   doc.setFont("helvetica", "bold");
