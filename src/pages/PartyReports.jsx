@@ -361,79 +361,111 @@ export default function PartyReports() {
   };
 
   // -------------------------
-  // Summary (ALL types)
-  // -------------------------
-  const report = useMemo(() => {
-    const txns = Array.isArray(rows) ? rows : [];
-    const want = norm(type);
+// Build summary (ALL party types)
+// -------------------------
+const report = useMemo(() => {
+  const txns = rows || [];
+  const pType = norm(type);
 
-    // Common
-    const count = txns.length;
+  let totalIn = 0;
+  let totalOut = 0;
 
-    // For internal types: show In/Out/Net
-    const totalIn = txns
-      .filter((t) => t._dir === "In")
-      .reduce((s, t) => s + num(t._amount), 0);
+  let creditCreated = 0; // customer/supplier/employee depending on mode
+  let settled = 0;
 
-    const totalOut = txns
-      .filter((t) => t._dir === "Out")
-      .reduce((s, t) => s + num(t._amount), 0);
+  for (const t of txns) {
+    const ty = norm(t?.type);
+    const m = norm(t?.mode);
 
-    const net = totalIn - totalOut;
+    // ✅ IMPORTANT: use the NET amount field you are actually storing
+    // Prefer _amount (latest), fallback to _total, then totalAmount
+    const amt = Number(
+      t?._amount ??
+      t?._total ??
+      t?.totalAmount ??
+      t?.amountIn ??
+      t?.amountOut ??
+      0
+    );
 
-    // Customer receivable: credit sales - receipts
-    const customerCreditSales = txns
-      .filter((t) => t._typeKey === "sales" && t._modeKey === "credit")
-      .reduce((s, t) => s + num(t._amount), 0);
+    if (!(amt > 0)) continue;
 
-    const customerReceipts = txns
-      .filter((t) => t._typeKey === "receipt")
-      .reduce((s, t) => s + num(t._amount), 0);
+    // ---------------- CUSTOMER ----------------
+    if (pType === "customer") {
+      if (ty === "sales" && m === "credit") creditCreated += amt;
+      if (ty === "receipt") settled += amt;
+    }
 
-    const receivable = customerCreditSales - customerReceipts;
+    // ---------------- SUPPLIER ----------------
+    else if (pType === "supplier") {
+      if ((ty === "purchase" || ty === "expense") && m === "credit") creditCreated += amt;
+      if (ty === "payment") settled += amt;
+    }
 
-    // Supplier payable: credit purchases/credit expense - payments
-    const supplierCreditPurchases = txns
-      .filter((t) => (t._typeKey === "purchase" || t._typeKey === "expense") && t._modeKey === "credit")
-      .reduce((s, t) => s + num(t._typeKey === "purchase" || t._typeKey === "expense" ? t._amount : 0), 0);
+    // ---------------- EMPLOYEE (FIXED LOGIC) ----------------
+    else if (pType === "employee") {
+      // ✅ Salary payable is created ONLY when Expense is CREDIT
+      if (ty === "expense" && m === "credit") creditCreated += amt;
 
-    const supplierPayments = txns
-      .filter((t) => t._typeKey === "payment")
-      .reduce((s, t) => s + num(t._amount), 0);
+      // ✅ Salary is paid ONLY when Payment is NOT credit (cash/bank/petti)
+      if (ty === "payment" && m !== "credit") settled += amt;
+    }
 
-    const payable = supplierCreditPurchases - supplierPayments;
+    // ---------------- OWNER / PARTNER / BOTH (internal) ----------------
+    else {
+      if (Number(t?.amountIn) > 0) totalIn += Number(t.amountIn);
+      if (Number(t?.amountOut) > 0) totalOut += Number(t.amountOut);
+    }
+  }
 
-    // Decide which summary to show
-    const mode =
-      want === "customer"
-        ? "customer"
-        : want === "supplier"
-        ? "supplier"
-        : want === "both"
-        ? "both"
-        : "internal";
-
+  // CUSTOMER
+  if (pType === "customer") {
     return {
-      mode,
-      count,
+      mode: "customer",
+      count: txns.length,
+      customerCreditSales: creditCreated,
+      customerReceipts: settled,
+      receivable: creditCreated - settled,
       rows: txns,
-
-      // internal
-      totalIn,
-      totalOut,
-      net,
-
-      // customer
-      customerCreditSales,
-      customerReceipts,
-      receivable,
-
-      // supplier
-      supplierCreditPurchases,
-      supplierPayments,
-      payable,
     };
-  }, [rows, type]);
+  }
+
+  // SUPPLIER
+  if (pType === "supplier") {
+    return {
+      mode: "supplier",
+      count: txns.length,
+      supplierCreditPurchases: creditCreated,
+      supplierPayments: settled,
+      payable: creditCreated - settled,
+      rows: txns,
+    };
+  }
+
+  // EMPLOYEE
+  if (pType === "employee") {
+    return {
+      mode: "employee",
+      count: txns.length,
+      totalToPay: creditCreated,
+      totalPaid: settled,
+      balance: creditCreated - settled,
+      rows: txns,
+    };
+  }
+
+  // INTERNAL (Owner/Partner/Both)
+  return {
+    mode: "internal",
+    count: txns.length,
+    totalIn,
+    totalOut,
+    net: totalIn - totalOut,
+    rows: txns,
+  };
+}, [rows, type]);
+
+
 
   const canLoad = Boolean(activeClientId && selectedParty?.name && fromDate && toDate);
   const canDownload = Boolean(canLoad && report?.rows?.length);
@@ -622,30 +654,73 @@ export default function PartyReports() {
         </div>
 
         {report.mode === "customer" ? (
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Box label="Credit Sales (NET, Credit only)" value={`${money(report.customerCreditSales)} ${currency}`} />
-            <Box label="Recovered (Receipts, NET)" value={`${money(report.customerReceipts)} ${currency}`} />
-            <Box label="Pending Receivable" value={`${money(report.receivable)} ${currency}`} />
-          </div>
-        ) : report.mode === "supplier" ? (
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Box label="Credit Purchases/Expenses (NET, Credit only)" value={`${money(report.supplierCreditPurchases)} ${currency}`} />
-            <Box label="Paid (Payments, NET)" value={`${money(report.supplierPayments)} ${currency}`} />
-            <Box label="Pending Payable" value={`${money(report.payable)} ${currency}`} />
-          </div>
-        ) : report.mode === "both" ? (
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Box label="Pending Receivable (Customer side)" value={`${money(report.receivable)} ${currency}`} />
-            <Box label="Pending Payable (Supplier side)" value={`${money(report.payable)} ${currency}`} />
-            <Box label="Net (In − Out)" value={`${money(report.net)} ${currency}`} />
-          </div>
-        ) : (
-          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Box label="Total In" value={`${money(report.totalIn)} ${currency}`} />
-            <Box label="Total Out" value={`${money(report.totalOut)} ${currency}`} />
-            <Box label="Net (In − Out)" value={`${money(report.net)} ${currency}`} />
-          </div>
-        )}
+  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <Box
+      label="Credit Sales (NET, Credit only)"
+      value={`${money(report.customerCreditSales)} ${currency}`}
+    />
+    <Box
+      label="Recovered (Receipts, NET)"
+      value={`${money(report.customerReceipts)} ${currency}`}
+    />
+    <Box
+      label="Pending Receivable"
+      value={`${money(report.receivable)} ${currency}`}
+    />
+  </div>
+) : report.mode === "supplier" ? (
+  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <Box
+      label="Credit Purchases/Expenses (NET, Credit only)"
+      value={`${money(report.supplierCreditPurchases)} ${currency}`}
+    />
+    <Box
+      label="Paid (Payments, NET)"
+      value={`${money(report.supplierPayments)} ${currency}`}
+    />
+    <Box
+      label="Pending Payable"
+      value={`${money(report.payable)} ${currency}`}
+    />
+  </div>
+) : report.mode === "employee" ? (
+  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <Box
+      label="Total To Pay (Credit)"
+      value={`${money(report.totalToPay)} ${currency}`}
+    />
+    <Box
+      label="Total Paid (Cash/Bank/Petti)"
+      value={`${money(report.totalPaid)} ${currency}`}
+    />
+    <Box
+      label="Total Balance"
+      value={`${money(report.balance)} ${currency}`}
+    />
+  </div>
+) : report.mode === "both" ? (
+  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <Box
+      label="Pending Receivable (Customer side)"
+      value={`${money(report.receivable)} ${currency}`}
+    />
+    <Box
+      label="Pending Payable (Supplier side)"
+      value={`${money(report.payable)} ${currency}`}
+    />
+    <Box
+      label="Net (In − Out)"
+      value={`${money(report.net)} ${currency}`}
+    />
+  </div>
+) : (
+  <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+    <Box label="Total In" value={`${money(report.totalIn)} ${currency}`} />
+    <Box label="Total Out" value={`${money(report.totalOut)} ${currency}`} />
+    <Box label="Net (In − Out)" value={`${money(report.net)} ${currency}`} />
+  </div>
+)}
+
 
         <div className="mt-2 text-xs text-slate-500">
           Note: Discounts are netted (customer discount reduces receivable; supplier discount reduces payable). Petti refill/internal transfers are excluded.
