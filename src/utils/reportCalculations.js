@@ -1,6 +1,7 @@
 // src/utils/reportCalculations.js
 // LIVE SAFE — Discount Netting + Existing Stable Engine
 // Backward compatible. No DB writes. No assumptions.
+// ✅ Added: Petti Cash + Internal Transfer (Refill) support
 
 function num(v) {
   const n = Number(v);
@@ -19,6 +20,13 @@ function normalizeMode(m) {
   if (x.startsWith("car")) return "bank"; // card -> bank bucket
   if (x.startsWith("upi")) return "bank";
   if (x.startsWith("cre")) return "credit";
+
+  // ✅ NEW: Petti mapping
+  if (x.startsWith("petti")) return "petti";
+  if (x.startsWith("petty")) return "petti";
+  if (x.includes("petti cash")) return "petti";
+  if (x.includes("petty cash")) return "petti";
+
   return x;
 }
 
@@ -31,6 +39,11 @@ function normalizeType(t) {
   if (x.startsWith("pur")) return "purchase";
   if (x.startsWith("pay")) return "payment";
   if (x.startsWith("exp")) return "expense";
+
+  // ✅ NEW: transfer/refill types
+  if (x.startsWith("tra")) return "transfer";
+  if (x.startsWith("ref")) return "refill";
+
   return x;
 }
 
@@ -56,8 +69,15 @@ function isSupplierParty(t) {
 function outValue(t) {
   const out = num(t?.amountOut);
   if (out > 0) return out;
-  return num(t?.amountIn);
+
+  // ✅ fallback ONLY for outflow types (legacy)
+  const ty = typeKey(t);
+  if (ty === "purchase" || ty === "payment" || ty === "expense") {
+    return num(t?.amountIn);
+  }
+  return 0;
 }
+
 function inValue(t) {
   return num(t?.amountIn);
 }
@@ -103,6 +123,10 @@ function normalizeCategory(raw) {
   if (x.includes("bill")) return "Utility";
   if (x.includes("trans")) return "Transport";
   if (x.includes("comm")) return "Commodity";
+  if (x.includes("loan")) return "Loan";
+
+  // ✅ NEW: Petti refill category normalization (kept as readable)
+  if (x.includes("petti refill") || x.includes("petty refill")) return "Petti Refill";
 
   return s;
 }
@@ -111,6 +135,7 @@ function modeLabel(m) {
   if (m === "cash") return "Cash";
   if (m === "bank") return "Bank";
   if (m === "credit") return "Credit";
+  if (m === "petti") return "Petti Cash";
   return m ? m.toUpperCase() : "Unknown";
 }
 
@@ -119,7 +144,57 @@ function typeLabel(ty) {
   if (ty === "payment") return "Payment";
   if (ty === "expense") return "Expense";
   if (ty === "income") return "Other Income";
+  if (ty === "transfer") return "Transfer";
+  if (ty === "refill") return "Refill";
   return ty ? ty.toUpperCase() : "Unknown";
+}
+
+function categoryKey(t) {
+  return normalizeCategory(t?.category);
+}
+
+// -------------------------------------------
+// ✅ INTERNAL TRANSFER (Petti Refill) detector
+// -------------------------------------------
+function internalTransferAmount(t) {
+  // Your refill txn stores totalAmount; older patterns may use amountIn/out.
+  return (
+    num(t?.totalAmount) ||
+    num(t?.amountIn) ||
+    num(t?.amountOut) ||
+    num(t?.amount) ||
+    0
+  );
+}
+
+function isInternalTransfer(t) {
+  if (!t) return false;
+  if (t?.internalTransfer === true) return true;
+
+  const ty = typeKey(t);
+  const m = modeKey(t);
+  const cat = String(t?.category || "").trim().toLowerCase();
+  const desc = String(t?.description || "").trim().toLowerCase();
+  const src = String(t?.sourceMode || "").trim();
+
+  // If it's a transfer/refill into petti with sourceMode, treat as internal transfer
+  if ((ty === "transfer" || ty === "refill") && m === "petti" && src) return true;
+
+  // If category/description hints refill
+  if (m === "petti" && (cat.includes("petti refill") || cat.includes("petty refill"))) return true;
+  if (m === "petti" && desc.includes("refill")) return true;
+
+  return false;
+}
+
+// -------------------------
+// LOAN Helpers
+// -------------------------
+function isLoanIncome(t) {
+  return typeKey(t) === "income" && categoryKey(t) === "Loan" && effectiveIn(t) > 0;
+}
+function isLoanPayment(t) {
+  return typeKey(t) === "payment" && categoryKey(t) === "Loan" && effectiveOut(t) > 0;
 }
 
 // -------------------------------------------
@@ -204,24 +279,35 @@ function effectiveOut(t) {
 // Receipt from Customer/Both = credit recovery
 // -------------------------------------------
 function isCreditRecovery(t) {
+  if (isInternalTransfer(t)) return false;
   return typeKey(t) === "receipt" && isCustomerParty(t) && effectiveIn(t) > 0;
 }
 
 /**
  * ✅ EXPENSE VERIFIED LIST (RANGE)
- * Include: Payment + Expense + Purchase (ONLY cash/bank purchases)
+ * Include: Payment + Expense + Purchase (ONLY cash/bank/petti purchases)
  * Exclude: Credit Purchase
+ * Exclude: Internal transfers
  */
 function isExpenseIncurred_RANGE(t) {
+  if (isInternalTransfer(t)) return false;
+
   const ty = typeKey(t);
   const m = modeKey(t);
+
   if (!(ty === "purchase" || ty === "payment" || ty === "expense")) return false;
   if (ty === "purchase" && m === "credit") return false;
+
+  // ✅ Loan Payment is NOT an expense (it reduces payable)
+  if (ty === "payment" && categoryKey(t) === "Loan") return false;
+
   return effectiveOut(t) > 0;
 }
 
 // Supplier liability created (Credit Purchase/Credit Expense)
 function isSupplierCreditLiability(t) {
+  if (isInternalTransfer(t)) return false;
+
   const ty = typeKey(t);
   const m = modeKey(t);
   if (!isSupplierParty(t)) return false;
@@ -239,6 +325,8 @@ function isSupplierCreditLiability(t) {
 
 // Supplier payment reduces payable
 function isSupplierPayment(t) {
+  if (isInternalTransfer(t)) return false;
+
   const ty = typeKey(t);
   if (!isSupplierParty(t)) return false;
   if (ty !== "payment") return false;
@@ -249,6 +337,7 @@ function isSupplierPayment(t) {
 function computeReceivablesTillDate(txnsTill) {
   const creditSales = txnsTill.filter(
     (t) =>
+      !isInternalTransfer(t) &&
       typeKey(t) === "sales" &&
       modeKey(t) === "credit" &&
       isCustomerParty(t) &&
@@ -256,7 +345,11 @@ function computeReceivablesTillDate(txnsTill) {
   );
 
   const receipts = txnsTill.filter(
-    (t) => typeKey(t) === "receipt" && isCustomerParty(t) && effectiveIn(t) > 0
+    (t) =>
+      !isInternalTransfer(t) &&
+      typeKey(t) === "receipt" &&
+      isCustomerParty(t) &&
+      effectiveIn(t) > 0
   );
 
   const createdMap = {};
@@ -354,10 +447,15 @@ function buildExpenseSummaryDetailed(txnsRange) {
   const map = {};
 
   for (const t of txnsRange) {
+    if (isInternalTransfer(t)) continue;
+
     const ty = typeKey(t);
     const m = modeKey(t);
 
-    // ✅ use effectiveOut for expense/payment/cash-bank purchase
+    // ✅ skip loan payment from expense summary
+    if (ty === "payment" && normalizeCategory(t?.category) === "Loan") continue;
+
+    // ✅ use effectiveOut for expense/payment/cash-bank-petti purchase
     let amount = 0;
     if (ty === "purchase") {
       if (m === "credit") continue;
@@ -393,6 +491,10 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     selectedDate,
     openingCash = 0,
     openingBank = 0,
+
+    // ✅ NEW: opening Petti (optional; defaults 0)
+    openingPetti = 0,
+
     actualCount = 0,
     analystNotesText = "",
     isSingleDay = false,
@@ -404,13 +506,14 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   // -------------------------
   // 1) SALES (NET) + INFLOW
   // -------------------------
-  const sales = txnsRange.filter((t) => typeKey(t) === "sales");
+  const sales = txnsRange.filter((t) => !isInternalTransfer(t) && typeKey(t) === "sales");
 
   const totalGrossSales = sum(sales, (t) => inValue(t));
   const totalNetSales = sum(sales, (t) => effectiveIn(t)); // ✅ NEW
 
   const cashSales = sum(sales.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
   const bankSales = sum(sales.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
+  const pettiSales = sum(sales.filter((t) => modeKey(t) === "petti"), (t) => effectiveIn(t)); // ✅ if someone records sales in petti
   const creditSales = sum(sales.filter((t) => modeKey(t) === "credit"), (t) => effectiveIn(t));
 
   const creditRecoveryTxns = txnsRange.filter(isCreditRecovery);
@@ -424,7 +527,13 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     (t) => effectiveIn(t)
   );
 
-  const incomeTxns = txnsRange.filter((t) => typeKey(t) === "income" && effectiveIn(t) > 0);
+  const incomeTxns = txnsRange.filter(
+    (t) =>
+      !isInternalTransfer(t) &&
+      typeKey(t) === "income" &&
+      categoryKey(t) !== "Loan" &&
+      effectiveIn(t) > 0
+  );
 
   const otherIncomeDetails = incomeTxns
     .map((t) => {
@@ -438,7 +547,9 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const totalIncome = sum(incomeTxns, (t) => effectiveIn(t));
 
   // ✅ Total Revenue Generated should reflect net sales
-  const totalRevenueGenerated = cashSales + bankSales + creditRecoveryTotal + totalIncome;
+  // (include pettiSales if used; it is real revenue, just different bucket)
+  const totalRevenueGenerated =
+    cashSales + bankSales + pettiSales + creditRecoveryTotal + totalIncome;
 
   // -------------------------
   // 2) EXPENSE SUMMARY
@@ -485,25 +596,75 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const liabTill = computeLiabilities(txnsTill);
 
   // -------------------------
-  // 6) LIQUIDITY (TILL DATE) — NETTED
+  // ✅ LOAN PAYABLE (TILL DATE)
+  // Loan Income (income + Loan) increases payable
+  // Loan Payment (payment + Loan) decreases payable
   // -------------------------
-  const cashInTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
-  const cashOutTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
+  const loanInTill = sum(txnsTill.filter((t) => !isInternalTransfer(t) && isLoanIncome(t)), (t) =>
+    effectiveIn(t)
+  );
+  const loanOutTill = sum(txnsTill.filter((t) => !isInternalTransfer(t) && isLoanPayment(t)), (t) =>
+    effectiveOut(t)
+  );
+  const loanOutstandingTill = loanInTill - loanOutTill;
 
-  const bankInTill = sum(txnsTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
-  const bankOutTill = sum(txnsTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveOut(t));
+  // -------------------------
+  // 6) LIQUIDITY (TILL DATE) — NETTED + PETTI + INTERNAL TRANSFERS
+  // -------------------------
+  const normalTill = txnsTill.filter((t) => !isInternalTransfer(t));
 
-  const totalCashBalance = num(openingCash) + (cashInTill - cashOutTill);
-  const totalBankBalance = num(openingBank) + (bankInTill - bankOutTill);
-  const totalLiquidFunds = totalCashBalance + totalBankBalance;
+  const cashInTill = sum(normalTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
+  const cashOutTill = sum(normalTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
+
+  const bankInTill = sum(normalTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
+  const bankOutTill = sum(normalTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveOut(t));
+
+  const pettiInTill = sum(normalTill.filter((t) => modeKey(t) === "petti"), (t) => effectiveIn(t));
+  const pettiOutTill = sum(normalTill.filter((t) => modeKey(t) === "petti"), (t) => effectiveOut(t));
+
+  let totalCashBalance = num(openingCash) + (cashInTill - cashOutTill);
+  let totalBankBalance = num(openingBank) + (bankInTill - bankOutTill);
+  let totalPettiBalance = num(openingPetti) + (pettiInTill - pettiOutTill);
+
+  // ✅ Apply internal transfers: subtract from sourceMode, add to petti
+  const internalTransfersTill = txnsTill.filter(isInternalTransfer);
+  for (const t of internalTransfersTill) {
+    const amt = internalTransferAmount(t);
+    if (!(amt > 0)) continue;
+
+    const src = normalizeMode(t?.sourceMode || "");
+    if (src === "cash") totalCashBalance -= amt;
+    else if (src === "bank") totalBankBalance -= amt;
+
+    totalPettiBalance += amt;
+  }
+
+  const totalBalance = totalCashBalance + totalBankBalance + totalPettiBalance;
+  const totalLiquidFunds = totalBalance; // keep name; now includes petti too
 
   // -------------------------
   // 7) DAILY CASH CHECK (RANGE) — NETTED
+  // Note:
+  // - This remains for CASH drawer reconciliation.
+  // - We intentionally do NOT include internal transfers here using mode filters,
+  //   because internal transfers are applied in liquidity via sourceMode.
   // -------------------------
-  const cashInRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
-  const cashOutRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
+  const rangeNormal = txnsRange.filter((t) => !isInternalTransfer(t));
 
-  const netCashPosition = cashInRange - cashOutRange;
+  const cashInRange = sum(rangeNormal.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
+  const cashOutRange = sum(rangeNormal.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
+
+  // ✅ Also subtract cash->petti transfers from expected drawer (because cash physically leaves drawer)
+  let cashToPettiRange = 0;
+  const internalTransfersRange = txnsRange.filter(isInternalTransfer);
+  for (const t of internalTransfersRange) {
+    const amt = internalTransferAmount(t);
+    if (!(amt > 0)) continue;
+    const src = normalizeMode(t?.sourceMode || "");
+    if (src === "cash") cashToPettiRange += amt;
+  }
+
+  const netCashPosition = (cashInRange - cashOutRange) - cashToPettiRange;
   const expectedDrawer = num(openingCash) + netCashPosition;
   const variance = num(actualCount) - expectedDrawer;
 
@@ -534,6 +695,9 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
       bankSales,
       creditSales,
 
+      // ✅ optional visibility
+      pettiSales,
+
       creditRecoveryTotal,
       creditRecoveryCash,
       creditRecoveryBank,
@@ -561,8 +725,15 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     liquidity: {
       totalCashBalance,
       totalBankBalance,
+
+      // ✅ NEW
+      totalPettiBalance,
+      totalBalance,
+
       totalReceivable: recvTill.totalReceivable,
-      totalPayable: liabTill.totalPayable,
+      totalPayable: liabTill.totalPayable + loanOutstandingTill,
+
+      // keep old name for backward compatibility (now equals totalBalance)
       totalLiquidFunds,
     },
 

@@ -15,7 +15,7 @@ import {
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 
-const PARTY_TYPES = ["Customer", "Supplier", "Both"];
+const PARTY_TYPES = ["Customer", "Supplier", "Partner", "Owner", "Employee","Both"];
 
 export default function Parties() {
   const { activeClientId, activeClientData } = useClient();

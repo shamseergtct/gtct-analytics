@@ -1,6 +1,13 @@
 // src/pages/Reports.jsx
 import { useMemo, useState } from "react";
-import { collection, getDocs, orderBy, query, where, Timestamp } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  orderBy,
+  query,
+  where,
+  Timestamp,
+} from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
 
@@ -32,6 +39,9 @@ function money(v) {
   return Number.isFinite(n) ? n.toFixed(2) : "0.00";
 }
 
+// -------------------------
+// Local normalizers (Quick section only)
+// -------------------------
 function normalizeMode(m) {
   const x = String(m || "").trim().toLowerCase();
   if (!x) return "";
@@ -40,6 +50,13 @@ function normalizeMode(m) {
   if (x.startsWith("car")) return "bank"; // card -> bank bucket
   if (x.startsWith("upi")) return "bank";
   if (x.startsWith("cre")) return "credit";
+
+  // ✅ Petti mapping
+  if (x.startsWith("petti")) return "petti";
+  if (x.startsWith("petty")) return "petti";
+  if (x.includes("petti cash")) return "petti";
+  if (x.includes("petty cash")) return "petti";
+
   return x;
 }
 function normalizeType(t) {
@@ -51,22 +68,22 @@ function normalizeType(t) {
   if (x.startsWith("pur")) return "purchase";
   if (x.startsWith("pay")) return "payment";
   if (x.startsWith("exp")) return "expense";
+  if (x.startsWith("tra")) return "transfer";
+  if (x.startsWith("ref")) return "refill";
   return x;
 }
+
+// -------------------------
+// Discount helpers (Quick section only)
+// -------------------------
 function safeSide(v) {
   return String(v || "").trim().toLowerCase();
 }
 function getDiscountAmount(t) {
-  // Backward compatible: support multiple possible field names
-  const a =
-    num(t?.discountAmount) ||
-    num(t?.discountAmt) ||
-    num(t?.discount) ||
-    0;
+  const a = num(t?.discountAmount) || num(t?.discountAmt) || num(t?.discount) || 0;
   return a > 0 ? a : 0;
 }
 function getDiscountEnabled(t) {
-  // Some records may not have "enabled" flag; if amount exists => enabled
   const enabled =
     Boolean(t?.discountEnabled) ||
     Boolean(t?.enableDiscount) ||
@@ -75,17 +92,12 @@ function getDiscountEnabled(t) {
   return enabled || getDiscountAmount(t) > 0;
 }
 function getDiscountSide(t) {
-  // customer / supplier
   const side =
     safeSide(t?.discountSide) ||
     safeSide(t?.discountFor) ||
     safeSide(t?.discountPartySide) ||
     "";
   return side;
-}
-function getDiscountType(t) {
-  // invoice / settlement (not used in totals; kept for future)
-  return safeSide(t?.discountType) || "";
 }
 
 function inValue(t) {
@@ -95,17 +107,46 @@ function outValue(t) {
   const out = num(t?.amountOut);
   if (out > 0) return out;
 
-  // ✅ Only allow fallback to amountIn for OUT-flow types (legacy records)
+  // legacy fallback only for outflow types
   const ty = normalizeType(t?.type);
-  if (ty === "purchase" || ty === "payment" || ty === "expense" || ty === "loan") {
-    return num(t?.amountIn);
-  }
-
-  // sales/receipt/income should NOT be treated as outflow
+  if (ty === "purchase" || ty === "payment" || ty === "expense") return num(t?.amountIn);
   return 0;
 }
 
+// -------------------------
+// Internal transfer + Loan detection (Quick section only)
+// -------------------------
+function internalTransferAmount(t) {
+  return num(t?.totalAmount) || num(t?.amountIn) || num(t?.amountOut) || 0;
+}
+function isInternalTransfer(t) {
+  if (!t) return false;
+  if (t?.internalTransfer === true) return true;
 
+  const ty = normalizeType(t?.type);
+  const m = normalizeMode(t?.mode);
+  const src = String(t?.sourceMode || "").trim();
+
+  if ((ty === "transfer" || ty === "refill") && m === "petti" && src) return true;
+
+  const cat = String(t?.category || "").trim().toLowerCase();
+  const desc = String(t?.description || "").trim().toLowerCase();
+
+  if (m === "petti" && (cat.includes("petti refill") || cat.includes("petty refill"))) return true;
+  if (m === "petti" && desc.includes("refill")) return true;
+
+  return false;
+}
+function isLoanMovement(t) {
+  const ty = normalizeType(t?.type);
+  const cat = String(t?.category || "").trim().toLowerCase();
+  const isLoanCat = cat === "loan" || cat.includes("loan");
+  return isLoanCat && (ty === "income" || ty === "payment");
+}
+
+// -------------------------
+// UI components
+// -------------------------
 function Section({ title, children, danger = false }) {
   return (
     <div
@@ -158,16 +199,6 @@ function QuickCard({ title, value, currency, emphasis = "normal" }) {
   );
 }
 
-function safeText(s) {
-  return String(s ?? "")
-    .replace(/\u2192/g, "to")
-    .replace(/[\u26A0\uFE0F]/g, "")   // ⚠️ remove (26A0 + FE0F)
-    .replace(/[\u0000-\u001F]/g, " ") // remove control chars
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-
 export default function Reports() {
   const { activeClientId, activeClientData } = useClient();
   const currency = activeClientData?.currency || "BHD";
@@ -177,6 +208,10 @@ export default function Reports() {
 
   const [openingCashFrom, setOpeningCashFrom] = useState("0");
   const [openingBankFrom, setOpeningBankFrom] = useState("0");
+
+  // ✅ Petti opening not stored yet in sessions; keep as 0 for now
+  const openingPettiFrom = "0";
+
   const [actualCountTo, setActualCountTo] = useState("0");
   const [analystNotesText, setAnalystNotesText] = useState("");
 
@@ -187,10 +222,7 @@ export default function Reports() {
   const [err, setErr] = useState("");
   const [sessionErr, setSessionErr] = useState("");
 
-  // Detailed report generation flag (data loaded)
   const [generated, setGenerated] = useState(false);
-
-  // Quick report flag (uses same loaded data; just UI)
   const [quickGenerated, setQuickGenerated] = useState(false);
 
   const isSingleDay = fromDate === toDate;
@@ -227,7 +259,7 @@ export default function Reports() {
     setLoading(true);
     try {
       const from = Timestamp.fromDate(startOfDay(fromDate));
-const to = Timestamp.fromDate(endOfDay(toDate));
+      const to = Timestamp.fromDate(endOfDay(toDate));
 
       // ✅ RANGE
       const qRange = query(
@@ -263,7 +295,6 @@ const to = Timestamp.fromDate(endOfDay(toDate));
   }
 
   async function generateQuickReport() {
-    // Quick report uses SAME dataset. If not generated, load first.
     if (!generated) {
       await generateReport();
     }
@@ -293,13 +324,14 @@ const to = Timestamp.fromDate(endOfDay(toDate));
   }
 
   // -------------------------
-  // Detailed report (existing engine)
+  // Detailed report (engine)
   // -------------------------
   const report = useMemo(() => {
     return generateDailyPulseReport(txnsRange, {
       selectedDate: `${fromDate} → ${toDate}`,
       openingCash: Number(openingCashFrom || 0),
       openingBank: Number(openingBankFrom || 0),
+      openingPetti: Number(openingPettiFrom || 0),
       actualCount: Number(actualCountTo || 0),
       analystNotesText: String(analystNotesText || ""),
       isSingleDay,
@@ -312,94 +344,40 @@ const to = Timestamp.fromDate(endOfDay(toDate));
     toDate,
     openingCashFrom,
     openingBankFrom,
+    openingPettiFrom,
     actualCountTo,
     analystNotesText,
     isSingleDay,
   ]);
 
   // -------------------------
-  // Quick report (LIVE SAFE)
-  // - Uses txnsTill for balances
-  // - Applies discount to inflow/outflow safely:
-  //   customer-side discount reduces inflow (sales/receipt)
-  //   supplier-side discount reduces outflow (purchase/payment/expense)
-  // - Sales shown as NET (avoids client confusion)
+  // Quick report (UI)
+  // Requirements:
+  // - Petti Cash Balance + Total Balance
+  // - Balance (Range) excludes Loan + internal transfers
   // -------------------------
   const quick = useMemo(() => {
-    const openingCash = num(openingCashFrom);
-    const openingBank = num(openingBankFrom);
-
-    const till = Array.isArray(txnsTill) ? txnsTill : [];
     const range = Array.isArray(txnsRange) ? txnsRange : [];
 
-    // Discount splits
-    let discCustomerSales = 0; // sales invoice discount (customer)
-    let discCustomerReceipt = 0; // settlement discount on receipt (customer)
-    let discSupplierOut = 0; // supplier discount reduces outflow
-
-    for (const t of till) {
-      if (!getDiscountEnabled(t)) continue;
-      const amt = getDiscountAmount(t);
-      if (!(amt > 0)) continue;
-
-      const side = getDiscountSide(t); // customer / supplier
-      const ty = normalizeType(t?.type);
-
-      if (side === "customer") {
-        if (ty === "sales") discCustomerSales += amt;
-        else if (ty === "receipt") discCustomerReceipt += amt;
-      } else if (side === "supplier") {
-        // purchase/payment/expense typically
-        discSupplierOut += amt;
-      }
-    }
-
-    // Cash/Bank balances till-date (discount-adjusted)
-    let cashIn = 0,
-      cashOut = 0,
-      bankIn = 0,
-      bankOut = 0;
-
-    for (const t of till) {
-      const m = normalizeMode(t?.mode);
-      const side = getDiscountSide(t);
-      const amtDisc = getDiscountEnabled(t) ? getDiscountAmount(t) : 0;
-
-      const _in = inValue(t);
-      const _out = num(t?.amountOut);
-
-      // inflow discount (customer) reduces actual inflow
-      const inAdj = side === "customer" ? Math.max(0, _in - amtDisc) : _in;
-
-      // outflow discount (supplier) reduces actual outflow
-      const outAdj = side === "supplier" ? Math.max(0, _out - amtDisc) : _out;
-
-      if (m === "cash") {
-        cashIn += inAdj;
-        cashOut += outAdj;
-      } else if (m === "bank") {
-        bankIn += inAdj;
-        bankOut += outAdj;
-      }
-    }
-
-    const cashBalance = openingCash + (cashIn - cashOut);
-    const bankBalance = openingBank + (bankIn - bankOut);
-    const totalBalance = cashBalance + bankBalance;
-        // ✅ Selected RANGE balance (All modes combined)
-    // (mode missing/credit also included)
+    // ✅ Range Balance (cash+bank+petti only), exclude loan + internal transfer, apply discounts
     let rangeIn = 0;
     let rangeOut = 0;
 
     for (const t of range) {
+      if (isInternalTransfer(t)) continue;
+      if (isLoanMovement(t)) continue;
+
+      const m = normalizeMode(t?.mode);
+      if (m !== "cash" && m !== "bank" && m !== "petti") continue;
+
       const side = getDiscountSide(t);
-      const amtDisc = getDiscountEnabled(t) ? getDiscountAmount(t) : 0;
+      const disc = getDiscountEnabled(t) ? getDiscountAmount(t) : 0;
 
       const _in = inValue(t);
-      const _out = outValue(t); // supports legacy cases
+      const _out = outValue(t);
 
-      const inAdj = side === "customer" ? Math.max(0, _in - amtDisc) : _in;
-      const outAdj = side === "supplier" ? Math.max(0, _out - amtDisc) : _out;
+      const inAdj = side === "customer" ? Math.max(0, _in - disc) : _in;
+      const outAdj = side === "supplier" ? Math.max(0, _out - disc) : _out;
 
       rangeIn += inAdj;
       rangeOut += outAdj;
@@ -407,36 +385,16 @@ const to = Timestamp.fromDate(endOfDay(toDate));
 
     const rangeBalance = rangeIn - rangeOut;
 
+    // ✅ Balances from stabilized engine (till-date)
+    const cashBalance = num(report?.liquidity?.totalCashBalance);
+    const bankBalance = num(report?.liquidity?.totalBankBalance);
+    const pettiBalance = num(report?.liquidity?.totalPettiBalance);
+    const totalBalance = num(report?.liquidity?.totalBalance);
 
-    // Net Sales in selected RANGE (discount-adjusted for customer-side sales)
-    let grossSalesRange = 0;
-    let discSalesRange = 0;
+    // ✅ Net sales / expense from engine
+    const totalSalesNet = num(report?.revenue?.totalNetSales);
+    const totalExpenseNet = num(report?.expenses?.totalExpenseIncurred);
 
-    for (const t of range) {
-      const ty = normalizeType(t?.type);
-      if (ty !== "sales") continue;
-      grossSalesRange += inValue(t);
-
-      if (getDiscountEnabled(t) && getDiscountSide(t) === "customer") {
-        discSalesRange += getDiscountAmount(t);
-      }
-    }
-
-    const totalSalesNet = Math.max(0, grossSalesRange - discSalesRange);
-
-    // Expense in selected RANGE (use report engine total, then adjust supplier discount on outflow txns in range)
-    // This keeps backward compatibility with your verified expense rules.
-    let supplierDiscRange = 0;
-    for (const t of range) {
-      if (!getDiscountEnabled(t)) continue;
-      if (getDiscountSide(t) !== "supplier") continue;
-      const ty = normalizeType(t?.type);
-      if (ty !== "purchase" && ty !== "payment" && ty !== "expense") continue;
-      supplierDiscRange += getDiscountAmount(t);
-    }
-    const totalExpenseNet = Math.max(0, num(report?.expenses?.totalExpenseIncurred) - supplierDiscRange);
-
-    // Receivable / Payable (from stabilized engine)
     const receivable = num(report?.liquidity?.totalReceivable);
     const payable = num(report?.liquidity?.totalPayable);
 
@@ -448,23 +406,18 @@ const to = Timestamp.fromDate(endOfDay(toDate));
       totalSales: totalSalesNet,
       totalExpense: totalExpenseNet,
       rangeBalance,
+
       cashBalance,
       bankBalance,
+      pettiBalance,
       totalBalance,
+
       receivable,
       payable,
       netPosition,
       isNegative,
-      // for future debugging (not shown)
-      _debug: {
-        discCustomerSales,
-        discCustomerReceipt,
-        discSupplierOut,
-        discSalesRange,
-        supplierDiscRange,
-      },
     };
-  }, [txnsTill, txnsRange, openingCashFrom, openingBankFrom, report]);
+  }, [txnsRange, report]);
 
   // -------------------------
   // PDFs
@@ -516,7 +469,6 @@ const to = Timestamp.fromDate(endOfDay(toDate));
           </p>
         </div>
 
-        {/* ✅ Buttons (Detailed + Quick) */}
         <div className="flex flex-wrap gap-2">
           <button
             onClick={generateReport}
@@ -689,22 +641,26 @@ const to = Timestamp.fromDate(endOfDay(toDate));
             <QuickCard title="Total Sales (NET)" value={quick?.totalSales} currency={currency} />
             <QuickCard title="Total Expense" value={quick?.totalExpense} currency={currency} />
             <QuickCard
-  title="Balance"
-  value={quick?.rangeBalance}
-  currency={currency}
-  emphasis={num(quick?.rangeBalance) < 0 ? "bad" : "good"}
-/>
+              title="Balance (Range)"
+              value={quick?.rangeBalance}
+              currency={currency}
+              emphasis={num(quick?.rangeBalance) < 0 ? "bad" : "good"}
+            />
 
+            <QuickCard title="Cash Balance" value={quick?.cashBalance} currency={currency} />
             <QuickCard title="Bank Balance" value={quick?.bankBalance} currency={currency} />
+            <QuickCard title="Petti Cash Balance" value={quick?.pettiBalance} currency={currency} />
+
             <QuickCard
-              title="Total Balance (Cash + Bank)"
+              title="Total Balance (Cash + Bank + Petti)"
               value={quick?.totalBalance}
               currency={currency}
               emphasis={num(quick?.totalBalance) < 0 ? "bad" : "good"}
             />
-            <QuickCard title="Total Receivable" value={quick?.receivable} currency={currency} />
 
+            <QuickCard title="Total Receivable" value={quick?.receivable} currency={currency} />
             <QuickCard title="Total Payable" value={quick?.payable} currency={currency} />
+
             <QuickCard
               title="Net Position (Bal + Rec - Pay)"
               value={quick?.netPosition}
@@ -725,21 +681,23 @@ const to = Timestamp.fromDate(endOfDay(toDate));
               <div className="flex gap-2">
                 <div>⚠️</div>
                 <div>
-                  Cash + Bank balance is negative. Please review payments, discounts, and cash
-                  drawer count.
+                  Total balance (Cash + Bank + Petti) is negative. Please review payments,
+                  internal transfers, discounts, and cash drawer count.
                 </div>
               </div>
             ) : (
               <div className="flex gap-2">
                 <div>✅</div>
-                <div>Balance is positive. Keep monitoring receivables/payables to maintain liquidity.</div>
+                <div>
+                  Total balance is positive. Keep monitoring receivables/payables to maintain liquidity.
+                </div>
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* ✅ Detailed report (existing UI) */}
+      {/* ✅ Detailed report */}
       {!generated ? null : (
         <>
           {/* Status */}
@@ -768,6 +726,7 @@ const to = Timestamp.fromDate(endOfDay(toDate));
             />
             <TwoColRow label="Cash Sales" value={`${money(report?.revenue?.cashSales)} ${currency}`} />
             <TwoColRow label="Bank Sales" value={`${money(report?.revenue?.bankSales)} ${currency}`} />
+            <TwoColRow label="Petti Sales" value={`${money(report?.revenue?.pettiSales)} ${currency}`} />
             <TwoColRow
               label="Credit Sales (Pending)"
               value={`${money(report?.revenue?.creditSales)} ${currency}`}
@@ -786,7 +745,7 @@ const to = Timestamp.fromDate(endOfDay(toDate));
             </div>
           </Section>
 
-          {/* 2 Expenses (details with date) */}
+          {/* 2 Expenses */}
           <Section title="2. Expenses (Verified) — Details">
             {report?.expenses?.details?.length ? (
               report.expenses.details.map((x, idx) => (
@@ -808,7 +767,7 @@ const to = Timestamp.fromDate(endOfDay(toDate));
             </div>
           </Section>
 
-          {/* 3 Liability - credit purchases list with date */}
+          {/* 3 Liability */}
           <Section title="3. Credit Purchase / Liability (Range)" danger>
             {report?.liabilities?.creditPurchases?.length ? (
               report.liabilities.creditPurchases.map((x, idx) => (
@@ -847,6 +806,18 @@ const to = Timestamp.fromDate(endOfDay(toDate));
                 value={`${money(report?.liquidity?.totalBankBalance)} ${currency}`}
               />
               <TwoColRow
+                label="Petti Cash Balance"
+                value={`${money(report?.liquidity?.totalPettiBalance)} ${currency}`}
+              />
+
+              <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
+                <div className="text-slate-300 font-semibold">TOTAL BALANCE (Cash + Bank + Petti)</div>
+                <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
+                  {money(report?.liquidity?.totalBalance)} {currency}
+                </div>
+              </div>
+
+              <TwoColRow
                 label="Total Receivable (Asset)"
                 value={`${money(report?.liquidity?.totalReceivable)} ${currency}`}
               />
@@ -856,7 +827,7 @@ const to = Timestamp.fromDate(endOfDay(toDate));
               />
 
               <div className="mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3 flex items-center justify-between gap-3">
-                <div className="text-emerald-200 font-semibold">TOTAL LIQUID FUNDS (Cash + Bank)</div>
+                <div className="text-emerald-200 font-semibold">TOTAL LIQUID FUNDS</div>
                 <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
                   {money(report?.liquidity?.totalLiquidFunds)} {currency}
                 </div>

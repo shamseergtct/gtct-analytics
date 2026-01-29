@@ -59,6 +59,13 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
   // customer / supplier
   const [discountSide, setDiscountSide] = useState("customer");
 
+  // --------------------------
+  // ✅ Petti Cash Refill UI
+  // --------------------------
+  const [showPettiRefill, setShowPettiRefill] = useState(false);
+  const [pettiRefillSource, setPettiRefillSource] = useState("Cash"); // Cash|Bank
+  const [pettiRefillAmount, setPettiRefillAmount] = useState("0");
+
   // Auto suggest side based on party type, but do NOT force (no assumptions)
   useEffect(() => {
     if (!discountEnabled) return;
@@ -153,6 +160,9 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     setShowPartyList(false); // ✅ closes dropdown (fixes stuck/duplicate)
   }
 
+  // --------------------------
+  // ✅ Save Normal Transaction
+  // --------------------------
   async function save() {
     if (!activeClientId) return alert("Select active client first.");
 
@@ -163,7 +173,8 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
     // Discount validation only if enabled
     if (discountEnabled) {
-      if (computedDiscountAmount <= 0) return alert("Enter Discount % or Discount Amount.");
+      if (computedDiscountAmount <= 0)
+        return alert("Enter Discount % or Discount Amount.");
       if (computedDiscountAmount > totalAmount)
         return alert("Discount cannot exceed Total Amount.");
       if (!discountType) return alert("Select Discount Type.");
@@ -271,9 +282,71 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     onSaved?.();
   }
 
+  // --------------------------
+  // ✅ Save Petti Refill Transaction (single txn)
+  // --------------------------
+  async function savePettiRefill() {
+    if (!activeClientId) return alert("Select active client first.");
+    if (!selectedDate) return alert("Select date.");
+    const amt = num(pettiRefillAmount);
+    if (amt <= 0) return alert("Enter refill amount.");
+
+    const dateObj = new Date(selectedDate);
+    const dateTs = Timestamp.fromDate(dateObj);
+
+    const payload = {
+      clientId: activeClientId,
+      date: dateTs,
+
+      // ✅ internal transfer flags
+      type: "Transfer", // can also be "Refill" if you want, but reportCalculations will treat both
+      category: "Petti Refill",
+      mode: "Petti",
+      sourceMode: pettiRefillSource, // "Cash"|"Bank"
+      internalTransfer: true,
+
+      // ✅ Must NOT be counted as revenue/expense/liability/receivable
+      amountBeforeTax: 0,
+      vatPercent: 0,
+      taxAmount: 0,
+      totalAmount: amt,
+
+      amountIn: 0,
+      amountOut: 0,
+
+      // keep party clean & not affecting reports
+      partyType: "Both",
+      partyId: null,
+      partyName: "Internal Transfer",
+
+      description: "Refill Petti Cash",
+
+      createdAt: Timestamp.now(),
+    };
+
+    await addDoc(collection(db, "transactions"), payload);
+
+    setShowPettiRefill(false);
+    setPettiRefillSource("Cash");
+    setPettiRefillAmount("0");
+
+    onSaved?.();
+  }
+
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-      <div className="text-white font-semibold">New Transaction</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-white font-semibold">New Transaction</div>
+
+        {/* ✅ New Action */}
+        <button
+          type="button"
+          onClick={() => setShowPettiRefill(true)}
+          className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-900"
+        >
+          Refill Petti Cash
+        </button>
+      </div>
 
       {/* Row 1 */}
       <div className="mt-4 grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -310,22 +383,32 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             onChange={(e) => setCategory(e.target.value)}
             className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
           >
-            <option>Commodity</option>
-            <option>Service</option>
-            <option>Salary</option>
-            <option>Rent</option>
-            <option>Utility</option>
-            <option>Transport</option>
-            <option>Other</option>
+            {String(type || "").toLowerCase() === "income" ? (
+              <>
+                <option value="">Select</option>
+                <option>Loan</option>
+                <option>Other</option>
+              </>
+            ) : (
+              <>
+                <option>Commodity</option>
+                <option>Service</option>
+                <option>Salary</option>
+                <option>Rent</option>
+                <option>Utility</option>
+                <option>Transport</option>
+                <option>Other</option>
 
-            {/* Phase-2 categories (safe: existing reports ignore if not used) */}
-            <option>Ingredients</option>
-            <option>Short-term Asset</option>
-            <option>Long-term Asset</option>
-            <option>Short-term Investment</option>
-            <option>Long-term Investment</option>
-            <option>Loan</option>
-            <option>Depreciation</option>
+                {/* Phase-2 categories */}
+                <option>Ingredients</option>
+                <option>Short-term Asset</option>
+                <option>Long-term Asset</option>
+                <option>Short-term Investment</option>
+                <option>Long-term Investment</option>
+                <option>Loan</option>
+                <option>Depreciation</option>
+              </>
+            )}
           </select>
         </div>
 
@@ -339,6 +422,9 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             <option>Cash</option>
             <option>Bank</option>
             <option>Credit</option>
+
+            {/* ✅ New */}
+            <option>Petti Cash</option>
           </select>
         </div>
       </div>
@@ -362,7 +448,8 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
             {/* Phase-2 Party Types */}
             <option value="Employee">Employee</option>
-            <option value="Owner / Partner">Owner / Partner</option>
+            <option value="Owner">Owner</option>
+            <option value="Partner">Partner</option>
           </select>
         </div>
 
@@ -379,7 +466,10 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             onFocus={() => setShowPartyList(true)}
             onBlur={() => {
               if (partyBlurTimer.current) clearTimeout(partyBlurTimer.current);
-              partyBlurTimer.current = setTimeout(() => setShowPartyList(false), 150);
+              partyBlurTimer.current = setTimeout(
+                () => setShowPartyList(false),
+                150
+              );
             }}
             placeholder="Search party..."
             className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
@@ -388,7 +478,9 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
           {showPartyList && (
             <div className="absolute z-50 mt-2 w-full max-h-60 overflow-auto rounded-xl border border-slate-800 bg-slate-950 shadow-lg">
               {filteredParties.length === 0 ? (
-                <div className="px-3 py-2 text-sm text-slate-400">No matches</div>
+                <div className="px-3 py-2 text-sm text-slate-400">
+                  No matches
+                </div>
               ) : (
                 filteredParties.map((p) => (
                   <button
@@ -460,8 +552,8 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
         {!discountEnabled ? (
           <div className="mt-2 text-xs text-slate-500">
-            Optional: Use for invoice / settlement discounts. (Accounting will post
-            as Discount Allowed / Discount Received.)
+            Optional: Use for invoice / settlement discounts. (Accounting will
+            post as Discount Allowed / Discount Received.)
           </div>
         ) : (
           <>
@@ -517,13 +609,16 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
                   <option value="supplier">supplier</option>
                 </select>
                 <div className="mt-1 text-xs text-slate-500">
-                  customer → Discount Allowed (Expense) • supplier → Discount Received (Income)
+                  customer → Discount Allowed (Expense) • supplier → Discount
+                  Received (Income)
                 </div>
               </div>
             </div>
 
             <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2">
-              <div className="text-sm text-slate-300">Computed Discount Amount</div>
+              <div className="text-sm text-slate-300">
+                Computed Discount Amount
+              </div>
               <div className="text-sm font-semibold text-amber-200 tabular-nums">
                 {computedDiscountAmount.toFixed(2)}
               </div>
@@ -559,6 +654,72 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
           Save Transaction
         </button>
       </div>
+
+      {/* ✅ Petti Refill Modal */}
+      {showPettiRefill && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-4">
+            <div className="flex items-center justify-between">
+              <div className="text-slate-100 font-semibold">Refill Petti Cash</div>
+              <button
+                type="button"
+                onClick={() => setShowPettiRefill(false)}
+                className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-100 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-3">
+              <div className="md:col-span-6">
+                <label className="text-sm text-slate-300">Source</label>
+                <select
+                  value={pettiRefillSource}
+                  onChange={(e) => setPettiRefillSource(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                >
+                  <option>Cash</option>
+                  <option>Bank</option>
+                </select>
+              </div>
+
+              <div className="md:col-span-6">
+                <label className="text-sm text-slate-300">Amount</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={pettiRefillAmount}
+                  onChange={(e) => setPettiRefillAmount(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                  placeholder="0"
+                />
+              </div>
+            </div>
+
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowPettiRefill(false)}
+                className="rounded-xl border border-slate-700 bg-slate-900 px-4 py-2 text-slate-100 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={savePettiRefill}
+                className="rounded-xl bg-indigo-600 px-4 py-2 font-semibold text-white hover:bg-indigo-500"
+              >
+                Save Refill
+              </button>
+            </div>
+
+            <div className="mt-3 text-xs text-slate-400">
+              This saves a single internal transfer transaction and will not be counted in
+              revenue/expense/liability/receivable reports.
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

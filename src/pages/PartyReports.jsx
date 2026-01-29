@@ -1,13 +1,24 @@
 // src/pages/PartyReports.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, getDocs, orderBy, query, where } from "firebase/firestore";
+import {
+  collection,
+  getDocs,
+  orderBy,
+  query,
+  where,
+  Timestamp,
+} from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
 
 import { generatePartyPDF } from "../utils/partyPdfGenerator";
 
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 function money(v) {
-  return Number(v || 0).toFixed(2);
+  return num(v).toFixed(2);
 }
 function toYYYYMMDD(d) {
   const x = new Date(d);
@@ -33,27 +44,171 @@ function asJSDate(v) {
 function norm(s) {
   return String(s || "").trim().toLowerCase();
 }
+function normalizeMode(m) {
+  const x = norm(m);
+  if (!x) return "";
+  if (x.startsWith("cas")) return "cash";
+  if (x.startsWith("ban")) return "bank";
+  if (x.startsWith("car")) return "bank";
+  if (x.startsWith("upi")) return "bank";
+  if (x.startsWith("cre")) return "credit";
+  if (x.startsWith("petti")) return "petti";
+  if (x.startsWith("petty")) return "petti";
+  if (x.includes("petti cash")) return "petti";
+  if (x.includes("petty cash")) return "petti";
+  return x;
+}
+function normalizeType(t) {
+  const x = norm(t);
+  if (!x) return "";
+  if (x.startsWith("sal")) return "sales";
+  if (x.startsWith("rec")) return "receipt";
+  if (x.startsWith("inc")) return "income";
+  if (x.startsWith("pur")) return "purchase";
+  if (x.startsWith("pay")) return "payment";
+  if (x.startsWith("exp")) return "expense";
+  if (x.startsWith("tra")) return "transfer";
+  if (x.startsWith("ref")) return "refill";
+  return x;
+}
 
-// ✅ safer: supports amountIn/amountOut/totalAmount
-function txnTotal(t) {
-  const inAmt = Number(t?.amountIn || 0);
-  const outAmt = Number(t?.amountOut || 0);
-  if (inAmt > 0) return inAmt;
-  if (outAmt > 0) return outAmt;
-  const total = Number(t?.totalAmount || 0);
-  return total > 0 ? total : 0;
+// -------- Discount helpers (backward compatible) --------
+function getDiscountAmount(t) {
+  const a =
+    num(t?.discountAmount) ||
+    num(t?.discountAmt) ||
+    num(t?.discount?.amount) ||
+    num(t?.discount) ||
+    0;
+  return a > 0 ? a : 0;
+}
+function getDiscountEnabled(t) {
+  const enabled =
+    Boolean(t?.discountEnabled) ||
+    Boolean(t?.enableDiscount) ||
+    Boolean(t?.hasDiscount) ||
+    Boolean(t?.isDiscountEnabled) ||
+    false;
+  return enabled || getDiscountAmount(t) > 0;
+}
+function getDiscountSide(t) {
+  return (
+    norm(t?.discountSide) ||
+    norm(t?.discountPartySide) ||
+    norm(t?.discountFor) ||
+    norm(t?.discount?.side) ||
+    ""
+  );
+}
+
+// -------- Internal transfer (Petti refill) --------
+function isInternalTransfer(t) {
+  if (!t) return false;
+  if (t?.internalTransfer === true) return true;
+
+  const ty = normalizeType(t?.type);
+  const m = normalizeMode(t?.mode);
+  const src = norm(t?.sourceMode);
+  if ((ty === "transfer" || ty === "refill") && m === "petti" && (src === "cash" || src === "bank"))
+    return true;
+
+  const cat = norm(t?.category);
+  if (m === "petti" && (cat.includes("petti refill") || cat.includes("petty refill")))
+    return true;
+
+  return false;
+}
+
+// -------- Effective In/Out (discount netting) --------
+function inValue(t) {
+  return num(t?.amountIn);
+}
+function outValue(t) {
+  const out = num(t?.amountOut);
+  if (out > 0) return out;
+
+  // legacy fallback for outflow types only
+  const ty = normalizeType(t?.type);
+  if (ty === "purchase" || ty === "payment" || ty === "expense") return num(t?.amountIn);
+  return 0;
+}
+
+// Netting rules:
+// - customer discount reduces inflow / receivable (Sales/Receipt/Income when customer-side)
+// - supplier discount reduces outflow / payable (Purchase/Payment/Expense when supplier-side)
+// - supplier discount also reduces CREDIT purchase liability (mode credit)
+function effectiveIn(t) {
+  const base = inValue(t);
+  if (!(base > 0)) return base;
+
+  if (!getDiscountEnabled(t)) return base;
+  const disc = getDiscountAmount(t);
+  if (!(disc > 0)) return base;
+
+  const side = getDiscountSide(t);
+  const ty = normalizeType(t?.type);
+
+  if (side === "customer" && (ty === "sales" || ty === "receipt" || ty === "income")) {
+    return Math.max(0, base - disc);
+  }
+  return base;
+}
+
+function effectiveOut(t) {
+  const base = outValue(t);
+  if (!(base > 0)) return base;
+
+  if (!getDiscountEnabled(t)) return base;
+  const disc = getDiscountAmount(t);
+  if (!(disc > 0)) return base;
+
+  const side = getDiscountSide(t);
+  const ty = normalizeType(t?.type);
+
+  if (side === "supplier" && (ty === "purchase" || ty === "payment" || ty === "expense")) {
+    return Math.max(0, base - disc);
+  }
+  return base;
+}
+
+function effectiveCreditLiabilityCreated(t) {
+  // For credit purchase/expense, some data stores value in amountIn
+  const base = num(t?.amountIn) > 0 ? num(t?.amountIn) : num(t?.totalAmount);
+  if (!(base > 0)) return 0;
+
+  if (!getDiscountEnabled(t)) return base;
+  const disc = getDiscountAmount(t);
+  if (!(disc > 0)) return base;
+
+  const side = getDiscountSide(t);
+  if (side === "supplier") return Math.max(0, base - disc);
+
+  return base;
+}
+
+function txnDirectionLabel(t) {
+  const ty = normalizeType(t?.type);
+  const m = normalizeMode(t?.mode);
+
+  if (isInternalTransfer(t)) return "Internal";
+  if (ty === "sales" || ty === "receipt" || ty === "income") return "In";
+  if (ty === "purchase" || ty === "payment" || ty === "expense") {
+    if (ty === "purchase" && m === "credit") return "Liability";
+    return "Out";
+  }
+  return "—";
 }
 
 export default function PartyReports() {
   const { activeClientId, activeClientData } = useClient();
   const currency = activeClientData?.currency || "BHD";
 
-  const [type, setType] = useState("Customer"); // Customer | Supplier
+  const [type, setType] = useState("Customer"); // Customer | Supplier | Both | Employee | Owner | Partner
   const [parties, setParties] = useState([]);
 
   // Searchable party picker
   const [partyQuery, setPartyQuery] = useState("");
-  const [selectedParty, setSelectedParty] = useState(null); // {id,name,type}
+  const [selectedParty, setSelectedParty] = useState(null);
   const [showPartyList, setShowPartyList] = useState(false);
   const blurTimer = useRef(null);
 
@@ -64,7 +219,6 @@ export default function PartyReports() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // Ledger rows (raw txns)
   const [rows, setRows] = useState([]);
 
   // -------------------------
@@ -100,16 +254,21 @@ export default function PartyReports() {
     run();
   }, [activeClientId]);
 
-  // ✅ Filter parties by type (include Both) — CASE INSENSITIVE
+  // ✅ Filter parties by type (include Both)
   const filteredParties = useMemo(() => {
     const want = norm(type);
     return parties.filter((p) => {
       const pt = norm(p?.type);
+
+      if (want === "both") {
+        // For "Both report", allow selecting ANY party; it will show both sides where applicable
+        return true;
+      }
+
       return pt === want || pt === "both";
     });
   }, [parties, type]);
 
-  // Search list
   const visibleParties = useMemo(() => {
     const q = partyQuery.trim().toLowerCase();
     const base = filteredParties;
@@ -128,16 +287,14 @@ export default function PartyReports() {
   }
 
   // -------------------------
-  // ✅ Load ledger (COMPLETE)
-  // Fetch by clientId + date range, then filter by partyId OR partyName
+  // Load ledger
   // -------------------------
   const load = async () => {
     setErr("");
     setRows([]);
 
     if (!activeClientId) return setErr("Please select an active client.");
-    if (!selectedParty?.id && !selectedParty?.name)
-      return setErr("Please select a party.");
+    if (!selectedParty?.id && !selectedParty?.name) return setErr("Please select a party.");
     if (!fromDate || !toDate) return setErr("Please choose From and To dates.");
 
     const f = startOfDay(fromDate);
@@ -146,12 +303,14 @@ export default function PartyReports() {
 
     setLoading(true);
     try {
-      // ✅ Uses your existing enabled index: transactions → clientId + date
+      const fromTs = Timestamp.fromDate(f);
+      const toTs = Timestamp.fromDate(t);
+
       const qy = query(
         collection(db, "transactions"),
         where("clientId", "==", activeClientId),
-        where("date", ">=", f),
-        where("date", "<=", t),
+        where("date", ">=", fromTs),
+        where("date", "<=", toTs),
         orderBy("date", "desc")
       );
 
@@ -161,18 +320,36 @@ export default function PartyReports() {
       const pid = String(selectedParty?.id || "").trim();
       const pname = norm(selectedParty?.name);
 
-      // ✅ local filter (partyId OR partyName)
+      // local filter (partyId OR partyName)
       const txns = all.filter((x) => {
+        if (isInternalTransfer(x)) return false; // ✅ always skip internal transfers
         if (pid && x?.partyId === pid) return true;
         if (pname && norm(x?.partyName) === pname) return true;
         return false;
       });
 
-      const normalized = txns.map((x) => ({
-        ...x,
-        _dateObj: asJSDate(x.date),
-        _total: txnTotal(x),
-      }));
+      const normalized = txns.map((x) => {
+        const d = asJSDate(x.date);
+        const ty = normalizeType(x?.type);
+        const mm = normalizeMode(x?.mode);
+
+        // display amount based on txn nature
+        let amount = 0;
+
+        if (ty === "purchase" && mm === "credit") amount = effectiveCreditLiabilityCreated(x);
+        else if (ty === "sales" || ty === "receipt" || ty === "income") amount = effectiveIn(x);
+        else if (ty === "purchase" || ty === "payment" || ty === "expense") amount = effectiveOut(x);
+        else amount = num(x?.totalAmount) || num(x?.amountIn) || num(x?.amountOut) || 0;
+
+        return {
+          ...x,
+          _dateObj: d,
+          _typeKey: ty,
+          _modeKey: mm,
+          _amount: amount,
+          _dir: txnDirectionLabel(x),
+        };
+      });
 
       setRows(normalized);
     } catch (e) {
@@ -184,44 +361,77 @@ export default function PartyReports() {
   };
 
   // -------------------------
-  // Build summary (Customer/Supplier)
+  // Summary (ALL types)
   // -------------------------
   const report = useMemo(() => {
-    const txns = rows || [];
-    const isCustomer = norm(type) === "customer";
+    const txns = Array.isArray(rows) ? rows : [];
+    const want = norm(type);
 
-    // CREDIT GIVEN:
-    // Customer => Sales (Credit)
-    // Supplier => Purchase (Credit)
-    const creditGiven = txns
-      .filter((t) => {
-        const tt = norm(t?.type);
-        const mm = norm(t?.mode);
-        if (mm !== "credit") return false;
-        if (isCustomer) return tt === "sales";
-        return tt === "purchase";
-      })
-      .reduce((s, t) => s + Number(txnTotal(t) || 0), 0);
+    // Common
+    const count = txns.length;
 
-    // SETTLED:
-    // Customer => Receipt
-    // Supplier => Payment
-    const settled = txns
-      .filter((t) => {
-        const tt = norm(t?.type);
-        if (isCustomer) return tt === "receipt";
-        return tt === "payment";
-      })
-      .reduce((s, t) => s + Number(txnTotal(t) || 0), 0);
+    // For internal types: show In/Out/Net
+    const totalIn = txns
+      .filter((t) => t._dir === "In")
+      .reduce((s, t) => s + num(t._amount), 0);
 
-    const pending = creditGiven - settled;
+    const totalOut = txns
+      .filter((t) => t._dir === "Out")
+      .reduce((s, t) => s + num(t._amount), 0);
+
+    const net = totalIn - totalOut;
+
+    // Customer receivable: credit sales - receipts
+    const customerCreditSales = txns
+      .filter((t) => t._typeKey === "sales" && t._modeKey === "credit")
+      .reduce((s, t) => s + num(t._amount), 0);
+
+    const customerReceipts = txns
+      .filter((t) => t._typeKey === "receipt")
+      .reduce((s, t) => s + num(t._amount), 0);
+
+    const receivable = customerCreditSales - customerReceipts;
+
+    // Supplier payable: credit purchases/credit expense - payments
+    const supplierCreditPurchases = txns
+      .filter((t) => (t._typeKey === "purchase" || t._typeKey === "expense") && t._modeKey === "credit")
+      .reduce((s, t) => s + num(t._typeKey === "purchase" || t._typeKey === "expense" ? t._amount : 0), 0);
+
+    const supplierPayments = txns
+      .filter((t) => t._typeKey === "payment")
+      .reduce((s, t) => s + num(t._amount), 0);
+
+    const payable = supplierCreditPurchases - supplierPayments;
+
+    // Decide which summary to show
+    const mode =
+      want === "customer"
+        ? "customer"
+        : want === "supplier"
+        ? "supplier"
+        : want === "both"
+        ? "both"
+        : "internal";
 
     return {
-      count: txns.length,
-      creditGiven,
-      settled,
-      pending,
+      mode,
+      count,
       rows: txns,
+
+      // internal
+      totalIn,
+      totalOut,
+      net,
+
+      // customer
+      customerCreditSales,
+      customerReceipts,
+      receivable,
+
+      // supplier
+      supplierCreditPurchases,
+      supplierPayments,
+      payable,
     };
   }, [rows, type]);
 
@@ -247,12 +457,23 @@ export default function PartyReports() {
     );
   };
 
+  const reportTitle = (() => {
+    const t = norm(type);
+    if (t === "customer") return "Customer Report (Receivable)";
+    if (t === "supplier") return "Supplier/Vendor Report (Payable)";
+    if (t === "both") return "Party Report (Both Sides)";
+    if (t === "employee") return "Employee Ledger";
+    if (t === "owner") return "Owner Ledger";
+    if (t === "partner") return "Partner Ledger";
+    return "Party Report";
+  })();
+
   return (
     <div className="space-y-5">
       {/* Header + Download */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-xl font-bold text-white">Customer / Vendor Reports</h2>
+          <h2 className="text-xl font-bold text-white">{reportTitle}</h2>
           <p className="text-sm text-slate-400">
             Active Client:{" "}
             <span className="text-slate-200 font-semibold">
@@ -288,15 +509,20 @@ export default function PartyReports() {
               className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
             >
               <option value="Customer">Customer (Receivable)</option>
-              <option value="Supplier">Vendor/Supplier (Payable)</option>
+              <option value="Supplier">Supplier/Vendor (Payable)</option>
+              <option value="Both">Both (Receivable + Payable)</option>
+              <option value="Employee">Employee</option>
+              <option value="Owner">Owner</option>
+              <option value="Partner">Partner</option>
             </select>
+            <div className="mt-1 text-xs text-slate-500">
+              Internal transfers (Petti refill) are excluded.
+            </div>
           </div>
 
           {/* Searchable Party Picker */}
           <div className="relative">
-            <label className="text-sm text-slate-300">
-              {type === "Customer" ? "Customer" : "Supplier"}
-            </label>
+            <label className="text-sm text-slate-300">Party</label>
 
             <input
               value={partyQuery}
@@ -375,8 +601,7 @@ export default function PartyReports() {
           </button>
 
           <div className="text-xs text-slate-500">
-            Ledger filter:{" "}
-            <span className="text-slate-300">clientId + date range + (partyId/partyName)</span>
+            Filter: <span className="text-slate-300">clientId + date range + (partyId/partyName)</span>
           </div>
         </div>
 
@@ -396,28 +621,34 @@ export default function PartyReports() {
           <div className="text-xs text-slate-400">{report.count} records</div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <Box
-            label={
-              type === "Customer"
-                ? "Credit Sales (Credit only)"
-                : "Credit Purchases (Credit only)"
-            }
-            value={`${money(report.creditGiven)} ${currency}`}
-          />
-          <Box
-            label={type === "Customer" ? "Recovered (Receipts)" : "Paid (Payments)"}
-            value={`${money(report.settled)} ${currency}`}
-          />
-          <Box
-            label={type === "Customer" ? "Pending Receivable" : "Pending Payable"}
-            value={`${money(report.pending)} ${currency}`}
-          />
-        </div>
+        {report.mode === "customer" ? (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Box label="Credit Sales (NET, Credit only)" value={`${money(report.customerCreditSales)} ${currency}`} />
+            <Box label="Recovered (Receipts, NET)" value={`${money(report.customerReceipts)} ${currency}`} />
+            <Box label="Pending Receivable" value={`${money(report.receivable)} ${currency}`} />
+          </div>
+        ) : report.mode === "supplier" ? (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Box label="Credit Purchases/Expenses (NET, Credit only)" value={`${money(report.supplierCreditPurchases)} ${currency}`} />
+            <Box label="Paid (Payments, NET)" value={`${money(report.supplierPayments)} ${currency}`} />
+            <Box label="Pending Payable" value={`${money(report.payable)} ${currency}`} />
+          </div>
+        ) : report.mode === "both" ? (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Box label="Pending Receivable (Customer side)" value={`${money(report.receivable)} ${currency}`} />
+            <Box label="Pending Payable (Supplier side)" value={`${money(report.payable)} ${currency}`} />
+            <Box label="Net (In − Out)" value={`${money(report.net)} ${currency}`} />
+          </div>
+        ) : (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <Box label="Total In" value={`${money(report.totalIn)} ${currency}`} />
+            <Box label="Total Out" value={`${money(report.totalOut)} ${currency}`} />
+            <Box label="Net (In − Out)" value={`${money(report.net)} ${currency}`} />
+          </div>
+        )}
 
         <div className="mt-2 text-xs text-slate-500">
-          Customer: <span className="text-slate-300">Sales(Credit) − Receipts</span>. Supplier:{" "}
-          <span className="text-slate-300">Purchase(Credit) − Payments</span>.
+          Note: Discounts are netted (customer discount reduces receivable; supplier discount reduces payable). Petti refill/internal transfers are excluded.
         </div>
       </div>
 
@@ -430,8 +661,9 @@ export default function PartyReports() {
             <div className="col-span-2">Date</div>
             <div className="col-span-2">Type</div>
             <div className="col-span-2">Mode</div>
-            <div className="col-span-4">Description</div>
-            <div className="col-span-2 text-right">Amount</div>
+            <div className="col-span-1">Dir</div>
+            <div className="col-span-3">Description</div>
+            <div className="col-span-2 text-right">Amount (NET)</div>
           </div>
 
           {report.rows.length === 0 ? (
@@ -447,11 +679,12 @@ export default function PartyReports() {
                 </div>
                 <div className="col-span-2 text-slate-100 font-medium">{t.type || "-"}</div>
                 <div className="col-span-2 text-slate-300">{t.mode || "-"}</div>
-                <div className="col-span-4 text-slate-400 truncate">
-                  {t.description || "-"}
+                <div className="col-span-1 text-slate-400">{t._dir}</div>
+                <div className="col-span-3 text-slate-400 truncate">
+                  {t.description || t.category || "-"}
                 </div>
-                <div className="col-span-2 text-right text-white font-semibold">
-                  {money(t._total)} {currency}
+                <div className="col-span-2 text-right text-white font-semibold tabular-nums">
+                  {money(t._amount)} {currency}
                 </div>
               </div>
             ))

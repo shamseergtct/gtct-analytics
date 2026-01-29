@@ -2,9 +2,12 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
 function money(v) {
-  const n = Number(v || 0);
-  return n.toFixed(2);
+  return num(v).toFixed(2);
 }
 
 function safeStr(v, fallback = "-") {
@@ -22,47 +25,59 @@ function toYYYYMMDD(d) {
 }
 
 /**
- * Draw a metric card with guaranteed visible text (white on dark background)
+ * Metric card (dark background, white text)
  */
 function metricCard(doc, { x, y, w, h, title, value, currency }) {
-  // Card background
-  doc.setFillColor(17, 24, 39); // slate-900-ish
+  doc.setFillColor(17, 24, 39); // slate-900
   doc.roundedRect(x, y, w, h, 4, 4, "F");
 
-  // Title
   doc.setTextColor(203, 213, 225); // slate-300
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.text(safeStr(title), x + 8, y + 14);
 
-  // Value (INSIDE the card)
-  doc.setTextColor(255, 255, 255); // white
+  doc.setTextColor(255, 255, 255);
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
 
   const v = `${money(value)} ${safeStr(currency)}`;
-  doc.text(v, x + 8, y + 26); // ✅ was y+36 (outside)
+  doc.text(v, x + 8, y + 26);
+}
+
+function titleByPartyType(partyType) {
+  const t = String(partyType || "").trim().toLowerCase();
+  if (t === "customer") return "Customer Statement";
+  if (t === "supplier") return "Supplier / Vendor Statement";
+  if (t === "both") return "Party Statement (Both)";
+  if (t === "employee") return "Employee Ledger";
+  if (t === "owner") return "Owner Ledger";
+  if (t === "partner") return "Partner Ledger";
+  return "Party Statement";
 }
 
 /**
- * Generate Party PDF (Customer/Vendor Statement)
- * Header should show CLIENT NAME (shop name) — not GTCT
+ * Generate Party PDF (ALL types)
+ * Uses report.mode:
+ *  - customer: credit sales - receipts = receivable
+ *  - supplier: credit purchases/expense - payments = payable
+ *  - both: show receivable + payable + net
+ *  - internal: show total in/out/net
  */
 export function generatePartyPDF({
   clientName,
   currency,
   partyName,
-  partyType, // "Customer" | "Supplier"
+  partyType,
   fromDate,
   toDate,
-  report, // from buildPartyReport()
+  report,
 }) {
   const doc = new jsPDF("p", "mm", "a4");
 
   const pageW = doc.internal.pageSize.getWidth();
   const margin = 14;
 
-  // ---------- HEADER (Client/Shop name) ----------
+  // ---------- HEADER ----------
   doc.setFillColor(0, 51, 102); // dark blue
   doc.rect(0, 0, pageW, 32, "F");
 
@@ -73,21 +88,13 @@ export function generatePartyPDF({
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
-  doc.text(
-    partyType === "Customer" ? "Customer Statement" : "Vendor Statement",
-    margin,
-    26
-  );
+  doc.text(titleByPartyType(partyType), margin, 26);
 
-  // Right side info
   doc.setFontSize(10);
   doc.text(`Party: ${safeStr(partyName)}`, pageW - margin, 14, { align: "right" });
-  doc.text(
-    `Period: ${safeStr(fromDate)} to ${safeStr(toDate)}`,
-    pageW - margin,
-    20,
-    { align: "right" }
-  );
+  doc.text(`Period: ${safeStr(fromDate)} to ${safeStr(toDate)}`, pageW - margin, 20, {
+    align: "right",
+  });
   doc.text(`Currency: ${safeStr(currency)}`, pageW - margin, 26, { align: "right" });
 
   // ---------- METRIC CARDS ----------
@@ -96,45 +103,38 @@ export function generatePartyPDF({
   const cardW = (pageW - margin * 2 - gap * 2) / 3;
   const cardH = 32;
 
-  const creditLabel =
-    partyType === "Customer" ? "Credit Sales" : "Credit Purchases";
-  const settledLabel =
-    partyType === "Customer" ? "Recovered" : "Paid";
-  const pendingLabel =
-    partyType === "Customer" ? "Pending Receivable" : "Pending Payable";
+  const mode = String(report?.mode || "").trim().toLowerCase();
 
-  // IMPORTANT: Ensure numbers exist
-  const creditGiven = Number(report?.creditGiven || 0);
-  const settled = Number(report?.settled || 0);
-  const pending = Number(report?.pending || 0);
+  // Defaults (internal style)
+  let card1 = { title: "Total In", value: num(report?.totalIn || 0) };
+  let card2 = { title: "Total Out", value: num(report?.totalOut || 0) };
+  let card3 = { title: "Net (In − Out)", value: num(report?.net || 0) };
 
-  metricCard(doc, {
-    x: margin,
-    y: cardY,
-    w: cardW,
-    h: cardH,
-    title: creditLabel,
-    value: creditGiven,
-    currency,
-  });
+  if (mode === "customer") {
+    card1 = { title: "Credit Sales (NET)", value: num(report?.customerCreditSales || 0) };
+    card2 = { title: "Recovered (Receipts, NET)", value: num(report?.customerReceipts || 0) };
+    card3 = { title: "Pending Receivable", value: num(report?.receivable || 0) };
+  } else if (mode === "supplier") {
+    card1 = {
+      title: "Credit Purchases/Expense (NET)",
+      value: num(report?.supplierCreditPurchases || 0),
+    };
+    card2 = { title: "Paid (Payments, NET)", value: num(report?.supplierPayments || 0) };
+    card3 = { title: "Pending Payable", value: num(report?.payable || 0) };
+  } else if (mode === "both") {
+    card1 = { title: "Pending Receivable", value: num(report?.receivable || 0) };
+    card2 = { title: "Pending Payable", value: num(report?.payable || 0) };
+    card3 = { title: "Net (In − Out)", value: num(report?.net || 0) };
+  }
 
-  metricCard(doc, {
-    x: margin + cardW + gap,
-    y: cardY,
-    w: cardW,
-    h: cardH,
-    title: settledLabel,
-    value: settled,
-    currency,
-  });
-
+  metricCard(doc, { x: margin, y: cardY, w: cardW, h: cardH, ...card1, currency });
+  metricCard(doc, { x: margin + cardW + gap, y: cardY, w: cardW, h: cardH, ...card2, currency });
   metricCard(doc, {
     x: margin + (cardW + gap) * 2,
     y: cardY,
     w: cardW,
     h: cardH,
-    title: pendingLabel,
-    value: pending,
+    ...card3,
     currency,
   });
 
@@ -146,22 +146,26 @@ export function generatePartyPDF({
   doc.setFontSize(12);
   doc.text("Transactions", margin, startY);
 
-  const bodyRows = (report?.rows || []).map((t) => {
+  const rows = Array.isArray(report?.rows) ? report.rows : [];
+
+  const bodyRows = rows.map((t) => {
     const d = t?._dateObj ? toYYYYMMDD(t._dateObj) : safeStr(t?.date);
-    const amount = Number(t?._total || 0);
+    const amount = num(t?._amount ?? t?._total ?? t?.totalAmount ?? 0);
+    const dir = safeStr(t?._dir, "-");
     return [
       d,
       safeStr(t?.type),
       safeStr(t?.mode),
-      safeStr(t?.description, "-"),
+      dir,
+      safeStr(t?.description || t?.category, "-"),
       `${money(amount)} ${safeStr(currency)}`,
     ];
   });
 
   autoTable(doc, {
     startY: startY + 4,
-    head: [["Date", "Type", "Mode", "Description", "Amount"]],
-    body: bodyRows.length ? bodyRows : [["-", "-", "-", "No records found.", "-"]],
+    head: [["Date", "Type", "Mode", "Dir", "Description", "Amount (NET)"]],
+    body: bodyRows.length ? bodyRows : [["-", "-", "-", "-", "No records found.", "-"]],
     styles: {
       font: "helvetica",
       fontSize: 9,
@@ -174,7 +178,7 @@ export function generatePartyPDF({
       fontStyle: "bold",
     },
     columnStyles: {
-      4: { halign: "right" },
+      5: { halign: "right" },
     },
     theme: "grid",
   });
@@ -185,12 +189,7 @@ export function generatePartyPDF({
   doc.setFontSize(8);
   doc.setTextColor(120, 120, 120);
 
-  // keep GTCT only as a small internal note, not the brand
-  doc.text(
-    "Generated for internal bookkeeping support",
-    margin,
-    finalY + 10
-  );
+  doc.text("Generated for internal bookkeeping support", margin, finalY + 10);
 
   return doc;
 }
