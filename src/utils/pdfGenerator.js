@@ -6,6 +6,7 @@ function money(v) {
   return Number(v || 0).toFixed(2);
 }
 
+// Avoid odd characters in PDF (safe for unicode issues)
 function safeText(s) {
   return String(s ?? "")
     .replace(/\u2192/g, "to") // → becomes "to"
@@ -14,8 +15,7 @@ function safeText(s) {
 }
 
 function fmtDateStr(s) {
-  const x = safeText(s);
-  return x;
+  return safeText(s);
 }
 
 // ✅ Helpers: keep section title with its table
@@ -175,7 +175,7 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
 
     y = doc.lastAutoTable.finalY + 25;
   } else {
-    y += 10; // just a small gap if no summary rows in range
+    y += 10; // small gap if no summary rows
   }
 
   // -------------------------
@@ -294,11 +294,13 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
       applyRightAlignAmountHeader(data);
-      if (data.section === "body" && data.row.index === 4) {
-        data.cell.styles.fillColor = [0, 120, 0];
-        data.cell.styles.textColor = 255;
-        data.cell.styles.fontStyle = "bold";
-      }
+      if (data.section === "body" && data.row.index === 5) {
+  const neg = Number(quick?.totalBalance || 0) < -0.009;
+  data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
+  data.cell.styles.textColor = 255;
+  data.cell.styles.fontStyle = "bold";
+}
+
     },
   });
 
@@ -380,3 +382,128 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
 
   return doc;
 }
+
+// ========================================
+// ✅ QUICK REPORT PDF (Client-share friendly)
+// ========================================
+export function generateQuickPDF({ clientName, reportDate, currency, quick }) {
+  const doc = new jsPDF("p", "pt", "a4");
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const pageHeight = doc.internal.pageSize.getHeight();
+
+  const isNeg = Boolean(quick?.isNegative);
+
+  // Header bar
+  doc.setFillColor(0, 51, 102);
+  doc.rect(0, 0, pageWidth, 70, "F");
+
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(16);
+  doc.text("GTCT - QUICK REPORT", 40, 42);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text(`Client: ${safeText(clientName)}`, pageWidth - 40, 28, { align: "right" });
+  doc.text(`Range: ${safeText(reportDate)}`, pageWidth - 40, 45, { align: "right" });
+
+  // Status chip (avoid emoji)
+  const chipText =
+    safeText(quick?.pdfStatusText) ||
+    (isNeg ? "ALERT: NEGATIVE" : "HEALTHY: POSITIVE");
+
+  const chipW = 170;
+  const chipH = 22;
+  const chipX = pageWidth - 40 - chipW;
+  const chipY = 78;
+
+  doc.setFillColor(isNeg ? 160 : 0, isNeg ? 0 : 150, 0);
+  doc.roundedRect(chipX, chipY, chipW, chipH, 10, 10, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(10);
+  doc.text(chipText, chipX + chipW / 2, chipY + 15, { align: "center" });
+
+  // Subtitle
+  doc.setTextColor(50, 50, 50);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.text("Snapshot for quick understanding & sharing.", 40, 115);
+
+  let y = 135;
+
+  const rows = [
+  ["Total Sales (NET)", money(quick?.totalSales)],
+  ["Total Expense", money(quick?.totalExpense)],
+  ["Balance (Range)", money(quick?.rangeBalance)],
+
+  ["Cash Balance (Till Date)", money(quick?.cashBalance)],
+  ["Bank Balance (Till Date)", money(quick?.bankBalance)],
+  ["Total Balance (Cash + Bank)", money(quick?.totalBalance)],
+
+  ["Total Receivable", money(quick?.receivable)],
+  ["Total Payable", money(quick?.payable)],
+  ["Net Position (Bal + Rec - Pay)", money(quick?.netPosition)],
+];
+
+
+  autoTable(doc, {
+    startY: y,
+    head: [["Metric", `Amount (${currency})`]],
+    body: rows,
+    theme: "plain",
+    styles: { font: "helvetica", fontSize: 11, cellPadding: 7 },
+    headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
+    didParseCell: (data) => {
+      applyRightAlignAmountHeader(data);
+
+      // highlight Total Balance row
+      if (data.section === "body" && data.row.index === 5) {
+        const neg = Number(quick?.totalBalance || 0) < -0.009;
+        data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
+        data.cell.styles.textColor = 255;
+        data.cell.styles.fontStyle = "bold";
+      }
+
+      // highlight Net Position row
+      if (data.section === "body" && data.row.index === 8) {
+        const neg = Number(quick?.netPosition || 0) < -0.009;
+        data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
+        data.cell.styles.textColor = 255;
+        data.cell.styles.fontStyle = "bold";
+      }
+    },
+  });
+
+  y = doc.lastAutoTable.finalY + 20;
+
+  // Message box (avoid emoji + sanitize)
+  const msg =
+    safeText(quick?.pdfAdviceText) ||
+    safeText(
+      isNeg
+        ? "Balance is negative. Please review payments, discounts, and cash drawer count."
+        : "Balance is positive. Keep monitoring receivables/payables to maintain liquidity."
+    );
+
+  doc.setDrawColor(isNeg ? 160 : 0, isNeg ? 0 : 150, 0);
+  doc.setFillColor(isNeg ? 255 : 235, isNeg ? 235 : 255, 235);
+  doc.roundedRect(40, y, pageWidth - 80, 55, 12, 12, "FD");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(30, 30, 30);
+
+  const split = doc.splitTextToSize(msg, pageWidth - 120);
+  doc.text(split, 60, y + 24);
+
+  // Footer
+  doc.setTextColor(120, 120, 120);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.text("Generated by GTCT Analytics", 40, pageHeight - 18);
+
+  return doc;
+}
+

@@ -1,11 +1,26 @@
 // src/components/MasterEntryForm.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import { collection, addDoc, getDocs, orderBy, query, where, Timestamp } from "firebase/firestore";
+import {
+  collection,
+  addDoc,
+  getDocs,
+  orderBy,
+  query,
+  where,
+  Timestamp,
+} from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
 
 function num(v) {
-  return Number(v || 0);
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+function clampPct(v) {
+  const n = num(v);
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return n;
 }
 
 export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved }) {
@@ -29,15 +44,69 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
   const [amountBeforeTax, setAmountBeforeTax] = useState("0");
   const [vatPercent, setVatPercent] = useState("0"); // ✅ default 0
 
+  // --------------------------
+  // ✅ Discount system (optional)
+  // --------------------------
+  const [discountEnabled, setDiscountEnabled] = useState(false);
+
+  // Both fields optional. If both given, amount wins (no assumptions).
+  const [discountPct, setDiscountPct] = useState("0");
+  const [discountAmount, setDiscountAmount] = useState("0");
+
+  // invoice / settlement
+  const [discountType, setDiscountType] = useState("invoice");
+
+  // customer / supplier
+  const [discountSide, setDiscountSide] = useState("customer");
+
+  // Auto suggest side based on party type, but do NOT force (no assumptions)
+  useEffect(() => {
+    if (!discountEnabled) return;
+    const pt = String(partyType || "").toLowerCase();
+    if (pt === "customer") setDiscountSide("customer");
+    else if (pt === "supplier") setDiscountSide("supplier");
+    // Both -> keep current user choice
+  }, [partyType, discountEnabled]);
+
   const taxAmount = useMemo(() => {
     const base = num(amountBeforeTax);
     const p = num(vatPercent);
     return (base * p) / 100;
   }, [amountBeforeTax, vatPercent]);
 
-  const totalAmount = useMemo(() => {
+  const grossTotal = useMemo(() => {
     return num(amountBeforeTax) + num(taxAmount);
   }, [amountBeforeTax, taxAmount]);
+
+  const computedDiscountAmount = useMemo(() => {
+    if (!discountEnabled) return 0;
+
+    const amt = num(discountAmount);
+    if (amt > 0) return amt;
+
+    const pct = clampPct(discountPct);
+    if (pct > 0) return (grossTotal * pct) / 100;
+
+    return 0;
+  }, [discountEnabled, discountAmount, discountPct, grossTotal]);
+
+  const totalAmount = useMemo(() => {
+    // IMPORTANT:
+    // - We do NOT reduce the transaction amount automatically (no assumption).
+    // - Discount accounting will be handled via virtual posting in Phase-2 ledger.
+    // - So Total Amount here remains the invoice/payment amount as entered.
+    //
+    // If later you decide to store net amounts, we'll do that in a controlled rollout.
+    return grossTotal;
+  }, [grossTotal]);
+
+  const discountWarning = useMemo(() => {
+    if (!discountEnabled) return "";
+    if (computedDiscountAmount <= 0) return "Discount enabled but amount is 0.";
+    if (computedDiscountAmount > totalAmount)
+      return "Discount amount cannot exceed total amount.";
+    return "";
+  }, [discountEnabled, computedDiscountAmount, totalAmount]);
 
   // Load parties for this client
   useEffect(() => {
@@ -92,6 +161,15 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     if (!mode) return alert("Select mode.");
     if (!partyQuery.trim()) return alert("Select party.");
 
+    // Discount validation only if enabled
+    if (discountEnabled) {
+      if (computedDiscountAmount <= 0) return alert("Enter Discount % or Discount Amount.");
+      if (computedDiscountAmount > totalAmount)
+        return alert("Discount cannot exceed Total Amount.");
+      if (!discountType) return alert("Select Discount Type.");
+      if (!discountSide) return alert("Select Discount Side.");
+    }
+
     const dateObj = new Date(selectedDate);
     const dateTs = Timestamp.fromDate(dateObj);
 
@@ -126,7 +204,21 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     }
 
     const partyName =
-      selectedParty?.id === "__cash__" ? "Cash" : (selectedParty?.name || partyQuery.trim());
+      selectedParty?.id === "__cash__"
+        ? "Cash"
+        : selectedParty?.name || partyQuery.trim();
+
+    // Optional discount payload (only if enabled)
+    const discountPayload = discountEnabled
+      ? {
+          discountPct: clampPct(discountPct),
+          discountAmount: num(computedDiscountAmount),
+          discountType: String(discountType || "").trim().toLowerCase(), // invoice/settlement
+          discountSide: String(discountSide || "").trim().toLowerCase(), // customer/supplier
+        }
+      : {
+          // Keep clean: do not write fields if not enabled
+        };
 
     const payload = {
       clientId: activeClientId,
@@ -137,7 +229,10 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
       mode,
 
       partyType,
-      partyId: selectedParty?.id === "__cash__" ? null : (selectedParty?.id || null),
+      partyId:
+        selectedParty?.id === "__cash__"
+          ? null
+          : selectedParty?.id || null,
       partyName,
 
       description: String(description || "").trim(),
@@ -150,6 +245,8 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
       amountIn: num(amountIn),
       amountOut: num(amountOut),
 
+      ...discountPayload,
+
       createdAt: Timestamp.now(),
     };
 
@@ -159,6 +256,14 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     setDescription("");
     setAmountBeforeTax("0");
     setVatPercent("0");
+
+    // reset discount
+    setDiscountEnabled(false);
+    setDiscountPct("0");
+    setDiscountAmount("0");
+    setDiscountType("invoice");
+    setDiscountSide("customer");
+
     setSelectedParty(null);
     setPartyQuery("");
     setShowPartyList(false);
@@ -212,6 +317,15 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             <option>Utility</option>
             <option>Transport</option>
             <option>Other</option>
+
+            {/* Phase-2 categories (safe: existing reports ignore if not used) */}
+            <option>Ingredients</option>
+            <option>Short-term Asset</option>
+            <option>Long-term Asset</option>
+            <option>Short-term Investment</option>
+            <option>Long-term Investment</option>
+            <option>Loan</option>
+            <option>Depreciation</option>
           </select>
         </div>
 
@@ -245,6 +359,10 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             <option value="Customer">Customer</option>
             <option value="Supplier">Supplier</option>
             <option value="Both">Both</option>
+
+            {/* Phase-2 Party Types */}
+            <option value="Employee">Employee</option>
+            <option value="Owner / Partner">Owner / Partner</option>
           </select>
         </div>
 
@@ -323,6 +441,101 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             className="mt-1 w-full rounded-xl bg-slate-950/70 border border-slate-800 px-3 py-2 text-slate-200 outline-none"
           />
         </div>
+      </div>
+
+      {/* ✅ Discount block (optional) */}
+      <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-slate-200 font-semibold text-sm">Discount</div>
+
+          <label className="flex items-center gap-2 text-xs text-slate-300 select-none">
+            <input
+              type="checkbox"
+              checked={discountEnabled}
+              onChange={(e) => setDiscountEnabled(e.target.checked)}
+            />
+            Enable Discount
+          </label>
+        </div>
+
+        {!discountEnabled ? (
+          <div className="mt-2 text-xs text-slate-500">
+            Optional: Use for invoice / settlement discounts. (Accounting will post
+            as Discount Allowed / Discount Received.)
+          </div>
+        ) : (
+          <>
+            <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label className="text-sm text-slate-300">Discount %</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={discountPct}
+                  onChange={(e) => setDiscountPct(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                  placeholder="0"
+                />
+                <div className="mt-1 text-xs text-slate-500">0–100</div>
+              </div>
+
+              <div>
+                <label className="text-sm text-slate-300">Discount Amount</label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={discountAmount}
+                  onChange={(e) => setDiscountAmount(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                  placeholder="0"
+                />
+                <div className="mt-1 text-xs text-slate-500">
+                  If amount is entered, it will be used. Else % applies.
+                </div>
+              </div>
+
+              <div>
+                <label className="text-sm text-slate-300">Discount Type</label>
+                <select
+                  value={discountType}
+                  onChange={(e) => setDiscountType(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                >
+                  <option value="invoice">invoice</option>
+                  <option value="settlement">settlement</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-sm text-slate-300">Discount Side</label>
+                <select
+                  value={discountSide}
+                  onChange={(e) => setDiscountSide(e.target.value)}
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                >
+                  <option value="customer">customer</option>
+                  <option value="supplier">supplier</option>
+                </select>
+                <div className="mt-1 text-xs text-slate-500">
+                  customer → Discount Allowed (Expense) • supplier → Discount Received (Income)
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2">
+              <div className="text-sm text-slate-300">Computed Discount Amount</div>
+              <div className="text-sm font-semibold text-amber-200 tabular-nums">
+                {computedDiscountAmount.toFixed(2)}
+              </div>
+            </div>
+
+            {discountWarning ? (
+              <div className="mt-2 rounded-xl border border-amber-900 bg-amber-950/30 p-2 text-xs text-amber-200">
+                {discountWarning}
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
 
       {/* Description */}

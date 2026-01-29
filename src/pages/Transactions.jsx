@@ -31,6 +31,36 @@ function endOfDay(yyyyMMdd) {
 function money(v) {
   return Number(v || 0).toFixed(2);
 }
+function num(v) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function discountInfo(t) {
+  // Backward compatible: fields may not exist
+  const pct = num(t?.discountPct);
+  const amt = num(t?.discountAmount);
+  const type = String(t?.discountType || "").trim(); // invoice/settlement
+  const side = String(t?.discountSide || "").trim(); // customer/supplier
+
+  const has = pct > 0 || amt > 0 || type || side;
+  if (!has) return null;
+
+  // label building without assumptions
+  const bits = [];
+  if (pct > 0) bits.push(`${pct}%`);
+  if (amt > 0) bits.push(`Amt ${money(amt)}`);
+  if (type) bits.push(type);
+  if (side) bits.push(side);
+
+  return {
+    pct,
+    amt,
+    type,
+    side,
+    label: bits.join(" • ") || "Discount",
+  };
+}
 
 export default function Transactions() {
   const { activeClientId, activeClientData } = useClient();
@@ -122,6 +152,7 @@ export default function Transactions() {
         {loading ? <div className="mt-3 text-slate-300">Loading…</div> : null}
 
         <div className="mt-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+          {/* Header row */}
           <div className="grid grid-cols-12 gap-2 px-4 py-3 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-800">
             <div className="col-span-2">Type</div>
             <div className="col-span-2">Mode</div>
@@ -134,46 +165,57 @@ export default function Transactions() {
           {txns.length === 0 ? (
             <div className="px-4 py-6 text-slate-400">No transactions found.</div>
           ) : (
-            txns.map((t) => (
-              <div
-                key={t.id}
-                className="grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40"
-              >
-                <div className="col-span-2 text-slate-100 font-medium">
-                  {t.type || "-"}
-                </div>
+            txns.map((t) => {
+              const disc = discountInfo(t);
+              return (
+                <div
+                  key={t.id}
+                  className="grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40"
+                >
+                  <div className="col-span-2 text-slate-100 font-medium">
+                    {t.type || "-"}
+                  </div>
 
-                <div className="col-span-2 text-slate-300">{t.mode || "-"}</div>
+                  <div className="col-span-2 text-slate-300">
+                    {t.mode || "-"}
+                    {/* Discount badge (if exists) */}
+                    {disc ? (
+                      <div className="mt-1 inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                        DISCOUNT • {disc.label}
+                      </div>
+                    ) : null}
+                  </div>
 
-                <div className="col-span-3 text-slate-300">
-                  {t.partyName || "-"}
-                  {t.partyType ? (
-                    <div className="text-[11px] text-slate-500">{t.partyType}</div>
-                  ) : null}
-                </div>
+                  <div className="col-span-3 text-slate-300">
+                    {t.partyName || "-"}
+                    {t.partyType ? (
+                      <div className="text-[11px] text-slate-500">{t.partyType}</div>
+                    ) : null}
+                  </div>
 
-                <div className="col-span-3 text-slate-400 truncate">
-                  {t.description || "-"}
-                </div>
+                  <div className="col-span-3 text-slate-400 truncate">
+                    {t.description || "-"}
+                  </div>
 
-                <div className="col-span-1 text-right text-emerald-200">
-                  {money(t.amountIn)}
-                </div>
+                  <div className="col-span-1 text-right text-emerald-200">
+                    {money(t.amountIn)}
+                  </div>
 
-                <div className="col-span-1 text-right text-red-200">
-                  {money(t.amountOut)}
-                </div>
+                  <div className="col-span-1 text-right text-red-200">
+                    {money(t.amountOut)}
+                  </div>
 
-                <div className="col-span-12 flex justify-end pt-2">
-                  <button
-                    onClick={() => deleteTxn(t.id)}
-                    className="text-xs text-red-300 hover:text-red-200"
-                  >
-                    Delete
-                  </button>
+                  <div className="col-span-12 flex justify-end pt-2">
+                    <button
+                      onClick={() => deleteTxn(t.id)}
+                      className="text-xs text-red-300 hover:text-red-200"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

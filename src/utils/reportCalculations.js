@@ -1,4 +1,6 @@
 // src/utils/reportCalculations.js
+// LIVE SAFE — Discount Netting + Existing Stable Engine
+// Backward compatible. No DB writes. No assumptions.
 
 function num(v) {
   const n = Number(v);
@@ -95,7 +97,6 @@ function normalizeCategory(raw) {
   if (!s) return "";
   const x = s.toLowerCase();
 
-  // keep your real category text, but standardize common ones
   if (x.includes("salary")) return "Salary";
   if (x.includes("rent")) return "Rent";
   if (x.includes("util")) return "Utility";
@@ -103,7 +104,6 @@ function normalizeCategory(raw) {
   if (x.includes("trans")) return "Transport";
   if (x.includes("comm")) return "Commodity";
 
-  // title-ish
   return s;
 }
 
@@ -122,9 +122,89 @@ function typeLabel(ty) {
   return ty ? ty.toUpperCase() : "Unknown";
 }
 
+// -------------------------------------------
+// ✅ DISCOUNT (Backward compatible extraction)
+// -------------------------------------------
+function getDiscountInfo(t) {
+  const enabled =
+    Boolean(t?.enableDiscount) ||
+    Boolean(t?.discountEnabled) ||
+    Boolean(t?.isDiscountEnabled) ||
+    num(t?.discountAmount) > 0 ||
+    num(t?.discount?.amount) > 0;
+
+  const amount =
+    num(t?.discountAmount) ||
+    num(t?.discount?.amount) ||
+    num(t?.discount_value) ||
+    0;
+
+  const discountType = String(
+    t?.discountType || t?.discount?.type || t?.discount_type || ""
+  )
+    .trim()
+    .toLowerCase(); // invoice / settlement
+
+  const side = String(
+    t?.discountSide ||
+      t?.discountPartySide ||
+      t?.discount?.side ||
+      t?.discount_side ||
+      ""
+  )
+    .trim()
+    .toLowerCase(); // customer / supplier
+
+  // safe return
+  return {
+    enabled: enabled && amount > 0,
+    amount: amount > 0 ? amount : 0,
+    discountType: discountType || "",
+    side: side || "",
+  };
+}
+
+// Netting rules:
+// - Customer-side discount reduces inflow / receivable (Sales/Receipt)
+// - Supplier-side discount reduces outflow / payable (Purchase/Payment/Expense)
+// NOTE: This is for “numbers clarity” (your request: show net amounts, avoid confusion)
+function effectiveIn(t) {
+  const base = inValue(t);
+  if (!(base > 0)) return base;
+
+  const ty = typeKey(t);
+  const { enabled, amount, side } = getDiscountInfo(t);
+  if (!enabled) return base;
+
+  // customer discount -> reduces what we actually receive / what customer owes
+  if (side === "customer" && (ty === "sales" || ty === "receipt" || ty === "income")) {
+    return Math.max(0, base - amount);
+  }
+
+  return base;
+}
+
+function effectiveOut(t) {
+  const base = num(t?.amountOut);
+  if (!(base > 0)) return base;
+
+  const ty = typeKey(t);
+  const { enabled, amount, side } = getDiscountInfo(t);
+  if (!enabled) return base;
+
+  // supplier discount -> reduces what we pay / what we owe
+  if (side === "supplier" && (ty === "purchase" || ty === "payment" || ty === "expense")) {
+    return Math.max(0, base - amount);
+  }
+
+  return base;
+}
+
+// -------------------------------------------
 // Receipt from Customer/Both = credit recovery
+// -------------------------------------------
 function isCreditRecovery(t) {
-  return typeKey(t) === "receipt" && isCustomerParty(t) && inValue(t) > 0;
+  return typeKey(t) === "receipt" && isCustomerParty(t) && effectiveIn(t) > 0;
 }
 
 /**
@@ -136,8 +216,8 @@ function isExpenseIncurred_RANGE(t) {
   const ty = typeKey(t);
   const m = modeKey(t);
   if (!(ty === "purchase" || ty === "payment" || ty === "expense")) return false;
-  if (ty === "purchase" && m === "credit") return false; // exclude credit purchase from verified expense list
-  return outValue(t) > 0;
+  if (ty === "purchase" && m === "credit") return false;
+  return effectiveOut(t) > 0;
 }
 
 // Supplier liability created (Credit Purchase/Credit Expense)
@@ -147,7 +227,14 @@ function isSupplierCreditLiability(t) {
   if (!isSupplierParty(t)) return false;
   if (!(ty === "purchase" || ty === "expense")) return false;
   if (m !== "credit") return false;
-  return outValue(t) > 0;
+
+  // credit purchase stored in amountIn (your system logic)
+  // supplier discount on credit invoice reduces liability too
+  const base = outValue(t);
+  const { enabled, amount, side } = getDiscountInfo(t);
+  if (enabled && side === "supplier") return Math.max(0, base - amount);
+
+  return base > 0;
 }
 
 // Supplier payment reduces payable
@@ -155,36 +242,38 @@ function isSupplierPayment(t) {
   const ty = typeKey(t);
   if (!isSupplierParty(t)) return false;
   if (ty !== "payment") return false;
-  return outValue(t) > 0;
+  return effectiveOut(t) > 0;
 }
 
-// ---------- Party-based receivables (TILL DATE) ----------
+// ---------- Receivables (TILL DATE) ----------
 function computeReceivablesTillDate(txnsTill) {
   const creditSales = txnsTill.filter(
     (t) =>
       typeKey(t) === "sales" &&
       modeKey(t) === "credit" &&
       isCustomerParty(t) &&
-      inValue(t) > 0
+      effectiveIn(t) > 0
   );
 
   const receipts = txnsTill.filter(
-    (t) => typeKey(t) === "receipt" && isCustomerParty(t) && inValue(t) > 0
+    (t) => typeKey(t) === "receipt" && isCustomerParty(t) && effectiveIn(t) > 0
   );
 
   const createdMap = {};
   for (const t of creditSales) {
     const k = safeName(t?.partyName || t?.description, "Customer");
-    createdMap[k] = (createdMap[k] || 0) + inValue(t);
+    createdMap[k] = (createdMap[k] || 0) + effectiveIn(t);
   }
 
   const settledMap = {};
   for (const t of receipts) {
     const k = safeName(t?.partyName || t?.description, "Customer");
-    settledMap[k] = (settledMap[k] || 0) + inValue(t);
+    settledMap[k] = (settledMap[k] || 0) + effectiveIn(t);
   }
 
-  const keys = Array.from(new Set([...Object.keys(createdMap), ...Object.keys(settledMap)])).sort();
+  const keys = Array.from(
+    new Set([...Object.keys(createdMap), ...Object.keys(settledMap)])
+  ).sort();
 
   const itemsNet = keys
     .map((k) => {
@@ -194,40 +283,49 @@ function computeReceivablesTillDate(txnsTill) {
     })
     .filter((x) => Math.abs(x.created) > 0.0001 || Math.abs(x.settled) > 0.0001);
 
-  const totalReceivable = itemsNet.reduce((s, x) => s + (x.balance > 0 ? x.balance : 0), 0);
+  const totalReceivable = itemsNet.reduce(
+    (s, x) => s + (x.balance > 0 ? x.balance : 0),
+    0
+  );
 
   return { itemsNet, totalReceivable };
 }
 
-// ---------- Party-based liabilities (TILL DATE or RANGE) ----------
+// ---------- Liabilities ----------
 function computeLiabilities(txns) {
   const creditCreate = txns.filter(isSupplierCreditLiability);
   const supplierPay = txns.filter(isSupplierPayment);
 
-  const totalCreated = sum(creditCreate, (t) => outValue(t));
-  const totalPaid = sum(supplierPay, (t) => outValue(t));
+  // created (credit) stored via outValue (amountIn fallback)
+  const createdAmount = (t) => {
+    const base = outValue(t);
+    const { enabled, amount, side } = getDiscountInfo(t);
+    if (enabled && side === "supplier") return Math.max(0, base - amount);
+    return base;
+  };
+
+  const totalCreated = sum(creditCreate, (t) => createdAmount(t));
+  const totalPaid = sum(supplierPay, (t) => effectiveOut(t));
   const net = totalCreated - totalPaid;
 
-  // ✅ For list display: ONLY credit purchases/credit expenses (created)
   const creditPurchasesList = creditCreate
     .map((t) => ({
       supplier: supplierKey(t),
       date: fmtDate(t),
-      amount: outValue(t),
-      type: typeKey(t), // purchase/expense
+      amount: createdAmount(t),
+      type: typeKey(t),
     }))
-    .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0)); // ascending
+    .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : 0));
 
-  // ✅ Till-date payable = sum of positive net per supplier (optional, for liquidity)
   const createdMap = {};
   for (const t of creditCreate) {
     const k = supplierKey(t);
-    createdMap[k] = (createdMap[k] || 0) + outValue(t);
+    createdMap[k] = (createdMap[k] || 0) + createdAmount(t);
   }
   const paidMap = {};
   for (const t of supplierPay) {
     const k = supplierKey(t);
-    paidMap[k] = (paidMap[k] || 0) + outValue(t);
+    paidMap[k] = (paidMap[k] || 0) + effectiveOut(t);
   }
 
   const keys = Array.from(new Set([...Object.keys(createdMap), ...Object.keys(paidMap)])).sort();
@@ -253,38 +351,34 @@ function computeLiabilities(txns) {
 }
 
 function buildExpenseSummaryDetailed(txnsRange) {
-  // Requirement:
-  // - Split by type + category + mode
-  // - Print only if exists (no "No data")
-  // - Examples:
-  //   Total Purchase Commodity by Cash
-  //   Total Purchase Commodity by Credit
-  //   Total Payment Supplier by Bank
-  //   Total Expense Salary by Cash
-
-  const map = {}; // key -> amount
+  const map = {};
 
   for (const t of txnsRange) {
     const ty = typeKey(t);
     const m = modeKey(t);
-    const amount = outValue(t);
-    if (!(amount > 0)) continue;
 
-    if (!(ty === "purchase" || ty === "payment" || ty === "expense")) continue;
+    // ✅ use effectiveOut for expense/payment/cash-bank purchase
+    let amount = 0;
+    if (ty === "purchase") {
+      if (m === "credit") continue;
+      amount = effectiveOut(t);
+    } else if (ty === "payment" || ty === "expense") {
+      amount = effectiveOut(t);
+    } else {
+      continue;
+    }
+
+    if (!(amount > 0)) continue;
 
     let category = normalizeCategory(t?.category);
 
-    // payment: show Supplier separately when partyType is Supplier/Both
     if (ty === "payment" && isSupplierParty(t)) category = "Supplier";
-
-    // fallback category
     if (!category) category = normalizeCategory(expenseKey(t)) || "Other";
 
     const key = `Total ${typeLabel(ty)} ${category} by ${modeLabel(m)}`;
     map[key] = (map[key] || 0) + amount;
   }
 
-  // stable sorted output (ascending): type then category then mode label
   const rows = Object.keys(map)
     .sort((a, b) => a.localeCompare(b))
     .map((k) => ({ label: k, amount: map[k] }));
@@ -302,58 +396,57 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     actualCount = 0,
     analystNotesText = "",
     isSingleDay = false,
-
-    // ✅ transactions till To-date for liquidity
     txnsTillDate = null,
   } = inputs;
 
   const txnsTill = Array.isArray(txnsTillDate) ? txnsTillDate : txnsRange;
 
   // -------------------------
-  // 1) REVENUE & INFLOW (RANGE)
+  // 1) SALES (NET) + INFLOW
   // -------------------------
   const sales = txnsRange.filter((t) => typeKey(t) === "sales");
+
   const totalGrossSales = sum(sales, (t) => inValue(t));
-  const cashSales = sum(sales.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
-  const bankSales = sum(sales.filter((t) => modeKey(t) === "bank"), (t) => inValue(t));
-  const creditSales = sum(sales.filter((t) => modeKey(t) === "credit"), (t) => inValue(t));
+  const totalNetSales = sum(sales, (t) => effectiveIn(t)); // ✅ NEW
+
+  const cashSales = sum(sales.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
+  const bankSales = sum(sales.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
+  const creditSales = sum(sales.filter((t) => modeKey(t) === "credit"), (t) => effectiveIn(t));
 
   const creditRecoveryTxns = txnsRange.filter(isCreditRecovery);
-  const creditRecoveryTotal = sum(creditRecoveryTxns, (t) => inValue(t));
+  const creditRecoveryTotal = sum(creditRecoveryTxns, (t) => effectiveIn(t));
   const creditRecoveryCash = sum(
     creditRecoveryTxns.filter((t) => modeKey(t) === "cash"),
-    (t) => inValue(t)
+    (t) => effectiveIn(t)
   );
   const creditRecoveryBank = sum(
     creditRecoveryTxns.filter((t) => modeKey(t) === "bank"),
-    (t) => inValue(t)
+    (t) => effectiveIn(t)
   );
 
-  // ✅ Other income list with description (so "Collected from MD" shows as a row)
-  const incomeTxns = txnsRange.filter((t) => typeKey(t) === "income" && inValue(t) > 0);
+  const incomeTxns = txnsRange.filter((t) => typeKey(t) === "income" && effectiveIn(t) > 0);
+
   const otherIncomeDetails = incomeTxns
     .map((t) => {
       const dt = fmtDate(t);
       const desc = safeName(t?.description || t?.category || t?.partyName, "Other Income");
-      // example: "COLLECTED FROM MD"
       const label = dt ? `Other Income - ${desc} (${dt})` : `Other Income - ${desc}`;
-      return { label, amount: inValue(t), date: dt };
+      return { label, amount: effectiveIn(t), date: dt };
     })
     .sort((a, b) => (a.date > b.date ? 1 : a.date < b.date ? -1 : a.label.localeCompare(b.label)));
 
-  const totalIncome = sum(incomeTxns, (t) => inValue(t));
+  const totalIncome = sum(incomeTxns, (t) => effectiveIn(t));
 
+  // ✅ Total Revenue Generated should reflect net sales
   const totalRevenueGenerated = cashSales + bankSales + creditRecoveryTotal + totalIncome;
 
   // -------------------------
-  // 2) EXPENSE SUMMARY (DETAILED) (RANGE) ✅
+  // 2) EXPENSE SUMMARY
   // -------------------------
   const expenseSummaryDetailed = buildExpenseSummaryDetailed(txnsRange);
 
   // -------------------------
-  // 3) EXPENSES (VERIFIED LIST) (RANGE) ✅
-  // - add party name
-  // - ascending order
+  // 3) EXPENSES VERIFIED
   // -------------------------
   const expenseTxns = txnsRange.filter(isExpenseIncurred_RANGE);
 
@@ -367,53 +460,48 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
       const labelBase = `${typeLabel(ty)} - ${cat}${partyPart}`;
       const label = dt ? `${labelBase} (${dt})` : labelBase;
 
-      return { label, amount: outValue(t), type: ty, date: dt };
+      return { label, amount: effectiveOut(t), type: ty, date: dt };
     })
     .sort((a, b) => {
-      // ascending date
       if (a.date !== b.date) return (a.date || "9999-99-99").localeCompare(b.date || "9999-99-99");
-      // then type order: Purchase -> Payment -> Expense
       const order = { purchase: 1, payment: 2, expense: 3 };
       const oa = order[a.type] || 9;
       const ob = order[b.type] || 9;
       if (oa !== ob) return oa - ob;
-      // then label
       return String(a.label).localeCompare(String(b.label));
     });
 
-  const totalExpenseIncurred = sum(expenseTxns, (t) => outValue(t));
+  const totalExpenseIncurred = sum(expenseTxns, (t) => effectiveOut(t));
 
   // -------------------------
-  // 4) LIABILITY (RANGE) ✅ list ONLY credit purchases + date
-  // TOTAL NEW LIABILITY = created - paid
+  // 4) LIABILITY (RANGE)
   // -------------------------
   const liabRange = computeLiabilities(txnsRange);
 
   // -------------------------
-  // 5) RECEIVABLE / PAYABLE (TILL DATE) ✅ for Liquidity section
+  // 5) RECEIVABLE / PAYABLE (TILL)
   // -------------------------
   const recvTill = computeReceivablesTillDate(txnsTill);
   const liabTill = computeLiabilities(txnsTill);
 
   // -------------------------
-  // 6) LIQUIDITY (TILL DATE)
-  // Total Liquid Funds = cash + bank only
+  // 6) LIQUIDITY (TILL DATE) — NETTED
   // -------------------------
-  const cashInTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
-  const cashOutTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => num(t?.amountOut));
+  const cashInTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
+  const cashOutTill = sum(txnsTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
 
-  const bankInTill = sum(txnsTill.filter((t) => modeKey(t) === "bank"), (t) => inValue(t));
-  const bankOutTill = sum(txnsTill.filter((t) => modeKey(t) === "bank"), (t) => num(t?.amountOut));
+  const bankInTill = sum(txnsTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
+  const bankOutTill = sum(txnsTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveOut(t));
 
   const totalCashBalance = num(openingCash) + (cashInTill - cashOutTill);
   const totalBankBalance = num(openingBank) + (bankInTill - bankOutTill);
   const totalLiquidFunds = totalCashBalance + totalBankBalance;
 
   // -------------------------
-  // 7) DAILY CASH CHECK (RANGE)
+  // 7) DAILY CASH CHECK (RANGE) — NETTED
   // -------------------------
-  const cashInRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => inValue(t));
-  const cashOutRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => num(t?.amountOut));
+  const cashInRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
+  const cashOutRange = sum(txnsRange.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
 
   const netCashPosition = cashInRange - cashOutRange;
   const expectedDrawer = num(openingCash) + netCashPosition;
@@ -440,35 +528,34 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
     revenue: {
       totalGrossSales,
+      totalNetSales, // ✅ NEW (for quick report + clarity)
+
       cashSales,
       bankSales,
       creditSales,
+
       creditRecoveryTotal,
       creditRecoveryCash,
       creditRecoveryBank,
 
-      // ✅ keep totals
       totalIncome,
-
-      // ✅ new: list rows for PDF (Collected from MD etc.)
       otherIncomeDetails,
 
       totalRevenueGenerated,
     },
 
-    // ✅ new section
-    expenseSummaryDetailed, // { rows:[{label,amount}], total }
+    expenseSummaryDetailed,
 
     expenses: {
-      details: expenseDetails, // ✅ type + category + party + date (ascending)
+      details: expenseDetails,
       totalExpenseIncurred,
     },
 
     liabilities: {
-      creditPurchases: liabRange.creditPurchasesList, // ✅ ONLY credit purchase/credit expense list + date
+      creditPurchases: liabRange.creditPurchasesList,
       totalCreated: liabRange.totalCreated,
       totalSupplierPaid: liabRange.totalPaid,
-      totalNewLiability: liabRange.net, // ✅ created - paid (range)
+      totalNewLiability: liabRange.net,
     },
 
     liquidity: {
@@ -476,7 +563,7 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
       totalBankBalance,
       totalReceivable: recvTill.totalReceivable,
       totalPayable: liabTill.totalPayable,
-      totalLiquidFunds, // ✅ cash + bank only
+      totalLiquidFunds,
     },
 
     cashCheck: {
