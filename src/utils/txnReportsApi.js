@@ -10,8 +10,6 @@ function parseYYYYMMDD_or_DDMMYYYY(s) {
   const parts = x.split("-").map((p) => p.trim());
   if (parts.length !== 3) return null;
 
-  // Detect format
-  // If first part has 4 digits => YYYY-MM-DD
   if (parts[0].length === 4) {
     const y = Number(parts[0]);
     const m = Number(parts[1]);
@@ -20,7 +18,6 @@ function parseYYYYMMDD_or_DDMMYYYY(s) {
     return { y, m, d };
   }
 
-  // Otherwise treat as DD-MM-YYYY
   const d = Number(parts[0]);
   const m = Number(parts[1]);
   const y = Number(parts[2]);
@@ -66,6 +63,11 @@ function normMode(m) {
   return x;
 }
 
+// ✅ Category normalized (safe)
+function normCategory(c) {
+  return String(c || "").trim().toLowerCase();
+}
+
 function isExcludedTxn(t) {
   if (!t) return true;
   if (t?.internalTransfer === true) return true;
@@ -77,16 +79,16 @@ function isExcludedTxn(t) {
 }
 
 /**
- * Fetch txns by client + date range ONLY (no type/mode/party filters in Firestore)
- * Then filter in JS to avoid type mismatches and reduce index needs.
+ * Fetch by client + date range only, then filter in JS.
  */
 export async function fetchTxnRange({
   clientId,
   fromDate,
   toDate,
-  typeKey,     // "sales"|"purchase"|...
-  mode,        // optional UI value: "Cash"|"Bank"|"Petti Cash"|"Credit"
-  partyId,     // optional
+  typeKey,   // "sales"|"purchase"|...
+  mode,      // optional UI value
+  partyId,   // optional
+  category,  // optional (string)
 }) {
   if (!clientId) throw new Error("No active client selected");
   if (!fromDate || !toDate) throw new Error("Select From and To dates");
@@ -109,24 +111,30 @@ export async function fetchTxnRange({
 
   const wantType = String(typeKey || "").trim().toLowerCase();
   const wantMode = mode ? normMode(mode) : ""; // "" means ALL
-  const wantPartyId = partyId ? String(partyId).trim() : "";
+  const wantPartyId = partyId ? String(partyId).trim() : ""; // "" means ALL
+  const wantCategory = category ? normCategory(category) : ""; // "" means ALL
 
   const rows = [];
   snap.forEach((docSnap) => {
     const d = docSnap.data();
     if (isExcludedTxn(d)) return;
 
-    // ✅ Type filter in JS (normalized)
+    // Type filter (normalized)
     if (wantType && normType(d?.type) !== wantType) return;
 
-    // ✅ Mode filter in JS (normalized)
+    // Mode filter (normalized)
     if (wantMode) {
       if (normMode(d?.mode) !== wantMode) return;
     }
 
-    // ✅ Party filter
+    // Party filter
     if (wantPartyId) {
       if (String(d?.partyId || "") !== wantPartyId) return;
+    }
+
+    // ✅ Category filter (normalized)
+    if (wantCategory) {
+      if (normCategory(d?.category) !== wantCategory) return;
     }
 
     rows.push({ id: docSnap.id, ...d });
