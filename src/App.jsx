@@ -13,6 +13,9 @@ import PartyReports from "./pages/PartyReports";
 import SuperAdmin from "./pages/SuperAdmin";
 import Sales from "./pages/Sales"; // ✅ NEW
 
+// ✅ NEW: Range Txn Reports (6 tabs)
+import TxnReports from "./pages/TxnReports.jsx";
+
 import ProtectedRoute from "./components/ProtectedRoute";
 import RoleRoute from "./components/RoleRoute";
 import Layout from "./components/Layout";
@@ -75,7 +78,18 @@ export default function App() {
         <Route path="/parties" element={<Parties />} />
         <Route path="/transactions" element={<Transactions />} />
         <Route path="/party-reports" element={<PartyReports />} />
+
         <Route path="/reports" element={<Reports />} />
+
+        {/* ✅ NEW: Transaction Range Reports (6 tabs) */}
+        <Route
+          path="/reports/transactions"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <TxnReports />
+            </RoleRoute>
+          }
+        />
 
         {/* ✅ Super Admin Console */}
         <Route

@@ -87,6 +87,16 @@ export default function SuperAdmin() {
   const [shopCurrency, setShopCurrency] = useState("INR");
   const [creatingShop, setCreatingShop] = useState(false);
 
+  // ✅ Shop edit modal
+  const [shopEditOpen, setShopEditOpen] = useState(false);
+  const [savingShopEdit, setSavingShopEdit] = useState(false);
+  const [editingShop, setEditingShop] = useState(null); // {id,...}
+  const [shopEditForm, setShopEditForm] = useState({
+    name: "",
+    currency: "INR",
+    isActive: true,
+  });
+
   // User creation form
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
@@ -198,11 +208,14 @@ export default function SuperAdmin() {
   // Close edit modal on ESC
   useEffect(() => {
     function onKeyDown(e) {
-      if (e.key === "Escape") setEditOpen(false);
+      if (e.key === "Escape") {
+        setEditOpen(false);
+        setShopEditOpen(false);
+      }
     }
-    if (editOpen) window.addEventListener("keydown", onKeyDown);
+    if (editOpen || shopEditOpen) window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [editOpen]);
+  }, [editOpen, shopEditOpen]);
 
   if (!isSuperAdmin) {
     return (
@@ -251,6 +264,9 @@ export default function SuperAdmin() {
         tax: defaults.tax,
         discount: defaults.discount,
 
+        // ✅ Add status field for edit feature
+        isActive: true,
+
         createdAt: Date.now(),
         createdBy: user?.uid || null,
       });
@@ -265,6 +281,67 @@ export default function SuperAdmin() {
       setErr(e2?.message || "Failed to create shop");
     } finally {
       setCreatingShop(false);
+    }
+  }
+
+  // -----------------------------
+  // SHOP EDIT (NEW)
+  // -----------------------------
+  function openEditShop(s) {
+    setErr("");
+    setMsg("");
+    setEditingShop(s);
+    setShopEditForm({
+      name: String(s?.name || "").trim(),
+      currency: String(s?.currency || "INR").trim().toUpperCase(),
+      isActive: s?.isActive === false ? false : true,
+    });
+    setShopEditOpen(true);
+  }
+
+  async function saveShopEdits() {
+    if (!editingShop?.id) return;
+
+    setErr("");
+    setMsg("");
+
+    const id = editingShop.id;
+    const name = String(shopEditForm.name || "").trim();
+    const currency = String(shopEditForm.currency || "").trim().toUpperCase();
+
+    if (!name) return setErr("Shop name is required.");
+    if (!currency) return setErr("Currency is required.");
+
+    setSavingShopEdit(true);
+    try {
+      await updateDoc(doc(db, "clients", id), {
+        name,
+        currency,
+        isActive: Boolean(shopEditForm.isActive),
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || null,
+      });
+
+      // ✅ Update local list instantly
+      setShops((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, name, currency, isActive: Boolean(shopEditForm.isActive) }
+            : x
+        )
+      );
+
+      setMsg("✅ Shop updated.");
+      setShopEditOpen(false);
+      setEditingShop(null);
+
+      // optional safety reload
+      await loadShops();
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to update shop.");
+    } finally {
+      setSavingShopEdit(false);
     }
   }
 
@@ -570,10 +647,30 @@ export default function SuperAdmin() {
                     key={s.id}
                     className="p-3 rounded border border-slate-800 bg-slate-950"
                   >
-                    <div className="font-semibold">{s.name || "Unnamed Shop"}</div>
-                    <div className="text-xs opacity-70">
-                      Currency: {s.currency || "-"} • ID: {s.id} • Warehouses:{" "}
-                      {Array.isArray(s.warehouses) ? s.warehouses.length : 0}
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">
+                          {s.name || "Unnamed Shop"}
+                        </div>
+                        <div className="text-xs opacity-70 truncate">
+                          Currency: {s.currency || "-"} • ID: {s.id} • Warehouses:{" "}
+                          {Array.isArray(s.warehouses) ? s.warehouses.length : 0}
+                        </div>
+
+                        <div className="text-xs mt-1">
+                          Status:{" "}
+                          <span className={s.isActive === false ? "text-red-400" : "text-emerald-400"}>
+                            {s.isActive === false ? "Inactive" : "Active"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => openEditShop(s)}
+                        className="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 shrink-0"
+                      >
+                        Edit
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -821,6 +918,96 @@ export default function SuperAdmin() {
           </div>
         </div>
       )}
+
+      {/* ✅ EDIT SHOP MODAL (NEW) */}
+      {shopEditOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setShopEditOpen(false)}
+          />
+
+          <div className="relative w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
+            <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold truncate">Edit Shop</div>
+                <div className="text-xs text-slate-400 truncate">
+                  Shop ID: <b>{editingShop?.id || "-"}</b> (read-only)
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShopEditOpen(false)}
+                className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div>
+                <div className="text-xs opacity-80 mb-1">Shop Name</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                  value={shopEditForm.name}
+                  onChange={(e) =>
+                    setShopEditForm((p) => ({ ...p, name: e.target.value }))
+                  }
+                  placeholder="Shop name"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Currency</div>
+                  <input
+                    className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                    value={shopEditForm.currency}
+                    onChange={(e) =>
+                      setShopEditForm((p) => ({ ...p, currency: e.target.value }))
+                    }
+                    placeholder="INR, BHD, AED..."
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pt-6">
+                  <input
+                    type="checkbox"
+                    checked={shopEditForm.isActive}
+                    onChange={(e) =>
+                      setShopEditForm((p) => ({ ...p, isActive: e.target.checked }))
+                    }
+                  />
+                  <span className="text-sm">
+                    Active (unchecked = Inactive)
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => setShopEditOpen(false)}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  disabled={savingShopEdit}
+                  onClick={saveShopEdits}
+                  className="rounded-xl bg-white text-slate-950 hover:opacity-90 px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {savingShopEdit ? "Saving…" : "Save Changes"}
+                </button>
+              </div>
+
+              <div className="text-[11px] text-slate-400">
+                Note: Shop ID cannot be changed. Name/Currency/Status only.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* EDIT USER MODAL */}
       {editOpen ? (

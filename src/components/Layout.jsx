@@ -17,6 +17,7 @@ import {
   Shield,
   Package,
   ShoppingCart, // ✅ NEW
+  FileText,     // ✅ NEW (for Range Reports)
 } from "lucide-react";
 
 export default function Layout() {
@@ -76,7 +77,13 @@ export default function Layout() {
       { to: "/parties", label: "Parties", icon: Building2 },
       { to: "/transactions", label: "Transactions", icon: ArrowLeftRight },
       { to: "/inventory", label: "Inventory", icon: Package },
+
+      // Reports
       { to: "/reports", label: "Reports", icon: BarChart3 },
+
+      // ✅ NEW: Range Reports (6 tabs)
+      { to: "/reports/transactions", label: "Range Reports", icon: FileText },
+
       { to: "/party-reports", label: "Party Reports", icon: BarChart3 },
     ],
     []
@@ -84,10 +91,11 @@ export default function Layout() {
 
   // ✅ Final nav items by role
   const navItems = useMemo(() => {
-    // Partner: only 2 report links
+    // Partner: show only report links (include Range Reports too if you want partners to access it)
     if (isPartner) {
       return [
         { to: "/reports", label: "Reports", icon: BarChart3 },
+        { to: "/reports/transactions", label: "Range Reports", icon: FileText }, // ✅ NEW
         { to: "/party-reports", label: "Party Reports", icon: BarChart3 },
       ];
     }
