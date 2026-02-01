@@ -8,6 +8,8 @@ import {
   query,
   where,
   Timestamp,
+  doc,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
@@ -22,57 +24,117 @@ function clampPct(v) {
   if (n > 100) return 100;
   return n;
 }
+function toYYYYMMDDFromTs(ts) {
+  try {
+    const d = ts?.toDate ? ts.toDate() : ts instanceof Date ? ts : null;
+    if (!d) return "";
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  } catch {
+    return "";
+  }
+}
+function safeStr(x) {
+  return String(x ?? "").trim();
+}
+function safeLower(x) {
+  return safeStr(x).toLowerCase();
+}
 
-export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved }) {
+export default function MasterEntryForm({
+  selectedDate,
+  onChangeDate,
+  onSaved,
+  editTxn = null,
+  onCancelEdit,
+}) {
   const { activeClientId } = useClient();
+  const isEdit = !!editTxn?.id;
 
   const [type, setType] = useState("Sales");
   const [category, setCategory] = useState("Commodity");
   const [mode, setMode] = useState("Cash");
 
-  const [partyType, setPartyType] = useState("Customer"); // Customer / Supplier / Both
+  const [partyType, setPartyType] = useState("Customer");
   const [parties, setParties] = useState([]);
 
-  // Party picker (search)
   const [partyQuery, setPartyQuery] = useState("");
-  const [selectedParty, setSelectedParty] = useState(null); // {id,name,type}
+  const [selectedParty, setSelectedParty] = useState(null);
   const [showPartyList, setShowPartyList] = useState(false);
   const partyBlurTimer = useRef(null);
 
   const [description, setDescription] = useState("");
 
   const [amountBeforeTax, setAmountBeforeTax] = useState("0");
-  const [vatPercent, setVatPercent] = useState("0"); // ✅ default 0
+  const [vatPercent, setVatPercent] = useState("0");
 
-  // --------------------------
-  // ✅ Discount system (optional)
-  // --------------------------
   const [discountEnabled, setDiscountEnabled] = useState(false);
-
-  // Both fields optional. If both given, amount wins (no assumptions).
   const [discountPct, setDiscountPct] = useState("0");
   const [discountAmount, setDiscountAmount] = useState("0");
-
-  // invoice / settlement
   const [discountType, setDiscountType] = useState("invoice");
-
-  // customer / supplier
   const [discountSide, setDiscountSide] = useState("customer");
 
-  // --------------------------
-  // ✅ Petti Cash Refill UI
-  // --------------------------
   const [showPettiRefill, setShowPettiRefill] = useState(false);
-  const [pettiRefillSource, setPettiRefillSource] = useState("Cash"); // Cash|Bank
+  const [pettiRefillSource, setPettiRefillSource] = useState("Cash");
   const [pettiRefillAmount, setPettiRefillAmount] = useState("0");
 
-  // Auto suggest side based on party type, but do NOT force (no assumptions)
+  // ✅ Reset everything EXCEPT date
+  const resetFormKeepDate = () => {
+    setType("Sales");
+    setCategory("Commodity");
+    setMode("Cash");
+
+    setPartyType("Customer");
+    setSelectedParty(null);
+    setPartyQuery("");
+    setShowPartyList(false);
+
+    setDescription("");
+
+    setAmountBeforeTax("0");
+    setVatPercent("0");
+
+    setDiscountEnabled(false);
+    setDiscountPct("0");
+    setDiscountAmount("0");
+    setDiscountType("invoice");
+    setDiscountSide("customer");
+
+    setShowPettiRefill(false);
+    setPettiRefillSource("Cash");
+    setPettiRefillAmount("0");
+  };
+
+  // ✅ IMPORTANT:
+  // When edit is cleared by parent (after update/cancel),
+  // reset the form automatically (but keep date).
+  const prevEditId = useRef(null);
+  useEffect(() => {
+    const nowId = editTxn?.id || null;
+
+    // If we were editing and now editTxn is cleared -> reset form
+    if (prevEditId.current && !nowId) {
+      resetFormKeepDate();
+    }
+
+    prevEditId.current = nowId;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editTxn?.id]);
+
+  // ✅ If client changes, reset form (keep date)
+  useEffect(() => {
+    resetFormKeepDate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeClientId]);
+
+  // Auto suggest side based on party type, but do NOT force
   useEffect(() => {
     if (!discountEnabled) return;
-    const pt = String(partyType || "").toLowerCase();
+    const pt = safeLower(partyType);
     if (pt === "customer") setDiscountSide("customer");
     else if (pt === "supplier") setDiscountSide("supplier");
-    // Both -> keep current user choice
   }, [partyType, discountEnabled]);
 
   const taxAmount = useMemo(() => {
@@ -97,15 +159,7 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     return 0;
   }, [discountEnabled, discountAmount, discountPct, grossTotal]);
 
-  const totalAmount = useMemo(() => {
-    // IMPORTANT:
-    // - We do NOT reduce the transaction amount automatically (no assumption).
-    // - Discount accounting will be handled via virtual posting in Phase-2 ledger.
-    // - So Total Amount here remains the invoice/payment amount as entered.
-    //
-    // If later you decide to store net amounts, we'll do that in a controlled rollout.
-    return grossTotal;
-  }, [grossTotal]);
+  const totalAmount = useMemo(() => grossTotal, [grossTotal]);
 
   const discountWarning = useMemo(() => {
     if (!discountEnabled) return "";
@@ -115,12 +169,10 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     return "";
   }, [discountEnabled, computedDiscountAmount, totalAmount]);
 
-  // Load parties for this client
+  // Load parties
   useEffect(() => {
     const run = async () => {
       setParties([]);
-      setSelectedParty(null);
-      setPartyQuery("");
       if (!activeClientId) return;
 
       const qy = query(
@@ -138,8 +190,6 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
   const filteredParties = useMemo(() => {
     const q = partyQuery.trim().toLowerCase();
-
-    // Always include a "Cash" quick option (no DB needed)
     const virtual = [{ id: "__cash__", name: "Cash", type: "Both" }];
 
     const base = parties.filter((p) => {
@@ -157,21 +207,91 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
   function pickParty(p) {
     setSelectedParty(p);
     setPartyQuery(p.name);
-    setShowPartyList(false); // ✅ closes dropdown (fixes stuck/duplicate)
+    setShowPartyList(false);
   }
 
-  // --------------------------
-  // ✅ Save Normal Transaction
-  // --------------------------
+  // ✅ Prefill in edit mode
+  useEffect(() => {
+    if (!isEdit) return;
+    if (editTxn?.internalTransfer === true) return;
+
+    const d = toYYYYMMDDFromTs(editTxn?.date);
+    if (d) onChangeDate?.(d);
+
+    setType(editTxn?.type || "Sales");
+    setCategory(editTxn?.category || "Commodity");
+    setMode(editTxn?.mode || "Cash");
+
+    setPartyType(editTxn?.partyType || "Customer");
+
+    const pName = editTxn?.partyName || "";
+    const pId = editTxn?.partyId || null;
+
+    setPartyQuery(pName || "");
+    if (pId)
+      setSelectedParty({
+        id: pId,
+        name: pName,
+        type: editTxn?.partyType || "Both",
+      });
+    else if (pName === "Cash")
+      setSelectedParty({ id: "__cash__", name: "Cash", type: "Both" });
+    else setSelectedParty(null);
+
+    setDescription(editTxn?.description || "");
+
+    setAmountBeforeTax(String(num(editTxn?.amountBeforeTax || 0)));
+    setVatPercent(String(num(editTxn?.vatPercent || 0)));
+
+    const discEnabled =
+      Boolean(editTxn?.discountEnabled) ||
+      num(editTxn?.discountPct) > 0 ||
+      num(editTxn?.discountAmount) > 0 ||
+      !!editTxn?.discountType ||
+      !!editTxn?.discountSide;
+
+    setDiscountEnabled(discEnabled);
+    setDiscountPct(String(num(editTxn?.discountPct || 0)));
+    setDiscountAmount(String(num(editTxn?.discountAmount || 0)));
+    setDiscountType(String(editTxn?.discountType || "invoice"));
+    setDiscountSide(String(editTxn?.discountSide || "customer"));
+
+    setShowPartyList(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editTxn?.id]);
+
+  function computeInOut({ typeVal, modeVal, total, partyTypeVal }) {
+    const t = safeLower(typeVal);
+    const m = safeLower(modeVal);
+
+    let amountIn = 0;
+    let amountOut = 0;
+
+    if (t === "sales") amountIn = total;
+    else if (t === "receipt" || t === "income") amountIn = total;
+    else if (t === "purchase") {
+      if (m === "credit") amountIn = total; // liability
+      else amountOut = total;
+    } else if (t === "payment" || t === "expense") amountOut = total;
+    else {
+      if (partyTypeVal === "Supplier") amountOut = total;
+      else amountIn = total;
+    }
+
+    return { amountIn, amountOut };
+  }
+
   async function save() {
     if (!activeClientId) return alert("Select active client first.");
-
     if (!selectedDate) return alert("Select date.");
     if (!type) return alert("Select type.");
     if (!mode) return alert("Select mode.");
     if (!partyQuery.trim()) return alert("Select party.");
 
-    // Discount validation only if enabled
+    if (isEdit && editTxn?.internalTransfer === true) {
+      return alert("This internal transfer cannot be edited here.");
+    }
+
     if (discountEnabled) {
       if (computedDiscountAmount <= 0)
         return alert("Enter Discount % or Discount Amount.");
@@ -184,54 +304,35 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     const dateObj = new Date(selectedDate);
     const dateTs = Timestamp.fromDate(dateObj);
 
-    // Decide In/Out
-    const t = String(type || "").toLowerCase();
-    const m = String(mode || "").toLowerCase();
-
-    let amountIn = 0;
-    let amountOut = 0;
-
-    // ✅ Sales always amountIn (even Credit) — used for Z-report + receivable
-    if (t === "sales") amountIn = totalAmount;
-
-    // ✅ Receipt is inflow
-    else if (t === "receipt" || t === "income") amountIn = totalAmount;
-
-    // ✅ Purchase:
-    // - Credit purchase creates liability (no cash out now) => keep as amountIn for liability tracking
-    // - Cash/Bank purchase is expense out
-    else if (t === "purchase") {
-      if (m === "credit") amountIn = totalAmount;
-      else amountOut = totalAmount;
-    }
-
-    // ✅ Payment/Expense is outflow
-    else if (t === "payment" || t === "expense") amountOut = totalAmount;
-
-    // fallback: if user uses random types, decide by partyType
-    else {
-      if (partyType === "Supplier") amountOut = totalAmount;
-      else amountIn = totalAmount;
-    }
+    const { amountIn, amountOut } = computeInOut({
+      typeVal: type,
+      modeVal: mode,
+      total: num(totalAmount),
+      partyTypeVal: partyType,
+    });
 
     const partyName =
       selectedParty?.id === "__cash__"
         ? "Cash"
         : selectedParty?.name || partyQuery.trim();
 
-    // Optional discount payload (only if enabled)
     const discountPayload = discountEnabled
       ? {
+          discountEnabled: true,
           discountPct: clampPct(discountPct),
           discountAmount: num(computedDiscountAmount),
-          discountType: String(discountType || "").trim().toLowerCase(), // invoice/settlement
-          discountSide: String(discountSide || "").trim().toLowerCase(), // customer/supplier
+          discountType: safeLower(discountType),
+          discountSide: safeLower(discountSide),
         }
       : {
-          // Keep clean: do not write fields if not enabled
+          discountEnabled: false,
+          discountPct: 0,
+          discountAmount: 0,
+          discountType: "",
+          discountSide: "",
         };
 
-    const payload = {
+    const basePayload = {
       clientId: activeClientId,
       date: dateTs,
 
@@ -241,12 +342,10 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
       partyType,
       partyId:
-        selectedParty?.id === "__cash__"
-          ? null
-          : selectedParty?.id || null,
+        selectedParty?.id === "__cash__" ? null : selectedParty?.id || null,
       partyName,
 
-      description: String(description || "").trim(),
+      description: safeStr(description),
 
       amountBeforeTax: num(amountBeforeTax),
       vatPercent: num(vatPercent),
@@ -258,33 +357,28 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
       ...discountPayload,
 
-      createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
     };
 
-    await addDoc(collection(db, "transactions"), payload);
+    if (isEdit) {
+      await updateDoc(doc(db, "transactions", editTxn.id), basePayload);
 
-    // reset small fields (keep date)
-    setDescription("");
-    setAmountBeforeTax("0");
-    setVatPercent("0");
+      // ✅ after edit save: reset all fields but keep date
+      resetFormKeepDate();
+      onCancelEdit?.();
+    } else {
+      await addDoc(collection(db, "transactions"), {
+        ...basePayload,
+        createdAt: Timestamp.now(),
+      });
 
-    // reset discount
-    setDiscountEnabled(false);
-    setDiscountPct("0");
-    setDiscountAmount("0");
-    setDiscountType("invoice");
-    setDiscountSide("customer");
-
-    setSelectedParty(null);
-    setPartyQuery("");
-    setShowPartyList(false);
+      // ✅ after new save: reset all fields but keep date
+      resetFormKeepDate();
+    }
 
     onSaved?.();
   }
 
-  // --------------------------
-  // ✅ Save Petti Refill Transaction (single txn)
-  // --------------------------
   async function savePettiRefill() {
     if (!activeClientId) return alert("Select active client first.");
     if (!selectedDate) return alert("Select date.");
@@ -298,14 +392,12 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
       clientId: activeClientId,
       date: dateTs,
 
-      // ✅ internal transfer flags
-      type: "Transfer", // can also be "Refill" if you want, but reportCalculations will treat both
+      type: "Transfer",
       category: "Petti Refill",
       mode: "Petti",
-      sourceMode: pettiRefillSource, // "Cash"|"Bank"
+      sourceMode: pettiRefillSource,
       internalTransfer: true,
 
-      // ✅ Must NOT be counted as revenue/expense/liability/receivable
       amountBeforeTax: 0,
       vatPercent: 0,
       taxAmount: 0,
@@ -314,7 +406,6 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
       amountIn: 0,
       amountOut: 0,
 
-      // keep party clean & not affecting reports
       partyType: "Both",
       partyId: null,
       partyName: "Internal Transfer",
@@ -322,10 +413,12 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
       description: "Refill Petti Cash",
 
       createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
     };
 
     await addDoc(collection(db, "transactions"), payload);
 
+    // keep date, reset modal fields
     setShowPettiRefill(false);
     setPettiRefillSource("Cash");
     setPettiRefillAmount("0");
@@ -333,16 +426,25 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
     onSaved?.();
   }
 
+  const headerTitle = isEdit ? "Edit Transaction" : "New Transaction";
+
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-white font-semibold">New Transaction</div>
+        <div className="text-white font-semibold">
+          {headerTitle}
+          {isEdit ? (
+            <span className="ml-2 text-xs text-amber-300/90">
+              (Updating existing record)
+            </span>
+          ) : null}
+        </div>
 
-        {/* ✅ New Action */}
         <button
           type="button"
           onClick={() => setShowPettiRefill(true)}
-          className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-900"
+          disabled={isEdit}
+          className="rounded-xl border border-slate-700 bg-slate-950 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-900 disabled:opacity-50"
         >
           Refill Petti Cash
         </button>
@@ -383,7 +485,7 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             onChange={(e) => setCategory(e.target.value)}
             className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
           >
-            {String(type || "").toLowerCase() === "income" ? (
+            {safeLower(type) === "income" ? (
               <>
                 <option value="">Select</option>
                 <option>Loan</option>
@@ -398,8 +500,6 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
                 <option>Utility</option>
                 <option>Transport</option>
                 <option>Other</option>
-
-                {/* Phase-2 categories */}
                 <option>Ingredients</option>
                 <option>Short-term Asset</option>
                 <option>Long-term Asset</option>
@@ -422,8 +522,6 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             <option>Cash</option>
             <option>Bank</option>
             <option>Credit</option>
-
-            {/* ✅ New */}
             <option>Petti Cash</option>
           </select>
         </div>
@@ -445,8 +543,6 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             <option value="Customer">Customer</option>
             <option value="Supplier">Supplier</option>
             <option value="Both">Both</option>
-
-            {/* Phase-2 Party Types */}
             <option value="Employee">Employee</option>
             <option value="Owner">Owner</option>
             <option value="Partner">Partner</option>
@@ -486,7 +582,7 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
                   <button
                     type="button"
                     key={p.id}
-                    onMouseDown={(e) => e.preventDefault()} // ✅ prevents blur before click
+                    onMouseDown={(e) => e.preventDefault()}
                     onClick={() => pickParty(p)}
                     className="w-full text-left px-3 py-2 text-sm text-slate-200 hover:bg-slate-900"
                   >
@@ -535,7 +631,7 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
         </div>
       </div>
 
-      {/* ✅ Discount block (optional) */}
+      {/* Discount */}
       <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3">
         <div className="flex items-center justify-between gap-3">
           <div className="text-slate-200 font-semibold text-sm">Discount</div>
@@ -552,8 +648,7 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
 
         {!discountEnabled ? (
           <div className="mt-2 text-xs text-slate-500">
-            Optional: Use for invoice / settlement discounts. (Accounting will
-            post as Discount Allowed / Discount Received.)
+            Optional: Use for invoice / settlement discounts.
           </div>
         ) : (
           <>
@@ -608,17 +703,11 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
                   <option value="customer">customer</option>
                   <option value="supplier">supplier</option>
                 </select>
-                <div className="mt-1 text-xs text-slate-500">
-                  customer → Discount Allowed (Expense) • supplier → Discount
-                  Received (Income)
-                </div>
               </div>
             </div>
 
             <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2">
-              <div className="text-sm text-slate-300">
-                Computed Discount Amount
-              </div>
+              <div className="text-sm text-slate-300">Computed Discount Amount</div>
               <div className="text-sm font-semibold text-amber-200 tabular-nums">
                 {computedDiscountAmount.toFixed(2)}
               </div>
@@ -645,17 +734,30 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
       </div>
 
       {/* Save */}
-      <div className="mt-4 flex justify-end">
+      <div className="mt-4 flex items-center justify-end gap-2">
+        {isEdit ? (
+          <button
+            type="button"
+            onClick={() => {
+              resetFormKeepDate();
+              onCancelEdit?.();
+            }}
+            className="rounded-xl border border-slate-700 bg-slate-900 px-5 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800"
+          >
+            Cancel Edit
+          </button>
+        ) : null}
+
         <button
           onClick={save}
           disabled={!activeClientId}
           className="rounded-xl bg-white px-5 py-2 text-sm font-semibold text-slate-950 hover:opacity-90 disabled:opacity-60"
         >
-          Save Transaction
+          {isEdit ? "Update Transaction" : "Save Transaction"}
         </button>
       </div>
 
-      {/* ✅ Petti Refill Modal */}
+      {/* Petti Refill Modal */}
       {showPettiRefill && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 p-4">
@@ -714,8 +816,7 @@ export default function MasterEntryForm({ selectedDate, onChangeDate, onSaved })
             </div>
 
             <div className="mt-3 text-xs text-slate-400">
-              This saves a single internal transfer transaction and will not be counted in
-              revenue/expense/liability/receivable reports.
+              This saves a single internal transfer transaction and will not be counted in reports.
             </div>
           </div>
         </div>
