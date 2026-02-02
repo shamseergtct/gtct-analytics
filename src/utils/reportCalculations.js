@@ -2,6 +2,7 @@
 // LIVE SAFE — Discount Netting + Existing Stable Engine
 // Backward compatible. No DB writes. No assumptions.
 // ✅ Added: Petti Cash + Internal Transfer (Refill) support
+// ✅ Added: Loan Report (Range + Till-date outstanding)
 
 function num(v) {
   const n = Number(v);
@@ -21,7 +22,7 @@ function normalizeMode(m) {
   if (x.startsWith("upi")) return "bank";
   if (x.startsWith("cre")) return "credit";
 
-  // ✅ NEW: Petti mapping
+  // ✅ Petti mapping
   if (x.startsWith("petti")) return "petti";
   if (x.startsWith("petty")) return "petti";
   if (x.includes("petti cash")) return "petti";
@@ -40,7 +41,7 @@ function normalizeType(t) {
   if (x.startsWith("pay")) return "payment";
   if (x.startsWith("exp")) return "expense";
 
-  // ✅ NEW: transfer/refill types
+  // ✅ transfer/refill types
   if (x.startsWith("tra")) return "transfer";
   if (x.startsWith("ref")) return "refill";
 
@@ -125,7 +126,6 @@ function normalizeCategory(raw) {
   if (x.includes("comm")) return "Commodity";
   if (x.includes("loan")) return "Loan";
 
-  // ✅ NEW: Petti refill category normalization (kept as readable)
   if (x.includes("petti refill") || x.includes("petty refill")) return "Petti Refill";
 
   return s;
@@ -157,7 +157,6 @@ function categoryKey(t) {
 // ✅ INTERNAL TRANSFER (Petti Refill) detector
 // -------------------------------------------
 function internalTransferAmount(t) {
-  // Your refill txn stores totalAmount; older patterns may use amountIn/out.
   return (
     num(t?.totalAmount) ||
     num(t?.amountIn) ||
@@ -177,10 +176,7 @@ function isInternalTransfer(t) {
   const desc = String(t?.description || "").trim().toLowerCase();
   const src = String(t?.sourceMode || "").trim();
 
-  // If it's a transfer/refill into petti with sourceMode, treat as internal transfer
   if ((ty === "transfer" || ty === "refill") && m === "petti" && src) return true;
-
-  // If category/description hints refill
   if (m === "petti" && (cat.includes("petti refill") || cat.includes("petty refill"))) return true;
   if (m === "petti" && desc.includes("refill")) return true;
 
@@ -188,7 +184,9 @@ function isInternalTransfer(t) {
 }
 
 // -------------------------
-// LOAN Helpers
+// LOAN Helpers (Q1 fixed)
+// - Loan acquired: Income + Loan
+// - Loan repaid: Payment + Loan
 // -------------------------
 function isLoanIncome(t) {
   return typeKey(t) === "income" && categoryKey(t) === "Loan" && effectiveIn(t) > 0;
@@ -218,7 +216,7 @@ function getDiscountInfo(t) {
     t?.discountType || t?.discount?.type || t?.discount_type || ""
   )
     .trim()
-    .toLowerCase(); // invoice / settlement
+    .toLowerCase();
 
   const side = String(
     t?.discountSide ||
@@ -228,9 +226,8 @@ function getDiscountInfo(t) {
       ""
   )
     .trim()
-    .toLowerCase(); // customer / supplier
+    .toLowerCase();
 
-  // safe return
   return {
     enabled: enabled && amount > 0,
     amount: amount > 0 ? amount : 0,
@@ -239,10 +236,6 @@ function getDiscountInfo(t) {
   };
 }
 
-// Netting rules:
-// - Customer-side discount reduces inflow / receivable (Sales/Receipt)
-// - Supplier-side discount reduces outflow / payable (Purchase/Payment/Expense)
-// NOTE: This is for “numbers clarity” (your request: show net amounts, avoid confusion)
 function effectiveIn(t) {
   const base = inValue(t);
   if (!(base > 0)) return base;
@@ -251,11 +244,9 @@ function effectiveIn(t) {
   const { enabled, amount, side } = getDiscountInfo(t);
   if (!enabled) return base;
 
-  // customer discount -> reduces what we actually receive / what customer owes
   if (side === "customer" && (ty === "sales" || ty === "receipt" || ty === "income")) {
     return Math.max(0, base - amount);
   }
-
   return base;
 }
 
@@ -267,28 +258,17 @@ function effectiveOut(t) {
   const { enabled, amount, side } = getDiscountInfo(t);
   if (!enabled) return base;
 
-  // supplier discount -> reduces what we pay / what we owe
   if (side === "supplier" && (ty === "purchase" || ty === "payment" || ty === "expense")) {
     return Math.max(0, base - amount);
   }
-
   return base;
 }
 
-// -------------------------------------------
-// Receipt from Customer/Both = credit recovery
-// -------------------------------------------
 function isCreditRecovery(t) {
   if (isInternalTransfer(t)) return false;
   return typeKey(t) === "receipt" && isCustomerParty(t) && effectiveIn(t) > 0;
 }
 
-/**
- * ✅ EXPENSE VERIFIED LIST (RANGE)
- * Include: Payment + Expense + Purchase (ONLY cash/bank/petti purchases)
- * Exclude: Credit Purchase
- * Exclude: Internal transfers
- */
 function isExpenseIncurred_RANGE(t) {
   if (isInternalTransfer(t)) return false;
 
@@ -298,13 +278,12 @@ function isExpenseIncurred_RANGE(t) {
   if (!(ty === "purchase" || ty === "payment" || ty === "expense")) return false;
   if (ty === "purchase" && m === "credit") return false;
 
-  // ✅ Loan Payment is NOT an expense (it reduces payable)
+  // ✅ Loan Payment is NOT an expense
   if (ty === "payment" && categoryKey(t) === "Loan") return false;
 
   return effectiveOut(t) > 0;
 }
 
-// Supplier liability created (Credit Purchase/Credit Expense)
 function isSupplierCreditLiability(t) {
   if (isInternalTransfer(t)) return false;
 
@@ -314,8 +293,6 @@ function isSupplierCreditLiability(t) {
   if (!(ty === "purchase" || ty === "expense")) return false;
   if (m !== "credit") return false;
 
-  // credit purchase stored in amountIn (your system logic)
-  // supplier discount on credit invoice reduces liability too
   const base = outValue(t);
   const { enabled, amount, side } = getDiscountInfo(t);
   if (enabled && side === "supplier") return Math.max(0, base - amount);
@@ -323,7 +300,6 @@ function isSupplierCreditLiability(t) {
   return base > 0;
 }
 
-// Supplier payment reduces payable
 function isSupplierPayment(t) {
   if (isInternalTransfer(t)) return false;
 
@@ -333,7 +309,6 @@ function isSupplierPayment(t) {
   return effectiveOut(t) > 0;
 }
 
-// ---------- Receivables (TILL DATE) ----------
 function computeReceivablesTillDate(txnsTill) {
   const creditSales = txnsTill.filter(
     (t) =>
@@ -384,12 +359,10 @@ function computeReceivablesTillDate(txnsTill) {
   return { itemsNet, totalReceivable };
 }
 
-// ---------- Liabilities ----------
 function computeLiabilities(txns) {
   const creditCreate = txns.filter(isSupplierCreditLiability);
   const supplierPay = txns.filter(isSupplierPayment);
 
-  // created (credit) stored via outValue (amountIn fallback)
   const createdAmount = (t) => {
     const base = outValue(t);
     const { enabled, amount, side } = getDiscountInfo(t);
@@ -452,10 +425,8 @@ function buildExpenseSummaryDetailed(txnsRange) {
     const ty = typeKey(t);
     const m = modeKey(t);
 
-    // ✅ skip loan payment from expense summary
     if (ty === "payment" && normalizeCategory(t?.category) === "Loan") continue;
 
-    // ✅ use effectiveOut for expense/payment/cash-bank-petti purchase
     let amount = 0;
     if (ty === "purchase") {
       if (m === "credit") continue;
@@ -491,10 +462,7 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     selectedDate,
     openingCash = 0,
     openingBank = 0,
-
-    // ✅ NEW: opening Petti (optional; defaults 0)
     openingPetti = 0,
-
     actualCount = 0,
     analystNotesText = "",
     isSingleDay = false,
@@ -504,16 +472,35 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const txnsTill = Array.isArray(txnsTillDate) ? txnsTillDate : txnsRange;
 
   // -------------------------
+  // ✅ LOAN (Range + Till)
+  // -------------------------
+  const loanInRange = sum(txnsRange.filter((t) => !isInternalTransfer(t) && isLoanIncome(t)), (t) =>
+    effectiveIn(t)
+  );
+  const loanOutRange = sum(txnsRange.filter((t) => !isInternalTransfer(t) && isLoanPayment(t)), (t) =>
+    effectiveOut(t)
+  );
+  const loanNetRange = loanInRange - loanOutRange;
+
+  const loanInTill = sum(txnsTill.filter((t) => !isInternalTransfer(t) && isLoanIncome(t)), (t) =>
+    effectiveIn(t)
+  );
+  const loanOutTill = sum(txnsTill.filter((t) => !isInternalTransfer(t) && isLoanPayment(t)), (t) =>
+    effectiveOut(t)
+  );
+  const loanOutstandingTill = loanInTill - loanOutTill;
+
+  // -------------------------
   // 1) SALES (NET) + INFLOW
   // -------------------------
   const sales = txnsRange.filter((t) => !isInternalTransfer(t) && typeKey(t) === "sales");
 
   const totalGrossSales = sum(sales, (t) => inValue(t));
-  const totalNetSales = sum(sales, (t) => effectiveIn(t)); // ✅ NEW
+  const totalNetSales = sum(sales, (t) => effectiveIn(t));
 
   const cashSales = sum(sales.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
   const bankSales = sum(sales.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
-  const pettiSales = sum(sales.filter((t) => modeKey(t) === "petti"), (t) => effectiveIn(t)); // ✅ if someone records sales in petti
+  const pettiSales = sum(sales.filter((t) => modeKey(t) === "petti"), (t) => effectiveIn(t));
   const creditSales = sum(sales.filter((t) => modeKey(t) === "credit"), (t) => effectiveIn(t));
 
   const creditRecoveryTxns = txnsRange.filter(isCreditRecovery);
@@ -546,8 +533,6 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
   const totalIncome = sum(incomeTxns, (t) => effectiveIn(t));
 
-  // ✅ Total Revenue Generated should reflect net sales
-  // (include pettiSales if used; it is real revenue, just different bucket)
   const totalRevenueGenerated =
     cashSales + bankSales + pettiSales + creditRecoveryTotal + totalIncome;
 
@@ -596,20 +581,7 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const liabTill = computeLiabilities(txnsTill);
 
   // -------------------------
-  // ✅ LOAN PAYABLE (TILL DATE)
-  // Loan Income (income + Loan) increases payable
-  // Loan Payment (payment + Loan) decreases payable
-  // -------------------------
-  const loanInTill = sum(txnsTill.filter((t) => !isInternalTransfer(t) && isLoanIncome(t)), (t) =>
-    effectiveIn(t)
-  );
-  const loanOutTill = sum(txnsTill.filter((t) => !isInternalTransfer(t) && isLoanPayment(t)), (t) =>
-    effectiveOut(t)
-  );
-  const loanOutstandingTill = loanInTill - loanOutTill;
-
-  // -------------------------
-  // 6) LIQUIDITY (TILL DATE) — NETTED + PETTI + INTERNAL TRANSFERS
+  // 6) LIQUIDITY (TILL DATE)
   // -------------------------
   const normalTill = txnsTill.filter((t) => !isInternalTransfer(t));
 
@@ -626,7 +598,6 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   let totalBankBalance = num(openingBank) + (bankInTill - bankOutTill);
   let totalPettiBalance = num(openingPetti) + (pettiInTill - pettiOutTill);
 
-  // ✅ Apply internal transfers: subtract from sourceMode, add to petti
   const internalTransfersTill = txnsTill.filter(isInternalTransfer);
   for (const t of internalTransfersTill) {
     const amt = internalTransferAmount(t);
@@ -640,21 +611,16 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   }
 
   const totalBalance = totalCashBalance + totalBankBalance + totalPettiBalance;
-  const totalLiquidFunds = totalBalance; // keep name; now includes petti too
+  const totalLiquidFunds = totalBalance;
 
   // -------------------------
-  // 7) DAILY CASH CHECK (RANGE) — NETTED
-  // Note:
-  // - This remains for CASH drawer reconciliation.
-  // - We intentionally do NOT include internal transfers here using mode filters,
-  //   because internal transfers are applied in liquidity via sourceMode.
+  // 7) DAILY CASH CHECK (RANGE)
   // -------------------------
   const rangeNormal = txnsRange.filter((t) => !isInternalTransfer(t));
 
   const cashInRange = sum(rangeNormal.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
   const cashOutRange = sum(rangeNormal.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
 
-  // ✅ Also subtract cash->petti transfers from expected drawer (because cash physically leaves drawer)
   let cashToPettiRange = 0;
   const internalTransfersRange = txnsRange.filter(isInternalTransfer);
   for (const t of internalTransfersRange) {
@@ -674,10 +640,20 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   if (Math.abs(variance) >= 0.01) notes.push("Cash variance detected. Please recheck drawer count.");
   if (recvTill.totalReceivable > 0) notes.push("Receivable pending till date. Verify party recovery tracking.");
   if (liabTill.totalPayable > 0) notes.push("Payable pending till date. Verify supplier payment tracking.");
+  if (loanOutstandingTill > 0) notes.push("Loan outstanding exists till date. Verify loan repayment plan.");
 
   return {
     meta: { date: selectedDate, count: txnsRange.length },
     flags: { isSingleDay: !!isSingleDay },
+
+    loan: {
+      acquiredRange: loanInRange,
+      repaidRange: loanOutRange,
+      netRange: loanNetRange,
+      acquiredTillDate: loanInTill,
+      repaidTillDate: loanOutTill,
+      outstandingTillDate: loanOutstandingTill,
+    },
 
     status: {
       healthy,
@@ -689,22 +665,16 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
 
     revenue: {
       totalGrossSales,
-      totalNetSales, // ✅ NEW (for quick report + clarity)
-
+      totalNetSales,
       cashSales,
       bankSales,
       creditSales,
-
-      // ✅ optional visibility
       pettiSales,
-
       creditRecoveryTotal,
       creditRecoveryCash,
       creditRecoveryBank,
-
       totalIncome,
       otherIncomeDetails,
-
       totalRevenueGenerated,
     },
 
@@ -725,15 +695,13 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
     liquidity: {
       totalCashBalance,
       totalBankBalance,
-
-      // ✅ NEW
       totalPettiBalance,
       totalBalance,
 
       totalReceivable: recvTill.totalReceivable,
+      // ✅ totalPayable now includes supplier payable + loan outstanding
       totalPayable: liabTill.totalPayable + loanOutstandingTill,
 
-      // keep old name for backward compatibility (now equals totalBalance)
       totalLiquidFunds,
     },
 

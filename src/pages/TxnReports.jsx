@@ -53,6 +53,9 @@ function normType(x) {
 function normCat(x) {
   return String(x || "").trim();
 }
+function normMode(x) {
+  return String(x || "").trim().toLowerCase();
+}
 
 // Party allowed mapping
 function allowedPartyTypesForTab(tabKey) {
@@ -72,6 +75,37 @@ function allowedPartyTypesForTab(tabKey) {
   }
 }
 
+/**
+ * ✅ FIXED AMOUNT LOGIC
+ *
+ * Purchase:
+ *  - Credit purchases stored in amountIn
+ *  - Cash/Bank/Petti stored in amountOut
+ *  - totalAmount (if present) overrides both
+ *
+ * Other tabs:
+ *  - Use totalAmount if present
+ *  - else use side (in/out) like earlier
+ */
+function computeReportAmount({ tabKey, side, row }) {
+  const totalAmount = num(row.totalAmount);
+
+  // Prefer totalAmount when available (safe + consistent)
+  if (totalAmount > 0) return totalAmount;
+
+  const amtIn = num(row.amountIn);
+  const amtOut = num(row.amountOut);
+
+  if (tabKey === "purchase") {
+    const m = normMode(row.mode);
+    const isCredit = m === "credit";
+    return isCredit ? amtIn : amtOut;
+  }
+
+  // default behavior for other tabs
+  return side === "in" ? amtIn : amtOut;
+}
+
 export default function TxnReports() {
   const { activeClientId, activeClientData } = useClient();
   const clientId = activeClientId;
@@ -83,7 +117,7 @@ export default function TxnReports() {
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
 
-  const [mode, setMode] = useState("");      // "" = ALL
+  const [mode, setMode] = useState(""); // "" = ALL
   const [partyId, setPartyId] = useState(""); // "" = ALL
   const [category, setCategory] = useState(""); // "" = ALL
 
@@ -160,13 +194,8 @@ export default function TxnReports() {
       });
 
       // ✅ Build category options from matching tab+range data (before category filter)
-      // For dropdown relevance, we fetch once without category, then apply category locally.
-      // To avoid double network call, we do a local rebuild from current result + fallback:
-      // If category is "", we can compute from data; if category is selected, we still want options,
-      // so compute from a second fetch without category.
       let baseForCats = data;
       if (category) {
-        // need all categories in this tab+range (ignoring category filter)
         const allDataNoCat = await fetchTxnRange({
           clientId,
           fromDate,
@@ -187,11 +216,13 @@ export default function TxnReports() {
       const catList = Array.from(cats).sort((a, b) => a.localeCompare(b));
       setCategoryOptions(catList);
 
-      // Normalize rows
+      // ✅ Normalize rows (FIXED amount for purchase credit)
       const normalized = data.map((r) => {
-        const amtIn = num(r.amountIn);
-        const amtOut = num(r.amountOut);
-        const amount = tabMeta.side === "in" ? amtIn : amtOut;
+        const amount = computeReportAmount({
+          tabKey: tabMeta.key,
+          side: tabMeta.side,
+          row: r,
+        });
 
         return {
           id: r.id,
@@ -410,8 +441,7 @@ export default function TxnReports() {
         <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
           <div className="text-sm text-slate-400">Total Amount</div>
           <div className="text-2xl font-semibold text-slate-100">
-            {money(summary.total)}{" "}
-            <span className="text-sm text-slate-400">{currency}</span>
+            {money(summary.total)} <span className="text-sm text-slate-400">{currency}</span>
           </div>
         </div>
 
@@ -441,9 +471,7 @@ export default function TxnReports() {
                 <th className="text-left px-4 py-3 whitespace-nowrap">Mode</th>
                 <th className="text-left px-4 py-3 whitespace-nowrap">Category</th>
                 <th className="text-left px-4 py-3 whitespace-nowrap">Description</th>
-                <th className="text-right px-4 py-3 whitespace-nowrap">
-                  Amount ({currency})
-                </th>
+                <th className="text-right px-4 py-3 whitespace-nowrap">Amount ({currency})</th>
               </tr>
             </thead>
 
@@ -462,9 +490,7 @@ export default function TxnReports() {
                     <td className="px-4 py-3 whitespace-nowrap">{r.mode || "-"}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{r.category || "-"}</td>
                     <td className="px-4 py-3">{r.description || "-"}</td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
-                      {money(r.amount)}
-                    </td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">{money(r.amount)}</td>
                   </tr>
                 ))
               )}

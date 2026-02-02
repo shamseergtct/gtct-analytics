@@ -1,12 +1,16 @@
 // src/pages/Reports.jsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   collection,
+  doc,
+  getDoc,
   getDocs,
   orderBy,
   query,
+  setDoc,
   where,
   Timestamp,
+  serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
@@ -80,7 +84,8 @@ function safeSide(v) {
   return String(v || "").trim().toLowerCase();
 }
 function getDiscountAmount(t) {
-  const a = num(t?.discountAmount) || num(t?.discountAmt) || num(t?.discount) || 0;
+  const a =
+    num(t?.discountAmount) || num(t?.discountAmt) || num(t?.discount) || 0;
   return a > 0 ? a : 0;
 }
 function getDiscountEnabled(t) {
@@ -109,7 +114,8 @@ function outValue(t) {
 
   // legacy fallback only for outflow types
   const ty = normalizeType(t?.type);
-  if (ty === "purchase" || ty === "payment" || ty === "expense") return num(t?.amountIn);
+  if (ty === "purchase" || ty === "payment" || ty === "expense")
+    return num(t?.amountIn);
   return 0;
 }
 
@@ -127,12 +133,17 @@ function isInternalTransfer(t) {
   const m = normalizeMode(t?.mode);
   const src = String(t?.sourceMode || "").trim();
 
-  if ((ty === "transfer" || ty === "refill") && m === "petti" && src) return true;
+  if ((ty === "transfer" || ty === "refill") && m === "petti" && src)
+    return true;
 
   const cat = String(t?.category || "").trim().toLowerCase();
   const desc = String(t?.description || "").trim().toLowerCase();
 
-  if (m === "petti" && (cat.includes("petti refill") || cat.includes("petty refill"))) return true;
+  if (
+    m === "petti" &&
+    (cat.includes("petti refill") || cat.includes("petty refill"))
+  )
+    return true;
   if (m === "petti" && desc.includes("refill")) return true;
 
   return false;
@@ -142,6 +153,49 @@ function isLoanMovement(t) {
   const cat = String(t?.category || "").trim().toLowerCase();
   const isLoanCat = cat === "loan" || cat.includes("loan");
   return isLoanCat && (ty === "income" || ty === "payment");
+}
+function isLoanIncome(t) {
+  const ty = normalizeType(t?.type);
+  const cat = String(t?.category || "").trim().toLowerCase();
+  return (cat === "loan" || cat.includes("loan")) && ty === "income" && inValue(t) > 0;
+}
+function isLoanRepay(t) {
+  const ty = normalizeType(t?.type);
+  const cat = String(t?.category || "").trim().toLowerCase();
+  // repayment is Payment
+  return (cat === "loan" || cat.includes("loan")) && ty === "payment" && outValue(t) > 0;
+}
+
+// -------------------------
+// Firestore: Opening Inputs stored in client_settings/{clientId}
+// -------------------------
+function clientSettingsRef(clientId) {
+  return doc(db, "client_settings", clientId);
+}
+async function fetchOpeningInputs(clientId) {
+  if (!clientId) return null;
+  const ref = clientSettingsRef(clientId);
+  const snap = await getDoc(ref);
+  if (!snap.exists()) return null;
+  const d = snap.data() || {};
+  return {
+    openingCashFrom: d.openingCashFrom ?? d.openingCash ?? 0,
+    openingBankFrom: d.openingBankFrom ?? d.openingBank ?? 0,
+  };
+}
+async function upsertOpeningInputs(clientId, openingCashFrom, openingBankFrom) {
+  if (!clientId) return;
+  const ref = clientSettingsRef(clientId);
+  await setDoc(
+    ref,
+    {
+      clientId,
+      openingCashFrom: num(openingCashFrom),
+      openingBankFrom: num(openingBankFrom),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 // -------------------------
@@ -206,10 +260,11 @@ export default function Reports() {
   const [fromDate, setFromDate] = useState(toYYYYMMDD(new Date()));
   const [toDate, setToDate] = useState(toYYYYMMDD(new Date()));
 
+  // ✅ Stored in Firestore (client_settings) and must remain until changed
   const [openingCashFrom, setOpeningCashFrom] = useState("0");
   const [openingBankFrom, setOpeningBankFrom] = useState("0");
 
-  // ✅ Petti opening not stored yet in sessions; keep as 0 for now
+  // Petti opening not stored
   const openingPettiFrom = "0";
 
   const [actualCountTo, setActualCountTo] = useState("0");
@@ -225,27 +280,122 @@ export default function Reports() {
   const [generated, setGenerated] = useState(false);
   const [quickGenerated, setQuickGenerated] = useState(false);
 
+  // status for opening inputs
+  const [inputsLoaded, setInputsLoaded] = useState(false);
+  const [savingOpening, setSavingOpening] = useState(false);
+
   const isSingleDay = fromDate === toDate;
 
-  async function loadSessions() {
+  // -----------------------------------------
+  // ✅ AUTO LOAD (NO BUTTON) — Opening inputs per client
+  // -----------------------------------------
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setInputsLoaded(false);
+      if (!activeClientId) return;
+
+      try {
+        const saved = await fetchOpeningInputs(activeClientId);
+        if (!mounted) return;
+
+        if (saved) {
+          setOpeningCashFrom(String(saved.openingCashFrom ?? 0));
+          setOpeningBankFrom(String(saved.openingBankFrom ?? 0));
+        } else {
+          // keep defaults (0) if no saved doc
+          setOpeningCashFrom("0");
+          setOpeningBankFrom("0");
+        }
+      } catch (e) {
+        console.error("Auto load opening inputs failed:", e);
+        // don't block UI
+      } finally {
+        if (mounted) setInputsLoaded(true);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [activeClientId]);
+
+  // -----------------------------------------
+  // ✅ AUTO LOAD — ToDate session (actual cash + notes)
+  // This fixes: "not loading automatically into respected fields"
+  // -----------------------------------------
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      if (!activeClientId || !toDate) return;
+      try {
+        const sTo = await fetchDailySession(activeClientId, toDate);
+        if (!mounted) return;
+        setActualCountTo(String(sTo?.actualCashDrawer ?? "0"));
+        setAnalystNotesText(String(sTo?.analystNotes ?? ""));
+      } catch (e) {
+        // silent (live safe)
+        console.error("Auto load ToDate session failed:", e);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [activeClientId, toDate]);
+
+  // -----------------------------------------
+  // ✅ AUTO SAVE (debounced) — opening inputs to Firestore client_settings
+  // -----------------------------------------
+  useEffect(() => {
+    if (!activeClientId) return;
+    if (!inputsLoaded) return;
+
+    const t = setTimeout(async () => {
+      try {
+        setSavingOpening(true);
+        await upsertOpeningInputs(
+          activeClientId,
+          Number(openingCashFrom || 0),
+          Number(openingBankFrom || 0)
+        );
+      } catch (e) {
+        console.error("Auto save opening inputs failed:", e);
+      } finally {
+        setSavingOpening(false);
+      }
+    }, 650);
+
+    return () => clearTimeout(t);
+  }, [activeClientId, openingCashFrom, openingBankFrom, inputsLoaded]);
+
+  // -----------------------------------------
+  // ✅ Load Saved Inputs button (manual)
+  // Fixes: "button not loading"
+  // -----------------------------------------
+  async function loadSavedInputs() {
     setSessionErr("");
     if (!activeClientId) return;
 
     try {
-      const sFrom = await fetchDailySession(activeClientId, fromDate);
+      // Opening inputs (client_settings)
+      const saved = await fetchOpeningInputs(activeClientId);
+      if (saved) {
+        setOpeningCashFrom(String(saved.openingCashFrom ?? 0));
+        setOpeningBankFrom(String(saved.openingBankFrom ?? 0));
+      }
+
+      // ToDate session inputs
       const sTo = await fetchDailySession(activeClientId, toDate);
-
-      setOpeningCashFrom(String(sFrom?.openingCash ?? "0"));
-      setOpeningBankFrom(String(sFrom?.openingBank ?? "0"));
-
       setActualCountTo(String(sTo?.actualCashDrawer ?? "0"));
       setAnalystNotesText(String(sTo?.analystNotes ?? ""));
     } catch (e) {
       console.error(e);
-      setSessionErr(e?.message || "Failed to load daily sessions.");
+      setSessionErr(e?.message || "Failed to load saved inputs.");
     }
   }
 
+  // -----------------------------------------
+  // Report generator
+  // -----------------------------------------
   async function generateReport() {
     setErr("");
     setSessionErr("");
@@ -261,7 +411,7 @@ export default function Reports() {
       const from = Timestamp.fromDate(startOfDay(fromDate));
       const to = Timestamp.fromDate(endOfDay(toDate));
 
-      // ✅ RANGE
+      // RANGE
       const qRange = query(
         collection(db, "transactions"),
         where("clientId", "==", activeClientId),
@@ -270,7 +420,7 @@ export default function Reports() {
         orderBy("date", "desc")
       );
 
-      // ✅ TILL DATE (beginning -> To)
+      // TILL DATE (1970 -> To)
       const veryOld = Timestamp.fromDate(new Date(1970, 0, 1, 0, 0, 0, 0));
       const qTill = query(
         collection(db, "transactions"),
@@ -280,7 +430,10 @@ export default function Reports() {
         orderBy("date", "desc")
       );
 
-      const [snapRange, snapTill] = await Promise.all([getDocs(qRange), getDocs(qTill)]);
+      const [snapRange, snapTill] = await Promise.all([
+        getDocs(qRange),
+        getDocs(qTill),
+      ]);
 
       setTxnsRange(snapRange.docs.map((d) => ({ id: d.id, ...d.data() })));
       setTxnsTill(snapTill.docs.map((d) => ({ id: d.id, ...d.data() })));
@@ -301,16 +454,23 @@ export default function Reports() {
     setQuickGenerated(true);
   }
 
+  // -----------------------------------------
+  // Save notes + actual cash (ToDate)
+  // Opening already auto-saves; but we also save immediately here (safe)
+  // -----------------------------------------
   async function saveNotesToToDate() {
     setSessionErr("");
     if (!activeClientId) return;
 
     try {
-      await upsertDailySession(activeClientId, fromDate, {
-        openingCash: Number(openingCashFrom || 0),
-        openingBank: Number(openingBankFrom || 0),
-      });
+      // Ensure opening stored (immediate save)
+      await upsertOpeningInputs(
+        activeClientId,
+        Number(openingCashFrom || 0),
+        Number(openingBankFrom || 0)
+      );
 
+      // Save ToDate session
       await upsertDailySession(activeClientId, toDate, {
         actualCashDrawer: Number(actualCountTo || 0),
         analystNotes: String(analystNotesText || ""),
@@ -326,7 +486,7 @@ export default function Reports() {
   // -------------------------
   // Detailed report (engine)
   // -------------------------
-  const report = useMemo(() => {
+  const reportBase = useMemo(() => {
     return generateDailyPulseReport(txnsRange, {
       selectedDate: `${fromDate} → ${toDate}`,
       openingCash: Number(openingCashFrom || 0),
@@ -351,15 +511,51 @@ export default function Reports() {
   ]);
 
   // -------------------------
+  // ✅ Loan summary (Range + TillDate) computed here (no dependency)
+  // -------------------------
+  const loan = useMemo(() => {
+    const range = Array.isArray(txnsRange) ? txnsRange : [];
+    const till = Array.isArray(txnsTill) ? txnsTill : range;
+
+    const acquiredRange = range
+      .filter((t) => !isInternalTransfer(t) && isLoanIncome(t))
+      .reduce((s, t) => s + inValue(t), 0);
+
+    const repaidRange = range
+      .filter((t) => !isInternalTransfer(t) && isLoanRepay(t))
+      .reduce((s, t) => s + outValue(t), 0);
+
+    const acquiredTill = till
+      .filter((t) => !isInternalTransfer(t) && isLoanIncome(t))
+      .reduce((s, t) => s + inValue(t), 0);
+
+    const repaidTill = till
+      .filter((t) => !isInternalTransfer(t) && isLoanRepay(t))
+      .reduce((s, t) => s + outValue(t), 0);
+
+    return {
+      acquiredRange: num(acquiredRange),
+      repaidRange: num(repaidRange),
+      netRange: num(acquiredRange - repaidRange),
+      outstandingTillDate: num(acquiredTill - repaidTill),
+    };
+  }, [txnsRange, txnsTill]);
+
+  // Final report object used in UI + PDF (includes loan)
+  const report = useMemo(() => {
+    return {
+      ...reportBase,
+      loan,
+    };
+  }, [reportBase, loan]);
+
+  // -------------------------
   // Quick report (UI)
-  // Requirements:
-  // - Petti Cash Balance + Total Balance
-  // - Balance (Range) excludes Loan + internal transfers
   // -------------------------
   const quick = useMemo(() => {
     const range = Array.isArray(txnsRange) ? txnsRange : [];
 
-    // ✅ Range Balance (cash+bank+petti only), exclude loan + internal transfer, apply discounts
+    // Range Balance (cash+bank+petti only), exclude loan + internal transfer, apply discounts
     let rangeIn = 0;
     let rangeOut = 0;
 
@@ -385,24 +581,25 @@ export default function Reports() {
 
     const rangeBalance = rangeIn - rangeOut;
 
-    // ✅ Balances from stabilized engine (till-date)
+    // Balances from engine (till-date)
     const cashBalance = num(report?.liquidity?.totalCashBalance);
     const bankBalance = num(report?.liquidity?.totalBankBalance);
     const pettiBalance = num(report?.liquidity?.totalPettiBalance);
     const totalBalance = num(report?.liquidity?.totalBalance);
 
-    // ✅ Net sales / expense from engine
     const totalSalesNet = num(report?.revenue?.totalNetSales);
     const totalExpenseNet = num(report?.expenses?.totalExpenseIncurred);
 
     const receivable = num(report?.liquidity?.totalReceivable);
     const payable = num(report?.liquidity?.totalPayable);
-
     const netPosition = totalBalance + receivable - payable;
 
     const isNegative = totalBalance < -0.009;
 
     return {
+      openingCash: num(openingCashFrom),
+      openingBank: num(openingBankFrom),
+
       totalSales: totalSalesNet,
       totalExpense: totalExpenseNet,
       rangeBalance,
@@ -416,8 +613,12 @@ export default function Reports() {
       payable,
       netPosition,
       isNegative,
+
+      loanAcquiredRange: num(report?.loan?.acquiredRange),
+      loanRepaidRange: num(report?.loan?.repaidRange),
+      loanOutstandingTill: num(report?.loan?.outstandingTillDate),
     };
-  }, [txnsRange, report]);
+  }, [txnsRange, report, openingCashFrom, openingBankFrom]);
 
   // -------------------------
   // PDFs
@@ -425,7 +626,7 @@ export default function Reports() {
   const downloadPDF = () => {
     if (!generated) return alert("Click Generate Detailed Report first.");
 
-    const doc = generateDailyPDF({
+    const docPdf = generateDailyPDF({
       clientName: activeClientData?.name || "Client",
       reportDate: `${fromDate} → ${toDate}`,
       currency,
@@ -435,22 +636,27 @@ export default function Reports() {
       },
     });
 
-    doc.save(
+    docPdf.save(
       `GTCT-DailyPulse-${activeClientData?.name || "Client"}-${fromDate}_to_${toDate}.pdf`
     );
   };
 
   const downloadQuickPDF = () => {
-    if (!generated && !quickGenerated) return alert("Click Generate Quick Report first.");
+    if (!generated && !quickGenerated)
+      return alert("Click Generate Quick Report first.");
 
-    const doc = generateQuickPDF({
+    const docPdf = generateQuickPDF({
       clientName: activeClientData?.name || "Client",
       reportDate: `${fromDate} → ${toDate}`,
       currency,
-      quick,
+      quick: {
+        ...quick,
+        // optional text for pdf generator if you use these keys
+        pdfStatusText: quick?.isNegative ? "ALERT: NEGATIVE" : "HEALTHY: POSITIVE",
+      },
     });
 
-    doc.save(
+    docPdf.save(
       `GTCT-QuickReport-${activeClientData?.name || "Client"}-${fromDate}_to_${toDate}.pdf`
     );
   };
@@ -536,6 +742,13 @@ export default function Reports() {
               onChange={(e) => setOpeningCashFrom(e.target.value)}
               className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
             />
+            <div className="mt-1 text-[11px] text-slate-500">
+              {savingOpening
+                ? "Saving to Firestore..."
+                : inputsLoaded
+                ? "Saved (Firestore)"
+                : "Loading..."}
+            </div>
           </div>
 
           <div>
@@ -547,6 +760,13 @@ export default function Reports() {
               onChange={(e) => setOpeningBankFrom(e.target.value)}
               className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
             />
+            <div className="mt-1 text-[11px] text-slate-500">
+              {savingOpening
+                ? "Saving to Firestore..."
+                : inputsLoaded
+                ? "Saved (Firestore)"
+                : "Loading..."}
+            </div>
           </div>
         </div>
 
@@ -564,7 +784,7 @@ export default function Reports() {
 
           <div className="flex items-end gap-2">
             <button
-              onClick={loadSessions}
+              onClick={loadSavedInputs}
               className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 hover:bg-slate-800 disabled:opacity-60"
               disabled={!activeClientId}
             >
@@ -607,14 +827,14 @@ export default function Reports() {
             </button>
 
             <div className="text-xs text-slate-500">
-              Notes + Actual Count saved to <b>To date</b>. Opening saved to{" "}
-              <b>From date</b>.
+              Notes + Actual Count saved to <b>To date</b>. Opening Cash/Bank saved to{" "}
+              <b>Firestore (until you change)</b>.
             </div>
           </div>
         </div>
       </div>
 
-      {/* ✅ Quick Report Section */}
+      {/* Quick Report Section */}
       {!quickGenerated ? null : (
         <div className="rounded-3xl border border-slate-800 bg-slate-900/30 p-4">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -638,13 +858,21 @@ export default function Reports() {
           </div>
 
           <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-            <QuickCard title="Total Sales (NET)" value={quick?.totalSales} currency={currency} />
-            <QuickCard title="Total Expense" value={quick?.totalExpense} currency={currency} />
+            <QuickCard title="Opening Cash (From)" value={quick?.openingCash} currency={currency} />
+            <QuickCard title="Opening Bank (From)" value={quick?.openingBank} currency={currency} />
             <QuickCard
               title="Balance (Range)"
               value={quick?.rangeBalance}
               currency={currency}
               emphasis={num(quick?.rangeBalance) < 0 ? "bad" : "good"}
+            />
+
+            <QuickCard title="Total Sales (NET)" value={quick?.totalSales} currency={currency} />
+            <QuickCard title="Total Expense" value={quick?.totalExpense} currency={currency} />
+            <QuickCard
+              title="Loan Outstanding (Till ToDate)"
+              value={quick?.loanOutstandingTill}
+              currency={currency}
             />
 
             <QuickCard title="Cash Balance" value={quick?.cashBalance} currency={currency} />
@@ -658,9 +886,8 @@ export default function Reports() {
               emphasis={num(quick?.totalBalance) < 0 ? "bad" : "good"}
             />
 
-            <QuickCard title="Total Receivable" value={quick?.receivable} currency={currency} />
-            <QuickCard title="Total Payable" value={quick?.payable} currency={currency} />
-
+            <QuickCard title="Loan Acquired (Range)" value={quick?.loanAcquiredRange} currency={currency} />
+            <QuickCard title="Loan Repaid (Range)" value={quick?.loanRepaidRange} currency={currency} />
             <QuickCard
               title="Net Position (Bal + Rec - Pay)"
               value={quick?.netPosition}
@@ -668,36 +895,10 @@ export default function Reports() {
               emphasis={num(quick?.netPosition) < 0 ? "bad" : "good"}
             />
           </div>
-
-          <div
-            className={[
-              "mt-4 rounded-2xl border p-3 text-sm",
-              quick?.isNegative
-                ? "border-red-900/40 bg-red-950/20 text-red-100"
-                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
-            ].join(" ")}
-          >
-            {quick?.isNegative ? (
-              <div className="flex gap-2">
-                <div>⚠️</div>
-                <div>
-                  Total balance (Cash + Bank + Petti) is negative. Please review payments,
-                  internal transfers, discounts, and cash drawer count.
-                </div>
-              </div>
-            ) : (
-              <div className="flex gap-2">
-                <div>✅</div>
-                <div>
-                  Total balance is positive. Keep monitoring receivables/payables to maintain liquidity.
-                </div>
-              </div>
-            )}
-          </div>
         </div>
       )}
 
-      {/* ✅ Detailed report */}
+      {/* Detailed report */}
       {!generated ? null : (
         <>
           {/* Status */}
@@ -715,18 +916,50 @@ export default function Reports() {
                 {report?.status?.statusText || "STATUS"}
               </div>
             </div>
-            <div className="mt-2 text-sm text-slate-400">{report?.status?.statusSub || ""}</div>
+            <div className="mt-2 text-sm text-slate-400">
+              {report?.status?.statusSub || ""}
+            </div>
           </div>
 
-          {/* 1 Revenue */}
+          {/* Loan Report */}
+          <Section title="Loan Report">
+            <TwoColRow
+              label="Loan Acquired (Range)"
+              value={`${money(report?.loan?.acquiredRange)} ${currency}`}
+            />
+            <TwoColRow
+              label="Loan Repaid (Range)"
+              value={`${money(report?.loan?.repaidRange)} ${currency}`}
+            />
+            <TwoColRow
+              label="Loan Net Change (Range)"
+              value={`${money(report?.loan?.netRange)} ${currency}`}
+            />
+            <div className="my-3 h-px bg-slate-800" />
+            <TwoColRow
+              label="Loan Outstanding (Till ToDate)"
+              value={`${money(report?.loan?.outstandingTillDate)} ${currency}`}
+            />
+          </Section>
+
+          {/* Revenue */}
           <Section title="1. Revenue & Inflow">
             <TwoColRow
               label="Total Gross Sales (Z-Report)"
               value={`${money(report?.revenue?.totalGrossSales)} ${currency}`}
             />
-            <TwoColRow label="Cash Sales" value={`${money(report?.revenue?.cashSales)} ${currency}`} />
-            <TwoColRow label="Bank Sales" value={`${money(report?.revenue?.bankSales)} ${currency}`} />
-            <TwoColRow label="Petti Sales" value={`${money(report?.revenue?.pettiSales)} ${currency}`} />
+            <TwoColRow
+              label="Cash Sales"
+              value={`${money(report?.revenue?.cashSales)} ${currency}`}
+            />
+            <TwoColRow
+              label="Bank Sales"
+              value={`${money(report?.revenue?.bankSales)} ${currency}`}
+            />
+            <TwoColRow
+              label="Petti Sales"
+              value={`${money(report?.revenue?.pettiSales)} ${currency}`}
+            />
             <TwoColRow
               label="Credit Sales (Pending)"
               value={`${money(report?.revenue?.creditSales)} ${currency}`}
@@ -736,7 +969,10 @@ export default function Reports() {
               label="Credit Recovery (Old Debts)"
               value={`${money(report?.revenue?.creditRecoveryTotal)} ${currency}`}
             />
-            <TwoColRow label="Income" value={`${money(report?.revenue?.totalIncome)} ${currency}`} />
+            <TwoColRow
+              label="Income"
+              value={`${money(report?.revenue?.totalIncome)} ${currency}`}
+            />
             <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
               <div className="text-slate-300 font-semibold">TOTAL REVENUE GENERATED</div>
               <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
@@ -745,7 +981,7 @@ export default function Reports() {
             </div>
           </Section>
 
-          {/* 2 Expenses */}
+          {/* Expenses */}
           <Section title="2. Expenses (Verified) — Details">
             {report?.expenses?.details?.length ? (
               report.expenses.details.map((x, idx) => (
@@ -767,7 +1003,7 @@ export default function Reports() {
             </div>
           </Section>
 
-          {/* 3 Liability */}
+          {/* Liability */}
           <Section title="3. Credit Purchase / Liability (Range)" danger>
             {report?.liabilities?.creditPurchases?.length ? (
               report.liabilities.creditPurchases.map((x, idx) => (
@@ -794,7 +1030,7 @@ export default function Reports() {
             </div>
           </Section>
 
-          {/* Liquidity + Daily Cash */}
+          {/* Liquidity + Cash Check */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <Section title="Liquidity & Balance (Till Date)">
               <TwoColRow
@@ -811,7 +1047,9 @@ export default function Reports() {
               />
 
               <div className="mt-2 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
-                <div className="text-slate-300 font-semibold">TOTAL BALANCE (Cash + Bank + Petti)</div>
+                <div className="text-slate-300 font-semibold">
+                  TOTAL BALANCE (Cash + Bank + Petti)
+                </div>
                 <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">
                   {money(report?.liquidity?.totalBalance)} {currency}
                 </div>
@@ -835,7 +1073,10 @@ export default function Reports() {
             </Section>
 
             <Section title="Daily Cash Check (Range)">
-              <TwoColRow label="Opening Cash (From)" value={`${money(openingCashFrom)} ${currency}`} />
+              <TwoColRow
+                label="Opening Cash (From)"
+                value={`${money(openingCashFrom)} ${currency}`}
+              />
               <TwoColRow
                 label="Net Cash Position (Range)"
                 value={`${money(report?.cashCheck?.netCashPosition)} ${currency}`}
@@ -844,7 +1085,10 @@ export default function Reports() {
                 label="Expected Drawer (To)"
                 value={`${money(report?.cashCheck?.expectedDrawer)} ${currency}`}
               />
-              <TwoColRow label="Actual Count (To)" value={`${money(actualCountTo)} ${currency}`} />
+              <TwoColRow
+                label="Actual Count (To)"
+                value={`${money(actualCountTo)} ${currency}`}
+              />
               <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950 p-3 flex items-center justify-between gap-3">
                 <div className="text-slate-300 font-semibold">VARIANCE</div>
                 <div className="text-white font-bold text-right tabular-nums whitespace-nowrap min-w-[140px]">

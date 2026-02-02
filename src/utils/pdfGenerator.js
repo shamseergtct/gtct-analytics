@@ -84,6 +84,41 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   let y = 140;
 
   // -------------------------
+  // ✅ LOAN REPORT
+  // -------------------------
+  y = ensureSpace(doc, y, 110);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text("LOAN REPORT", 40, y);
+  y += 10;
+
+  autoTable(doc, {
+    startY: y + 10,
+    head: [["Metric", `Amount (${currency})`]],
+    body: [
+      ["Loan Acquired (Range)", money(report?.loan?.acquiredRange)],
+      ["Loan Repaid (Range)", money(report?.loan?.repaidRange)],
+      ["Loan Net Change (Range)", money(report?.loan?.netRange)],
+      ["Loan Outstanding (Till ToDate)", money(report?.loan?.outstandingTillDate)],
+    ],
+    theme: "plain",
+    styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
+    headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
+    columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
+    didParseCell: (data) => {
+      applyRightAlignAmountHeader(data);
+      if (data.section === "body" && data.row.index === 3) {
+        // highlight outstanding
+        data.cell.styles.fillColor = [120, 0, 0];
+        data.cell.styles.textColor = 255;
+        data.cell.styles.fontStyle = "bold";
+      }
+    },
+  });
+
+  y = doc.lastAutoTable.finalY + 25;
+
+  // -------------------------
   // 1) Revenue & Inflow
   // -------------------------
   y = ensureSpace(doc, y, 100);
@@ -101,13 +136,13 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     ["Total Gross Sales (Z-Report)", money(report?.revenue?.totalGrossSales)],
     ["  - Cash Sales", money(report?.revenue?.cashSales)],
     ["  - Bank Sales", money(report?.revenue?.bankSales)],
+    ["  - Petti Sales", money(report?.revenue?.pettiSales)],
     ["  - Credit Sales (Pending)", money(report?.revenue?.creditSales)],
     ["Add: Credit Recovery (Old Debts)", money(report?.revenue?.creditRecoveryTotal)],
     ["  - By Cash", money(report?.revenue?.creditRecoveryCash)],
     ["  - By Bank/Card", money(report?.revenue?.creditRecoveryBank)],
   ];
 
-  // ✅ Insert other income rows (Collected from MD etc.) without losing totals
   for (const r of otherIncomeDetails) {
     revenueRows.push([safeText(r?.label || "Other Income"), money(r?.amount)]);
   }
@@ -124,7 +159,6 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
       applyRightAlignAmountHeader(data);
-      // last row highlight
       if (data.section === "body" && data.row.index === revenueRows.length - 1) {
         data.cell.styles.fillColor = [0, 51, 102];
         data.cell.styles.textColor = 255;
@@ -136,139 +170,6 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   y = doc.lastAutoTable.finalY + 25;
 
   // -------------------------
-  // 2) Expense Summary (Detailed) ✅
-  // -------------------------
-  y = ensureSpace(doc, y, 90);
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.text("2. EXPENSE SUMMARY (DETAILED)", 40, y);
-  y += 10;
-
-  const summaryRowsRaw = Array.isArray(report?.expenseSummaryDetailed?.rows)
-    ? report.expenseSummaryDetailed.rows
-    : [];
-
-  const summaryRows = summaryRowsRaw
-    .filter((x) => Number(x?.amount || 0) !== 0)
-    .map((x) => [safeText(x.label), money(x.amount)]);
-
-  // only print if something exists; else skip table entirely
-  if (summaryRows.length) {
-    autoTable(doc, {
-      startY: y + 10,
-      head: [[`Expense Summary (Type + Category + Mode)`, `Amount (${currency})`]],
-      body: [...summaryRows, ["TOTAL EXPENSE INCURRED", money(report?.expenses?.totalExpenseIncurred)]],
-      theme: "plain",
-      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-      headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
-      columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
-      didParseCell: (data) => {
-        applyRightAlignAmountHeader(data);
-        if (data.section === "body" && data.row.index === summaryRows.length) {
-          data.cell.styles.fillColor = [0, 51, 102];
-          data.cell.styles.textColor = 255;
-          data.cell.styles.fontStyle = "bold";
-        }
-      },
-    });
-
-    y = doc.lastAutoTable.finalY + 25;
-  } else {
-    y += 10; // small gap if no summary rows
-  }
-
-  // -------------------------
-  // 3) Expenses Verified (List) ✅ party + ascending order
-  // -------------------------
-  y = ensureSpace(doc, y, 90);
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.text("3. EXPENSES (VERIFIED)", 40, y);
-  y += 10;
-
-  const expenseDetails = Array.isArray(report?.expenses?.details) ? report.expenses.details : [];
-
-  const expenseRows = expenseDetails
-    .filter((x) => Number(x?.amount || 0) !== 0)
-    .map((x) => [safeText(x.label), money(x.amount)]);
-
-  if (expenseRows.length) {
-    autoTable(doc, {
-      startY: y + 10,
-      head: [["Expense (Type + Category + Party + Date)", `Amount (${currency})`]],
-      body: [...expenseRows, ["TOTAL EXPENSE INCURRED", money(report?.expenses?.totalExpenseIncurred)]],
-      theme: "plain",
-      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-      headStyles: { fillColor: [0, 51, 102], textColor: 255, fontStyle: "bold" },
-      columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
-      didParseCell: (data) => {
-        applyRightAlignAmountHeader(data);
-        if (data.section === "body" && data.row.index === expenseRows.length) {
-          data.cell.styles.fillColor = [0, 51, 102];
-          data.cell.styles.textColor = 255;
-          data.cell.styles.fontStyle = "bold";
-        }
-      },
-    });
-
-    y = doc.lastAutoTable.finalY + 25;
-  } else {
-    y += 10;
-  }
-
-  // -------------------------
-  // 4) Credit Purchase / Liability (ONLY credit purchases with date)
-  // -------------------------
-  y = ensureSpace(doc, y, 90);
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
-  doc.text("4. CREDIT PURCHASE / LIABILITY", 40, y);
-  y += 10;
-
-  const creditPurchases = Array.isArray(report?.liabilities?.creditPurchases)
-    ? report.liabilities.creditPurchases
-    : [];
-
-  const liabRows = creditPurchases.length
-    ? creditPurchases.map((x) => [
-        safeText(`${x.supplier}${x.date ? ` (${fmtDateStr(x.date)})` : ""}`),
-        money(x.amount),
-      ])
-    : [];
-
-  if (liabRows.length) {
-    autoTable(doc, {
-      startY: y + 10,
-      head: [["Credit Purchase (Supplier + Date)", `Amount (${currency})`]],
-      body: [
-        ...liabRows,
-        ["Supplier Paid (Range)", money(report?.liabilities?.totalSupplierPaid)],
-        ["TOTAL NEW LIABILITY (Created - Paid)", money(report?.liabilities?.totalNewLiability)],
-      ],
-      theme: "plain",
-      styles: { font: "helvetica", fontSize: 10, cellPadding: 6 },
-      headStyles: { fillColor: [120, 0, 0], textColor: 255, fontStyle: "bold" },
-      columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
-      didParseCell: (data) => {
-        applyRightAlignAmountHeader(data);
-        const lastRowIndex = liabRows.length + 1;
-        if (data.section === "body" && data.row.index === lastRowIndex) {
-          data.cell.styles.fillColor = [120, 0, 0];
-          data.cell.styles.textColor = 255;
-          data.cell.styles.fontStyle = "bold";
-        }
-      },
-    });
-
-    y = doc.lastAutoTable.finalY + 25;
-  } else {
-    y += 10;
-  }
-
-  // -------------------------
   // Liquidity & Balance
   // -------------------------
   y = ensureSpace(doc, y, 90);
@@ -278,12 +179,16 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   doc.text("LIQUIDITY & BALANCE", 40, y);
   y += 10;
 
+  const totalBal = Number(report?.liquidity?.totalBalance || 0);
+
   autoTable(doc, {
     startY: y + 10,
     head: [["Metric", `Amount (${currency})`]],
     body: [
       ["Total Cash Balance", money(report?.liquidity?.totalCashBalance)],
       ["Total Bank Balance", money(report?.liquidity?.totalBankBalance)],
+      ["Petti Cash Balance", money(report?.liquidity?.totalPettiBalance)],
+      ["TOTAL BALANCE (Cash + Bank + Petti)", money(report?.liquidity?.totalBalance)],
       ["TOTAL RECEIVABLE (ASSET)", money(report?.liquidity?.totalReceivable)],
       ["Total Payable (Liability)", money(report?.liquidity?.totalPayable)],
       ["TOTAL LIQUID FUNDS", money(report?.liquidity?.totalLiquidFunds)],
@@ -294,13 +199,14 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
     columnStyles: { 0: { halign: "left" }, 1: { halign: "right" } },
     didParseCell: (data) => {
       applyRightAlignAmountHeader(data);
-      if (data.section === "body" && data.row.index === 5) {
-  const neg = Number(quick?.totalBalance || 0) < -0.009;
-  data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
-  data.cell.styles.textColor = 255;
-  data.cell.styles.fontStyle = "bold";
-}
 
+      // highlight TOTAL BALANCE row (index 3)
+      if (data.section === "body" && data.row.index === 3) {
+        const neg = totalBal < -0.009;
+        data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
+        data.cell.styles.textColor = 255;
+        data.cell.styles.fontStyle = "bold";
+      }
     },
   });
 
@@ -309,8 +215,7 @@ export function generateDailyPDF({ clientName, reportDate, currency, report }) {
   // -------------------------
   // DAILY CASH CHECK
   // -------------------------
-  const dailyCashRequired = 10 + 10 + 70;
-  y = ensureSpace(doc, y, dailyCashRequired);
+  y = ensureSpace(doc, y, 90);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(12);
@@ -407,10 +312,9 @@ export function generateQuickPDF({ clientName, reportDate, currency, quick }) {
   doc.text(`Client: ${safeText(clientName)}`, pageWidth - 40, 28, { align: "right" });
   doc.text(`Range: ${safeText(reportDate)}`, pageWidth - 40, 45, { align: "right" });
 
-  // Status chip (avoid emoji)
+  // Status chip
   const chipText =
-    safeText(quick?.pdfStatusText) ||
-    (isNeg ? "ALERT: NEGATIVE" : "HEALTHY: POSITIVE");
+    safeText(quick?.pdfStatusText) || (isNeg ? "ALERT: NEGATIVE" : "HEALTHY: POSITIVE");
 
   const chipW = 170;
   const chipH = 22;
@@ -433,19 +337,26 @@ export function generateQuickPDF({ clientName, reportDate, currency, quick }) {
   let y = 135;
 
   const rows = [
-  ["Total Sales (NET)", money(quick?.totalSales)],
-  ["Total Expense", money(quick?.totalExpense)],
-  ["Balance (Range)", money(quick?.rangeBalance)],
+    ["Opening Cash (From)", money(quick?.openingCash)],
+    ["Opening Bank (From)", money(quick?.openingBank)],
 
-  ["Cash Balance (Till Date)", money(quick?.cashBalance)],
-  ["Bank Balance (Till Date)", money(quick?.bankBalance)],
-  ["Total Balance (Cash + Bank)", money(quick?.totalBalance)],
+    ["Total Sales (NET)", money(quick?.totalSales)],
+    ["Total Expense", money(quick?.totalExpense)],
+    ["Balance (Range)", money(quick?.rangeBalance)],
 
-  ["Total Receivable", money(quick?.receivable)],
-  ["Total Payable", money(quick?.payable)],
-  ["Net Position (Bal + Rec - Pay)", money(quick?.netPosition)],
-];
+    ["Loan Acquired (Range)", money(quick?.loanAcquiredRange)],
+    ["Loan Repaid (Range)", money(quick?.loanRepaidRange)],
+    ["Loan Outstanding (Till ToDate)", money(quick?.loanOutstandingTill)],
 
+    ["Cash Balance (Till Date)", money(quick?.cashBalance)],
+    ["Bank Balance (Till Date)", money(quick?.bankBalance)],
+    ["Petti Balance (Till Date)", money(quick?.pettiBalance)],
+    ["Total Balance (Cash + Bank + Petti)", money(quick?.totalBalance)],
+
+    ["Total Receivable", money(quick?.receivable)],
+    ["Total Payable (Incl Loan)", money(quick?.payable)],
+    ["Net Position (Bal + Rec - Pay)", money(quick?.netPosition)],
+  ];
 
   autoTable(doc, {
     startY: y,
@@ -458,16 +369,16 @@ export function generateQuickPDF({ clientName, reportDate, currency, quick }) {
     didParseCell: (data) => {
       applyRightAlignAmountHeader(data);
 
-      // highlight Total Balance row
-      if (data.section === "body" && data.row.index === 5) {
+      // highlight Total Balance row (index 11)
+      if (data.section === "body" && data.row.index === 11) {
         const neg = Number(quick?.totalBalance || 0) < -0.009;
         data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
         data.cell.styles.textColor = 255;
         data.cell.styles.fontStyle = "bold";
       }
 
-      // highlight Net Position row
-      if (data.section === "body" && data.row.index === 8) {
+      // highlight Net Position row (index 14)
+      if (data.section === "body" && data.row.index === 14) {
         const neg = Number(quick?.netPosition || 0) < -0.009;
         data.cell.styles.fillColor = neg ? [120, 0, 0] : [0, 120, 0];
         data.cell.styles.textColor = 255;
@@ -478,7 +389,6 @@ export function generateQuickPDF({ clientName, reportDate, currency, quick }) {
 
   y = doc.lastAutoTable.finalY + 20;
 
-  // Message box (avoid emoji + sanitize)
   const msg =
     safeText(quick?.pdfAdviceText) ||
     safeText(
@@ -506,4 +416,3 @@ export function generateQuickPDF({ clientName, reportDate, currency, quick }) {
 
   return doc;
 }
-
