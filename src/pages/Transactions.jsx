@@ -1,5 +1,5 @@
 // src/pages/Transactions.jsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   deleteDoc,
@@ -44,7 +44,6 @@ function tsToYYYYMMDD(ts) {
     return "";
   }
 }
-
 function discountInfo(t) {
   const pct = num(t?.discountPct);
   const amt = num(t?.discountAmount);
@@ -70,7 +69,7 @@ function discountInfo(t) {
   };
 }
 
-// ✅ Date is stored per-client
+// ✅ per-client key (Transactions page only)
 function storageKey(clientId) {
   return `gtct_txn_selectedDate_${clientId || "no_client"}`;
 }
@@ -78,29 +77,46 @@ function storageKey(clientId) {
 export default function Transactions() {
   const { activeClientId, activeClientData } = useClient();
 
-  // ✅ default today first (will be replaced by saved date once client is known)
-  const [selectedDate, setSelectedDate] = useState(toYYYYMMDD(new Date()));
+  // ✅ Always load from localStorage ONLY for Transactions page
+  const [selectedDate, setSelectedDate] = useState(() => toYYYYMMDD(new Date()));
 
   const [loading, setLoading] = useState(false);
   const [txns, setTxns] = useState([]);
   const [err, setErr] = useState("");
 
-  // ✅ edit state
   const [editingTxn, setEditingTxn] = useState(null);
 
-  // ✅ When client changes, load saved date for that client (or keep today if none)
+  // ✅ prevent overwriting saved date during client switching
+  const didHydrateRef = useRef(false);
+
+  // ✅ on client change → hydrate saved date (or keep today if none)
   useEffect(() => {
-    if (!activeClientId) return;
+    didHydrateRef.current = false;
+
+    if (!activeClientId) {
+      setSelectedDate(toYYYYMMDD(new Date()));
+      return;
+    }
+
     try {
       const saved = localStorage.getItem(storageKey(activeClientId));
       if (saved) setSelectedDate(saved);
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+      else setSelectedDate(toYYYYMMDD(new Date()));
+    } catch {
+      setSelectedDate(toYYYYMMDD(new Date()));
+    } finally {
+      // mark hydration done after state is set
+      setTimeout(() => {
+        didHydrateRef.current = true;
+      }, 0);
+    }
   }, [activeClientId]);
 
-  // ✅ Persist date ONLY from Transactions page
+  // ✅ persist ONLY after hydration (so it never resets on refresh/nav)
   useEffect(() => {
     if (!activeClientId) return;
+    if (!didHydrateRef.current) return;
+
     try {
       localStorage.setItem(storageKey(activeClientId), selectedDate);
     } catch {}
@@ -116,10 +132,6 @@ export default function Transactions() {
       const from = startOfDay(selectedDate);
       const to = endOfDay(selectedDate);
 
-      // NOTE:
-      // In your Reports.jsx you use Timestamp.fromDate(),
-      // here you already used plain Date and it's working for you.
-      // So we keep the SAME behavior.
       const qy = query(
         collection(db, "transactions"),
         where("clientId", "==", activeClientId),
@@ -143,7 +155,7 @@ export default function Transactions() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeClientId, selectedDate]);
 
-  // ✅ If user changes selectedDate while editing, cancel edit safely
+  // ✅ if date changed during edit, cancel edit safely
   useEffect(() => {
     if (!editingTxn?.id) return;
     const ed = tsToYYYYMMDD(editingTxn?.date);
@@ -168,10 +180,9 @@ export default function Transactions() {
       alert("Internal transfer/refill cannot be edited from here.");
       return;
     }
-
     setEditingTxn(t);
 
-    // ✅ Sync date picker to txn date
+    // ✅ sync date picker to txn date (also persists ONLY here)
     const d = tsToYYYYMMDD(t?.date);
     if (d) setSelectedDate(d);
 
@@ -185,7 +196,6 @@ export default function Transactions() {
 
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div>
         <h2 className="text-xl font-bold text-white">Transactions</h2>
         <p className="text-sm text-slate-400">
@@ -203,7 +213,6 @@ export default function Transactions() {
         ) : null}
       </div>
 
-      {/* Form */}
       <MasterEntryForm
         selectedDate={selectedDate}
         onChangeDate={setSelectedDate}
@@ -212,7 +221,6 @@ export default function Transactions() {
         onCancelEdit={() => setEditingTxn(null)}
       />
 
-      {/* List */}
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
         <div className="flex items-center justify-between">
           <div className="text-white font-semibold">Transactions</div>
@@ -228,7 +236,6 @@ export default function Transactions() {
         {loading ? <div className="mt-3 text-slate-300">Loading…</div> : null}
 
         <div className="mt-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-          {/* Header row */}
           <div className="grid grid-cols-12 gap-2 px-4 py-3 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-800">
             <div className="col-span-2">Type</div>
             <div className="col-span-2">Mode</div>
