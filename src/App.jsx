@@ -13,6 +13,7 @@ import PartyReports from "./pages/PartyReports";
 import SuperAdmin from "./pages/SuperAdmin";
 import Sales from "./pages/Sales"; // ✅ NEW
 
+
 // ✅ NEW: Range Txn Reports (6 tabs)
 import TxnReports from "./pages/TxnReports.jsx";
 
@@ -80,6 +81,7 @@ export default function App() {
         <Route path="/party-reports" element={<PartyReports />} />
 
         <Route path="/reports" element={<Reports />} />
+        
 
         {/* ✅ NEW: Transaction Range Reports (6 tabs) */}
         <Route

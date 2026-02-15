@@ -13,6 +13,10 @@ const TABS = [
   { key: "payment", title: "Payment", pdfTitle: "Payment Report", side: "out" },
   { key: "expense", title: "Expense", pdfTitle: "Expense Report", side: "out" },
   { key: "income", title: "Income", pdfTitle: "Income Report", side: "in" },
+
+  // NEW
+  { key: "receivable", title: "Receivable", pdfTitle: "Receivable Report", side: "in" },
+  { key: "payable", title: "Payable", pdfTitle: "Payable Report", side: "out" },
 ];
 
 // "" means ALL
@@ -66,8 +70,6 @@ function normKey(x) {
   return String(x || "").trim().toLowerCase();
 }
 function rangeText(fromDate, toDate) {
-  // Keep it simple & readable
-  // (UI shows input YYYY-MM-DD, PDF can also show the same)
   return `${fromDate} to ${toDate}`;
 }
 
@@ -110,10 +112,7 @@ function getTxnAmount(tabKey, side, row) {
     return amtOut > 0 ? amtOut : amtIn;
   }
 
-  // default fallback
-  return side === "in"
-    ? (amtIn > 0 ? amtIn : amtOut)
-    : (amtOut > 0 ? amtOut : amtIn);
+  return side === "in" ? (amtIn > 0 ? amtIn : amtOut) : (amtOut > 0 ? amtOut : amtIn);
 }
 
 function buildSummary(rows) {
@@ -176,12 +175,189 @@ function buildPartyModeCondensed(rows, fromDate, toDate) {
     }
   }
 
-  // Sort by amount desc, then party
   return Array.from(map.values()).sort((a, b) => {
     const d = num(b.amount) - num(a.amount);
     if (d !== 0) return d;
     return String(a.partyName).localeCompare(String(b.partyName));
   });
+}
+
+/**
+ * ✅ ONLY for Receivable/Payable tabs:
+ * Party-wise LAST BALANCE (as-of To date), mode grouping not needed.
+ * Mapping (net > 0 => receivable, net < 0 => payable):
+ * - SALE      => net += amount
+ * - RECEIPT   => net -= amount
+ * - PURCHASE  => net -= amount
+ * - EXPENSE (party-linked) => net -= amount
+ * - PAYMENT   => net += amount
+ * - INCOME with category "Loan" => net -= amount  (loan is payable)
+ *
+ * We output rows as "Credit" mode so Summary by Mode will not show Bank/Cash.
+ */
+function buildOutstandingRows({
+  toDate,
+  sales = [],
+  receipts = [],
+  purchases = [],
+  payments = [],
+  expenses = [],
+  incomes = [],
+  tabKey, // "receivable" | "payable"
+}) {
+  const byParty = new Map();
+
+  function ensure(partyId, partyName) {
+    if (!partyId) return null;
+    if (!byParty.has(partyId)) {
+      byParty.set(partyId, {
+        partyId,
+        partyName: partyName || "-",
+        net: 0,
+        sales: 0,
+        receipts: 0,
+        purchases: 0,
+        payments: 0,
+        expenses: 0,
+        loanIncome: 0,
+      });
+    } else {
+      // keep latest non-empty name
+      const r = byParty.get(partyId);
+      if ((!r.partyName || r.partyName === "-") && partyName) r.partyName = partyName;
+    }
+    return byParty.get(partyId);
+  }
+
+  // helpers to read party id/name robustly from API
+  function pid(row) {
+    return row?.partyId || row?.party?.id || row?.party?.partyId || "";
+  }
+  function pname(row) {
+    return row?.partyName || row?.party?.name || "-";
+  }
+  function isInternal(row) {
+    return row?.internalTransfer === true || row?.internalTransfer === "true";
+  }
+
+  // meta for amount extraction
+  const metaByKey = {
+    sales: { key: "sales", side: "in" },
+    receipt: { key: "receipt", side: "in" },
+    purchase: { key: "purchase", side: "out" },
+    payment: { key: "payment", side: "out" },
+    expense: { key: "expense", side: "out" },
+    income: { key: "income", side: "in" },
+  };
+
+  // SALES
+  for (const r0 of sales) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.sales.key, metaByKey.sales.side, r0);
+    if (!amt) continue;
+    r.net += amt;
+    r.sales += amt;
+  }
+
+  // RECEIPTS
+  for (const r0 of receipts) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.receipt.key, metaByKey.receipt.side, r0);
+    if (!amt) continue;
+    r.net -= amt;
+    r.receipts += amt;
+  }
+
+  // PURCHASES
+  for (const r0 of purchases) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.purchase.key, metaByKey.purchase.side, r0);
+    if (!amt) continue;
+    r.net -= amt;
+    r.purchases += amt;
+  }
+
+  // PAYMENTS
+  for (const r0 of payments) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.payment.key, metaByKey.payment.side, r0);
+    if (!amt) continue;
+    r.net += amt;
+    r.payments += amt;
+  }
+
+  // EXPENSES (only party-linked, already ensured by pid)
+  for (const r0 of expenses) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue; // skip non-party expenses
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.expense.key, metaByKey.expense.side, r0);
+    if (!amt) continue;
+    r.net -= amt;
+    r.expenses += amt;
+  }
+
+  // INCOME (only category Loan contributes to payable)
+  for (const r0 of incomes) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const cat = String(r0?.category || "").trim().toLowerCase();
+    if (cat !== "loan") continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.income.key, metaByKey.income.side, r0);
+    if (!amt) continue;
+    r.net -= amt; // loan increases payable
+    r.loanIncome += amt;
+  }
+
+  const out = [];
+  for (const r of byParty.values()) {
+    if (!r.net) continue;
+
+    // Receivable tab: show net > 0
+    // Payable tab: show net < 0
+    if (tabKey === "receivable" && r.net <= 0) continue;
+    if (tabKey === "payable" && r.net >= 0) continue;
+
+    const outstanding = tabKey === "receivable" ? r.net : Math.abs(r.net);
+
+    out.push({
+      id: `out_${r.partyId}`,
+      // we keep a single row per party with "Credit" mode so summary doesn't show Bank/Cash
+      date: toDate,
+      dateText: fmtDate(toDate),
+      partyId: r.partyId,
+      partyName: r.partyName || "-",
+      mode: "Credit",
+      category: tabKey === "receivable" ? "Receivable" : "Payable",
+      description:
+        tabKey === "receivable"
+          ? `Sales ${money(r.sales)} - Receipt ${money(r.receipts)} - Purchase/Exp ${money(
+              r.purchases + r.expenses
+            )} + Payment ${money(r.payments)} - Loan ${money(r.loanIncome)}`
+          : `Payable/Advance (includes Loan)`,
+      amount: outstanding,
+      _breakdown: r,
+    });
+  }
+
+  // Sort: highest outstanding first
+  out.sort((a, b) => num(b.amount) - num(a.amount));
+  return out;
 }
 
 export default function TxnReports() {
@@ -207,6 +383,8 @@ export default function TxnReports() {
   const [loading, setLoading] = useState(false);
   const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
+
+  const isCreditTab = tabMeta.key === "receivable" || tabMeta.key === "payable";
 
   // Default date range: current month
   useEffect(() => {
@@ -266,6 +444,89 @@ export default function TxnReports() {
       if (!fromDate || !toDate) throw new Error("Select From and To dates.");
       if (fromDate > toDate) throw new Error("From date cannot be after To date.");
 
+      // ✅ ONLY change behavior for Receivable/Payable tabs
+      if (isCreditTab) {
+        // For "last balance", ignore From date and compute as-of To date using full history.
+        // Keep Party filter (optional). Ignore Mode/Category filters for balance (bank/cash not relevant).
+        const MIN_DATE = "2000-01-01";
+
+        const [sales, receipts, purchases, payments, expenses, incomes] = await Promise.all([
+          fetchTxnRange({
+            clientId,
+            fromDate: MIN_DATE,
+            toDate,
+            typeKey: "sales",
+            mode: "",
+            partyId: partyId || "",
+            category: "",
+          }),
+          fetchTxnRange({
+            clientId,
+            fromDate: MIN_DATE,
+            toDate,
+            typeKey: "receipt",
+            mode: "",
+            partyId: partyId || "",
+            category: "",
+          }),
+          fetchTxnRange({
+            clientId,
+            fromDate: MIN_DATE,
+            toDate,
+            typeKey: "purchase",
+            mode: "",
+            partyId: partyId || "",
+            category: "",
+          }),
+          fetchTxnRange({
+            clientId,
+            fromDate: MIN_DATE,
+            toDate,
+            typeKey: "payment",
+            mode: "",
+            partyId: partyId || "",
+            category: "",
+          }),
+          fetchTxnRange({
+            clientId,
+            fromDate: MIN_DATE,
+            toDate,
+            typeKey: "expense",
+            mode: "",
+            partyId: partyId || "",
+            category: "",
+          }),
+          fetchTxnRange({
+            clientId,
+            fromDate: MIN_DATE,
+            toDate,
+            typeKey: "income",
+            mode: "",
+            partyId: partyId || "",
+            category: "", // we will apply Loan filter in compute
+          }),
+        ]);
+
+        // Category options not meaningful for credit tabs (and we should not touch other parts)
+        setCategoryOptions([]);
+
+        const outstanding = buildOutstandingRows({
+          toDate,
+          sales,
+          receipts,
+          purchases,
+          payments,
+          expenses,
+          incomes,
+          tabKey: tabMeta.key,
+        });
+
+        // Rows are already normalized for UI (one row per party)
+        setRows(outstanding);
+        return;
+      }
+
+      // ✅ Existing behavior unchanged for all other tabs
       const data = await fetchTxnRange({
         clientId,
         fromDate,
@@ -346,17 +607,19 @@ export default function TxnReports() {
 
   function filtersText() {
     const parts = [];
-    if (mode) parts.push(`Mode: ${mode}`);
+    // For credit tabs, mode/category are not used for balance; but keep Party mention if selected.
+    if (!isCreditTab) {
+      if (mode) parts.push(`Mode: ${mode}`);
+      if (category) parts.push(`Category: ${category}`);
+    }
     if (partyId) {
       const p = allParties.find((x) => x.id === partyId);
       parts.push(`Party: ${p?.name || "Selected Party"}`);
     }
-    if (category) parts.push(`Category: ${category}`);
     return parts.join(" | ");
   }
 
   function onDownloadPDF() {
-    // For viewMode "both", we can export condensed list (short) + summary tables
     const hasData = viewMode === "both" ? condensed.length > 0 : rows.length > 0;
     if (!hasData) return alert("No data to export.");
 
@@ -368,9 +631,8 @@ export default function TxnReports() {
       toDate,
       filtersText: filtersText(),
       summary,
-      viewMode, // "detailed" | "summary" | "both"
+      viewMode,
       breakdown,
-      // send both:
       rows: rows.map((r) => ({
         dateText: r.dateText,
         partyName: r.partyName,

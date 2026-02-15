@@ -16,6 +16,21 @@ function fileSafeName(s) {
   return safeText(s).replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").toLowerCase();
 }
 
+function addFooter(doc) {
+  const pages = doc.getNumberOfPages();
+  const w = doc.internal.pageSize.getWidth();
+  const h = doc.internal.pageSize.getHeight();
+
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(9);
+    doc.setTextColor(110);
+
+    doc.text("GTCT Daily Analytics", 14, h - 10);
+    doc.text(`Page ${i}/${pages}`, w - 14, h - 10, { align: "right" });
+  }
+}
+
 export function generateTxnRangePDF({
   title,
   clientName,
@@ -23,16 +38,21 @@ export function generateTxnRangePDF({
   fromDate,
   toDate,
   filtersText,
-  summary, // { count, total }
-  viewMode = "detailed", // "detailed" | "summary" | "both"
-  breakdown, // { totalCount, totalAmount, modeRows, categoryRows }
-  rows, // detailed rows
-  condensedRows, // ✅ NEW: [{ rangeText, partyName, mode, amount }]
+  summary,
+  viewMode = "detailed",
+  breakdown,
+  rows,
+  condensedRows,
 }) {
   const doc = new jsPDF();
   const CUR = safeText(currency || "BHD");
 
-  // Header
+  const titleLower = safeText(title || "").toLowerCase();
+  const isReceivable = titleLower.includes("receivable");
+  const isPayable = titleLower.includes("payable");
+  const isCreditReport = isReceivable || isPayable;
+
+  // HEADER
   doc.setFontSize(14);
   doc.text(safeText(clientName || "GTCT Analytics"), 14, 14);
 
@@ -58,11 +78,47 @@ export function generateTxnRangePDF({
 
   let currentY = Math.max(58, y);
 
+  // =========================
+  // RECEIVABLE / PAYABLE TABLE
+  // =========================
+  if (isCreditReport) {
+    const body = (rows || []).map((r) => [
+      safeText(r.partyName || "-"),
+      money(r.amount),
+    ]);
+
+    autoTable(doc, {
+      startY: currentY,
+      head: [[
+        "Party",
+        `${isReceivable ? "Receivable" : "Payable"} (${CUR})`,
+      ]],
+      body: body.length ? body : [["No data", ""]],
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: {
+        fillColor: [30, 64, 175],
+        textColor: 255,
+        fontStyle: "bold",
+      },
+      columnStyles: {
+        0: { halign: "left" },
+        1: { halign: "right" }, // HEADER + AMOUNT RIGHT
+      },
+    });
+
+    addFooter(doc);
+    const baseName = fileSafeName(title || "credit_report");
+    doc.save(`${baseName}_${fromDate}_to_${toDate}.pdf`);
+    return;
+  }
+
+  // =========================
+  // SUMMARY TABLES
+  // =========================
   const wantSummary = viewMode === "summary" || viewMode === "both";
   const wantDetailed = viewMode === "detailed";
   const wantCondensed = viewMode === "both";
 
-  // Summary by Mode + Category
   if (wantSummary) {
     const modeRows = (breakdown?.modeRows || []).map((r) => [
       safeText(r.key || "Unknown"),
@@ -74,100 +130,42 @@ export function generateTxnRangePDF({
       startY: currentY,
       head: [[`Summary by Mode`, "Count", `Total (${CUR})`]],
       body: modeRows.length ? modeRows : [["No data", "", ""]],
-      styles: { fontSize: 9, cellPadding: 2 },
-      headStyles: { fontSize: 9 },
-      columnStyles: {
-        1: { halign: "right" },
-        2: { halign: "right" },
-      },
-    });
-
-    currentY = (doc.lastAutoTable?.finalY || currentY) + 8;
-
-    const catRows = (breakdown?.categoryRows || []).map((r) => [
-      safeText(r.key || "Uncategorized"),
-      String(r.count ?? 0),
-      money(r.total ?? 0),
-    ]);
-
-    autoTable(doc, {
-      startY: currentY,
-      head: [[`Summary by Category`, "Count", `Total (${CUR})`]],
-      body: catRows.length ? catRows : [["No data", "", ""]],
-      styles: { fontSize: 9, cellPadding: 2 },
-      headStyles: { fontSize: 9 },
-      columnStyles: {
-        1: { halign: "right" },
-        2: { halign: "right" },
-      },
     });
 
     currentY = (doc.lastAutoTable?.finalY || currentY) + 10;
   }
 
-  // ✅ BOTH: Short Party List (Party+Mode only, no daily dates)
   if (wantCondensed) {
     const body = (condensedRows || []).map((r) => [
-      safeText(r.rangeText || `${fromDate} to ${toDate}`),
+      safeText(r.rangeText || ""),
       safeText(r.partyName || "-"),
-      safeText(r.mode || "-"),
       money(r.amount),
     ]);
 
     autoTable(doc, {
       startY: currentY,
-      head: [[
-        "Date Range",
-        "Party",
-        "Mode",
-        `Total (${CUR})`,
-      ]],
-      body: body.length ? body : [["No data", "", "", ""]],
-      styles: { fontSize: 9, cellPadding: 2 },
-      headStyles: { fontSize: 9 },
-      columnStyles: {
-        3: { halign: "right" },
-      },
+      head: [["Date Range", "Party", `Total (${CUR})`]],
+      body,
     });
 
-    currentY = (doc.lastAutoTable?.finalY || currentY) + 8;
+    currentY = (doc.lastAutoTable?.finalY || currentY) + 10;
   }
 
-  // Detailed table ONLY when viewMode === detailed
   if (wantDetailed) {
     const body = (rows || []).map((r) => [
       safeText(r.dateText || "-"),
       safeText(r.partyName || "-"),
-      safeText(r.mode || "-"),
-      safeText(r.category || "-"),
-      safeText(r.description || "-"),
       money(r.amount),
     ]);
 
     autoTable(doc, {
       startY: currentY,
-      head: [[
-        "Date",
-        "Party",
-        "Mode",
-        "Category",
-        "Description",
-        `Amount (${CUR})`,
-      ]],
-      body: body.length ? body : [["No data", "", "", "", "", ""]],
-      styles: { fontSize: 8.5, cellPadding: 2 },
-      headStyles: { fontSize: 9 },
-      columnStyles: {
-        5: { halign: "right" },
-        0: { cellWidth: 22 },
-        1: { cellWidth: 34 },
-        2: { cellWidth: 18 },
-        3: { cellWidth: 26 },
-        4: { cellWidth: 70 },
-      },
+      head: [["Date", "Party", `Amount (${CUR})`]],
+      body,
     });
   }
 
+  addFooter(doc);
   const baseName = fileSafeName(title || "transaction_report");
   doc.save(`${baseName}_${fromDate}_to_${toDate}.pdf`);
 }
