@@ -3,8 +3,10 @@ import { useEffect, useMemo, useState } from "react";
 import { collection, getDocs, query, where } from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
-import { fetchTxnRange } from "../utils/txnReportsApi.js";
+import { fetchTxnRange, fetchPartyDueFromTransactions } from "../utils/txnReportsApi.js";
 import { generateTxnRangePDF } from "../utils/txnRangePdf.js";
+
+
 
 const TABS = [
   { key: "sales", title: "Sales", pdfTitle: "Sales Report", side: "in" },
@@ -445,86 +447,33 @@ export default function TxnReports() {
       if (fromDate > toDate) throw new Error("From date cannot be after To date.");
 
       // ✅ ONLY change behavior for Receivable/Payable tabs
-      if (isCreditTab) {
-        // For "last balance", ignore From date and compute as-of To date using full history.
-        // Keep Party filter (optional). Ignore Mode/Category filters for balance (bank/cash not relevant).
-        const MIN_DATE = "2000-01-01";
+if (isCreditTab) {
+  setCategoryOptions([]); // not used for credit tabs
 
-        const [sales, receipts, purchases, payments, expenses, incomes] = await Promise.all([
-          fetchTxnRange({
-            clientId,
-            fromDate: MIN_DATE,
-            toDate,
-            typeKey: "sales",
-            mode: "",
-            partyId: partyId || "",
-            category: "",
-          }),
-          fetchTxnRange({
-            clientId,
-            fromDate: MIN_DATE,
-            toDate,
-            typeKey: "receipt",
-            mode: "",
-            partyId: partyId || "",
-            category: "",
-          }),
-          fetchTxnRange({
-            clientId,
-            fromDate: MIN_DATE,
-            toDate,
-            typeKey: "purchase",
-            mode: "",
-            partyId: partyId || "",
-            category: "",
-          }),
-          fetchTxnRange({
-            clientId,
-            fromDate: MIN_DATE,
-            toDate,
-            typeKey: "payment",
-            mode: "",
-            partyId: partyId || "",
-            category: "",
-          }),
-          fetchTxnRange({
-            clientId,
-            fromDate: MIN_DATE,
-            toDate,
-            typeKey: "expense",
-            mode: "",
-            partyId: partyId || "",
-            category: "",
-          }),
-          fetchTxnRange({
-            clientId,
-            fromDate: MIN_DATE,
-            toDate,
-            typeKey: "income",
-            mode: "",
-            partyId: partyId || "",
-            category: "", // we will apply Loan filter in compute
-          }),
-        ]);
+  const dues = await fetchPartyDueFromTransactions({
+    clientId,
+    toDate,
+    kind: tabMeta.key, // "receivable" | "payable"
+    partyId: partyId || "",
+  });
 
-        // Category options not meaningful for credit tabs (and we should not touch other parts)
-        setCategoryOptions([]);
+  const creditRows = (dues || []).map((r, idx) => ({
+    id: `credit_${tabMeta.key}_${r.partyId || idx}`,
+    date: null,
+    dateText: "-",
+    partyId: r.partyId || "",
+    partyName: r.partyName || "-",
+    mode: "Credit",
+    category: tabMeta.key === "receivable" ? "Receivable" : "Payable",
+    description: "-",
+    amount: num(r.amount),
+  }));
 
-        const outstanding = buildOutstandingRows({
-          toDate,
-          sales,
-          receipts,
-          purchases,
-          payments,
-          expenses,
-          incomes,
-          tabKey: tabMeta.key,
-        });
+  setRows(creditRows);
+  return;
+}
 
-        // Rows are already normalized for UI (one row per party)
-        setRows(outstanding);
-        return;
-      }
+
 
       // ✅ Existing behavior unchanged for all other tabs
       const data = await fetchTxnRange({
