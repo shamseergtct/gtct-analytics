@@ -12,7 +12,6 @@ function money(v) {
 function safeText(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();
 }
-
 function fileSafeName(s) {
   return safeText(s).replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").toLowerCase();
 }
@@ -26,15 +25,14 @@ export function generateTxnRangePDF({
   filtersText,
   summary, // { count, total }
   viewMode = "detailed", // "detailed" | "summary" | "both"
-  breakdown, // { totalCount, totalAmount, modeRows:[{key,count,total}], categoryRows:[{key,count,total}] }
-  rows, // [{ dateText, partyName, mode, category, description, amount }]
+  breakdown, // { totalCount, totalAmount, modeRows, categoryRows }
+  rows, // detailed rows
+  condensedRows, // ✅ NEW: [{ rangeText, partyName, mode, amount }]
 }) {
   const doc = new jsPDF();
   const CUR = safeText(currency || "BHD");
 
-  // ----------------------------
   // Header
-  // ----------------------------
   doc.setFontSize(14);
   doc.text(safeText(clientName || "GTCT Analytics"), 14, 14);
 
@@ -58,19 +56,14 @@ export function generateTxnRangePDF({
   doc.text(`Total Amount (${CUR}): ${money(totalAmount)}`, 14, y);
   y += 8;
 
-  // Keep y reasonable if header is small
-  const startAfterHeader = Math.max(58, y);
+  let currentY = Math.max(58, y);
 
-  // ----------------------------
-  // Summary tables (Mode + Category)
-  // ----------------------------
   const wantSummary = viewMode === "summary" || viewMode === "both";
-  const wantDetailed = viewMode === "detailed" || viewMode === "both";
+  const wantDetailed = viewMode === "detailed";
+  const wantCondensed = viewMode === "both";
 
-  let currentY = startAfterHeader;
-
+  // Summary by Mode + Category
   if (wantSummary) {
-    // ✅ Summary by Mode
     const modeRows = (breakdown?.modeRows || []).map((r) => [
       safeText(r.key || "Unknown"),
       String(r.count ?? 0),
@@ -91,7 +84,6 @@ export function generateTxnRangePDF({
 
     currentY = (doc.lastAutoTable?.finalY || currentY) + 8;
 
-    // ✅ Summary by Category
     const catRows = (breakdown?.categoryRows || []).map((r) => [
       safeText(r.key || "Uncategorized"),
       String(r.count ?? 0),
@@ -113,9 +105,35 @@ export function generateTxnRangePDF({
     currentY = (doc.lastAutoTable?.finalY || currentY) + 10;
   }
 
-  // ----------------------------
-  // Detailed table
-  // ----------------------------
+  // ✅ BOTH: Short Party List (Party+Mode only, no daily dates)
+  if (wantCondensed) {
+    const body = (condensedRows || []).map((r) => [
+      safeText(r.rangeText || `${fromDate} to ${toDate}`),
+      safeText(r.partyName || "-"),
+      safeText(r.mode || "-"),
+      money(r.amount),
+    ]);
+
+    autoTable(doc, {
+      startY: currentY,
+      head: [[
+        "Date Range",
+        "Party",
+        "Mode",
+        `Total (${CUR})`,
+      ]],
+      body: body.length ? body : [["No data", "", "", ""]],
+      styles: { fontSize: 9, cellPadding: 2 },
+      headStyles: { fontSize: 9 },
+      columnStyles: {
+        3: { halign: "right" },
+      },
+    });
+
+    currentY = (doc.lastAutoTable?.finalY || currentY) + 8;
+  }
+
+  // Detailed table ONLY when viewMode === detailed
   if (wantDetailed) {
     const body = (rows || []).map((r) => [
       safeText(r.dateText || "-"),
@@ -150,9 +168,6 @@ export function generateTxnRangePDF({
     });
   }
 
-  // ----------------------------
-  // Save
-  // ----------------------------
   const baseName = fileSafeName(title || "transaction_report");
   doc.save(`${baseName}_${fromDate}_to_${toDate}.pdf`);
 }

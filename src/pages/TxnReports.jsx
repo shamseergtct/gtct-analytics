@@ -27,7 +27,7 @@ const MODE_OPTIONS = [
 const VIEW_OPTIONS = [
   { value: "detailed", label: "Detailed" },
   { value: "summary", label: "Summary" },
-  { value: "both", label: "Both" },
+  { value: "both", label: "Both (Short Party List)" }, // ✅ changed meaning
 ];
 
 function num(v) {
@@ -62,6 +62,14 @@ function normCat(x) {
 function normMode(x) {
   return String(x || "").trim();
 }
+function normKey(x) {
+  return String(x || "").trim().toLowerCase();
+}
+function rangeText(fromDate, toDate) {
+  // Keep it simple & readable
+  // (UI shows input YYYY-MM-DD, PDF can also show the same)
+  return `${fromDate} to ${toDate}`;
+}
 
 // Party allowed mapping
 function allowedPartyTypesForTab(tabKey) {
@@ -82,7 +90,7 @@ function allowedPartyTypesForTab(tabKey) {
 }
 
 /**
- * ✅ AMOUNT LOGIC (fixes purchase credit 0)
+ * ✅ AMOUNT LOGIC (fix purchase credit 0)
  * 1) Prefer totalAmount if >0
  * 2) else fallback:
  *    - purchase credit may be in amountIn
@@ -102,22 +110,20 @@ function getTxnAmount(tabKey, side, row) {
     return amtOut > 0 ? amtOut : amtIn;
   }
 
+  // default fallback
   return side === "in"
-    ? amtIn > 0
-      ? amtIn
-      : amtOut
-    : amtOut > 0
-    ? amtOut
-    : amtIn;
+    ? (amtIn > 0 ? amtIn : amtOut)
+    : (amtOut > 0 ? amtOut : amtIn);
 }
 
-function buildBreakdown(normalizedRows) {
+function buildSummary(rows) {
   const byMode = {};
   const byCategory = {};
+
   let totalCount = 0;
   let totalAmount = 0;
 
-  for (const r of normalizedRows) {
+  for (const r of rows) {
     totalCount += 1;
     totalAmount += num(r.amount);
 
@@ -137,6 +143,45 @@ function buildBreakdown(normalizedRows) {
   const categoryRows = Object.values(byCategory).sort((a, b) => b.total - a.total);
 
   return { totalCount, totalAmount, modeRows, categoryRows };
+}
+
+/**
+ * ✅ NEW: Condensed list (Party shown ONCE per Mode)
+ * Output rows:
+ * { id, rangeText, partyName, mode, amount }
+ */
+function buildPartyModeCondensed(rows, fromDate, toDate) {
+  const map = new Map();
+  const rText = rangeText(fromDate, toDate);
+
+  for (const r of rows) {
+    const party = String(r.partyName || "-").trim() || "-";
+    const mode = String(r.mode || "-").trim() || "-";
+
+    const key = `${normKey(party)}__${normKey(mode)}`;
+    const prev = map.get(key);
+
+    if (!prev) {
+      map.set(key, {
+        id: key,
+        rangeText: rText,
+        partyName: party,
+        mode,
+        amount: num(r.amount),
+        count: 1,
+      });
+    } else {
+      prev.amount += num(r.amount);
+      prev.count += 1;
+    }
+  }
+
+  // Sort by amount desc, then party
+  return Array.from(map.values()).sort((a, b) => {
+    const d = num(b.amount) - num(a.amount);
+    if (d !== 0) return d;
+    return String(a.partyName).localeCompare(String(b.partyName));
+  });
 }
 
 export default function TxnReports() {
@@ -160,7 +205,7 @@ export default function TxnReports() {
   const [categoryOptions, setCategoryOptions] = useState([]);
 
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState([]); // normalized rows
+  const [rows, setRows] = useState([]);
   const [error, setError] = useState("");
 
   // Default date range: current month
@@ -198,7 +243,6 @@ export default function TxnReports() {
     const allowed = allowedPartyTypesForTab(tabMeta.key);
     if (!allowed.size) return allParties;
 
-    // support both partyType or type
     return allParties.filter((p) => {
       const pt = normType(p.partyType || p.type);
       return allowed.has(pt);
@@ -222,7 +266,6 @@ export default function TxnReports() {
       if (!fromDate || !toDate) throw new Error("Select From and To dates.");
       if (fromDate > toDate) throw new Error("From date cannot be after To date.");
 
-      // main data (with filters)
       const data = await fetchTxnRange({
         clientId,
         fromDate,
@@ -233,7 +276,7 @@ export default function TxnReports() {
         category: category || "",
       });
 
-      // category options from same tab+range but without category filter
+      // category options from data without category filter
       const allNoCat = await fetchTxnRange({
         clientId,
         fromDate,
@@ -251,8 +294,7 @@ export default function TxnReports() {
       }
       setCategoryOptions(Array.from(cats).sort((a, b) => a.localeCompare(b)));
 
-      // normalize + amount fix + remove internal transfers
-      const normalized = (data || [])
+      const normalized = data
         .filter((r) => r?.internalTransfer !== true)
         .map((r) => {
           const amount = getTxnAmount(tabMeta.key, tabMeta.side, r);
@@ -293,7 +335,14 @@ export default function TxnReports() {
     return { count, total };
   }, [rows]);
 
-  const breakdown = useMemo(() => buildBreakdown(rows), [rows]);
+  const breakdown = useMemo(() => buildSummary(rows), [rows]);
+
+  // ✅ NEW condensed rows for "both"
+  const condensed = useMemo(() => buildPartyModeCondensed(rows, fromDate, toDate), [
+    rows,
+    fromDate,
+    toDate,
+  ]);
 
   function filtersText() {
     const parts = [];
@@ -307,8 +356,9 @@ export default function TxnReports() {
   }
 
   function onDownloadPDF() {
-    // allow summary-only export even if rows empty? (still needs something)
-    if (!rows.length) return alert("No data to export.");
+    // For viewMode "both", we can export condensed list (short) + summary tables
+    const hasData = viewMode === "both" ? condensed.length > 0 : rows.length > 0;
+    if (!hasData) return alert("No data to export.");
 
     generateTxnRangePDF({
       title: tabMeta.pdfTitle,
@@ -318,14 +368,21 @@ export default function TxnReports() {
       toDate,
       filtersText: filtersText(),
       summary,
-      viewMode, // ✅ IMPORTANT: your pdf util needs this
-      breakdown, // ✅ IMPORTANT: your pdf util needs this
+      viewMode, // "detailed" | "summary" | "both"
+      breakdown,
+      // send both:
       rows: rows.map((r) => ({
         dateText: r.dateText,
         partyName: r.partyName,
         mode: r.mode,
         category: r.category,
         description: r.description,
+        amount: r.amount,
+      })),
+      condensedRows: condensed.map((r) => ({
+        rangeText: r.rangeText,
+        partyName: r.partyName,
+        mode: r.mode,
         amount: r.amount,
       })),
     });
@@ -350,7 +407,7 @@ export default function TxnReports() {
 
         <button
           onClick={onDownloadPDF}
-          disabled={loading || rows.length === 0}
+          disabled={loading || (viewMode === "both" ? condensed.length === 0 : rows.length === 0)}
           className="rounded-xl bg-slate-100 px-4 py-2 text-slate-900 font-medium disabled:opacity-50"
         >
           Download PDF
@@ -444,7 +501,7 @@ export default function TxnReports() {
           </select>
         </div>
 
-        {/* View mode */}
+        {/* View */}
         <div className="md:col-span-3">
           <label className="text-sm text-slate-300">View</label>
           <select
@@ -505,7 +562,7 @@ export default function TxnReports() {
         </div>
       </div>
 
-      {/* SUMMARY VIEW */}
+      {/* Summary tables (mode+category) */}
       {(viewMode === "summary" || viewMode === "both") && (
         <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
           <div className="rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
@@ -580,15 +637,58 @@ export default function TxnReports() {
         </div>
       )}
 
-      {/* DETAILED VIEW */}
-      {(viewMode === "detailed" || viewMode === "both") && (
+      {/* ✅ BOTH view: Short Party List (Party+Mode, range shown once) */}
+      {viewMode === "both" && (
         <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
-          <div className="p-4 flex items-center justify-between">
-            <div>
-              <div className="text-slate-100 font-semibold">{tabMeta.title} List</div>
-              <div className="text-sm text-slate-400">
-                {filtersText() ? filtersText() : "No extra filters"}
-              </div>
+          <div className="p-4">
+            <div className="text-slate-100 font-semibold">
+              Short Party List (Grouped by Party + Mode)
+            </div>
+            <div className="text-sm text-slate-400">
+              Range: {rangeText(fromDate, toDate)} • {filtersText() || "No extra filters"}
+            </div>
+          </div>
+
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-900/70">
+                <tr className="text-slate-200">
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Date Range</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Party</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Mode</th>
+                  <th className="text-right px-4 py-3 whitespace-nowrap">Total ({currency})</th>
+                </tr>
+              </thead>
+              <tbody>
+                {condensed.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-6 text-slate-400">
+                      {loading ? "Loading..." : "No transactions found for this range."}
+                    </td>
+                  </tr>
+                ) : (
+                  condensed.map((r) => (
+                    <tr key={r.id} className="border-t border-slate-800 text-slate-100">
+                      <td className="px-4 py-3 whitespace-nowrap">{r.rangeText}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.partyName}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.mode}</td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">{money(r.amount)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Detailed view ONLY when viewMode === detailed */}
+      {viewMode === "detailed" && (
+        <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
+          <div className="p-4">
+            <div className="text-slate-100 font-semibold">{tabMeta.title} List</div>
+            <div className="text-sm text-slate-400">
+              {filtersText() ? filtersText() : "No extra filters"}
             </div>
           </div>
 
