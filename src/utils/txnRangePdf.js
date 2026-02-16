@@ -13,8 +13,12 @@ function safeText(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();
 }
 function fileSafeName(s) {
-  return safeText(s).replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").toLowerCase();
+  return safeText(s)
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "_")
+    .toLowerCase();
 }
+
 function formatDateTime(d = new Date()) {
   try {
     return d.toLocaleString();
@@ -23,7 +27,13 @@ function formatDateTime(d = new Date()) {
   }
 }
 
-function addFooter(doc, brandText = "GTCT Daily Analytics") {
+/**
+ * Footer on every page:
+ * - left: GTCT Daily Analytics
+ * - center: Generated date/time
+ * - right: Page X / Y
+ */
+function addProfessionalFooter(doc, brandText = "GTCT Daily Analytics") {
   const pageCount = doc.getNumberOfPages();
   const w = doc.internal.pageSize.getWidth();
   const h = doc.internal.pageSize.getHeight();
@@ -50,6 +60,11 @@ function addFooter(doc, brandText = "GTCT Daily Analytics") {
   }
 }
 
+function isCreditReportTitle(title) {
+  const t = safeText(title || "").toLowerCase();
+  return t.includes("receivable") || t.includes("payable");
+}
+
 export function generateTxnRangePDF({
   title,
   clientName,
@@ -57,9 +72,9 @@ export function generateTxnRangePDF({
   fromDate,
   toDate,
   filtersText,
-  summary,
-  viewMode = "detailed",
-  breakdown,
+  summary, // { count, total }
+  viewMode = "detailed", // "detailed" | "summary" | "both"
+  breakdown, // { totalCount, totalAmount, modeRows, categoryRows }
   rows,
   condensedRows,
 }) {
@@ -70,12 +85,12 @@ export function generateTxnRangePDF({
   const pageW = doc.internal.pageSize.getWidth();
   const marginX = 40;
 
+  const creditReport = isCreditReportTitle(title);
   const titleLower = safeText(title || "").toLowerCase();
   const isReceivable = titleLower.includes("receivable");
   const isPayable = titleLower.includes("payable");
-  const isCreditReport = isReceivable || isPayable;
 
-  // Header
+  // ---- Header (professional) ----
   doc.setFont("helvetica", "bold");
   doc.setFontSize(14);
   doc.setTextColor(20, 20, 20);
@@ -116,60 +131,70 @@ export function generateTxnRangePDF({
   const wantDetailed = viewMode === "detailed";
   const wantCondensed = viewMode === "both";
 
-  const baseTableStyles = {
+  // ---- shared table styling (fix header height + proper wrap) ----
+  const baseTable = {
+    theme: "grid",
+    margin: { left: marginX, right: marginX },
     styles: {
       font: "helvetica",
       fontSize: 9,
       cellPadding: 6,
       textColor: [35, 35, 35],
-      lineColor: [220, 220, 220],
-      lineWidth: 0.5,
+      lineColor: [225, 225, 225],
+      lineWidth: 0.6,
+      overflow: "linebreak", // ✅ wrap text
+      valign: "middle",
+      minCellHeight: 16, // ✅ prevents huge header blocks
     },
     headStyles: {
       fillColor: [30, 64, 175],
       textColor: [255, 255, 255],
       fontStyle: "bold",
       fontSize: 9.5,
+      cellPadding: 6,
+      valign: "middle",
+      minCellHeight: 20, // ✅ keeps header normal
     },
     alternateRowStyles: {
       fillColor: [248, 250, 252],
     },
-    tableLineColor: [220, 220, 220],
-    tableLineWidth: 0.5,
-    margin: { left: marginX, right: marginX },
+
+    // ✅ Right align LAST column (Amount) for ALL tables
+    didParseCell: (data) => {
+      const last = data.table?.columns?.length - 1;
+      if (data.column.index === last) {
+        data.cell.styles.halign = "right";
+      }
+    },
   };
 
-  // ✅ Receivable/Payable PDF: ONLY 2 columns + header amount right aligned
-  if (isCreditReport) {
-    const body = (rows || []).map((r) => [safeText(r.partyName || "-"), money(r.amount)]);
+  // ✅ Receivable/Payable: 2 columns only
+  if (creditReport) {
+    const body = (rows || []).map((r) => [
+      safeText(r.partyName || "-"),
+      money(r.amount),
+    ]);
 
     autoTable(doc, {
       startY: currentY,
       head: [[
         "Party",
-        `${isReceivable ? "Receivable" : "Payable"} (${CUR})`,
+        `${isReceivable ? "Receivable" : isPayable ? "Payable" : "Amount"} (${CUR})`,
       ]],
       body: body.length ? body : [["No data", ""]],
-      ...baseTableStyles,
+      ...baseTable,
       columnStyles: {
-        0: { halign: "left" },
-        1: { halign: "right" },
-      },
-      didParseCell: (data) => {
-        if (data.section === "head") {
-          if (data.column.index === 1) data.cell.styles.halign = "right"; // ✅ header right
-          if (data.column.index === 0) data.cell.styles.halign = "left";
-        }
+        0: { halign: "left", cellWidth: 340 },
+        1: { halign: "right", cellWidth: 170 },
       },
     });
 
-    addFooter(doc, brand);
-    const baseName = fileSafeName(title || "transaction_report");
-    doc.save(`${baseName}_${fromDate}_to_${toDate}.pdf`);
+    addProfessionalFooter(doc, brand);
+    doc.save(`${fileSafeName(title || "report")}_${fromDate}_to_${toDate}.pdf`);
     return;
   }
 
-  // Summary (normal reports)
+  // Summary by Mode + Category
   if (wantSummary) {
     const modeRows = (breakdown?.modeRows || []).map((r) => [
       safeText(r.key || "Unknown"),
@@ -181,11 +206,15 @@ export function generateTxnRangePDF({
       startY: currentY,
       head: [[`Summary by Mode`, "Count", `Total (${CUR})`]],
       body: modeRows.length ? modeRows : [["No data", "", ""]],
-      ...baseTableStyles,
-      columnStyles: { 1: { halign: "right" }, 2: { halign: "right" } },
+      ...baseTable,
+      columnStyles: {
+        0: { cellWidth: 280 },
+        1: { cellWidth: 90 },
+        2: { cellWidth: 140 },
+      },
     });
 
-    currentY = (doc.lastAutoTable?.finalY || currentY) + 8;
+    currentY = (doc.lastAutoTable?.finalY || currentY) + 14;
 
     const catRows = (breakdown?.categoryRows || []).map((r) => [
       safeText(r.key || "Uncategorized"),
@@ -197,14 +226,18 @@ export function generateTxnRangePDF({
       startY: currentY,
       head: [[`Summary by Category`, "Count", `Total (${CUR})`]],
       body: catRows.length ? catRows : [["No data", "", ""]],
-      ...baseTableStyles,
-      columnStyles: { 1: { halign: "right" }, 2: { halign: "right" } },
+      ...baseTable,
+      columnStyles: {
+        0: { cellWidth: 280 },
+        1: { cellWidth: 90 },
+        2: { cellWidth: 140 },
+      },
     });
 
-    currentY = (doc.lastAutoTable?.finalY || currentY) + 10;
+    currentY = (doc.lastAutoTable?.finalY || currentY) + 18;
   }
 
-  // Both condensed (normal only)
+  // BOTH: Short Party List
   if (wantCondensed) {
     const body = (condensedRows || []).map((r) => [
       safeText(r.rangeText || `${fromDate} to ${toDate}`),
@@ -217,14 +250,19 @@ export function generateTxnRangePDF({
       startY: currentY,
       head: [["Date Range", "Party", "Mode", `Total (${CUR})`]],
       body: body.length ? body : [["No data", "", "", ""]],
-      ...baseTableStyles,
-      columnStyles: { 3: { halign: "right" } },
+      ...baseTable,
+      columnStyles: {
+        0: { cellWidth: 140 },
+        1: { cellWidth: 190 },
+        2: { cellWidth: 90 },
+        3: { cellWidth: 90 },
+      },
     });
 
-    currentY = (doc.lastAutoTable?.finalY || currentY) + 8;
+    currentY = (doc.lastAutoTable?.finalY || currentY) + 14;
   }
 
-  // Detailed (normal only)
+  // Detailed table
   if (wantDetailed) {
     const body = (rows || []).map((r) => [
       safeText(r.dateText || "-"),
@@ -239,20 +277,18 @@ export function generateTxnRangePDF({
       startY: currentY,
       head: [["Date", "Party", "Mode", "Category", "Description", `Amount (${CUR})`]],
       body: body.length ? body : [["No data", "", "", "", "", ""]],
-      ...baseTableStyles,
-      styles: { ...baseTableStyles.styles, fontSize: 8.5 },
+      ...baseTable,
       columnStyles: {
-        5: { halign: "right" },
-        0: { cellWidth: 70 },
-        1: { cellWidth: 120 },
-        2: { cellWidth: 70 },
-        3: { cellWidth: 90 },
-        4: { cellWidth: 220 },
+        0: { cellWidth: 70 },  // Date
+        1: { cellWidth: 140 }, // Party
+        2: { cellWidth: 70 },  // Mode
+        3: { cellWidth: 90 },  // Category
+        4: { cellWidth: 220 }, // Description (wrap)
+        5: { cellWidth: 90 },  // Amount (right)
       },
     });
   }
 
-  addFooter(doc, brand);
-  const baseName = fileSafeName(title || "transaction_report");
-  doc.save(`${baseName}_${fromDate}_to_${toDate}.pdf`);
+  addProfessionalFooter(doc, brand);
+  doc.save(`${fileSafeName(title || "report")}_${fromDate}_to_${toDate}.pdf`);
 }
