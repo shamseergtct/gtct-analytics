@@ -271,55 +271,46 @@ export function generateTxnRangePDF({
     currentY = (doc.lastAutoTable?.finalY || currentY) + 14;
   }
 
-  // ---------- Detailed table (THIS is the fix) ----------
-  if (wantDetailed) {
-    const body = (rows || []).map((r) => [
-      safeText(r.dateText || "-"),
-      safeText(r.partyName || "-"),
-      safeText(r.mode || "-"),
-      safeText(r.category || "-"),
-      safeText(r.description || "-"),
-      money(r.amount),
-    ]);
+  // Detailed table ONLY when viewMode === detailed
+if (wantDetailed) {
+  const body = (rows || []).map((r) => [
+    safeText(r.dateText || "-"),
+    safeText(r.partyName || "-"),
+    safeText(r.mode || "-"),
+    safeText(r.category || "-"),
+    safeText(r.description || "-"),
+    money(r.amount),
+  ]);
 
-    /**
-     * ✅ IMPORTANT:
-     * Fixed widths that ALWAYS fit A4:
-     * A4 width ~595pt, margins 40+40 => usable ~515pt
-     * Total below = 60 + 120 + 60 + 80 + 155 + 40 = 515
-     * So Amount column will NEVER disappear.
-     */
-    autoTable(doc, {
-      startY: currentY,
-      head: [[
-        "Date",
-        "Party",
-        "Mode",
-        "Category",
-        "Description",
-        `Amount (${CUR})`,
-      ]],
-      body: body.length ? body : [["No data", "", "", "", "", ""]],
-      ...baseTableStyles,
-      columnStyles: {
-  0: { cellWidth: 60 },   // Date
-  1: { cellWidth: 110 },  // Party
-  2: { cellWidth: 55 },   // Mode
-  3: { cellWidth: 75 },   // Category
+  autoTable(doc, {
+    startY: currentY,
+    head: [[
+      "Date",
+      "Party",
+      "Mode",
+      "Category",
+      "Description",
+      `Amount (${CUR})`,
+    ]],
+    body: body.length ? body : [["No data", "", "", "", "", ""]],
+    ...baseTableStyles,
+    styles: {
+      ...baseTableStyles.styles,
+      fontSize: 8.8,
+      overflow: "linebreak",
+      cellPadding: 6,
+    },
+    columnStyles: {
+      0: { cellWidth: 60 },   // Date
+      1: { cellWidth: 110 },  // Party
+      2: { cellWidth: 55 },   // Mode
+      3: { cellWidth: 75 },   // Category
+      4: { cellWidth: 165, overflow: "linebreak" }, // Description
+      5: { cellWidth: 50, halign: "right", overflow: "hidden" }, // Amount (single line)
+    },
+  });
+}
 
-  // Description gets flexible big space
-  4: { cellWidth: 165, overflow: "linebreak" },
-
-  // Amount fixed single-line column
-  5: {
-    cellWidth: 50,
-    halign: "right",
-    overflow: "hidden",   // prevent wrap
-    minCellHeight: 14
-  }
-},
-    });
-  }
 
   // Footer
   addProfessionalFooter(doc, brand);
