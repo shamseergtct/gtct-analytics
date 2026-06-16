@@ -72,6 +72,10 @@ function normalizeType(t) {
   return x;
 }
 
+function isCreditMode(m) {
+  return normalizeMode(m) === "credit";
+}
+
 // -------- Discount helpers (backward compatible) --------
 function getDiscountAmount(t) {
   const a =
@@ -121,7 +125,7 @@ function isInternalTransfer(t) {
 
 // -------- Effective In/Out (discount netting) --------
 function inValue(t) {
-  return num(t?.amountIn);
+  return num(t?.amountIn) || num(t?.amount);
 }
 function outValue(t) {
   const out = num(t?.amountOut);
@@ -320,18 +324,19 @@ export default function PartyReports() {
       const pid = String(selectedParty?.id || "").trim();
       const pname = norm(selectedParty?.name);
 
-      // local filter (partyId OR partyName)
+      // local filter (partyId OR partyName; legacy customerId/customerName too)
       const txns = all.filter((x) => {
         if (isInternalTransfer(x)) return false; // ✅ always skip internal transfers
-        if (pid && x?.partyId === pid) return true;
-        if (pname && norm(x?.partyName) === pname) return true;
+        if (pid && (x?.partyId === pid || x?.customerId === pid)) return true;
+        if (pname && (norm(x?.partyName) === pname || norm(x?.customerName) === pname))
+          return true;
         return false;
       });
 
       const normalized = txns.map((x) => {
-        const d = asJSDate(x.date);
+        const d = asJSDate(x.date) || asJSDate(x.dateAt) || (x?.dateMs ? new Date(x.dateMs) : null);
         const ty = normalizeType(x?.type);
-        const mm = normalizeMode(x?.mode);
+        const mm = normalizeMode(x?.mode || x?.paymentMode);
 
         // display amount based on txn nature
         let amount = 0;
@@ -339,7 +344,7 @@ export default function PartyReports() {
         if (ty === "purchase" && mm === "credit") amount = effectiveCreditLiabilityCreated(x);
         else if (ty === "sales" || ty === "receipt" || ty === "income") amount = effectiveIn(x);
         else if (ty === "purchase" || ty === "payment" || ty === "expense") amount = effectiveOut(x);
-        else amount = num(x?.totalAmount) || num(x?.amountIn) || num(x?.amountOut) || 0;
+        else amount = num(x?.totalAmount) || num(x?.amountIn) || num(x?.amountOut) || num(x?.amount) || 0;
 
         return {
           ...x,
@@ -370,16 +375,22 @@ const report = useMemo(() => {
   let totalIn = 0;
   let totalOut = 0;
 
-  let creditCreated = 0; // customer/supplier/employee depending on mode
-  let settled = 0;
+  let creditCreated = 0;
+  let creditSettled = 0; // receipts/payments that reduce credit balance
+  let paidImmediate = 0; // cash/bank/petti settled at transaction time
+
+  let customerCredit = 0;
+  let customerCreditSettled = 0;
+  let customerPaidImmediate = 0;
+  let supplierCredit = 0;
+  let supplierCreditSettled = 0;
+  let supplierPaidImmediate = 0;
 
   for (const t of txns) {
-    const ty = norm(t?.type);
-    const m = norm(t?.mode);
+    const ty = t?._typeKey || normalizeType(t?.type);
+    const m = t?._modeKey || normalizeMode(t?.mode || t?.paymentMode);
 
-    // ✅ IMPORTANT: use the NET amount field you are actually storing
-    // Prefer _amount (latest), fallback to _total, then totalAmount
-    const amt = Number(
+    const amt = num(
       t?._amount ??
       t?._total ??
       t?.totalAmount ??
@@ -390,78 +401,81 @@ const report = useMemo(() => {
 
     if (!(amt > 0)) continue;
 
-    // ---------------- CUSTOMER ----------------
     if (pType === "customer") {
-      if (ty === "sales" && m === "credit") creditCreated += amt;
-      if (ty === "receipt") settled += amt;
-    }
+      if ((ty === "sales" || ty === "income") && isCreditMode(m)) creditCreated += amt;
+      else if ((ty === "sales" || ty === "income") && !isCreditMode(m)) paidImmediate += amt;
+      if (ty === "receipt") creditSettled += amt;
+    } else if (pType === "supplier") {
+      if ((ty === "purchase" || ty === "expense") && isCreditMode(m)) creditCreated += amt;
+      else if ((ty === "purchase" || ty === "expense") && !isCreditMode(m)) paidImmediate += amt;
+      if (ty === "payment") creditSettled += amt;
+    } else if (pType === "employee") {
+      if (ty === "expense" && isCreditMode(m)) creditCreated += amt;
+      if (ty === "payment" && !isCreditMode(m)) creditSettled += amt;
+    } else if (pType === "both") {
+      if ((ty === "sales" || ty === "income") && isCreditMode(m)) customerCredit += amt;
+      else if ((ty === "sales" || ty === "income") && !isCreditMode(m)) customerPaidImmediate += amt;
+      if (ty === "receipt") customerCreditSettled += amt;
 
-    // ---------------- SUPPLIER ----------------
-    else if (pType === "supplier") {
-      if ((ty === "purchase" || ty === "expense") && m === "credit") creditCreated += amt;
-      if (ty === "payment") settled += amt;
-    }
-
-    // ---------------- EMPLOYEE (FIXED LOGIC) ----------------
-    else if (pType === "employee") {
-      // ✅ Salary payable is created ONLY when Expense is CREDIT
-      if (ty === "expense" && m === "credit") creditCreated += amt;
-
-      // ✅ Salary is paid ONLY when Payment is NOT credit (cash/bank/petti)
-      if (ty === "payment" && m !== "credit") settled += amt;
-    }
-
-    // ---------------- OWNER / PARTNER / BOTH (internal) ----------------
-    else {
-      if (Number(t?.amountIn) > 0) totalIn += Number(t.amountIn);
-      if (Number(t?.amountOut) > 0) totalOut += Number(t.amountOut);
+      if ((ty === "purchase" || ty === "expense") && isCreditMode(m)) supplierCredit += amt;
+      else if ((ty === "purchase" || ty === "expense") && !isCreditMode(m)) supplierPaidImmediate += amt;
+      if (ty === "payment") supplierCreditSettled += amt;
+    } else {
+      if (ty === "sales" || ty === "receipt" || ty === "income") totalIn += amt;
+      else if (ty === "purchase" || ty === "payment" || ty === "expense") totalOut += amt;
     }
   }
 
-  // CUSTOMER
+  const base = { count: txns.length, rows: txns };
+
   if (pType === "customer") {
     return {
+      ...base,
       mode: "customer",
-      count: txns.length,
       customerCreditSales: creditCreated,
-      customerReceipts: settled,
-      receivable: creditCreated - settled,
-      rows: txns,
+      customerReceipts: creditSettled + paidImmediate,
+      receivable: creditCreated - creditSettled,
     };
   }
 
-  // SUPPLIER
   if (pType === "supplier") {
     return {
+      ...base,
       mode: "supplier",
-      count: txns.length,
       supplierCreditPurchases: creditCreated,
-      supplierPayments: settled,
-      payable: creditCreated - settled,
-      rows: txns,
+      supplierPayments: creditSettled + paidImmediate,
+      payable: creditCreated - creditSettled,
     };
   }
 
-  // EMPLOYEE
   if (pType === "employee") {
     return {
+      ...base,
       mode: "employee",
-      count: txns.length,
       totalToPay: creditCreated,
-      totalPaid: settled,
-      balance: creditCreated - settled,
-      rows: txns,
+      totalPaid: creditSettled,
+      balance: creditCreated - creditSettled,
     };
   }
 
-  // INTERNAL (Owner/Partner/Both)
+  if (pType === "both") {
+    const receivable = customerCredit - customerCreditSettled;
+    const payable = supplierCredit - supplierCreditSettled;
+    return {
+      ...base,
+      mode: "both",
+      receivable,
+      payable,
+      net: receivable - payable,
+    };
+  }
+
   return {
+    ...base,
     mode: "internal",
-    count: txns.length,
     totalIn,
     totalOut,
     net: totalIn - totalOut,
-    rows: txns,
   };
 }, [rows, type]);
 
@@ -721,7 +735,6 @@ const report = useMemo(() => {
   </div>
 )}
 
-
         <div className="mt-2 text-xs text-slate-500">
           Note: Discounts are netted (customer discount reduces receivable; supplier discount reduces payable). Petti refill/internal transfers are excluded.
         </div>
@@ -744,25 +757,27 @@ const report = useMemo(() => {
           {report.rows.length === 0 ? (
             <div className="px-4 py-6 text-slate-400">No records found.</div>
           ) : (
-            report.rows.map((t) => (
-              <div
-                key={t.id}
-                className="grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40"
-              >
-                <div className="col-span-2 text-slate-300">
-                  {t._dateObj ? toYYYYMMDD(t._dateObj) : "-"}
+            <>
+              {report.rows.map((t) => (
+                <div
+                  key={t.id}
+                  className="grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40"
+                >
+                  <div className="col-span-2 text-slate-300">
+                    {t._dateObj ? toYYYYMMDD(t._dateObj) : "-"}
+                  </div>
+                  <div className="col-span-2 text-slate-100 font-medium">{t.type || "-"}</div>
+                  <div className="col-span-2 text-slate-300">{t.mode || t.paymentMode || "-"}</div>
+                  <div className="col-span-1 text-slate-400">{t._dir}</div>
+                  <div className="col-span-3 text-slate-400 truncate">
+                    {t.description || t.category || "-"}
+                  </div>
+                  <div className="col-span-2 text-right text-white font-semibold tabular-nums">
+                    {money(t._amount)} {currency}
+                  </div>
                 </div>
-                <div className="col-span-2 text-slate-100 font-medium">{t.type || "-"}</div>
-                <div className="col-span-2 text-slate-300">{t.mode || "-"}</div>
-                <div className="col-span-1 text-slate-400">{t._dir}</div>
-                <div className="col-span-3 text-slate-400 truncate">
-                  {t.description || t.category || "-"}
-                </div>
-                <div className="col-span-2 text-right text-white font-semibold tabular-nums">
-                  {money(t._amount)} {currency}
-                </div>
-              </div>
-            ))
+              ))}
+            </>
           )}
         </div>
       </div>

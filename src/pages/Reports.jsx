@@ -34,6 +34,11 @@ function endOfDay(yyyyMMdd) {
   const [y, m, d] = yyyyMMdd.split("-").map(Number);
   return new Date(y, m - 1, d, 23, 59, 59, 999);
 }
+function prevDate(yyyyMMdd) {
+  const d = startOfDay(yyyyMMdd);
+  d.setDate(d.getDate() - 1);
+  return toYYYYMMDD(d);
+}
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
@@ -198,6 +203,127 @@ async function upsertOpeningInputs(clientId, openingCashFrom, openingBankFrom) {
   );
 }
 
+async function fetchTransactionsTill(clientId, dateKey) {
+  if (!clientId || !dateKey) return [];
+  const veryOld = Timestamp.fromDate(new Date(1970, 0, 1, 0, 0, 0, 0));
+  const to = Timestamp.fromDate(endOfDay(dateKey));
+  const qy = query(
+    collection(db, "transactions"),
+    where("clientId", "==", clientId),
+    where("date", ">=", veryOld),
+    where("date", "<=", to),
+    orderBy("date", "desc")
+  );
+  const snap = await getDocs(qy);
+  return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+}
+
+async function computeClosingBankTill(clientId, dateKey, openingCash, openingBank) {
+  const txns = await fetchTransactionsTill(clientId, dateKey);
+  const result = generateDailyPulseReport(txns, {
+    selectedDate: dateKey,
+    openingCash: num(openingCash),
+    openingBank: num(openingBank),
+    openingPetti: 0,
+    actualCount: 0,
+    txnsTillDate: txns,
+    isSingleDay: true,
+  });
+  return num(result?.liquidity?.totalBankBalance);
+}
+
+/**
+ * Bootstrap opening used to compute a given date (one day back, then legacy settings).
+ */
+async function getBootstrapOpening(clientId, forDate) {
+  const dayBefore = prevDate(forDate);
+  const session = await fetchDailySession(clientId, dayBefore).catch(() => null);
+
+  if (session?.actualCashDrawer != null || session?.closingBankBalance != null) {
+    return {
+      cash: num(session.actualCashDrawer),
+      bank: num(session.closingBankBalance),
+    };
+  }
+
+  const saved = await fetchOpeningInputs(clientId).catch(() => null);
+  return {
+    cash: num(saved?.openingCashFrom),
+    bank: num(saved?.openingBankFrom),
+  };
+}
+
+/**
+ * Opening for `fromDate` = previous day's actual cash count + closing bank balance.
+ */
+async function resolveOpeningFromPreviousDay(clientId, fromDate) {
+  if (!clientId || !fromDate) {
+    return { cash: 0, bank: 0, sourceDate: "", mode: "empty" };
+  }
+
+  const sourceDate = prevDate(fromDate);
+  const prevSession = await fetchDailySession(clientId, sourceDate).catch(() => null);
+
+  const hasSavedClosing =
+    prevSession &&
+    (prevSession.actualCashDrawer != null || prevSession.closingBankBalance != null);
+
+  if (hasSavedClosing) {
+    const cash = num(prevSession.actualCashDrawer);
+    let bank = prevSession.closingBankBalance;
+
+    if (bank === undefined || bank === null) {
+      const boot = await getBootstrapOpening(clientId, sourceDate);
+      bank = await computeClosingBankTill(
+        clientId,
+        sourceDate,
+        cash || boot.cash,
+        boot.bank
+      );
+    } else {
+      bank = num(bank);
+    }
+
+    return { cash, bank, sourceDate, mode: "saved" };
+  }
+
+  const boot = await getBootstrapOpening(clientId, sourceDate);
+  const txns = await fetchTransactionsTill(clientId, sourceDate).catch(() => []);
+
+  if (txns.length > 0) {
+    const result = generateDailyPulseReport(txns, {
+      selectedDate: sourceDate,
+      openingCash: boot.cash,
+      openingBank: boot.bank,
+      openingPetti: 0,
+      actualCount: 0,
+      txnsTillDate: txns,
+      isSingleDay: true,
+    });
+
+    return {
+      cash: num(result?.cashCheck?.expectedDrawer),
+      bank: num(result?.liquidity?.totalBankBalance),
+      sourceDate,
+      mode: "computed",
+    };
+  }
+
+  if (boot.cash || boot.bank) {
+    return { cash: boot.cash, bank: boot.bank, sourceDate, mode: "legacy" };
+  }
+
+  return { cash: 0, bank: 0, sourceDate, mode: "empty" };
+}
+
+function openingSourceLabel(mode, sourceDate) {
+  if (!sourceDate) return "No previous day data — using 0";
+  if (mode === "saved") return `Auto from ${sourceDate} closing`;
+  if (mode === "computed") return `Computed from ${sourceDate} transactions`;
+  if (mode === "legacy") return `From saved settings (${sourceDate})`;
+  return `No data for ${sourceDate} — using 0`;
+}
+
 // -------------------------
 // UI components
 // -------------------------
@@ -282,34 +408,41 @@ export default function Reports() {
 
   // status for opening inputs
   const [inputsLoaded, setInputsLoaded] = useState(false);
-  const [savingOpening, setSavingOpening] = useState(false);
+  const [openingSourceDate, setOpeningSourceDate] = useState("");
+  const [openingSourceMode, setOpeningSourceMode] = useState("empty");
+  const [savingSession, setSavingSession] = useState(false);
+  const [saveOk, setSaveOk] = useState("");
 
   const isSingleDay = fromDate === toDate;
 
   // -----------------------------------------
-  // ✅ AUTO LOAD (NO BUTTON) — Opening inputs per client
+  // AUTO LOAD — Opening from previous day closing (actual cash + bank)
   // -----------------------------------------
   useEffect(() => {
     let mounted = true;
     (async () => {
       setInputsLoaded(false);
-      if (!activeClientId) return;
-
       try {
-        const saved = await fetchOpeningInputs(activeClientId);
+        if (!activeClientId || !fromDate) {
+          if (mounted) {
+            setOpeningSourceMode("empty");
+            setOpeningSourceDate("");
+          }
+          return;
+        }
+
+        const opening = await resolveOpeningFromPreviousDay(activeClientId, fromDate);
         if (!mounted) return;
 
-        if (saved) {
-          setOpeningCashFrom(String(saved.openingCashFrom ?? 0));
-          setOpeningBankFrom(String(saved.openingBankFrom ?? 0));
-        } else {
-          // keep defaults (0) if no saved doc
-          setOpeningCashFrom("0");
-          setOpeningBankFrom("0");
-        }
+        setOpeningCashFrom(String(opening.cash));
+        setOpeningBankFrom(String(opening.bank));
+        setOpeningSourceDate(opening.sourceDate || "");
+        setOpeningSourceMode(opening.mode || "empty");
       } catch (e) {
-        console.error("Auto load opening inputs failed:", e);
-        // don't block UI
+        console.error("Auto load opening from previous day failed:", e);
+        if (mounted) {
+          setSessionErr(e?.message || "Failed to load opening balances.");
+        }
       } finally {
         if (mounted) setInputsLoaded(true);
       }
@@ -317,7 +450,7 @@ export default function Reports() {
     return () => {
       mounted = false;
     };
-  }, [activeClientId]);
+  }, [activeClientId, fromDate]);
 
   // -----------------------------------------
   // ✅ AUTO LOAD — ToDate session (actual cash + notes)
@@ -333,8 +466,10 @@ export default function Reports() {
         setActualCountTo(String(sTo?.actualCashDrawer ?? "0"));
         setAnalystNotesText(String(sTo?.analystNotes ?? ""));
       } catch (e) {
-        // silent (live safe)
         console.error("Auto load ToDate session failed:", e);
+        if (e?.message?.includes("permission")) {
+          setSessionErr("Missing or insufficient permissions to load saved session.");
+        }
       }
     })();
     return () => {
@@ -343,47 +478,19 @@ export default function Reports() {
   }, [activeClientId, toDate]);
 
   // -----------------------------------------
-  // ✅ AUTO SAVE (debounced) — opening inputs to Firestore client_settings
-  // -----------------------------------------
-  useEffect(() => {
-    if (!activeClientId) return;
-    if (!inputsLoaded) return;
-
-    const t = setTimeout(async () => {
-      try {
-        setSavingOpening(true);
-        await upsertOpeningInputs(
-          activeClientId,
-          Number(openingCashFrom || 0),
-          Number(openingBankFrom || 0)
-        );
-      } catch (e) {
-        console.error("Auto save opening inputs failed:", e);
-      } finally {
-        setSavingOpening(false);
-      }
-    }, 650);
-
-    return () => clearTimeout(t);
-  }, [activeClientId, openingCashFrom, openingBankFrom, inputsLoaded]);
-
-  // -----------------------------------------
-  // ✅ Load Saved Inputs button (manual)
-  // Fixes: "button not loading"
+  // Load Saved Inputs button (manual)
   // -----------------------------------------
   async function loadSavedInputs() {
     setSessionErr("");
     if (!activeClientId) return;
 
     try {
-      // Opening inputs (client_settings)
-      const saved = await fetchOpeningInputs(activeClientId);
-      if (saved) {
-        setOpeningCashFrom(String(saved.openingCashFrom ?? 0));
-        setOpeningBankFrom(String(saved.openingBankFrom ?? 0));
-      }
+      const opening = await resolveOpeningFromPreviousDay(activeClientId, fromDate);
+      setOpeningCashFrom(String(opening.cash));
+      setOpeningBankFrom(String(opening.bank));
+      setOpeningSourceDate(opening.sourceDate || "");
+      setOpeningSourceMode(opening.mode || "empty");
 
-      // ToDate session inputs
       const sTo = await fetchDailySession(activeClientId, toDate);
       setActualCountTo(String(sTo?.actualCashDrawer ?? "0"));
       setAnalystNotesText(String(sTo?.analystNotes ?? ""));
@@ -458,29 +565,44 @@ export default function Reports() {
   // Save notes + actual cash (ToDate)
   // Opening already auto-saves; but we also save immediately here (safe)
   // -----------------------------------------
-  async function saveNotesToToDate() {
+  async function saveDayClosing() {
     setSessionErr("");
-    if (!activeClientId) return;
+    setSaveOk("");
+    if (!activeClientId) return setSessionErr("Please select an active client first.");
+    if (!toDate) return setSessionErr("Please select a To date.");
 
+    setSavingSession(true);
     try {
-      // Ensure opening stored (immediate save)
-      await upsertOpeningInputs(
-        activeClientId,
-        Number(openingCashFrom || 0),
-        Number(openingBankFrom || 0)
-      );
+      let closingBankBalance = generated
+        ? num(report?.liquidity?.totalBankBalance)
+        : await computeClosingBankTill(
+            activeClientId,
+            toDate,
+            openingCashFrom,
+            openingBankFrom
+          );
 
-      // Save ToDate session
       await upsertDailySession(activeClientId, toDate, {
         actualCashDrawer: Number(actualCountTo || 0),
+        closingBankBalance,
+        openingCashUsed: num(openingCashFrom),
+        openingBankUsed: num(openingBankFrom),
         analystNotes: String(analystNotesText || ""),
         reportFrom: fromDate,
         reportTo: toDate,
       });
+
+      setSaveOk(`Saved closing for ${toDate}. Next day will use this automatically.`);
     } catch (e) {
       console.error(e);
-      setSessionErr(e?.message || "Failed to save notes/inputs.");
+      setSessionErr(e?.message || "Failed to save day closing.");
+    } finally {
+      setSavingSession(false);
     }
+  }
+
+  async function saveNotesToToDate() {
+    await saveDayClosing();
   }
 
   // -------------------------
@@ -743,11 +865,9 @@ export default function Reports() {
               className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
             />
             <div className="mt-1 text-[11px] text-slate-500">
-              {savingOpening
-                ? "Saving to Firestore..."
-                : inputsLoaded
-                ? "Saved (Firestore)"
-                : "Loading..."}
+              {!inputsLoaded
+                ? "Loading..."
+                : openingSourceLabel(openingSourceMode, openingSourceDate)}
             </div>
           </div>
 
@@ -761,11 +881,9 @@ export default function Reports() {
               className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
             />
             <div className="mt-1 text-[11px] text-slate-500">
-              {savingOpening
-                ? "Saving to Firestore..."
-                : inputsLoaded
-                ? "Saved (Firestore)"
-                : "Loading..."}
+              {!inputsLoaded
+                ? "Loading..."
+                : openingSourceLabel(openingSourceMode, openingSourceDate)}
             </div>
           </div>
         </div>
@@ -782,7 +900,14 @@ export default function Reports() {
             />
           </div>
 
-          <div className="flex items-end gap-2">
+          <div className="flex flex-wrap items-end gap-2">
+            <button
+              onClick={saveDayClosing}
+              disabled={!activeClientId || savingSession}
+              className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {savingSession ? "Saving..." : "Save Day Closing"}
+            </button>
             <button
               onClick={loadSavedInputs}
               className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100 hover:bg-slate-800 disabled:opacity-60"
@@ -791,6 +916,17 @@ export default function Reports() {
               Load Saved Inputs
             </button>
           </div>
+        </div>
+
+        {saveOk ? (
+          <div className="mt-3 rounded-xl border border-emerald-900/40 bg-emerald-950/30 p-2 text-sm text-emerald-200">
+            {saveOk}
+          </div>
+        ) : null}
+
+        <div className="mt-2 text-xs text-slate-500">
+          Save stores <b>Actual Cash Count</b> + <b>closing bank</b> for the <b>To</b> date. The
+          next day&apos;s opening loads from this automatically.
         </div>
 
         {err ? (
@@ -819,16 +955,15 @@ export default function Reports() {
 
           <div className="mt-2 flex flex-col sm:flex-row sm:items-center gap-2">
             <button
-              onClick={saveNotesToToDate}
-              className="rounded-xl bg-slate-200 px-3 py-2 text-sm font-semibold text-slate-950 hover:opacity-90 disabled:opacity-60"
-              disabled={!activeClientId}
+              onClick={saveDayClosing}
+              disabled={!activeClientId || savingSession}
+              className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
             >
-              Save Notes
+              {savingSession ? "Saving..." : "Save Day Closing"}
             </button>
 
             <div className="text-xs text-slate-500">
-              Notes + Actual Count saved to <b>To date</b>. Opening Cash/Bank saved to{" "}
-              <b>Firestore (until you change)</b>.
+              Saves notes + actual cash count + closing bank for <b>{toDate || "To date"}</b>.
             </div>
           </div>
         </div>

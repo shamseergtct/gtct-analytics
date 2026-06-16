@@ -43,6 +43,44 @@ function safeLower(x) {
   return safeStr(x).toLowerCase();
 }
 
+const DEFAULT_FORM_PREFS = {
+  type: "Sales",
+  category: "Commodity",
+  mode: "Cash",
+  partyType: "Customer",
+};
+
+function formPrefsKey(clientId) {
+  return `gtct_txn_form_prefs_${clientId || "no_client"}`;
+}
+
+function loadFormPrefs(clientId) {
+  try {
+    const raw = localStorage.getItem(formPrefsKey(clientId));
+    if (!raw) return { ...DEFAULT_FORM_PREFS };
+    return { ...DEFAULT_FORM_PREFS, ...JSON.parse(raw) };
+  } catch {
+    return { ...DEFAULT_FORM_PREFS };
+  }
+}
+
+function saveFormPrefs(clientId, prefs) {
+  if (!clientId) return;
+  try {
+    localStorage.setItem(
+      formPrefsKey(clientId),
+      JSON.stringify({
+        type: prefs.type || DEFAULT_FORM_PREFS.type,
+        category: prefs.category || DEFAULT_FORM_PREFS.category,
+        mode: prefs.mode || DEFAULT_FORM_PREFS.mode,
+        partyType: prefs.partyType || DEFAULT_FORM_PREFS.partyType,
+      })
+    );
+  } catch {
+    // ignore storage errors
+  }
+}
+
 export default function MasterEntryForm({
   selectedDate,
   onChangeDate,
@@ -80,13 +118,31 @@ export default function MasterEntryForm({
   const [pettiRefillSource, setPettiRefillSource] = useState("Cash");
   const [pettiRefillAmount, setPettiRefillAmount] = useState("0");
 
-  // ✅ Reset everything EXCEPT date
-  const resetFormKeepDate = () => {
-    setType("Sales");
-    setCategory("Commodity");
-    setMode("Cash");
+  const prefsHydratedRef = useRef(false);
 
-    setPartyType("Customer");
+  // Restore last-used type/category/mode/party type per client
+  useEffect(() => {
+    prefsHydratedRef.current = false;
+    if (!activeClientId) return;
+
+    const prefs = loadFormPrefs(activeClientId);
+    setType(prefs.type);
+    setCategory(prefs.category);
+    setMode(prefs.mode);
+    setPartyType(prefs.partyType);
+
+    setTimeout(() => {
+      prefsHydratedRef.current = true;
+    }, 0);
+  }, [activeClientId]);
+
+  useEffect(() => {
+    if (!activeClientId || !prefsHydratedRef.current || isEdit) return;
+    saveFormPrefs(activeClientId, { type, category, mode, partyType });
+  }, [activeClientId, type, category, mode, partyType, isEdit]);
+
+  // Reset amounts/party after save — keep date + type/category/mode/party type
+  const resetFormKeepDate = () => {
     setSelectedParty(null);
     setPartyQuery("");
     setShowPartyList(false);
@@ -117,6 +173,13 @@ export default function MasterEntryForm({
     // If we were editing and now editTxn is cleared -> reset form
     if (prevEditId.current && !nowId) {
       resetFormKeepDate();
+      if (activeClientId) {
+        const prefs = loadFormPrefs(activeClientId);
+        setType(prefs.type);
+        setCategory(prefs.category);
+        setMode(prefs.mode);
+        setPartyType(prefs.partyType);
+      }
     }
 
     prevEditId.current = nowId;
@@ -363,8 +426,9 @@ export default function MasterEntryForm({
     if (isEdit) {
       await updateDoc(doc(db, "transactions", editTxn.id), basePayload);
 
-      // ✅ after edit save: reset all fields but keep date
+      // after edit save: reset entry fields but keep date + last type/category/mode/party type
       resetFormKeepDate();
+      saveFormPrefs(activeClientId, { type, category, mode, partyType });
       onCancelEdit?.();
     } else {
       await addDoc(collection(db, "transactions"), {
@@ -372,8 +436,9 @@ export default function MasterEntryForm({
         createdAt: Timestamp.now(),
       });
 
-      // ✅ after new save: reset all fields but keep date
+      // after new save: reset entry fields but keep date + last type/category/mode/party type
       resetFormKeepDate();
+      saveFormPrefs(activeClientId, { type, category, mode, partyType });
     }
 
     onSaved?.();

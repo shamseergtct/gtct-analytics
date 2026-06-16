@@ -125,6 +125,10 @@ export function generatePartyPDF({
     card1 = { title: "Pending Receivable", value: num(report?.receivable || 0) };
     card2 = { title: "Pending Payable", value: num(report?.payable || 0) };
     card3 = { title: "Net (In − Out)", value: num(report?.net || 0) };
+  } else if (mode === "employee") {
+    card1 = { title: "Total To Pay (Credit)", value: num(report?.totalToPay || 0) };
+    card2 = { title: "Total Paid (Cash/Bank/Petti)", value: num(report?.totalPaid || 0) };
+    card3 = { title: "Total Balance", value: num(report?.balance || 0) };
   }
 
   metricCard(doc, { x: margin, y: cardY, w: cardW, h: cardH, ...card1, currency });
@@ -155,7 +159,7 @@ export function generatePartyPDF({
     return [
       d,
       safeStr(t?.type),
-      safeStr(t?.mode),
+      safeStr(t?.mode || t?.paymentMode),
       dir,
       safeStr(t?.description || t?.category, "-"),
       `${money(amount)} ${safeStr(currency)}`,
