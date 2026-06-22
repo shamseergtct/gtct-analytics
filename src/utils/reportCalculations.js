@@ -49,7 +49,7 @@ function normalizeType(t) {
 }
 
 function modeKey(t) {
-  return normalizeMode(t?.mode);
+  return normalizeMode(t?.mode || t?.paymentMode);
 }
 function typeKey(t) {
   return normalizeType(t?.type);
@@ -71,16 +71,22 @@ function outValue(t) {
   const out = num(t?.amountOut);
   if (out > 0) return out;
 
-  // ✅ fallback ONLY for outflow types (legacy)
   const ty = typeKey(t);
   if (ty === "purchase" || ty === "payment" || ty === "expense") {
-    return num(t?.amountIn);
+    return num(t?.amountIn) || num(t?.amount) || num(t?.totalAmount);
   }
   return 0;
 }
 
 function inValue(t) {
-  return num(t?.amountIn);
+  const direct = num(t?.amountIn);
+  if (direct > 0) return direct;
+
+  const ty = typeKey(t);
+  if (ty === "sales" || ty === "receipt" || ty === "income") {
+    return num(t?.amount) || num(t?.totalAmount);
+  }
+  return 0;
 }
 
 function safeName(v, fallback) {
@@ -95,14 +101,30 @@ function supplierKey(t) {
   return safeName(t?.partyName || t?.description, "Supplier");
 }
 
+function txnJSDate(t) {
+  try {
+    if (t?.date?.toDate instanceof Function) {
+      const d = t.date.toDate();
+      if (d instanceof Date && !Number.isNaN(d.getTime())) return d;
+    }
+    if (t?.date instanceof Date && !Number.isNaN(t.date.getTime())) return t.date;
+    if (t?.dateAt?.toDate instanceof Function) {
+      const d = t.dateAt.toDate();
+      if (d instanceof Date && !Number.isNaN(d.getTime())) return d;
+    }
+    if (num(t?.dateMs) > 0) {
+      const d = new Date(num(t.dateMs));
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 function fmtDate(t) {
   try {
-    const d =
-      t?.date?.toDate?.() instanceof Date
-        ? t.date.toDate()
-        : t?.date instanceof Date
-        ? t.date
-        : null;
+    const d = txnJSDate(t);
     if (!d) return "";
     const y = d.getFullYear();
     const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -581,25 +603,27 @@ export function generateDailyPulseReport(txnsRange = [], inputs = {}) {
   const liabTill = computeLiabilities(txnsTill);
 
   // -------------------------
-  // 6) LIQUIDITY (TILL DATE)
+  // 6) LIQUIDITY (closing balance at To date)
+  // Opening = previous day closing; add ONLY report-range movements (no double count)
   // -------------------------
-  const normalTill = txnsTill.filter((t) => !isInternalTransfer(t));
+  const liquidityTxns = txnsRange;
+  const normalLiquidity = liquidityTxns.filter((t) => !isInternalTransfer(t));
 
-  const cashInTill = sum(normalTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
-  const cashOutTill = sum(normalTill.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
+  const cashInLiquidity = sum(normalLiquidity.filter((t) => modeKey(t) === "cash"), (t) => effectiveIn(t));
+  const cashOutLiquidity = sum(normalLiquidity.filter((t) => modeKey(t) === "cash"), (t) => effectiveOut(t));
 
-  const bankInTill = sum(normalTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
-  const bankOutTill = sum(normalTill.filter((t) => modeKey(t) === "bank"), (t) => effectiveOut(t));
+  const bankInLiquidity = sum(normalLiquidity.filter((t) => modeKey(t) === "bank"), (t) => effectiveIn(t));
+  const bankOutLiquidity = sum(normalLiquidity.filter((t) => modeKey(t) === "bank"), (t) => effectiveOut(t));
 
-  const pettiInTill = sum(normalTill.filter((t) => modeKey(t) === "petti"), (t) => effectiveIn(t));
-  const pettiOutTill = sum(normalTill.filter((t) => modeKey(t) === "petti"), (t) => effectiveOut(t));
+  const pettiInLiquidity = sum(normalLiquidity.filter((t) => modeKey(t) === "petti"), (t) => effectiveIn(t));
+  const pettiOutLiquidity = sum(normalLiquidity.filter((t) => modeKey(t) === "petti"), (t) => effectiveOut(t));
 
-  let totalCashBalance = num(openingCash) + (cashInTill - cashOutTill);
-  let totalBankBalance = num(openingBank) + (bankInTill - bankOutTill);
-  let totalPettiBalance = num(openingPetti) + (pettiInTill - pettiOutTill);
+  let totalCashBalance = num(openingCash) + (cashInLiquidity - cashOutLiquidity);
+  let totalBankBalance = num(openingBank) + (bankInLiquidity - bankOutLiquidity);
+  let totalPettiBalance = num(openingPetti) + (pettiInLiquidity - pettiOutLiquidity);
 
-  const internalTransfersTill = txnsTill.filter(isInternalTransfer);
-  for (const t of internalTransfersTill) {
+  const internalTransfersLiquidity = liquidityTxns.filter(isInternalTransfer);
+  for (const t of internalTransfersLiquidity) {
     const amt = internalTransferAmount(t);
     if (!(amt > 0)) continue;
 
