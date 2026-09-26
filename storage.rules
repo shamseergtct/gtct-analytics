@@ -1,0 +1,31 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function userProfile() {
+      return firestore.get(
+        /databases/(default)/documents/users/$(request.auth.uid)
+      ).data;
+    }
+
+    function canAccessClient(clientId) {
+      return request.auth != null
+        && userProfile().isActive != false
+        && (
+          userProfile().role == 'super_admin'
+          || (
+            userProfile().assignedShops is list
+            && clientId in userProfile().assignedShops
+          )
+        );
+    }
+
+    match /inventory/{clientId}/{itemId}/{fileName} {
+      allow read: if canAccessClient(clientId);
+      allow create, update: if canAccessClient(clientId)
+        && request.resource.size <= 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+      allow delete: if canAccessClient(clientId);
+    }
+  }
+}

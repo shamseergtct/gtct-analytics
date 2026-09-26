@@ -1,0 +1,812 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userPath() {
+      return /databases/$(database)/documents/users/$(request.auth.uid);
+    }
+
+    function profileExists() {
+      return signedIn() && exists(userPath());
+    }
+
+    function profile() {
+      return get(userPath()).data;
+    }
+
+    function activeUser() {
+      return profileExists() && profile().isActive != false;
+    }
+
+    function isSuperAdmin() {
+      return activeUser() && profile().role == 'super_admin';
+    }
+
+    function assignedTo(clientId) {
+      return activeUser()
+        && profile().assignedShops is list
+        && profile().assignedShops.hasAny([clientId]);
+    }
+
+    function canAccessClient(clientId) {
+      return isSuperAdmin() || assignedTo(clientId);
+    }
+
+    function canManageClient(clientId) {
+      return isSuperAdmin()
+        || (
+          activeUser()
+          && profile().role == 'admin'
+          && assignedTo(clientId)
+        );
+    }
+
+    function canReadTenantResource() {
+      return canAccessClient(resource.data.clientId);
+    }
+
+    function canCreateTenantResource() {
+      return request.resource.data.clientId is string
+        && canAccessClient(request.resource.data.clientId);
+    }
+
+    function canUpdateTenantResource() {
+      return canAccessClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId;
+    }
+
+    function validPurchaseValues(data) {
+      return data.amount is number
+        && data.amount > 0
+        && data.partyId is string
+        && data.vendorName is string
+        && data.receiptNote is string
+        && data.entryType in ['purchase', 'expense']
+        && (
+          (
+            data.entryType == 'purchase'
+            && data.category in ['COMMODITY', 'CONSUMABLES', 'ASSET']
+          )
+          || (
+            data.entryType == 'expense'
+            && data.category in [
+              'UTILITY BILL',
+              'WAGE',
+              'SALARY',
+              'RENT',
+              'MAINTENANCE',
+              'OTHER'
+            ]
+          )
+        )
+        && data.paymentMode in [
+          'CASH',
+          'PETTY_CASH',
+          'CARD',
+          'QR',
+          'BANK',
+          'BANK_TRANSFER',
+          'CREDIT'
+        ]
+        && (
+          (
+            data.paymentMode == 'CREDIT'
+            && data.entryType == 'purchase'
+            && data.liabilityType == 'ACCOUNTS_PAYABLE'
+          )
+          || (
+            data.paymentMode != 'CREDIT'
+            && data.liabilityType == ''
+          )
+        );
+    }
+
+    match /users/{uid} {
+      allow get: if activeUser() && (request.auth.uid == uid || isSuperAdmin());
+      allow list, create, update, delete: if isSuperAdmin();
+    }
+
+    match /clients/{clientId} {
+      allow read: if canAccessClient(clientId);
+      allow create, update, delete: if isSuperAdmin();
+
+      match /dailySessions/{sessionId} {
+        allow read: if canAccessClient(clientId);
+        allow create: if canAccessClient(clientId)
+          && request.resource.data.clientId == clientId;
+        allow update: if canAccessClient(clientId)
+          && resource.data.clientId == clientId
+          && request.resource.data.clientId == clientId;
+        allow delete: if isSuperAdmin();
+      }
+    }
+
+    match /client_settings/{clientId} {
+      allow read: if canAccessClient(clientId);
+      allow create: if canAccessClient(clientId)
+        && request.resource.data.clientId == clientId;
+      allow update: if canAccessClient(clientId)
+        && resource.data.clientId == clientId
+        && request.resource.data.clientId == clientId;
+      allow delete: if isSuperAdmin();
+    }
+
+    match /parties/{partyId} {
+      allow read: if canReadTenantResource();
+      allow create: if canCreateTenantResource();
+      allow update: if canUpdateTenantResource();
+      allow delete: if canReadTenantResource();
+    }
+
+    match /bank_accounts/{accountId} {
+      allow read: if canReadTenantResource();
+      allow create: if canCreateTenantResource()
+        && request.resource.data.accountName is string
+        && request.resource.data.accountName.size() > 0
+        && request.resource.data.bankName is string
+        && request.resource.data.bankName.size() > 0
+        && request.resource.data.accountNumber is string
+        && request.resource.data.isActive is bool;
+      allow update: if canUpdateTenantResource()
+        && request.resource.data.accountName is string
+        && request.resource.data.accountName.size() > 0
+        && request.resource.data.bankName is string
+        && request.resource.data.bankName.size() > 0
+        && request.resource.data.accountNumber is string
+        && request.resource.data.isActive is bool;
+      allow delete: if canReadTenantResource();
+    }
+
+    match /transactions/{transactionId} {
+      allow read: if canReadTenantResource();
+      allow create: if canCreateTenantResource();
+      allow update: if canUpdateTenantResource();
+      allow delete: if canReadTenantResource();
+    }
+
+    match /inventory/{itemId} {
+      allow read: if canReadTenantResource();
+      allow create: if canCreateTenantResource()
+        && request.resource.data.keys().hasAll([
+          'clientId',
+          'category',
+          'itemCode',
+          'itemName',
+          'cost',
+          'sellingPrice',
+          'imageUrl',
+          'imagePath',
+          'imageName',
+          'imageStatus',
+          'currentStock',
+          'createdAt',
+          'createdAtMs',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && request.resource.data.keys().hasOnly([
+          'clientId',
+          'category',
+          'itemCode',
+          'itemName',
+          'cost',
+          'sellingPrice',
+          'imageUrl',
+          'imagePath',
+          'imageName',
+          'imageStatus',
+          'currentStock',
+          'createdAt',
+          'createdAtMs',
+          'createdBy',
+          'updatedAt',
+          'updatedBy'
+        ])
+        && request.resource.data.category in [
+          'COMMODITY',
+          'CONSUMABLES',
+          'ASSET'
+        ]
+        && request.resource.data.itemCode is string
+        && request.resource.data.itemCode.size() > 0
+        && request.resource.data.itemName is string
+        && request.resource.data.itemName.size() > 0
+        && request.resource.data.cost is number
+        && request.resource.data.cost >= 0
+        && request.resource.data.sellingPrice is number
+        && request.resource.data.sellingPrice >= 0
+        && request.resource.data.currentStock == 0
+        && request.resource.data.imageStatus in ['NONE', 'UPLOADED'];
+      allow update: if canUpdateTenantResource();
+      allow delete: if canReadTenantResource();
+
+      match /stock_audits/{auditId} {
+        allow read: if canReadTenantResource();
+        allow create: if canCreateTenantResource()
+          && request.resource.data.itemId == itemId;
+        allow update: if canUpdateTenantResource()
+          && request.resource.data.itemId == itemId;
+        allow delete: if isSuperAdmin();
+      }
+    }
+
+    match /inventory_movements/{movementId} {
+      allow read: if canReadTenantResource();
+      allow create: if canCreateTenantResource();
+      allow update: if canUpdateTenantResource();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /payment_receipts/{entryId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canCreateTenantResource()
+        && request.resource.data.entryType in ['receipt', 'payment']
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.partyId is string
+        && request.resource.data.partyName is string
+        && request.resource.data.category in [
+          'SETTLEMENT',
+          'ADVANCE',
+          'LOAN',
+          'OTHER'
+        ]
+        && request.resource.data.paymentMode in [
+          'CASH',
+          'PETTY_CASH',
+          'CARD',
+          'QR',
+          'BANK',
+          'BANK_TRANSFER'
+        ]
+        && request.resource.data.note is string
+        && request.resource.data.transactionId is string
+        && request.resource.data.createdBy == request.auth.uid
+        && get(
+          /databases/$(database)/documents/parties/$(request.resource.data.partyId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.type == request.resource.data.entryType
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.partyId == request.resource.data.partyId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refType == 'payment_receipt'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refId == entryId
+        && (
+          (
+            request.resource.data.paymentMode == 'CASH'
+            && request.resource.data.shiftId is string
+            && get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.clientId == request.resource.data.clientId
+            && get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.status == 'OPEN'
+          )
+          || (
+            request.resource.data.paymentMode != 'CASH'
+            && request.resource.data.shiftId == ''
+          )
+        );
+
+      allow update: if canUpdateTenantResource()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'entryType',
+          'amount',
+          'partyId',
+          'partyName',
+          'category',
+          'paymentMode',
+          'bankAccountId',
+          'bankAccountName',
+          'liabilityType',
+          'note',
+          'shiftId',
+          'businessDate',
+          'businessDateAt',
+          'updatedBy',
+          'updatedAt',
+          'updatedAtMs'
+        ])
+        && request.resource.data.transactionId == resource.data.transactionId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.entryType in ['receipt', 'payment']
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.partyId is string
+        && request.resource.data.partyName is string
+        && request.resource.data.category in [
+          'SETTLEMENT',
+          'ADVANCE',
+          'LOAN',
+          'OTHER'
+        ]
+        && request.resource.data.paymentMode in [
+          'CASH',
+          'PETTY_CASH',
+          'CARD',
+          'QR',
+          'BANK',
+          'BANK_TRANSFER'
+        ]
+        && request.resource.data.note is string
+        && get(
+          /databases/$(database)/documents/parties/$(request.resource.data.partyId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.type == request.resource.data.entryType
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.partyId == request.resource.data.partyId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refType == 'payment_receipt'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refId == entryId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.totalAmount == request.resource.data.amount
+        && (
+          (
+            request.resource.data.paymentMode == 'CASH'
+            && request.resource.data.shiftId is string
+            && get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.clientId == request.resource.data.clientId
+            && (
+              request.resource.data.shiftId == resource.data.shiftId
+              || get(
+                /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+              ).data.status == 'OPEN'
+            )
+          )
+          || (
+            request.resource.data.paymentMode != 'CASH'
+            && request.resource.data.shiftId == ''
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    match /internal_transfers/{transferId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canCreateTenantResource()
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.transferType in ['CASH_TO_BANK', 'BANK_TO_CASH', 'BANK_TO_BANK', 'CASH_TO_PETTI', 'PETTI_TO_CASH', 'BANK_TO_PETTI', 'PETTI_TO_BANK', 'CASH_TO_LOCKER', 'LOCKER_TO_CASH']
+        && request.resource.data.note is string
+        && request.resource.data.businessDate is string
+        && request.resource.data.shiftId is string
+        && request.resource.data.transactionId is string
+        && request.resource.data.createdBy == request.auth.uid
+        && get(
+          /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+        ).data.clientId == request.resource.data.clientId
+        && get(
+          /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+        ).data.status == 'OPEN'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.type == 'transfer'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.internalTransfer == true
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refType == 'internal_transfer'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refId == transferId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.transferType == request.resource.data.transferType;
+
+      allow update: if canUpdateTenantResource()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'transferType',
+          'amount',
+          'note',
+          'bankAccountId',
+          'bankAccountName',
+          'destinationBankAccountId',
+          'destinationBankAccountName',
+          'paymentMode',
+          'businessDate',
+          'businessDateAt',
+          'shiftId',
+          'updatedBy',
+          'updatedAt',
+          'updatedAtMs'
+        ])
+        && request.resource.data.transactionId == resource.data.transactionId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.transferType in ['CASH_TO_BANK', 'BANK_TO_CASH', 'BANK_TO_BANK', 'CASH_TO_PETTI', 'PETTI_TO_CASH', 'BANK_TO_PETTI', 'PETTI_TO_BANK', 'CASH_TO_LOCKER', 'LOCKER_TO_CASH']
+        && request.resource.data.note is string
+        && request.resource.data.businessDate is string
+        && request.resource.data.shiftId is string
+        && get(
+          /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+        ).data.clientId == request.resource.data.clientId
+        && (
+          request.resource.data.shiftId == resource.data.shiftId
+          || get(
+            /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+          ).data.status == 'OPEN'
+        )
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.type == 'transfer'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.internalTransfer == true
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refType == 'internal_transfer'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refId == transferId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.transferType == request.resource.data.transferType
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.totalAmount == request.resource.data.amount;
+
+      allow delete: if false;
+    }
+
+    match /purchases/{purchaseId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canCreateTenantResource()
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.partyId is string
+        && request.resource.data.vendorName is string
+        && request.resource.data.entryType in ['purchase', 'expense']
+        && (
+          (
+            request.resource.data.entryType == 'purchase'
+            && request.resource.data.category in [
+              'COMMODITY',
+              'CONSUMABLES',
+              'ASSET'
+            ]
+          )
+          || (
+            request.resource.data.entryType == 'expense'
+            && request.resource.data.category in [
+              'UTILITY BILL',
+              'WAGE',
+              'SALARY',
+              'RENT',
+              'MAINTENANCE',
+              'OTHER'
+            ]
+          )
+        )
+        && request.resource.data.paymentMode in [
+          'CASH',
+          'PETTY_CASH',
+          'CARD',
+          'QR',
+          'BANK',
+          'BANK_TRANSFER',
+          'CREDIT'
+        ]
+        && request.resource.data.receiptNote is string
+        && request.resource.data.transactionId is string
+        && request.resource.data.createdBy == request.auth.uid
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refType == 'purchase'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refId == purchaseId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.partyId == request.resource.data.partyId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.type == request.resource.data.entryType
+        && (
+          (
+            request.resource.data.paymentMode == 'CREDIT'
+            && request.resource.data.entryType == 'purchase'
+            && request.resource.data.liabilityType == 'ACCOUNTS_PAYABLE'
+            && getAfter(
+              /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+            ).data.mode == 'credit'
+            && getAfter(
+              /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+            ).data.amountOut == request.resource.data.amount
+            && getAfter(
+              /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+            ).data.liabilityType == 'ACCOUNTS_PAYABLE'
+          )
+          || (
+            request.resource.data.paymentMode != 'CREDIT'
+            && request.resource.data.liabilityType == ''
+          )
+        )
+        && get(
+          /databases/$(database)/documents/parties/$(request.resource.data.partyId)
+        ).data.clientId == request.resource.data.clientId
+        && (
+          (
+            request.resource.data.paymentMode == 'CASH'
+            && request.resource.data.shiftId is string
+            && get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.clientId == request.resource.data.clientId
+            && get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.status == 'OPEN'
+          )
+          || (
+            request.resource.data.paymentMode != 'CASH'
+            && request.resource.data.shiftId == ''
+          )
+        );
+
+      allow update: if canUpdateTenantResource()
+        && validPurchaseValues(request.resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'entryType',
+          'amount',
+          'partyId',
+          'vendorName',
+          'category',
+          'paymentMode',
+          'bankAccountId',
+          'bankAccountName',
+          'liabilityType',
+          'receiptNote',
+          'shiftId',
+          'businessDate',
+          'businessDateAt',
+          'updatedBy',
+          'updatedAt',
+          'updatedAtMs'
+        ])
+        && request.resource.data.transactionId == resource.data.transactionId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && get(
+          /databases/$(database)/documents/parties/$(request.resource.data.partyId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.clientId == request.resource.data.clientId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refType == 'purchase'
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.refId == purchaseId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.partyId == request.resource.data.partyId
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.type == request.resource.data.entryType
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.amountOut == request.resource.data.amount
+        && getAfter(
+          /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
+        ).data.liabilityType == request.resource.data.liabilityType
+        && (
+          (
+            request.resource.data.paymentMode == 'CASH'
+            && request.resource.data.shiftId is string
+            && get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.clientId == request.resource.data.clientId
+            && (
+              request.resource.data.shiftId == resource.data.shiftId
+              || get(
+                /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+              ).data.status == 'OPEN'
+            )
+          )
+          || (
+            request.resource.data.paymentMode != 'CASH'
+            && request.resource.data.shiftId == ''
+          )
+        );
+
+      allow delete: if false;
+    }
+
+    match /sales_invoices/{invoiceId} {
+      allow read: if canReadTenantResource();
+      allow create: if canCreateTenantResource();
+      allow update: if canUpdateTenantResource();
+      allow delete: if isSuperAdmin();
+
+      match /items/{itemId} {
+        allow read: if canReadTenantResource();
+        allow create: if canCreateTenantResource()
+          && request.resource.data.invoiceId == invoiceId;
+        allow update: if canUpdateTenantResource()
+          && request.resource.data.invoiceId == invoiceId;
+        allow delete: if canReadTenantResource();
+      }
+    }
+
+    match /daily_reports/{reportId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canCreateTenantResource()
+        && canManageClient(request.resource.data.clientId)
+        && request.resource.data.date is string
+        && request.resource.data.totalSales is number
+        && request.resource.data.totalExpenses is number
+        && request.resource.data.expectedCash is number
+        && request.resource.data.actualCash is number
+        && request.resource.data.cashVariance is number
+        && request.resource.data.totalBank is number
+        && request.resource.data.totalReceivable is number
+        && request.resource.data.totalPayable is number
+        && request.resource.data.status == 'closed'
+        && request.resource.data.isEdited == false
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid;
+
+      allow update: if canUpdateTenantResource()
+        && canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.date == resource.data.date
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.status in ['closed', 're-opened']
+        && request.resource.data.isEdited is bool
+        && request.resource.data.updatedBy == request.auth.uid;
+
+      allow delete: if isSuperAdmin();
+    }
+
+    match /shifts/{shiftId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canCreateTenantResource()
+        && request.resource.data.openedBy == request.auth.uid
+        && request.resource.data.status == 'OPEN'
+        && request.resource.data.zReportId == null;
+
+      allow update: if canUpdateTenantResource()
+        && request.resource.data.openedBy == resource.data.openedBy
+        && (
+          (
+            resource.data.status == 'OPEN'
+            && request.resource.data.status in ['OPEN', 'CLOSED']
+            && (
+              request.resource.data.status == 'OPEN'
+              || (
+                request.resource.data.closedBy == request.auth.uid
+                && request.resource.data.zReportId is string
+                && getAfter(
+                  /databases/$(database)/documents/z_reports/$(request.resource.data.zReportId)
+                ).data.shiftId == shiftId
+              )
+              || (
+                request.resource.data.closedBy == request.auth.uid
+                && request.resource.data.zReportId == null
+                && request.resource.data.closedWithoutZReport == true
+              )
+            )
+          )
+          || (
+            resource.data.status == 'CLOSED'
+            && request.resource.data.status == 'CLOSED'
+            && request.resource.data.zReportId == resource.data.zReportId
+            && request.resource.data.closedBy == resource.data.closedBy
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+              'openingFloat',
+              'closingCashCounted',
+              'updatedBy',
+              'updatedAt'
+            ])
+            && request.resource.data.updatedBy == request.auth.uid
+          )
+        );
+
+      allow delete: if isSuperAdmin();
+    }
+
+    match /z_reports/{reportId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canCreateTenantResource()
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.shiftId is string
+        && request.resource.data.grossSales is number
+        && request.resource.data.grossSales >= 0
+        && request.resource.data.netSales is number
+        && request.resource.data.netSales >= 0
+        && request.resource.data.openingFloat is number
+        && request.resource.data.openingFloat >= 0
+        && request.resource.data.creditSalesTotal is number
+        && request.resource.data.creditSalesTotal >= 0
+        && request.resource.data.creditEntries is list
+        && request.resource.data.creditEntries.size() <= 100
+        && request.resource.data.bankEntries is list
+        && request.resource.data.bankEntries.size() <= 100
+        && !request.resource.data.keys().hasAny(['voidTotal'])
+        && get(
+          /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+        ).data.clientId == request.resource.data.clientId
+        && (
+          // Save Z-report while shift remains OPEN (global shift bar closes separately).
+          (
+            get(
+              /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+            ).data.status == 'OPEN'
+            && request.resource.data.shiftStatus == 'OPEN'
+          )
+          // Legacy: create Z-report in the same transaction that closes the shift.
+          || getAfter(
+            /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
+          ).data.zReportId == reportId
+        );
+
+      allow update: if canUpdateTenantResource()
+        && request.resource.data.shiftId == resource.data.shiftId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.grossSales is number
+        && request.resource.data.grossSales >= 0
+        && request.resource.data.netSales is number
+        && request.resource.data.netSales >= 0
+        && request.resource.data.openingFloat is number
+        && request.resource.data.openingFloat >= 0
+        && request.resource.data.creditSalesTotal is number
+        && request.resource.data.creditSalesTotal >= 0
+        && request.resource.data.creditEntries is list
+        && request.resource.data.creditEntries.size() <= 100
+        && request.resource.data.bankEntries is list
+        && request.resource.data.bankEntries.size() <= 100
+        && !request.resource.data.keys().hasAny(['voidTotal']);
+
+      allow delete: if isSuperAdmin();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,948 @@
+// src/pages/TxnReports.jsx
+import { useEffect, useMemo, useState } from "react";
+import { collection, getDocs, query, where } from "firebase/firestore";
+import { db } from "../firebase";
+import { useClient } from "../context/ClientContext.jsx";
+import { fetchTxnRange, fetchPartyDueFromTransactions } from "../utils/txnReportsApi.js";
+import { generateTxnRangePDF } from "../utils/txnRangePdf.js";
+import DateInput from "../components/DateInput.jsx";
+import {
+  formatDateValue,
+  formatIsoRange,
+} from "../utils/dateFormat.js";
+
+
+
+const TABS = [
+  { key: "sales", title: "Sales", pdfTitle: "Sales Report", side: "in" },
+  { key: "purchase", title: "Purchase", pdfTitle: "Purchase Report", side: "out" },
+  { key: "receipt", title: "Receipt", pdfTitle: "Receipt Report", side: "in" },
+  { key: "payment", title: "Payment", pdfTitle: "Payment Report", side: "out" },
+  { key: "expense", title: "Expense", pdfTitle: "Expense Report", side: "out" },
+  { key: "income", title: "Income", pdfTitle: "Income Report", side: "in" },
+
+  // NEW
+  { key: "receivable", title: "Receivable", pdfTitle: "Receivable Report", side: "in" },
+  { key: "payable", title: "Payable", pdfTitle: "Payable Report", side: "out" },
+];
+
+// "" means ALL
+const MODE_OPTIONS = [
+  { value: "", label: "All" },
+  { value: "CASH", label: "Cash" },
+  { value: "CARD", label: "Card" },
+  { value: "QR", label: "QR" },
+  { value: "BANK_TRANSFER", label: "Bank Transfer" },
+  { value: "PETTI", label: "Petti Cash" },
+];
+
+const VIEW_OPTIONS = [
+  { value: "detailed", label: "Detailed" },
+  { value: "summary", label: "Summary" },
+  { value: "both", label: "Both (Short Party List)" }, // ✅ changed meaning
+];
+
+function num(v) {
+  const x = Number(v || 0);
+  return Number.isFinite(x) ? x : 0;
+}
+function money(v) {
+  return num(v).toFixed(2);
+}
+function todayYYYYMMDD() {
+  const d = new Date();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+function fmtDate(d) {
+  return formatDateValue(d, "-");
+}
+function normType(x) {
+  return String(x || "").trim().toLowerCase();
+}
+function normCat(x) {
+  return String(x || "").trim();
+}
+function normMode(x) {
+  return String(x || "").trim();
+}
+function normKey(x) {
+  return String(x || "").trim().toLowerCase();
+}
+function rangeText(fromDate, toDate) {
+  return formatIsoRange(fromDate, toDate, " to ");
+}
+
+// Party allowed mapping
+function allowedPartyTypesForTab(tabKey) {
+  switch (tabKey) {
+    case "sales":
+    case "receipt":
+      return new Set(["customer", "both"]);
+    case "purchase":
+    case "payment":
+      return new Set(["supplier", "both"]);
+    case "expense":
+      return new Set(["employee", "both"]);
+    case "income":
+      return new Set(["owner", "partner", "both"]);
+    default:
+      return new Set();
+  }
+}
+
+/**
+ * ✅ AMOUNT LOGIC (fix purchase credit 0)
+ * 1) Prefer totalAmount if >0
+ * 2) else fallback:
+ *    - purchase credit may be in amountIn
+ *    - cash/bank/petti often in amountOut
+ *    - otherwise use side mapping
+ */
+function getTxnAmount(tabKey, side, row) {
+  const total = num(row?.totalAmount);
+  if (total !== 0) return total;
+
+  const amtIn = num(row?.amountIn);
+  const amtOut = num(row?.amountOut);
+
+  if (tabKey === "purchase") {
+    const m = String(row?.mode || "").trim().toLowerCase();
+    if (m === "credit") return amtIn !== 0 ? amtIn : amtOut;
+    return amtOut !== 0 ? amtOut : amtIn;
+  }
+
+  return side === "in"
+    ? (amtIn !== 0 ? amtIn : amtOut)
+    : (amtOut !== 0 ? amtOut : amtIn);
+}
+
+function buildSummary(rows) {
+  const byMode = {};
+  const byCategory = {};
+
+  let totalCount = 0;
+  let totalAmount = 0;
+
+  for (const r of rows) {
+    totalCount += 1;
+    totalAmount += num(r.amount);
+
+    const m = normMode(r.mode) || "Unknown";
+    const c = normCat(r.category) || "Uncategorized";
+
+    byMode[m] = byMode[m] || { key: m, count: 0, total: 0 };
+    byMode[m].count += 1;
+    byMode[m].total += num(r.amount);
+
+    byCategory[c] = byCategory[c] || { key: c, count: 0, total: 0 };
+    byCategory[c].count += 1;
+    byCategory[c].total += num(r.amount);
+  }
+
+  const modeRows = Object.values(byMode).sort((a, b) => b.total - a.total);
+  const categoryRows = Object.values(byCategory).sort((a, b) => b.total - a.total);
+
+  return { totalCount, totalAmount, modeRows, categoryRows };
+}
+
+/**
+ * ✅ NEW: Condensed list (Party shown ONCE per Mode)
+ * Output rows:
+ * { id, rangeText, partyName, mode, amount }
+ */
+function buildPartyModeCondensed(rows, fromDate, toDate) {
+  const map = new Map();
+  const rText = rangeText(fromDate, toDate);
+
+  for (const r of rows) {
+    const party = String(r.partyName || "-").trim() || "-";
+    const mode = String(r.mode || "-").trim() || "-";
+
+    const key = `${normKey(party)}__${normKey(mode)}`;
+    const prev = map.get(key);
+
+    if (!prev) {
+      map.set(key, {
+        id: key,
+        rangeText: rText,
+        partyName: party,
+        mode,
+        amount: num(r.amount),
+        count: 1,
+      });
+    } else {
+      prev.amount += num(r.amount);
+      prev.count += 1;
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => {
+    const d = num(b.amount) - num(a.amount);
+    if (d !== 0) return d;
+    return String(a.partyName).localeCompare(String(b.partyName));
+  });
+}
+
+/**
+ * ✅ ONLY for Receivable/Payable tabs:
+ * Party-wise LAST BALANCE (as-of To date), mode grouping not needed.
+ * Mapping (net > 0 => receivable, net < 0 => payable):
+ * - SALE      => net += amount
+ * - RECEIPT   => net -= amount
+ * - PURCHASE  => net -= amount
+ * - EXPENSE (party-linked) => net -= amount
+ * - PAYMENT   => net += amount
+ * - INCOME with category "Loan" => net -= amount  (loan is payable)
+ *
+ * We output rows as "Credit" mode so Summary by Mode will not show Bank/Cash.
+ */
+// Retained for legacy report compatibility; current credit tabs use the API path below.
+// eslint-disable-next-line no-unused-vars
+function buildOutstandingRows({
+  toDate,
+  sales = [],
+  receipts = [],
+  purchases = [],
+  payments = [],
+  expenses = [],
+  incomes = [],
+  tabKey, // "receivable" | "payable"
+}) {
+  const byParty = new Map();
+
+  function ensure(partyId, partyName) {
+    if (!partyId) return null;
+    if (!byParty.has(partyId)) {
+      byParty.set(partyId, {
+        partyId,
+        partyName: partyName || "-",
+        net: 0,
+        sales: 0,
+        receipts: 0,
+        purchases: 0,
+        payments: 0,
+        expenses: 0,
+        loanIncome: 0,
+      });
+    } else {
+      // keep latest non-empty name
+      const r = byParty.get(partyId);
+      if ((!r.partyName || r.partyName === "-") && partyName) r.partyName = partyName;
+    }
+    return byParty.get(partyId);
+  }
+
+  // helpers to read party id/name robustly from API
+  function pid(row) {
+    return row?.partyId || row?.party?.id || row?.party?.partyId || "";
+  }
+  function pname(row) {
+    return row?.partyName || row?.party?.name || "-";
+  }
+  function isInternal(row) {
+    return row?.internalTransfer === true || row?.internalTransfer === "true";
+  }
+
+  // meta for amount extraction
+  const metaByKey = {
+    sales: { key: "sales", side: "in" },
+    receipt: { key: "receipt", side: "in" },
+    purchase: { key: "purchase", side: "out" },
+    payment: { key: "payment", side: "out" },
+    expense: { key: "expense", side: "out" },
+    income: { key: "income", side: "in" },
+  };
+
+  // SALES
+  for (const r0 of sales) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.sales.key, metaByKey.sales.side, r0);
+    if (!amt) continue;
+    r.net += amt;
+    r.sales += amt;
+  }
+
+  // RECEIPTS
+  for (const r0 of receipts) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.receipt.key, metaByKey.receipt.side, r0);
+    if (!amt) continue;
+    r.net -= amt;
+    r.receipts += amt;
+  }
+
+  // PURCHASES
+  for (const r0 of purchases) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.purchase.key, metaByKey.purchase.side, r0);
+    if (!amt) continue;
+    r.net -= amt;
+    r.purchases += amt;
+  }
+
+  // PAYMENTS
+  for (const r0 of payments) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.payment.key, metaByKey.payment.side, r0);
+    if (!amt) continue;
+    r.net += amt;
+    r.payments += amt;
+  }
+
+  // EXPENSES (only party-linked, already ensured by pid)
+  for (const r0 of expenses) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue; // skip non-party expenses
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.expense.key, metaByKey.expense.side, r0);
+    if (!amt) continue;
+    r.net -= amt;
+    r.expenses += amt;
+  }
+
+  // INCOME (only category Loan contributes to payable)
+  for (const r0 of incomes) {
+    if (isInternal(r0)) continue;
+    const id = pid(r0);
+    if (!id) continue;
+    const cat = String(r0?.category || "").trim().toLowerCase();
+    if (cat !== "loan") continue;
+    const r = ensure(id, pname(r0));
+    const amt = getTxnAmount(metaByKey.income.key, metaByKey.income.side, r0);
+    if (!amt) continue;
+    r.net -= amt; // loan increases payable
+    r.loanIncome += amt;
+  }
+
+  const out = [];
+  for (const r of byParty.values()) {
+    if (!r.net) continue;
+
+    // Receivable tab: show net > 0
+    // Payable tab: show net < 0
+    if (tabKey === "receivable" && r.net <= 0) continue;
+    if (tabKey === "payable" && r.net >= 0) continue;
+
+    const outstanding = tabKey === "receivable" ? r.net : Math.abs(r.net);
+
+    out.push({
+      id: `out_${r.partyId}`,
+      // we keep a single row per party with "Credit" mode so summary doesn't show Bank/Cash
+      date: toDate,
+      dateText: fmtDate(toDate),
+      partyId: r.partyId,
+      partyName: r.partyName || "-",
+      mode: "Credit",
+      category: tabKey === "receivable" ? "Receivable" : "Payable",
+      description:
+        tabKey === "receivable"
+          ? `Sales ${money(r.sales)} - Receipt ${money(r.receipts)} - Purchase/Exp ${money(
+              r.purchases + r.expenses
+            )} + Payment ${money(r.payments)} - Loan ${money(r.loanIncome)}`
+          : `Payable/Advance (includes Loan)`,
+      amount: outstanding,
+      _breakdown: r,
+    });
+  }
+
+  // Sort: highest outstanding first
+  out.sort((a, b) => num(b.amount) - num(a.amount));
+  return out;
+}
+
+export default function TxnReports() {
+  const { activeClientId, activeClientData } = useClient();
+  const clientId = activeClientId;
+  const currency = activeClientData?.currency || "BHD";
+
+  const [tab, setTab] = useState(TABS[0].key);
+  const tabMeta = useMemo(() => TABS.find((t) => t.key === tab) || TABS[0], [tab]);
+
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+
+  const [mode, setMode] = useState("");
+  const [partyId, setPartyId] = useState("");
+  const [category, setCategory] = useState("");
+
+  const [viewMode, setViewMode] = useState("detailed");
+
+  const [allParties, setAllParties] = useState([]);
+  const [categoryOptions, setCategoryOptions] = useState([]);
+
+  const [loading, setLoading] = useState(false);
+  const [rows, setRows] = useState([]);
+  const [error, setError] = useState("");
+
+  const isCreditTab = tabMeta.key === "receivable" || tabMeta.key === "payable";
+
+  // Default date range: current month
+  useEffect(() => {
+    const t = todayYYYYMMDD();
+    const first = t.slice(0, 8) + "01";
+    setFromDate((v) => v || first);
+    setToDate((v) => v || t);
+  }, []);
+
+  // Load parties
+  useEffect(() => {
+    (async () => {
+      try {
+        if (!clientId) {
+          setAllParties([]);
+          return;
+        }
+        const qy = query(collection(db, "parties"), where("clientId", "==", clientId));
+        const snap = await getDocs(qy);
+
+        const list = [];
+        snap.forEach((d) => list.push({ id: d.id, ...d.data() }));
+        list.sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+        setAllParties(list);
+      } catch (e) {
+        console.error(e);
+        setAllParties([]);
+      }
+    })();
+  }, [clientId]);
+
+  // Filter parties shown in dropdown based on tab
+  const partyOptions = useMemo(() => {
+    const allowed = allowedPartyTypesForTab(tabMeta.key);
+    if (!allowed.size) return allParties;
+
+    return allParties.filter((p) => {
+      const pt = normType(p.partyType || p.type);
+      return allowed.has(pt);
+    });
+  }, [allParties, tabMeta.key]);
+
+  // If selected party becomes invalid after tab change, reset to ALL
+  useEffect(() => {
+    if (!partyId) return;
+    const stillExists = partyOptions.some((p) => p.id === partyId);
+    if (!stillExists) setPartyId("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tabMeta.key, clientId]);
+
+  async function runFetch() {
+    setError("");
+    setLoading(true);
+
+    try {
+      if (!clientId) throw new Error("Please select an active client first.");
+      if (!fromDate || !toDate) throw new Error("Select From and To dates.");
+      if (fromDate > toDate) throw new Error("From date cannot be after To date.");
+
+      // ✅ ONLY change behavior for Receivable/Payable tabs
+if (isCreditTab) {
+  setCategoryOptions([]); // not used for credit tabs
+
+  const dues = await fetchPartyDueFromTransactions({
+    clientId,
+    toDate,
+    kind: tabMeta.key, // "receivable" | "payable"
+    partyId: partyId || "",
+  });
+
+  const creditRows = (dues || []).map((r, idx) => ({
+    id: `credit_${tabMeta.key}_${r.partyId || idx}`,
+    date: null,
+    dateText: "-",
+    partyId: r.partyId || "",
+    partyName: r.partyName || "-",
+    mode: "Credit",
+    category: tabMeta.key === "receivable" ? "Receivable" : "Payable",
+    description: "-",
+    amount: num(r.amount),
+  }));
+
+  setRows(creditRows);
+  return;
+}
+
+
+
+      // ✅ Existing behavior unchanged for all other tabs
+      const data = await fetchTxnRange({
+        clientId,
+        fromDate,
+        toDate,
+        typeKey: tabMeta.key,
+        mode: mode || "",
+        partyId: partyId || "",
+        category: category || "",
+      });
+
+      // category options from data without category filter
+      const allNoCat = await fetchTxnRange({
+        clientId,
+        fromDate,
+        toDate,
+        typeKey: tabMeta.key,
+        mode: mode || "",
+        partyId: partyId || "",
+        category: "",
+      });
+
+      const cats = new Set();
+      for (const r of allNoCat) {
+        const c = normCat(r.category);
+        if (c) cats.add(c);
+      }
+      setCategoryOptions(Array.from(cats).sort((a, b) => a.localeCompare(b)));
+
+      const normalized = data
+        .filter((r) => r?.internalTransfer !== true)
+        .map((r) => {
+          const amount = getTxnAmount(tabMeta.key, tabMeta.side, r);
+          return {
+            id: r.id,
+            date: r.date,
+            dateText: fmtDate(r.date),
+            partyName: r.partyName || "-",
+            mode: r.mode || "-",
+            category: r.category || "-",
+            description: r.description || "-",
+            amount,
+          };
+        });
+
+      setRows(normalized);
+    } catch (e) {
+      console.error(e);
+      setRows([]);
+      setCategoryOptions([]);
+      setError(e?.message || "Failed to load report.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Auto fetch when tab changes
+  useEffect(() => {
+    if (!clientId || !fromDate || !toDate) return;
+    setCategory("");
+    runFetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, clientId]);
+
+  const summary = useMemo(() => {
+    const count = rows.length;
+    const total = rows.reduce((s, r) => s + num(r.amount), 0);
+    return { count, total };
+  }, [rows]);
+
+  const breakdown = useMemo(() => buildSummary(rows), [rows]);
+
+  // ✅ NEW condensed rows for "both"
+  const condensed = useMemo(() => buildPartyModeCondensed(rows, fromDate, toDate), [
+    rows,
+    fromDate,
+    toDate,
+  ]);
+
+  function filtersText() {
+    const parts = [];
+    // For credit tabs, mode/category are not used for balance; but keep Party mention if selected.
+    if (!isCreditTab) {
+      if (mode) parts.push(`Mode: ${mode}`);
+      if (category) parts.push(`Category: ${category}`);
+    }
+    if (partyId) {
+      const p = allParties.find((x) => x.id === partyId);
+      parts.push(`Party: ${p?.name || "Selected Party"}`);
+    }
+    return parts.join(" | ");
+  }
+
+  function onDownloadPDF() {
+    const hasData = viewMode === "both" ? condensed.length > 0 : rows.length > 0;
+    if (!hasData) return alert("No data to export.");
+
+    generateTxnRangePDF({
+      title: tabMeta.pdfTitle,
+      clientName: activeClientData?.name || "Client",
+      currency,
+      fromDate,
+      toDate,
+      filtersText: filtersText(),
+      summary,
+      viewMode,
+      breakdown,
+      rows: rows.map((r) => ({
+        dateText: r.dateText,
+        partyName: r.partyName,
+        mode: r.mode,
+        category: r.category,
+        description: r.description,
+        amount: r.amount,
+      })),
+      condensedRows: condensed.map((r) => ({
+        rangeText: r.rangeText,
+        partyName: r.partyName,
+        mode: r.mode,
+        amount: r.amount,
+      })),
+    });
+  }
+
+  return (
+    <div className="p-4 md:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold text-slate-100">Transaction Reports</h1>
+          <p className="text-sm text-slate-400">
+            Range-based reports for Sales / Purchase / Receipt / Payment / Expense / Income
+          </p>
+          <p className="text-xs text-slate-500 mt-1">
+            Active Client:{" "}
+            <span className="text-slate-200 font-semibold">
+              {activeClientData?.name || "No client selected"}
+            </span>{" "}
+            | Currency: <span className="text-slate-200 font-semibold">{currency}</span>
+          </p>
+        </div>
+
+        <button
+          onClick={onDownloadPDF}
+          disabled={loading || (viewMode === "both" ? condensed.length === 0 : rows.length === 0)}
+          className="rounded-xl bg-slate-100 px-4 py-2 text-slate-900 font-medium disabled:opacity-50"
+        >
+          Download PDF
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="mt-4 flex flex-wrap gap-2">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            className={
+              "rounded-xl px-3 py-2 text-sm border " +
+              (tab === t.key
+                ? "bg-slate-100 text-slate-900 border-slate-200"
+                : "bg-slate-950/40 text-slate-200 border-slate-800 hover:bg-slate-900/60")
+            }
+          >
+            {t.title}
+          </button>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div className="mt-4 grid grid-cols-1 md:grid-cols-12 gap-3 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+        <div className="md:col-span-3">
+          <label className="text-sm text-slate-300">From</label>
+          <DateInput
+            value={fromDate}
+            onChange={(e) => setFromDate(e.target.value)}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-700 bg-slate-900 text-slate-100"
+          />
+        </div>
+
+        <div className="md:col-span-3">
+          <label className="text-sm text-slate-300">To</label>
+          <DateInput
+            value={toDate}
+            onChange={(e) => setToDate(e.target.value)}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-700 bg-slate-900 text-slate-100"
+          />
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-sm text-slate-300">Mode (optional)</label>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value)}
+            className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+          >
+            {MODE_OPTIONS.map((m) => (
+              <option key={m.label} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-sm text-slate-300">Party (optional)</label>
+          <select
+            value={partyId}
+            onChange={(e) => setPartyId(e.target.value)}
+            className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+          >
+            <option value="">All</option>
+            {partyOptions.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name || "(No name)"} {(p.partyType || p.type) ? `(${p.partyType || p.type})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-sm text-slate-300">Category (optional)</label>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+          >
+            <option value="">All</option>
+            {categoryOptions.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* View */}
+        <div className="md:col-span-3">
+          <label className="text-sm text-slate-300">View</label>
+          <select
+            value={viewMode}
+            onChange={(e) => setViewMode(e.target.value)}
+            className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
+          >
+            {VIEW_OPTIONS.map((v) => (
+              <option key={v.value} value={v.value}>
+                {v.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="md:col-span-9 flex flex-wrap items-center gap-2 mt-6">
+          <button
+            onClick={runFetch}
+            disabled={loading}
+            className="rounded-xl bg-emerald-500 px-4 py-2 text-slate-950 font-semibold disabled:opacity-50"
+          >
+            {loading ? "Loading..." : "Apply"}
+          </button>
+
+          <button
+            onClick={() => {
+              setMode("");
+              setPartyId("");
+              setCategory("");
+              runFetch();
+            }}
+            className="rounded-xl border border-slate-700 px-4 py-2 text-slate-100 hover:bg-slate-900/60"
+          >
+            Clear Filters
+          </button>
+
+          {error ? <span className="text-sm text-red-400">{error}</span> : null}
+        </div>
+      </div>
+
+      {/* Top summary cards */}
+      <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <div className="text-sm text-slate-400">Total Count</div>
+          <div className="text-2xl font-semibold text-slate-100">{summary.count}</div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <div className="text-sm text-slate-400">Total Amount</div>
+          <div className="text-2xl font-semibold text-slate-100">
+            {money(summary.total)} <span className="text-sm text-slate-400">{currency}</span>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
+          <div className="text-sm text-slate-400">Active Tab</div>
+          <div className="text-2xl font-semibold text-slate-100">{tabMeta.title}</div>
+        </div>
+      </div>
+
+      {/* Summary tables (mode+category) */}
+      {(viewMode === "summary" || viewMode === "both") && (
+        <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
+            <div className="p-4">
+              <div className="text-slate-100 font-semibold">Summary by Mode</div>
+              <div className="text-sm text-slate-400">{filtersText() || "No extra filters"}</div>
+            </div>
+            <div className="overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-900/70">
+                  <tr className="text-slate-200">
+                    <th className="text-left px-4 py-3">Mode</th>
+                    <th className="text-right px-4 py-3">Count</th>
+                    <th className="text-right px-4 py-3">Total ({currency})</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdown.modeRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-6 text-slate-400">
+                        No data
+                      </td>
+                    </tr>
+                  ) : (
+                    breakdown.modeRows.map((r) => (
+                      <tr key={r.key} className="border-t border-slate-800 text-slate-100">
+                        <td className="px-4 py-3">{r.key}</td>
+                        <td className="px-4 py-3 text-right">{r.count}</td>
+                        <td className="px-4 py-3 text-right">{money(r.total)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
+            <div className="p-4">
+              <div className="text-slate-100 font-semibold">Summary by Category</div>
+              <div className="text-sm text-slate-400">{filtersText() || "No extra filters"}</div>
+            </div>
+            <div className="overflow-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-900/70">
+                  <tr className="text-slate-200">
+                    <th className="text-left px-4 py-3">Category</th>
+                    <th className="text-right px-4 py-3">Count</th>
+                    <th className="text-right px-4 py-3">Total ({currency})</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {breakdown.categoryRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={3} className="px-4 py-6 text-slate-400">
+                        No data
+                      </td>
+                    </tr>
+                  ) : (
+                    breakdown.categoryRows.map((r) => (
+                      <tr key={r.key} className="border-t border-slate-800 text-slate-100">
+                        <td className="px-4 py-3">{r.key}</td>
+                        <td className="px-4 py-3 text-right">{r.count}</td>
+                        <td className="px-4 py-3 text-right">{money(r.total)}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ BOTH view: Short Party List (Party+Mode, range shown once) */}
+      {viewMode === "both" && (
+        <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
+          <div className="p-4">
+            <div className="text-slate-100 font-semibold">
+              Short Party List (Grouped by Party + Mode)
+            </div>
+            <div className="text-sm text-slate-400">
+              Range: {rangeText(fromDate, toDate)} • {filtersText() || "No extra filters"}
+            </div>
+          </div>
+
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-900/70">
+                <tr className="text-slate-200">
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Date Range</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Party</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Mode</th>
+                  <th className="text-right px-4 py-3 whitespace-nowrap">Total ({currency})</th>
+                </tr>
+              </thead>
+              <tbody>
+                {condensed.length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="px-4 py-6 text-slate-400">
+                      {loading ? "Loading..." : "No transactions found for this range."}
+                    </td>
+                  </tr>
+                ) : (
+                  condensed.map((r) => (
+                    <tr key={r.id} className="border-t border-slate-800 text-slate-100">
+                      <td className="px-4 py-3 whitespace-nowrap">{r.rangeText}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.partyName}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.mode}</td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">{money(r.amount)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Detailed view ONLY when viewMode === detailed */}
+      {viewMode === "detailed" && (
+        <div className="mt-4 rounded-2xl border border-slate-800 bg-slate-950/40 overflow-hidden">
+          <div className="p-4">
+            <div className="text-slate-100 font-semibold">{tabMeta.title} List</div>
+            <div className="text-sm text-slate-400">
+              {filtersText() ? filtersText() : "No extra filters"}
+            </div>
+          </div>
+
+          <div className="overflow-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-900/70">
+                <tr className="text-slate-200">
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Date</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Party</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Mode</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Category</th>
+                  <th className="text-left px-4 py-3 whitespace-nowrap">Description</th>
+                  <th className="text-right px-4 py-3 whitespace-nowrap">
+                    Amount ({currency})
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-6 text-slate-400">
+                      {loading ? "Loading..." : "No transactions found for this range."}
+                    </td>
+                  </tr>
+                ) : (
+                  rows.map((r) => (
+                    <tr key={r.id} className="border-t border-slate-800 text-slate-100">
+                      <td className="px-4 py-3 whitespace-nowrap">{r.dateText}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.partyName || "-"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.mode || "-"}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">{r.category || "-"}</td>
+                      <td className="px-4 py-3">{r.description || "-"}</td>
+                      <td className="px-4 py-3 text-right whitespace-nowrap">{money(r.amount)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

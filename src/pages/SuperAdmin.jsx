@@ -1,0 +1,1163 @@
+// src/pages/SuperAdmin.jsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  collection,
+  doc,
+  getDocs,
+  orderBy,
+  query,
+  setDoc,
+  updateDoc,
+} from "firebase/firestore";
+import {
+  createUserWithEmailAndPassword,
+  getAuth,
+  signOut,
+} from "firebase/auth";
+import { getApps, initializeApp } from "firebase/app";
+
+import { db, firebaseConfig } from "../firebase";
+import { useAuth } from "../context/AuthContext";
+
+// ✅ Secondary auth (does not affect current session)
+function getSecondaryAuth() {
+  const name = "secondary-auth";
+  const existing = getApps().find((a) => a.name === name);
+  const secondaryApp = existing || initializeApp(firebaseConfig, name);
+  return getAuth(secondaryApp);
+}
+
+function norm(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+function nowYear() {
+  return new Date().getFullYear();
+}
+
+// ✅ Client-level defaults: warehouses + invoice numbering + tax/discount
+function defaultClientSettings(currency = "INR") {
+  return {
+    currency: String(currency || "INR").trim().toUpperCase(),
+
+    warehouses: [{ id: "main", name: "Main Warehouse" }],
+
+    invoice: {
+      prefix: "INV-",
+      suffix: "",
+      padding: 4,
+      resetYearly: true, // per client, per year sequence
+      year: nowYear(),
+      nextNumber: 1,
+    },
+
+    tax: {
+      enabled: false,
+      type: "percent", // percent | fixed
+      rate: 0,
+      amount: 0,
+    },
+
+    discount: {
+      enabled: false,
+      type: "percent", // percent | fixed
+      rate: 0,
+      amount: 0,
+    },
+  };
+}
+
+export default function SuperAdmin() {
+  const { user, isSuperAdmin } = useAuth();
+
+  const [tab, setTab] = useState("shops"); // 'shops' | 'users'
+  const [shops, setShops] = useState([]);
+  const [loadingShops, setLoadingShops] = useState(true);
+
+  // ✅ Users list
+  const [allUsers, setAllUsers] = useState([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  // Shop creation form
+  const [shopId, setShopId] = useState("");
+  const [shopName, setShopName] = useState("");
+  const [shopCurrency, setShopCurrency] = useState("INR");
+  const [creatingShop, setCreatingShop] = useState(false);
+
+  // ✅ Shop edit modal
+  const [shopEditOpen, setShopEditOpen] = useState(false);
+  const [savingShopEdit, setSavingShopEdit] = useState(false);
+  const [editingShop, setEditingShop] = useState(null); // {id,...}
+  const [shopEditForm, setShopEditForm] = useState({
+    name: "",
+    currency: "INR",
+    isActive: true,
+  });
+
+  // User creation form
+  const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [newRole, setNewRole] = useState("admin"); // admin | partner
+  const [selectedShopIds, setSelectedShopIds] = useState([]);
+  const [creatingUser, setCreatingUser] = useState(false);
+
+  // ✅ Search
+  const [shopSearch, setShopSearch] = useState("");
+  const [assignShopSearch, setAssignShopSearch] = useState("");
+  const [userSearch, setUserSearch] = useState("");
+
+  // ✅ Edit user modal
+  const [editOpen, setEditOpen] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editingUser, setEditingUser] = useState(null); // {id,...}
+  const [editShopSearch, setEditShopSearch] = useState("");
+  const editModalRef = useRef(null);
+
+  const [editForm, setEditForm] = useState({
+    name: "",
+    role: "admin",
+    isActive: true,
+    assignedShops: [],
+  });
+
+  const shopsById = useMemo(() => {
+    const map = {};
+    for (const s of shops) map[s.id] = s;
+    return map;
+  }, [shops]);
+
+  const filteredShopsForAll = useMemo(() => {
+    const q = norm(shopSearch);
+    if (!q) return shops;
+    return shops.filter((s) => {
+      const name = norm(s.name);
+      const id = norm(s.id);
+      return name.includes(q) || id.includes(q);
+    });
+  }, [shops, shopSearch]);
+
+  const filteredShopsForAssign = useMemo(() => {
+    const q = norm(assignShopSearch);
+    if (!q) return shops;
+    return shops.filter((s) => {
+      const name = norm(s.name);
+      const id = norm(s.id);
+      return name.includes(q) || id.includes(q);
+    });
+  }, [shops, assignShopSearch]);
+
+  const filteredUsers = useMemo(() => {
+    const q = norm(userSearch);
+    if (!q) return allUsers;
+    return allUsers.filter((u) => {
+      const email = norm(u.email);
+      const name = norm(u.name);
+      const role = norm(u.role);
+      return email.includes(q) || name.includes(q) || role.includes(q);
+    });
+  }, [allUsers, userSearch]);
+
+  const filteredShopsForEdit = useMemo(() => {
+    const q = norm(editShopSearch);
+    if (!q) return shops;
+    return shops.filter((s) => norm(s.name).includes(q) || norm(s.id).includes(q));
+  }, [shops, editShopSearch]);
+
+  async function loadShops() {
+    setErr("");
+    setMsg("");
+    setLoadingShops(true);
+    try {
+      const qy = query(collection(db, "clients"), orderBy("createdAt", "desc"));
+      const snap = await getDocs(qy);
+      setShops(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to load shops");
+    } finally {
+      setLoadingShops(false);
+    }
+  }
+
+  async function loadUsers() {
+    setLoadingUsers(true);
+    try {
+      const qy = query(collection(db, "users"), orderBy("createdAt", "desc"));
+      const snap = await getDocs(qy);
+      setAllUsers(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to load users");
+    } finally {
+      setLoadingUsers(false);
+    }
+  }
+
+  useEffect(() => {
+    loadShops();
+  }, []);
+
+  useEffect(() => {
+    if (tab === "users") loadUsers();
+  }, [tab]);
+
+  // Close edit modal on ESC
+  useEffect(() => {
+    function onKeyDown(e) {
+      if (e.key === "Escape") {
+        setEditOpen(false);
+        setShopEditOpen(false);
+      }
+    }
+    if (editOpen || shopEditOpen) window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editOpen, shopEditOpen]);
+
+  if (!isSuperAdmin) {
+    return (
+      <div className="p-6 text-slate-100">
+        <div className="text-xl font-semibold">Access denied</div>
+        <div className="opacity-80 text-sm mt-1">
+          This page is only for <b>super_admin</b>.
+        </div>
+      </div>
+    );
+  }
+
+  // -----------------------------
+  // Create Shop
+  // -----------------------------
+  async function handleCreateShop(e) {
+    e.preventDefault();
+    setErr("");
+    setMsg("");
+
+    const id = String(shopId || "").trim();
+    const name = String(shopName || "").trim();
+    const currencyInput = String(shopCurrency || "").trim() || "INR";
+
+    if (!id || !name) {
+      setErr("Shop ID and Name are required.");
+      return;
+    }
+    if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+      setErr("Shop ID can use letters, numbers, _ and - only.");
+      return;
+    }
+
+    setCreatingShop(true);
+    try {
+      const defaults = defaultClientSettings(currencyInput);
+
+      await setDoc(doc(db, "clients", id), {
+        clientId: id,
+        name,
+        currency: defaults.currency,
+
+        // ✅ NEW DEFAULT SETTINGS
+        warehouses: defaults.warehouses,
+        invoice: defaults.invoice,
+        tax: defaults.tax,
+        discount: defaults.discount,
+
+        // ✅ Add status field for edit feature
+        isActive: true,
+
+        createdAt: Date.now(),
+        createdBy: user?.uid || null,
+      });
+
+      setShopId("");
+      setShopName("");
+      setShopCurrency("INR");
+      setMsg(`✅ Shop created: ${name}`);
+      await loadShops();
+    } catch (e2) {
+      console.error(e2);
+      setErr(e2?.message || "Failed to create shop");
+    } finally {
+      setCreatingShop(false);
+    }
+  }
+
+  // -----------------------------
+  // SHOP EDIT (NEW)
+  // -----------------------------
+  function openEditShop(s) {
+    setErr("");
+    setMsg("");
+    setEditingShop(s);
+    setShopEditForm({
+      name: String(s?.name || "").trim(),
+      currency: String(s?.currency || "INR").trim().toUpperCase(),
+      isActive: s?.isActive === false ? false : true,
+    });
+    setShopEditOpen(true);
+  }
+
+  async function saveShopEdits() {
+    if (!editingShop?.id) return;
+
+    setErr("");
+    setMsg("");
+
+    const id = editingShop.id;
+    const name = String(shopEditForm.name || "").trim();
+    const currency = String(shopEditForm.currency || "").trim().toUpperCase();
+
+    if (!name) return setErr("Shop name is required.");
+    if (!currency) return setErr("Currency is required.");
+
+    setSavingShopEdit(true);
+    try {
+      await updateDoc(doc(db, "clients", id), {
+        name,
+        currency,
+        isActive: Boolean(shopEditForm.isActive),
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || null,
+      });
+
+      // ✅ Update local list instantly
+      setShops((prev) =>
+        prev.map((x) =>
+          x.id === id
+            ? { ...x, name, currency, isActive: Boolean(shopEditForm.isActive) }
+            : x
+        )
+      );
+
+      setMsg("✅ Shop updated.");
+      setShopEditOpen(false);
+      setEditingShop(null);
+
+      // optional safety reload
+      await loadShops();
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to update shop.");
+    } finally {
+      setSavingShopEdit(false);
+    }
+  }
+
+  // -----------------------------
+  // Create User
+  // -----------------------------
+  async function handleCreateUser(e) {
+    e.preventDefault();
+    setErr("");
+    setMsg("");
+
+    const email = String(newEmail || "").trim().toLowerCase();
+    const password = String(newPassword || "");
+    const roleToSet = newRole === "partner" ? "partner" : "admin";
+    const name = String(newName || "").trim();
+
+    if (!email || !password) {
+      setErr("Email and Password are required.");
+      return;
+    }
+    if (password.length < 6) {
+      setErr("Password must be at least 6 characters.");
+      return;
+    }
+    if (!selectedShopIds.length) {
+      setErr("Please assign at least 1 shop.");
+      return;
+    }
+
+    setCreatingUser(true);
+    try {
+      const secondaryAuth = getSecondaryAuth();
+      const cred = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        email,
+        password
+      );
+      const uid = cred.user.uid;
+
+      await setDoc(doc(db, "users", uid), {
+        uid,
+        email,
+        name: name || email.split("@")[0],
+        role: roleToSet,
+        assignedShops: selectedShopIds,
+        createdBy: user?.uid || null,
+        createdAt: Date.now(),
+        isActive: true,
+      });
+
+      await signOut(secondaryAuth);
+
+      setNewName("");
+      setNewEmail("");
+      setNewPassword("");
+      setNewRole("admin");
+      setSelectedShopIds([]);
+      setMsg(`✅ User created: ${email} (${roleToSet})`);
+
+      await loadUsers();
+    } catch (e2) {
+      console.error(e2);
+      setErr(e2?.message || "Failed to create user");
+    } finally {
+      setCreatingUser(false);
+    }
+  }
+
+  // -----------------------------
+  // Disable / Enable user (Firestore-only)
+  // -----------------------------
+  async function toggleUserActive(targetUid, nextActive) {
+    setErr("");
+    setMsg("");
+    try {
+      if (targetUid === user?.uid && nextActive === false) {
+        setErr("You cannot disable your own super admin account.");
+        return;
+      }
+
+      await updateDoc(doc(db, "users", targetUid), {
+        isActive: nextActive,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || null,
+      });
+
+      setMsg(`✅ User ${nextActive ? "enabled" : "disabled"}.`);
+      await loadUsers();
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to update user status");
+    }
+  }
+
+  function toggleShopSelection(id) {
+    setSelectedShopIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      return [...prev, id];
+    });
+  }
+
+  const selectedShopNames = useMemo(() => {
+    if (!selectedShopIds.length) return "None";
+    return selectedShopIds.map((id) => shopsById[id]?.name || id).join(", ");
+  }, [selectedShopIds, shopsById]);
+
+  // -----------------------------
+  // EDIT USER
+  // -----------------------------
+  function openEditUser(u) {
+    setErr("");
+    setMsg("");
+    setEditingUser(u);
+
+    setEditForm({
+      name: String(u?.name || "").trim(),
+      role: u?.role || "admin",
+      isActive: u?.isActive === false ? false : true,
+      assignedShops: Array.isArray(u?.assignedShops) ? u.assignedShops : [],
+    });
+
+    setEditShopSearch("");
+    setEditOpen(true);
+  }
+
+  function toggleEditShop(id) {
+    setEditForm((prev) => {
+      const cur = Array.isArray(prev.assignedShops) ? prev.assignedShops : [];
+      if (cur.includes(id)) {
+        return { ...prev, assignedShops: cur.filter((x) => x !== id) };
+      }
+      return { ...prev, assignedShops: [...cur, id] };
+    });
+  }
+
+  async function saveUserEdits() {
+    if (!editingUser?.id) return;
+
+    setErr("");
+    setMsg("");
+
+    const uid = editingUser.id;
+    const name = String(editForm.name || "").trim();
+
+    // safety: prevent disabling yourself
+    if (uid === user?.uid && editForm.isActive === false) {
+      setErr("You cannot disable your own super admin account.");
+      return;
+    }
+
+    // optional safety: prevent changing your own role
+    if (uid === user?.uid && editForm.role !== editingUser.role) {
+      setErr("You cannot change your own role.");
+      return;
+    }
+
+    if (!Array.isArray(editForm.assignedShops) || editForm.assignedShops.length === 0) {
+      setErr("Assign at least 1 shop to this user.");
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      await updateDoc(doc(db, "users", uid), {
+        name: name || (editingUser.email ? editingUser.email.split("@")[0] : "User"),
+        role: editForm.role, // admin | partner | super_admin
+        isActive: editForm.isActive,
+        assignedShops: editForm.assignedShops,
+        updatedAt: Date.now(),
+        updatedBy: user?.uid || null,
+      });
+
+      setMsg("✅ User updated.");
+      setEditOpen(false);
+      setEditingUser(null);
+      await loadUsers();
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Failed to update user.");
+    } finally {
+      setSavingEdit(false);
+    }
+  }
+
+  return (
+    <div className="p-4 md:p-6 text-slate-100">
+      <div className="text-2xl font-semibold mb-1">Super Admin</div>
+      <div className="text-sm opacity-80 mb-5">
+        Multi-tenant shop + user management (RBAC)
+      </div>
+
+      <div className="flex gap-2 mb-5 flex-wrap">
+        <button
+          className={`px-4 py-2 rounded border ${
+            tab === "shops"
+              ? "bg-slate-800 border-slate-700"
+              : "border-slate-800 hover:bg-slate-900"
+          }`}
+          onClick={() => setTab("shops")}
+        >
+          Shop Management
+        </button>
+        <button
+          className={`px-4 py-2 rounded border ${
+            tab === "users"
+              ? "bg-slate-800 border-slate-700"
+              : "border-slate-800 hover:bg-slate-900"
+          }`}
+          onClick={() => setTab("users")}
+        >
+          User Management
+        </button>
+      </div>
+
+      {err && (
+        <div className="mb-4 text-sm text-red-200 bg-red-950/40 border border-red-900 rounded-xl p-2">
+          {err}
+        </div>
+      )}
+      {msg && (
+        <div className="mb-4 text-sm text-emerald-200 bg-emerald-950/30 border border-emerald-900/40 rounded-xl p-2">
+          {msg}
+        </div>
+      )}
+
+      {/* SHOPS TAB */}
+      {tab === "shops" && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Create Shop */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div className="font-semibold mb-3">Create New Shop</div>
+            <form onSubmit={handleCreateShop} className="space-y-3">
+              <div>
+                <div className="text-xs opacity-80 mb-1">Client ID (shop id)</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={shopId}
+                  onChange={(e) => setShopId(e.target.value)}
+                  placeholder="shop_001"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-80 mb-1">Shop Name</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={shopName}
+                  onChange={(e) => setShopName(e.target.value)}
+                  placeholder="My Shop"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-80 mb-1">Currency</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={shopCurrency}
+                  onChange={(e) => setShopCurrency(e.target.value)}
+                  placeholder="INR, BHD, AED..."
+                />
+              </div>
+
+              <div className="text-xs opacity-70">
+                ✅ This will auto-create defaults: Warehouses + Invoice settings + Tax/Discount.
+              </div>
+
+              <button
+                disabled={creatingShop}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-60 px-4 py-2 rounded"
+              >
+                {creatingShop ? "Creating…" : "Create Shop"}
+              </button>
+            </form>
+          </div>
+
+          {/* Searchable Shops */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+              <div className="font-semibold">Search Shops</div>
+              <input
+                className="w-full sm:w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                value={shopSearch}
+                onChange={(e) => setShopSearch(e.target.value)}
+                placeholder="Search by name / id…"
+              />
+            </div>
+
+            {loadingShops ? (
+              <div className="opacity-80">Loading…</div>
+            ) : (
+              <div className="space-y-2">
+                {shops.length === 0 && (
+                  <div className="opacity-70 text-sm">No shops yet.</div>
+                )}
+
+                <div className="text-xs opacity-60">
+                  Showing {Math.min(filteredShopsForAll.length, 20)} of{" "}
+                  {filteredShopsForAll.length}
+                </div>
+
+                {filteredShopsForAll.slice(0, 20).map((s) => (
+                  <div
+                    key={s.id}
+                    className="p-3 rounded border border-slate-800 bg-slate-950"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">
+                          {s.name || "Unnamed Shop"}
+                        </div>
+                        <div className="text-xs opacity-70 truncate">
+                          Currency: {s.currency || "-"} • ID: {s.id} • Warehouses:{" "}
+                          {Array.isArray(s.warehouses) ? s.warehouses.length : 0}
+                        </div>
+
+                        <div className="text-xs mt-1">
+                          Status:{" "}
+                          <span className={s.isActive === false ? "text-red-400" : "text-emerald-400"}>
+                            {s.isActive === false ? "Inactive" : "Active"}
+                          </span>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => openEditShop(s)}
+                        className="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 shrink-0"
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  </div>
+                ))}
+
+                {filteredShopsForAll.length > 20 ? (
+                  <div className="text-xs opacity-60">
+                    Too many results — refine your search.
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* USERS TAB */}
+      {tab === "users" && (
+        <div className="grid lg:grid-cols-2 gap-6">
+          {/* Create User */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div className="font-semibold mb-3">Create New User</div>
+            <form onSubmit={handleCreateUser} className="space-y-3">
+              <div>
+                <div className="text-xs opacity-80 mb-1">Name</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Eg: Manager / Accountant / Staff name"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-80 mb-1">Email</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  placeholder="user@email.com"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-80 mb-1">Password</div>
+                <input
+                  type="password"
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Temporary password"
+                />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-80 mb-1">Role</div>
+                <select
+                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                  value={newRole}
+                  onChange={(e) => setNewRole(e.target.value)}
+                >
+                  <option value="admin">admin</option>
+                  <option value="partner">partner</option>
+                </select>
+              </div>
+
+              {/* Searchable Assign Shops */}
+              <div>
+                <div className="flex items-center justify-between mb-2 gap-3 flex-wrap">
+                  <div className="text-xs opacity-80">Assign Shops</div>
+                  <input
+                    className="w-full sm:w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                    value={assignShopSearch}
+                    onChange={(e) => setAssignShopSearch(e.target.value)}
+                    placeholder="Search shops to assign…"
+                  />
+                </div>
+
+                <div className="max-h-56 overflow-auto rounded border border-slate-800 bg-slate-950 p-2 space-y-2">
+                  {loadingShops ? (
+                    <div className="opacity-70 text-sm p-2">Loading shops…</div>
+                  ) : shops.length === 0 ? (
+                    <div className="opacity-70 text-sm p-2">
+                      No shops found. Create a shop first.
+                    </div>
+                  ) : (
+                    filteredShopsForAssign.slice(0, 50).map((s) => (
+                      <label
+                        key={s.id}
+                        className="flex items-center gap-2 text-sm p-2 rounded hover:bg-slate-900 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedShopIds.includes(s.id)}
+                          onChange={() => toggleShopSelection(s.id)}
+                        />
+                        <span className="font-medium">{s.name || s.id}</span>
+                        <span className="text-xs opacity-60">• {s.currency || ""}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+
+                {filteredShopsForAssign.length > 50 ? (
+                  <div className="text-xs opacity-60 mt-2">
+                    Too many shops — refine search to assign.
+                  </div>
+                ) : null}
+
+                <div className="text-xs opacity-70 mt-2">
+                  Selected: <span className="opacity-90">{selectedShopNames}</span>
+                </div>
+              </div>
+
+              <button
+                disabled={creatingUser || loadingShops || shops.length === 0}
+                className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 px-4 py-2 rounded"
+              >
+                {creatingUser ? "Creating…" : "Create User"}
+              </button>
+            </form>
+
+            {/* Existing Users (LIMIT 5) */}
+            <div className="mt-6 bg-slate-950 border border-slate-800 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
+                <div className="font-semibold">Existing Users</div>
+                <button
+                  onClick={loadUsers}
+                  className="px-3 py-1.5 text-xs rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"
+                >
+                  Refresh
+                </button>
+              </div>
+
+              <input
+                className="w-full p-2 rounded bg-slate-900 border border-slate-800 text-sm mb-3"
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                placeholder="Search users by name / email / role…"
+              />
+
+              {loadingUsers ? (
+                <div className="opacity-70 text-sm">Loading users…</div>
+              ) : filteredUsers.length === 0 ? (
+                <div className="opacity-70 text-sm">No users found.</div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="text-xs opacity-60">
+                    Showing {Math.min(filteredUsers.length, 5)} of {filteredUsers.length}
+                  </div>
+
+                  {filteredUsers.slice(0, 5).map((u) => {
+                    const shopNames =
+                      Array.isArray(u.assignedShops) && u.assignedShops.length
+                        ? u.assignedShops.map((id) => shopsById[id]?.name || id).join(", ")
+                        : "—";
+
+                    return (
+                      <div
+                        key={u.id}
+                        className="p-3 rounded border border-slate-800 bg-slate-900"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium truncate">
+                              {u.name || u.email || u.id}
+                            </div>
+                            <div className="text-xs opacity-80 truncate">{u.email || ""}</div>
+
+                            <div className="text-xs opacity-80 mt-1">
+                              Role: <b>{u.role || "-"}</b>
+                            </div>
+
+                            <div className="text-xs opacity-70 mt-1 truncate">
+                              Shops: {shopNames}
+                            </div>
+
+                            <div className="text-xs mt-1">
+                              Status:{" "}
+                              <span
+                                className={
+                                  u.isActive === false ? "text-red-400" : "text-emerald-400"
+                                }
+                              >
+                                {u.isActive === false ? "Disabled" : "Active"}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex gap-2 shrink-0 flex-wrap justify-end">
+                            <button
+                              onClick={() => openEditUser(u)}
+                              className="px-3 py-1 text-xs rounded bg-slate-800 hover:bg-slate-700 border border-slate-700"
+                            >
+                              Edit
+                            </button>
+
+                            <button
+                              onClick={() => toggleUserActive(u.id, u.isActive === false)}
+                              className={`px-3 py-1 text-xs rounded ${
+                                u.isActive === false
+                                  ? "bg-emerald-600 hover:bg-emerald-700"
+                                  : "bg-red-600 hover:bg-red-700"
+                              }`}
+                            >
+                              {u.isActive === false ? "Enable" : "Disable"}
+                            </button>
+
+                            <button
+                              disabled
+                              className="px-3 py-1 text-xs rounded bg-slate-700 opacity-50 cursor-not-allowed"
+                            >
+                              Reset Password
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {filteredUsers.length > 5 ? (
+                    <div className="text-xs opacity-60">
+                      Too many results — refine your user search.
+                    </div>
+                  ) : null}
+                </div>
+              )}
+
+              <div className="text-xs opacity-70 mt-3">
+                Tip: You cannot disable your own super admin account.
+              </div>
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+            <div className="font-semibold mb-2">Notes</div>
+            <ul className="text-sm opacity-80 list-disc pl-5 space-y-2">
+              <li>
+                Disable/Enable is stored in Firestore as <code>isActive</code>.
+              </li>
+              <li>Firestore rules block disabled users completely.</li>
+              <li>Edit user updates: name, role, assigned shops, status.</li>
+              <li>Next Phase: Reset password using Cloud Function (secure).</li>
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {/* ✅ EDIT SHOP MODAL (NEW) */}
+      {shopEditOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setShopEditOpen(false)}
+          />
+
+          <div className="relative w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
+            <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold truncate">Edit Shop</div>
+                <div className="text-xs text-slate-400 truncate">
+                  Shop ID: <b>{editingShop?.id || "-"}</b> (read-only)
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShopEditOpen(false)}
+                className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div>
+                <div className="text-xs opacity-80 mb-1">Shop Name</div>
+                <input
+                  className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                  value={shopEditForm.name}
+                  onChange={(e) =>
+                    setShopEditForm((p) => ({ ...p, name: e.target.value }))
+                  }
+                  placeholder="Shop name"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Currency</div>
+                  <input
+                    className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                    value={shopEditForm.currency}
+                    onChange={(e) =>
+                      setShopEditForm((p) => ({ ...p, currency: e.target.value }))
+                    }
+                    placeholder="INR, BHD, AED..."
+                  />
+                </div>
+
+                <div className="flex items-center gap-2 pt-6">
+                  <input
+                    type="checkbox"
+                    checked={shopEditForm.isActive}
+                    onChange={(e) =>
+                      setShopEditForm((p) => ({ ...p, isActive: e.target.checked }))
+                    }
+                  />
+                  <span className="text-sm">
+                    Active (unchecked = Inactive)
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => setShopEditOpen(false)}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  disabled={savingShopEdit}
+                  onClick={saveShopEdits}
+                  className="rounded-xl bg-white text-slate-950 hover:opacity-90 px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {savingShopEdit ? "Saving…" : "Save Changes"}
+                </button>
+              </div>
+
+              <div className="text-[11px] text-slate-400">
+                Note: Shop ID cannot be changed. Name/Currency/Status only.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* EDIT USER MODAL */}
+      {editOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4">
+          <div
+            className="absolute inset-0 bg-black/60"
+            onClick={() => setEditOpen(false)}
+          />
+
+          <div
+            ref={editModalRef}
+            className="relative w-full max-w-2xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl max-h-[85vh] overflow-auto"
+          >
+            <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-lg font-semibold truncate">Edit User</div>
+                <div className="text-xs text-slate-400 truncate">
+                  {editingUser?.email || editingUser?.id || ""}
+                </div>
+              </div>
+
+              <button
+                onClick={() => setEditOpen(false)}
+                className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-200 hover:bg-slate-800"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Name</div>
+                  <input
+                    className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                    value={editForm.name}
+                    onChange={(e) => setEditForm((p) => ({ ...p, name: e.target.value }))}
+                    placeholder="User name"
+                  />
+                </div>
+
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Role</div>
+                  <select
+                    className="w-full p-2 rounded bg-slate-900 border border-slate-800"
+                    value={editForm.role}
+                    onChange={(e) => setEditForm((p) => ({ ...p, role: e.target.value }))}
+                    disabled={editingUser?.id === user?.uid}
+                  >
+                    <option value="admin">admin</option>
+                    <option value="partner">partner</option>
+                    <option value="super_admin">super_admin</option>
+                  </select>
+                  {editingUser?.id === user?.uid ? (
+                    <div className="text-[11px] text-amber-300/80 mt-1">
+                      You cannot change your own role.
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between gap-3 flex-wrap">
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={editForm.isActive}
+                    onChange={(e) =>
+                      setEditForm((p) => ({ ...p, isActive: e.target.checked }))
+                    }
+                    disabled={editingUser?.id === user?.uid}
+                  />
+                  Active (unchecked = Disabled)
+                </label>
+
+                {editingUser?.id === user?.uid ? (
+                  <div className="text-[11px] text-amber-300/80">
+                    You cannot disable your own account.
+                  </div>
+                ) : null}
+              </div>
+
+              {/* Assign shops */}
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
+                  <div className="text-sm font-semibold">Assigned Shops</div>
+                  <input
+                    className="w-full sm:w-64 p-2 rounded bg-slate-950 border border-slate-800 text-sm"
+                    value={editShopSearch}
+                    onChange={(e) => setEditShopSearch(e.target.value)}
+                    placeholder="Search shops…"
+                  />
+                </div>
+
+                <div className="max-h-60 overflow-auto rounded border border-slate-800 bg-slate-950 p-2 space-y-2">
+                  {loadingShops ? (
+                    <div className="opacity-70 text-sm p-2">Loading shops…</div>
+                  ) : shops.length === 0 ? (
+                    <div className="opacity-70 text-sm p-2">No shops found.</div>
+                  ) : (
+                    filteredShopsForEdit.slice(0, 80).map((s) => (
+                      <label
+                        key={s.id}
+                        className="flex items-center gap-2 text-sm p-2 rounded hover:bg-slate-900 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={editForm.assignedShops.includes(s.id)}
+                          onChange={() => toggleEditShop(s.id)}
+                        />
+                        <span className="font-medium">{s.name || s.id}</span>
+                        <span className="text-xs opacity-60">• {s.currency || ""}</span>
+                      </label>
+                    ))
+                  )}
+                </div>
+
+                <div className="text-xs opacity-70 mt-2">
+                  Selected:{" "}
+                  <span className="opacity-90">
+                    {editForm.assignedShops.length
+                      ? editForm.assignedShops.map((id) => shopsById[id]?.name || id).join(", ")
+                      : "None"}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  onClick={() => setEditOpen(false)}
+                  className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  disabled={savingEdit}
+                  onClick={saveUserEdits}
+                  className="rounded-xl bg-emerald-600 hover:bg-emerald-700 px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                >
+                  {savingEdit ? "Saving…" : "Save Changes"}
+                </button>
+              </div>
+
+              <div className="text-[11px] text-slate-400">
+                Note: user must have at least 1 assigned shop.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
