@@ -79,11 +79,6 @@ export function calculateEodSnapshot({
   const selectedZReports = zReports.filter(
     (report) => String(report?.businessDate || "") === selectedDate
   );
-  const zReportShiftIds = new Set(
-    selectedZReports
-      .map((report) => String(report?.shiftId || ""))
-      .filter(Boolean)
-  );
 
   // Sales exclude internals and never include loans/transfers.
   const salesTransactions = dayTransactions.filter(
@@ -92,16 +87,24 @@ export function calculateEodSnapshot({
       !isLoanTransaction(transaction) &&
       normalizeTransactionType(transaction?.type) === "sales"
   );
+
+  function salesAmount(transaction) {
+    const direct = num(transaction?.amountIn);
+    if (direct !== 0) return direct;
+    return num(transaction?.totalAmount) || num(transaction?.amount);
+  }
+
   const systemSales = salesTransactions.reduce(
-    (total, transaction) => total + num(transaction.amountIn),
+    (total, transaction) => total + salesAmount(transaction),
     0
   );
-  const uncoveredSystemSales = salesTransactions
-    .filter(
-      (transaction) =>
-        !zReportShiftIds.has(String(transaction?.shiftId || ""))
-    )
-    .reduce((total, transaction) => total + num(transaction.amountIn), 0);
+  // Shifts that already have Sales-module (POS) invoices — Z-report sales for
+  // those shifts are reconciliation only and must not double-count revenue.
+  const shiftsWithSystemSales = new Set(
+    salesTransactions
+      .map((transaction) => String(transaction?.shiftId || ""))
+      .filter(Boolean)
+  );
   const zReportSales = selectedZReports.reduce((total, report) => {
     const grossSales =
       report?.grossSales === undefined || report?.grossSales === null
@@ -109,7 +112,22 @@ export function calculateEodSnapshot({
         : num(report.grossSales);
     return total + grossSales;
   }, 0);
-  const totalSales = zReportSales + uncoveredSystemSales;
+  const uncoveredZReportSales = selectedZReports
+    .filter((report) => {
+      const shiftId = String(report?.shiftId || "");
+      // No shift link → keep Z sales only when there is no POS sales at all.
+      if (!shiftId) return systemSales <= 0;
+      return !shiftsWithSystemSales.has(shiftId);
+    })
+    .reduce((total, report) => {
+      const grossSales =
+        report?.grossSales === undefined || report?.grossSales === null
+          ? num(report?.netSales) + num(report?.creditSalesTotal)
+          : num(report.grossSales);
+      return total + grossSales;
+    }, 0);
+  // Sales module first; Z-report fills gaps for shifts without POS billing.
+  const totalSales = systemSales + uncoveredZReportSales;
 
   // Expenses are operational purchase/expense only — never loans or transfers.
   const totalExpenses = dayTransactions
@@ -133,22 +151,29 @@ export function calculateEodSnapshot({
       "cash"
     );
   });
-  const zReportCashSales = selectedZReports.reduce(
-    (total, report) => total + num(report?.cashTotal),
-    0
-  );
+  const systemCashSales = salesTransactions
+    .filter(
+      (transaction) =>
+        normalizeTransactionMode(
+          transaction?.mode || transaction?.paymentMode
+        ) === "cash"
+    )
+    .reduce((total, transaction) => total + salesAmount(transaction), 0);
+  const uncoveredZReportCashSales = selectedZReports
+    .filter((report) => {
+      const shiftId = String(report?.shiftId || "");
+      if (!shiftId) return systemCashSales <= 0;
+      return !shiftsWithSystemSales.has(shiftId);
+    })
+    .reduce((total, report) => total + num(report?.cashTotal), 0);
+  const nonSaleCashIn = drawerTransactions
+    .filter(
+      (transaction) =>
+        normalizeTransactionType(transaction?.type) !== "sales"
+    )
+    .reduce((total, transaction) => total + num(transaction.amountIn), 0);
   const totalCashIn =
-    zReportCashSales +
-    drawerTransactions
-      .filter((transaction) => {
-        const isSale =
-          normalizeTransactionType(transaction?.type) === "sales";
-        return (
-          !isSale ||
-          !zReportShiftIds.has(String(transaction?.shiftId || ""))
-        );
-      })
-      .reduce((total, transaction) => total + num(transaction.amountIn), 0);
+    systemCashSales + uncoveredZReportCashSales + nonSaleCashIn;
   const totalCashOut = drawerTransactions.reduce(
     (total, transaction) => total + num(transaction.amountOut),
     0
@@ -209,15 +234,22 @@ export function calculateEodSnapshot({
   const closingCashInHand =
     previousCashInHand + todayNetCashDelta - todayCashToLocker + todayLockerToCash;
 
-  const zReportBank = selectedZReports.reduce((total, report) => {
-    if (report?.bankTotal != null && report.bankTotal !== "") {
-      return total + num(report.bankTotal);
-    }
-    return total + num(report?.cardTotal) + num(report?.qrTotal);
-  }, 0);
+  const uncoveredZReportBank = selectedZReports
+    .filter((report) => {
+      const shiftId = String(report?.shiftId || "");
+      if (!shiftId) return systemSales <= 0;
+      return !shiftsWithSystemSales.has(shiftId);
+    })
+    .reduce((total, report) => {
+      if (report?.bankTotal != null && report.bankTotal !== "") {
+        return total + num(report.bankTotal);
+      }
+      return total + num(report?.cardTotal) + num(report?.qrTotal);
+    }, 0);
 
   // Non-transfer bank tender activity (POS card/QR + Bank / Bank:<account> /
   // bank_transfer receipts, payments, loans, purchases, sales).
+  // Always include Sales-module bank tenders; Z-report bank only fills gaps.
   const todayNetBankFromTenders = dayTransactions
     .filter((transaction) => {
       if (isInternal(transaction)) return false;
@@ -230,12 +262,7 @@ export function calculateEodSnapshot({
         mode === "qr" ||
         mode === "bank_transfer" ||
         /^bank/i.test(rawMode.trim());
-      if (!isBankFamily) return false;
-      const coveredPosTender =
-        normalizeTransactionType(transaction?.type) === "sales" &&
-        (mode === "card" || mode === "qr") &&
-        zReportShiftIds.has(String(transaction?.shiftId || ""));
-      return !coveredPosTender;
+      return isBankFamily;
     })
     .reduce(
       (total, transaction) =>
@@ -281,7 +308,7 @@ export function calculateEodSnapshot({
     }, 0);
 
   const todayNetBankDelta =
-    zReportBank + todayNetBankFromTenders + todayNetBankFromTransfers;
+    uncoveredZReportBank + todayNetBankFromTenders + todayNetBankFromTransfers;
   const previousBankBalance = num(
     previousReport?.closingBankBalance ?? previousReport?.totalBank
   );

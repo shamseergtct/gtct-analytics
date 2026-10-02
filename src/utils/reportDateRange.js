@@ -46,8 +46,13 @@ export function resolveReportDateRange(preset, customFrom, customTo, now = new D
     case "all":
       return { fromDate: FULL_PERIOD_START, toDate: today };
     case "custom": {
-      const fromDate = String(customFrom || today).slice(0, 10);
-      const toDate = String(customTo || today).slice(0, 10);
+      let fromDate = String(customFrom || today).slice(0, 10);
+      let toDate = String(customTo || today).slice(0, 10);
+      if (fromDate > toDate) {
+        const swap = fromDate;
+        fromDate = toDate;
+        toDate = swap;
+      }
       return { fromDate, toDate };
     }
     case "today":

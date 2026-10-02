@@ -19,6 +19,7 @@ import PaymentReceiptEntry from "./pages/PaymentReceiptEntry";
 import InternalTransferEntry from "./pages/InternalTransferEntry";
 import BankAccounts from "./pages/BankAccounts";
 import EndOfDay from "./pages/EndOfDay";
+import Help from "./pages/Help";
 
 
 // ✅ NEW: Range Txn Reports (6 tabs)
@@ -142,6 +143,7 @@ export default function App() {
         <Route path="/reports" element={<Reports />} />
         <Route path="/reports-hub" element={<ReportsHub />} />
         <Route path="/reports/end-of-day" element={<EndOfDay />} />
+        <Route path="/help" element={<Help />} />
         
 
         {/* ✅ NEW: Transaction Range Reports (6 tabs) */}

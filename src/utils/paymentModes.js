@@ -67,21 +67,43 @@ export function paymentModeSelectionFromSaved(paymentMode, bankAccountId) {
 }
 
 /**
- * Build dropdown options: Cash (+ optional Petty/Credit), then active banks.
- * Card/QR are omitted — pick a bank account so the destination is unambiguous.
- * Legacy Card/QR/Bank Transfer can be shown only when editing an old saved value.
+ * Build dropdown options for payment mode.
+ * Base: Cash. Optional Card / QR / Petti / Bank Transfer / Credit, then active banks.
+ * Legacy Card/QR/Bank Transfer can also be forced when editing an old saved value.
  */
 export function buildPaymentModeOptions({
   bankAccounts = [],
   includeCredit = false,
   includePettyCash = false,
+  includeCard = false,
+  includeQr = false,
+  includeBankTransfer = false,
   includeLegacyBankTransfer = false,
   includeLegacyCard = false,
   includeLegacyQr = false,
 } = {}) {
   const options = [{ value: "CASH", label: "Cash" }];
+
+  if (includeCard || includeLegacyCard) {
+    options.push({
+      value: "CARD",
+      label: includeCard ? "Card" : "Card (Legacy)",
+    });
+  }
+  if (includeQr || includeLegacyQr) {
+    options.push({
+      value: "QR",
+      label: includeQr ? "QR" : "QR (Legacy)",
+    });
+  }
   if (includePettyCash) {
-    options.push({ value: "PETTY_CASH", label: "Petty Cash" });
+    options.push({ value: "PETTI", label: "Petti Cash" });
+  }
+  if (includeBankTransfer || includeLegacyBankTransfer) {
+    options.push({
+      value: "BANK_TRANSFER",
+      label: includeBankTransfer ? "Bank Transfer" : "Bank Transfer (Legacy)",
+    });
   }
 
   for (const account of bankAccounts) {
@@ -90,19 +112,6 @@ export function buildPaymentModeOptions({
     options.push({
       value: bankAccountOptionValue(account.id),
       label: `Bank: ${account.accountName || "Account"}`,
-    });
-  }
-
-  if (includeLegacyCard) {
-    options.push({ value: "CARD", label: "Card (Legacy)" });
-  }
-  if (includeLegacyQr) {
-    options.push({ value: "QR", label: "QR (Legacy)" });
-  }
-  if (includeLegacyBankTransfer) {
-    options.push({
-      value: "BANK_TRANSFER",
-      label: "Bank Transfer (Legacy)",
     });
   }
 

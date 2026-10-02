@@ -12,6 +12,7 @@ import {
 import { Landmark, Pencil, Plus, X } from "lucide-react";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
+import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 
 const LABEL_CLASS = "block text-sm font-medium text-gray-300";
 const FIELD_CLASS =
@@ -208,14 +209,17 @@ export default function BankAccounts() {
             accounts appear as Bank options in payment modes.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={openAdd}
-          className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500"
-        >
+        <div className="flex flex-wrap items-center gap-2">
+          <ModuleHelpButton moduleId="bank-accounts" />
+          <button
+            type="button"
+            onClick={openAdd}
+            className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-500"
+          >
           <Plus size={16} />
           Add Bank Account
         </button>
+        </div>
       </div>
 
       {pageError ? (

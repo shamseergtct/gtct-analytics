@@ -10,6 +10,12 @@ import {
 import { useNavigate } from "react-router-dom";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
+import {
+  DEFAULT_SHOP_TYPE,
+  SHOP_TYPE_OPTIONS,
+  normalizeShopType,
+  shopTypeLabel,
+} from "../utils/shopTypes.js";
 
 function nowYear() {
   return new Date().getFullYear();
@@ -18,6 +24,7 @@ function nowYear() {
 function makeDefaultClientSettings(currency = "AED") {
   return {
     currency: String(currency || "AED").trim().toUpperCase(),
+    shop_type: DEFAULT_SHOP_TYPE,
 
     // ✅ Warehouses (editable list per client)
     warehouses: [{ id: "main", name: "Main Warehouse" }],
@@ -115,6 +122,7 @@ export default function Clients() {
       location: c.location || "",
       contact_number: c.contact_number || "",
       currency: (c.currency || defaults.currency || "AED").toUpperCase(),
+      shop_type: normalizeShopType(c.shop_type ?? defaults.shop_type),
       warehouses: Array.isArray(c.warehouses) && c.warehouses.length ? c.warehouses : defaults.warehouses,
       invoice: { ...defaults.invoice, ...(c.invoice || {}) },
       tax: { ...defaults.tax, ...(c.tax || {}) },
@@ -154,6 +162,7 @@ export default function Clients() {
       location: String(form.location || "").trim(),
       currency: String(form.currency || "AED").trim().toUpperCase(),
       contact_number: String(form.contact_number || "").trim(),
+      shop_type: normalizeShopType(form.shop_type),
 
       warehouses: cleanedWarehouses.length ? cleanedWarehouses : [{ id: "main", name: "Main Warehouse" }],
 
@@ -329,7 +338,8 @@ export default function Clients() {
                           ) : null}
                         </div>
                         <div className="text-xs text-slate-400">
-                          Currency: {c.currency || "AED"} • Warehouses:{" "}
+                          Currency: {c.currency || "AED"} • Type:{" "}
+                          {shopTypeLabel(c.shop_type)} • Warehouses:{" "}
                           {Array.isArray(c.warehouses) ? c.warehouses.length : 0}
                         </div>
                       </td>
@@ -409,7 +419,6 @@ export default function Clients() {
             </div>
 
             <form className="mt-4 space-y-4" onSubmit={onSave}>
-              {/* Basic */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-sm text-slate-300">Client Name *</label>
@@ -423,6 +432,25 @@ export default function Clients() {
                 </div>
 
                 <div>
+                  <label className="text-sm text-slate-300">Shop Type</label>
+                  <select
+                    className="mt-1 h-10 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                    value={normalizeShopType(form.shop_type)}
+                    onChange={(e) =>
+                      setForm({ ...form, shop_type: normalizeShopType(e.target.value) })
+                    }
+                  >
+                    {SHOP_TYPE_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
                   <label className="text-sm text-slate-300">Currency</label>
                   <input
                     className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
@@ -431,9 +459,7 @@ export default function Clients() {
                     placeholder="AED"
                   />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="text-sm text-slate-300">Location</label>
                   <input
@@ -443,18 +469,18 @@ export default function Clients() {
                     placeholder="Bahrain / Kerala"
                   />
                 </div>
+              </div>
 
-                <div>
-                  <label className="text-sm text-slate-300">Contact Number</label>
-                  <input
-                    className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
-                    value={form.contact_number}
-                    onChange={(e) =>
-                      setForm({ ...form, contact_number: e.target.value })
-                    }
-                    placeholder="+973 XXXXXXXX"
-                  />
-                </div>
+              <div>
+                <label className="text-sm text-slate-300">Contact Number</label>
+                <input
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                  value={form.contact_number}
+                  onChange={(e) =>
+                    setForm({ ...form, contact_number: e.target.value })
+                  }
+                  placeholder="+973 XXXXXXXX"
+                />
               </div>
 
               {/* Warehouses */}

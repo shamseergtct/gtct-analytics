@@ -205,7 +205,16 @@ service cloud.firestore {
           'createdAtMs',
           'createdBy',
           'updatedAt',
-          'updatedBy'
+          'updatedBy',
+          // Optional vertical extensions (retail / cafe / wholesale)
+          'barcode',
+          'minStock',
+          'batchNo',
+          'expiryDate',
+          'baseUnit',
+          'recipeNotes',
+          'unitsPerCarton',
+          'wholesalePrice'
         ])
         && request.resource.data.category in [
           'COMMODITY',
@@ -221,7 +230,48 @@ service cloud.firestore {
         && request.resource.data.sellingPrice is number
         && request.resource.data.sellingPrice >= 0
         && request.resource.data.currentStock == 0
-        && request.resource.data.imageStatus in ['NONE', 'UPLOADED'];
+        && request.resource.data.imageStatus in ['NONE', 'UPLOADED']
+        && (
+          !('barcode' in request.resource.data)
+          || request.resource.data.barcode is string
+        )
+        && (
+          !('minStock' in request.resource.data)
+          || (
+            request.resource.data.minStock is number
+            && request.resource.data.minStock >= 0
+          )
+        )
+        && (
+          !('batchNo' in request.resource.data)
+          || request.resource.data.batchNo is string
+        )
+        && (
+          !('expiryDate' in request.resource.data)
+          || request.resource.data.expiryDate is string
+        )
+        && (
+          !('baseUnit' in request.resource.data)
+          || request.resource.data.baseUnit is string
+        )
+        && (
+          !('recipeNotes' in request.resource.data)
+          || request.resource.data.recipeNotes is string
+        )
+        && (
+          !('unitsPerCarton' in request.resource.data)
+          || (
+            request.resource.data.unitsPerCarton is number
+            && request.resource.data.unitsPerCarton >= 1
+          )
+        )
+        && (
+          !('wholesalePrice' in request.resource.data)
+          || (
+            request.resource.data.wholesalePrice is number
+            && request.resource.data.wholesalePrice >= 0
+          )
+        );
       allow update: if canUpdateTenantResource();
       allow delete: if canReadTenantResource();
 

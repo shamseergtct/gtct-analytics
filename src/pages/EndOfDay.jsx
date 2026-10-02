@@ -29,6 +29,9 @@ import {
 import { db } from "../firebase";
 import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
+import { useShift } from "../context/shift-context.js";
+import ModuleExitButton from "../components/ModuleExitButton.jsx";
+import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import DateInput from "../components/DateInput.jsx";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import { calculateEodSnapshot } from "../utils/eodCalculations.js";
@@ -74,6 +77,7 @@ function StatCell({ label, value, tone = "text-slate-900" }) {
 export default function EndOfDay() {
   const { user, role } = useAuth();
   const { activeClientId, activeClientData } = useClient();
+  const { activeShift } = useShift();
   const [searchParams, setSearchParams] = useSearchParams();
   const cardRef = useRef(null);
   const previewRunRef = useRef(0);
@@ -102,6 +106,25 @@ export default function EndOfDay() {
     setMessage("");
     setError("");
   }, [dateFromUrl]);
+
+  // When opening EOD with no ?date= and a shift is open, lock report date to the shift business date.
+  useEffect(() => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl)) return;
+    if (!activeShift || activeShift.status !== "OPEN") return;
+    const shiftDate = String(activeShift.businessDate || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(shiftDate)) return;
+    if (shiftDate === selectedDate) return;
+    setSelectedDate(shiftDate);
+    setMessage("");
+    setError("");
+    setSearchParams({ date: shiftDate }, { replace: true });
+  }, [
+    activeShift?.businessDate,
+    activeShift?.status,
+    dateFromUrl,
+    selectedDate,
+    setSearchParams,
+  ]);
 
   function selectBusinessDate(nextDate) {
     const clean = String(nextDate || "").slice(0, 10);
@@ -574,6 +597,7 @@ export default function EndOfDay() {
             <h1 className="text-2xl font-semibold text-white">End of Day Closure</h1>
           </div>
           <div className="flex items-end gap-2">
+            <ModuleHelpButton moduleId="end-of-day" className="h-10" />
             <label className="text-xs font-medium uppercase tracking-wider text-slate-400">
               Business Date
               <DateInput

@@ -20,6 +20,7 @@ import {
 import { formatIsoDate } from "../utils/dateFormat.js";
 import DateInput from "../components/DateInput.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
+import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import BankAccountSearchSelect from "../components/BankAccountSearchSelect.jsx";
 import { useFormDraft } from "../hooks/useFormDraft.js";
 import {
@@ -796,7 +797,10 @@ export default function InternalTransferEntry() {
                 {activeClientData?.name || activeClientId}
               </p>
             </div>
-            <ModuleExitButton ariaLabel="Close internal transfer entry" />
+            <div className="flex items-center gap-2">
+              <ModuleHelpButton moduleId="internal-transfers" />
+              <ModuleExitButton ariaLabel="Close internal transfer entry" />
+            </div>
           </div>
         </div>
 

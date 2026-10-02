@@ -116,14 +116,15 @@ export default function MasterEntryForm({
 
   const [type, setType] = useState("Sales");
   const [category, setCategory] = useState("Commodity");
-  const [mode, setMode] = useState("Cash");
+  const [mode, setMode] = useState("CASH");
   const paymentModeOptions = useMemo(
     () =>
       buildPaymentModeOptions({
         bankAccounts,
         includePettyCash: true,
+        includeCredit: true,
         ...legacyPaymentModeFlags(mode),
-      }).concat([{ value: "PETTI", label: "Petti Cash" }]),
+      }),
     [bankAccounts, mode]
   );
   const resolvedMode = parsePaymentModeSelection(mode);
@@ -657,9 +658,6 @@ export default function MasterEntryForm({
                 {option.label}
               </option>
             ))}
-            {normalizeTransactionMode(mode) === "credit" ? (
-              <option value="CREDIT">Credit (Legacy Record)</option>
-            ) : null}
           </select>
         </div>
       </div>
@@ -755,7 +753,6 @@ export default function MasterEntryForm({
             onChange={(e) => setVatPercent(e.target.value)}
             className="mt-1 w-full rounded-xl bg-slate-950 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
           />
-          <div className="mt-1 text-xs text-slate-500">Default is 0</div>
         </div>
 
         <div>
@@ -800,7 +797,6 @@ export default function MasterEntryForm({
                   className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
                   placeholder="0"
                 />
-                <div className="mt-1 text-xs text-slate-500">0–100</div>
               </div>
 
               <div>
@@ -813,9 +809,6 @@ export default function MasterEntryForm({
                   className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
                   placeholder="0"
                 />
-                <div className="mt-1 text-xs text-slate-500">
-                  If amount is entered, it will be used. Else % applies.
-                </div>
               </div>
 
               <div>

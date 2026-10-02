@@ -21,6 +21,7 @@ import {
 import { formatIsoDate } from "../utils/dateFormat.js";
 import DateInput from "../components/DateInput.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
+import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import {
   getInsufficientFundsError,
   isBankTenderMode,
@@ -741,7 +742,10 @@ export default function PaymentReceiptEntry() {
                 {activeClientData?.name || activeClientId}
               </p>
             </div>
-            <ModuleExitButton ariaLabel="Close payment and receipt entry" />
+            <div className="flex items-center gap-2">
+              <ModuleHelpButton moduleId="payments-receipts" />
+              <ModuleExitButton ariaLabel="Close payment and receipt entry" />
+            </div>
           </div>
         </div>
 

@@ -28,6 +28,7 @@ import {
   Landmark,
   ArrowLeft,
   Home,
+  CircleHelp,
 } from "lucide-react";
 
 export default function Layout() {
@@ -117,6 +118,7 @@ export default function Layout() {
       { to: "/reports/end-of-day", label: "End of Day", icon: CalendarCheck2 },
       { to: "/reports/transactions", label: "Range Reports", icon: FileText },
       { to: "/party-reports", label: "Party Reports", icon: BarChart3 },
+      { to: "/help", label: "Help", icon: CircleHelp },
     ],
     []
   );
@@ -129,6 +131,7 @@ export default function Layout() {
         { to: "/reports/end-of-day", label: "End of Day", icon: CalendarCheck2 },
         { to: "/reports/transactions", label: "Range Reports", icon: FileText },
         { to: "/party-reports", label: "Party Reports", icon: BarChart3 },
+        { to: "/help", label: "Help", icon: CircleHelp },
       ];
     }
 

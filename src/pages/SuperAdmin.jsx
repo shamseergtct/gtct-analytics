@@ -18,6 +18,12 @@ import { getApps, initializeApp } from "firebase/app";
 
 import { db, firebaseConfig } from "../firebase";
 import { useAuth } from "../context/AuthContext";
+import {
+  DEFAULT_SHOP_TYPE,
+  SHOP_TYPE_OPTIONS,
+  normalizeShopType,
+  shopTypeLabel,
+} from "../utils/shopTypes.js";
 
 // ✅ Secondary auth (does not affect current session)
 function getSecondaryAuth() {
@@ -39,6 +45,7 @@ function nowYear() {
 function defaultClientSettings(currency = "INR") {
   return {
     currency: String(currency || "INR").trim().toUpperCase(),
+    shop_type: DEFAULT_SHOP_TYPE,
 
     warehouses: [{ id: "main", name: "Main Warehouse" }],
 
@@ -85,6 +92,7 @@ export default function SuperAdmin() {
   const [shopId, setShopId] = useState("");
   const [shopName, setShopName] = useState("");
   const [shopCurrency, setShopCurrency] = useState("INR");
+  const [shopType, setShopType] = useState(DEFAULT_SHOP_TYPE);
   const [creatingShop, setCreatingShop] = useState(false);
 
   // ✅ Shop edit modal
@@ -94,6 +102,7 @@ export default function SuperAdmin() {
   const [shopEditForm, setShopEditForm] = useState({
     name: "",
     currency: "INR",
+    shop_type: DEFAULT_SHOP_TYPE,
     isActive: true,
   });
 
@@ -239,6 +248,7 @@ export default function SuperAdmin() {
     const id = String(shopId || "").trim();
     const name = String(shopName || "").trim();
     const currencyInput = String(shopCurrency || "").trim() || "INR";
+    const resolvedShopType = normalizeShopType(shopType);
 
     if (!id || !name) {
       setErr("Shop ID and Name are required.");
@@ -257,6 +267,7 @@ export default function SuperAdmin() {
         clientId: id,
         name,
         currency: defaults.currency,
+        shop_type: resolvedShopType,
 
         // ✅ NEW DEFAULT SETTINGS
         warehouses: defaults.warehouses,
@@ -274,6 +285,7 @@ export default function SuperAdmin() {
       setShopId("");
       setShopName("");
       setShopCurrency("INR");
+      setShopType(DEFAULT_SHOP_TYPE);
       setMsg(`✅ Shop created: ${name}`);
       await loadShops();
     } catch (e2) {
@@ -294,6 +306,7 @@ export default function SuperAdmin() {
     setShopEditForm({
       name: String(s?.name || "").trim(),
       currency: String(s?.currency || "INR").trim().toUpperCase(),
+      shop_type: normalizeShopType(s?.shop_type),
       isActive: s?.isActive === false ? false : true,
     });
     setShopEditOpen(true);
@@ -308,6 +321,7 @@ export default function SuperAdmin() {
     const id = editingShop.id;
     const name = String(shopEditForm.name || "").trim();
     const currency = String(shopEditForm.currency || "").trim().toUpperCase();
+    const resolvedShopType = normalizeShopType(shopEditForm.shop_type);
 
     if (!name) return setErr("Shop name is required.");
     if (!currency) return setErr("Currency is required.");
@@ -317,6 +331,7 @@ export default function SuperAdmin() {
       await updateDoc(doc(db, "clients", id), {
         name,
         currency,
+        shop_type: resolvedShopType,
         isActive: Boolean(shopEditForm.isActive),
         updatedAt: Date.now(),
         updatedBy: user?.uid || null,
@@ -326,7 +341,13 @@ export default function SuperAdmin() {
       setShops((prev) =>
         prev.map((x) =>
           x.id === id
-            ? { ...x, name, currency, isActive: Boolean(shopEditForm.isActive) }
+            ? {
+                ...x,
+                name,
+                currency,
+                shop_type: resolvedShopType,
+                isActive: Boolean(shopEditForm.isActive),
+              }
             : x
         )
       );
@@ -595,6 +616,21 @@ export default function SuperAdmin() {
               </div>
 
               <div>
+                <div className="text-xs opacity-80 mb-1">Shop Type</div>
+                <select
+                  className="h-10 w-full rounded bg-slate-950 border border-slate-800 px-2 text-sm"
+                  value={normalizeShopType(shopType)}
+                  onChange={(e) => setShopType(normalizeShopType(e.target.value))}
+                >
+                  {SHOP_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
                 <div className="text-xs opacity-80 mb-1">Currency</div>
                 <input
                   className="w-full p-2 rounded bg-slate-950 border border-slate-800"
@@ -653,7 +689,8 @@ export default function SuperAdmin() {
                           {s.name || "Unnamed Shop"}
                         </div>
                         <div className="text-xs opacity-70 truncate">
-                          Currency: {s.currency || "-"} • ID: {s.id} • Warehouses:{" "}
+                          Currency: {s.currency || "-"} • Type:{" "}
+                          {shopTypeLabel(s.shop_type)} • ID: {s.id} • Warehouses:{" "}
                           {Array.isArray(s.warehouses) ? s.warehouses.length : 0}
                         </div>
 
@@ -955,6 +992,26 @@ export default function SuperAdmin() {
                   }
                   placeholder="Shop name"
                 />
+              </div>
+
+              <div>
+                <div className="text-xs opacity-80 mb-1">Shop Type</div>
+                <select
+                  className="h-10 w-full rounded bg-slate-900 border border-slate-800 px-2 text-sm"
+                  value={normalizeShopType(shopEditForm.shop_type)}
+                  onChange={(e) =>
+                    setShopEditForm((p) => ({
+                      ...p,
+                      shop_type: normalizeShopType(e.target.value),
+                    }))
+                  }
+                >
+                  {SHOP_TYPE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

@@ -2,11 +2,19 @@ import { formatIsoDate } from "./dateFormat.js";
 
 export const REPORT_VIEW_TYPES = [
   { key: "invoice", label: "Invoice wise" },
+  { key: "customer", label: "Party wise" },
   { key: "daily", label: "Daily total" },
   { key: "weekly", label: "Weekly total" },
   { key: "monthly", label: "Monthly total" },
   { key: "quarterly", label: "Quarterly total" },
   { key: "annually", label: "Annually" },
+];
+
+export const PAYMENT_FILTER_OPTIONS = [
+  { key: "all", label: "All payments" },
+  { key: "cash", label: "Cash" },
+  { key: "bank", label: "Bank" },
+  { key: "credit", label: "Credit" },
 ];
 
 function pad(n) {
@@ -97,6 +105,29 @@ function periodBucket(date, viewType) {
   }
 }
 
+function customerBucket(row) {
+  const raw = String(row?.party || "").trim() || "Walk-in";
+  const key = raw.toLowerCase();
+  // Don't treat payment tenders as customer names when rolling up.
+  const tenderLike =
+    key === "cash" ||
+    key === "bank" ||
+    key === "credit" ||
+    key === "card" ||
+    key === "qr" ||
+    key === "bank transfer" ||
+    key === "bank_transfer" ||
+    key.startsWith("bank:") ||
+    key === "petti" ||
+    key === "petty";
+  const party = tenderLike ? "Walk-in" : raw;
+  return {
+    key: party.toLowerCase(),
+    label: party,
+    sortKey: party.toLowerCase(),
+  };
+}
+
 function parseAmount(value) {
   if (value == null || value === "") return 0;
   const parsed = Number(String(value).replace(/,/g, ""));
@@ -112,9 +143,113 @@ function hasDebitCredit(columns = []) {
   return columns.some((col) => col.key === "debit" || col.key === "credit");
 }
 
+/** Normalize a payment / description cell into cash | bank | credit | other. */
+export function normalizePaymentFilterKey(description) {
+  const text = String(description || "")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, " ");
+  if (!text) return "other";
+  if (text.includes("credit") || text.startsWith("cre")) return "credit";
+  if (
+    text.includes("bank") ||
+    text.startsWith("car") ||
+    text.startsWith("qr") ||
+    text.startsWith("upi")
+  ) {
+    return "bank";
+  }
+  if (
+    text.startsWith("cas") ||
+    text.includes("petti") ||
+    text.includes("petty")
+  ) {
+    return "cash";
+  }
+  // Aggregated labels like "Cash 10.00 · Bank 5.00"
+  const parts = text.split("·").map((part) => part.trim());
+  if (parts.length > 1) {
+    const keys = new Set(parts.map((part) => normalizePaymentFilterKey(part)));
+    if (keys.size === 1) return [...keys][0];
+    return "mixed";
+  }
+  return "other";
+}
+
+function paymentTypeLabel(key) {
+  if (key === "cash") return "Cash";
+  if (key === "bank") return "Bank";
+  if (key === "credit") return "Credit";
+  return "Other";
+}
+
+function formatPaymentSummary(paymentMap) {
+  const order = ["cash", "bank", "credit", "other"];
+  const parts = [];
+  for (const key of order) {
+    const amount = paymentMap.get(key) || 0;
+    if (amount <= 0) continue;
+    parts.push(`${paymentTypeLabel(key)} ${money(amount)}`);
+  }
+  if (parts.length === 0) return "—";
+  if (parts.length === 1) {
+    // Single tender: show type only (amount is already in Amount column)
+    const onlyKey = order.find((key) => (paymentMap.get(key) || 0) > 0);
+    return paymentTypeLabel(onlyKey);
+  }
+  return parts.join(" · ");
+}
+
+/** Filter ledger rows by payment tender before aggregation. */
+export function filterRowsByPayment(rows = [], paymentFilter = "all") {
+  const want = String(paymentFilter || "all").toLowerCase();
+  if (!want || want === "all") return rows;
+  return rows.filter((row) => {
+    if (row?.id === "__grand_total__" || row?._isTotal) return false;
+    return normalizePaymentFilterKey(row.description) === want;
+  });
+}
+
+/** Filter ledger rows by party name (case-insensitive). */
+export function filterRowsByParty(rows = [], partyFilter = "all") {
+  const want = String(partyFilter || "all").trim().toLowerCase();
+  if (!want || want === "all") return rows;
+  return rows.filter((row) => {
+    if (row?.id === "__grand_total__" || row?._isTotal) return false;
+    return String(row?.party || "").trim().toLowerCase() === want;
+  });
+}
+
+/** @deprecated Use filterRowsByParty */
+export function filterRowsByCustomer(rows = [], customerFilter = "all") {
+  return filterRowsByParty(rows, customerFilter);
+}
+
+/** Unique party names from report rows, sorted for the filter dropdown. */
+export function listPartiesFromRows(rows = []) {
+  const names = new Set();
+  rows.forEach((row) => {
+    if (row?.id === "__grand_total__" || row?._isTotal) return;
+    const name = String(row?.party || "").trim();
+    if (name && name !== "—") names.add(name);
+  });
+  return Array.from(names).sort((a, b) =>
+    a.localeCompare(b, undefined, { sensitivity: "base" })
+  );
+}
+
+/** @deprecated Use listPartiesFromRows */
+export function listCustomersFromRows(rows = []) {
+  return listPartiesFromRows(rows);
+}
+
 /**
- * Aggregate invoice-level ledger rows into period totals.
+ * Aggregate invoice-level ledger rows into period or customer totals.
  * Preserves invoice-wise rows when viewType is "invoice".
+ *
+ * For non-invoice views:
+ *  - Ref / Invoice shows the selected report type name
+ *  - Description / Payment shows rolled-up payment tenders
  *
  * balanceMode:
  *  - "ar"   customer receivable: debit − credit
@@ -136,35 +271,63 @@ export function aggregateLedgerRows({
   const buckets = new Map();
   const viewLabel =
     REPORT_VIEW_TYPES.find((item) => item.key === viewType)?.label || "Period";
+  const isCustomerWise = viewType === "customer";
 
   rows.forEach((row) => {
     if (row?.id === "__grand_total__" || row?._isTotal) return;
-    const date = parseRowDate(row.date);
-    if (!date) return;
-    const bucket = periodBucket(date, viewType);
+
+    let bucket;
+    if (isCustomerWise) {
+      bucket = customerBucket(row);
+    } else {
+      const date = parseRowDate(row.date);
+      if (!date) return;
+      bucket = periodBucket(date, viewType);
+    }
     if (!bucket) return;
 
     if (!buckets.has(bucket.key)) {
       buckets.set(bucket.key, {
-        id: `period-${bucket.key}`,
-        date: bucket.label,
-        ref: "—",
-        party: partyLabel || "—",
-        description: viewLabel,
+        id: isCustomerWise
+          ? `customer-${bucket.key}`
+          : `period-${bucket.key}`,
+        date: isCustomerWise ? "—" : bucket.label,
+        ref: viewLabel,
+        party: isCustomerWise ? bucket.label : partyLabel || "—",
         sortKey: bucket.sortKey,
         _in: 0,
         _out: 0,
         _debit: 0,
         _credit: 0,
+        _count: 0,
         _partySet: new Set(),
+        _payments: new Map(),
       });
     }
 
     const entry = buckets.get(bucket.key);
+    entry._count += 1;
     const rowParty = String(row.party || "").trim();
     if (rowParty && rowParty !== "—") {
       entry._partySet.add(rowParty);
     }
+
+    const rowIn = useDebitCredit
+      ? parseAmount(row.debit)
+      : parseAmount(row.in);
+    const rowOut = useDebitCredit
+      ? parseAmount(row.credit)
+      : parseAmount(row.out);
+    const paymentAmount = Math.max(rowIn, rowOut);
+    const payKey = normalizePaymentFilterKey(row.description);
+    if (paymentAmount > 0) {
+      entry._payments.set(
+        payKey === "mixed" ? "other" : payKey,
+        (entry._payments.get(payKey === "mixed" ? "other" : payKey) || 0) +
+          paymentAmount
+      );
+    }
+
     if (useDebitCredit) {
       entry._debit += parseAmount(row.debit);
       entry._credit += parseAmount(row.credit);
@@ -181,9 +344,16 @@ export function aggregateLedgerRows({
   let running = 0;
   const aggregatedRows = sorted.map((entry) => {
     const parties = Array.from(entry._partySet || []);
-    const party =
-      partyLabel ||
-      (parties.length === 1 ? parties[0] : parties.length > 1 ? "Multiple" : "—");
+    const party = isCustomerWise
+      ? entry.party
+      : partyLabel ||
+        (parties.length === 1
+          ? parties[0]
+          : parties.length > 1
+            ? "Multiple"
+            : "—");
+    const paymentSummary = formatPaymentSummary(entry._payments);
+
     if (useDebitCredit) {
       // Match party-ledger sign: AR uses debit−credit, AP uses credit−debit.
       running +=
@@ -193,9 +363,9 @@ export function aggregateLedgerRows({
       return {
         id: entry.id,
         date: entry.date,
-        ref: entry.ref,
+        ref: viewLabel,
         party,
-        description: entry.description,
+        description: paymentSummary,
         debit: entry._debit ? money(entry._debit) : "",
         credit: entry._credit ? money(entry._credit) : "",
         balance: money(running),
@@ -206,9 +376,9 @@ export function aggregateLedgerRows({
     return {
       id: entry.id,
       date: entry.date,
-      ref: entry.ref,
+      ref: viewLabel,
       party,
-      description: entry.description,
+      description: paymentSummary,
       in: entry._in ? money(entry._in) : "",
       out: entry._out ? money(entry._out) : "",
       balance: money(running),
@@ -222,7 +392,24 @@ export function reportViewSupportsAggregation(layout, reportType) {
   if (layout === "pnl" || layout === "cashflow" || layout === "due_list") {
     return false;
   }
-  return ["ledger", "customers", "vendors", "expense", "z_audit", "loans"].includes(
+  return ["ledger", "sales", "customers", "vendors", "expense", "z_audit", "loans"].includes(
     reportType
   );
+}
+
+/** Detect which payment tenders appear in rows (for showing the filter). */
+export function detectPaymentFiltersPresent(rows = []) {
+  const found = new Set();
+  rows.forEach((row) => {
+    if (row?.id === "__grand_total__" || row?._isTotal) return;
+    const key = normalizePaymentFilterKey(row.description);
+    if (key === "mixed") {
+      found.add("cash");
+      found.add("bank");
+      found.add("credit");
+      return;
+    }
+    if (key === "cash" || key === "bank" || key === "credit") found.add(key);
+  });
+  return found;
 }

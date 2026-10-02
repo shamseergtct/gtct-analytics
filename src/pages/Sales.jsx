@@ -18,16 +18,16 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import { useNavigate } from "react-router-dom";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useShift, useUnsavedWork } from "../context/shift-context.js";
-import DateInput from "../components/DateInput.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
+import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import { formatDateValue } from "../utils/dateFormat.js";
 import {
   buildTransactionPayload,
-  normalizeTransactionMode,
 } from "../utils/transactionContract.js";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
 import {
@@ -37,6 +37,17 @@ import {
   parsePaymentModeSelection,
   paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
+import { getSalesLayout } from "../components/sales/index.js";
+import {
+  formatPaymentLabel,
+  itemMatchesSearchQuery,
+  resolveSaleTenders,
+  roundMoney,
+  saleTenderTxnId,
+  tenderTotals,
+} from "../components/sales/salesHelpers.js";
+import { getPartyCode, nextPartyCode } from "../utils/partyCode.js";
+import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
 
 /**
  * =========================
@@ -57,11 +68,6 @@ function calcBaseTotal(qty, sellingPrice) {
 function calcTaxAmount(qty, sellingPrice, taxPct) {
   const base = calcBaseTotal(qty, sellingPrice);
   return Math.max(0, (base * num(taxPct)) / 100);
-}
-function calcLineTotal(qty, sellingPrice, taxPct) {
-  const base = calcBaseTotal(qty, sellingPrice);
-  const taxAmt = calcTaxAmount(qty, sellingPrice, taxPct);
-  return Math.max(0, base + taxAmt);
 }
 
 function todayYYYYMMDD() {
@@ -249,7 +255,7 @@ function printInvoice({ shopName, invoice, items, mode }) {
             <div><b>Customer:</b> ${custName || "-"}</div>
             <div><b>Phone:</b> ${phone || "-"}</div>
             ${(a1 || a2 || a3) ? `<div><b>Address:</b> ${[a1,a2,a3].filter(Boolean).join(", ")}</div>` : ""}
-            <div><b>Payment:</b> ${escapeHtml(invoice.paymentMode || "-")}</div>
+            <div><b>Payment:</b> ${escapeHtml(formatPaymentLabel(invoice))}</div>
             <div><b>Order Type:</b> ${escapeHtml(invoice.orderType || "-")}</div>
           </div>
 
@@ -322,6 +328,7 @@ function printInvoice({ shopName, invoice, items, mode }) {
  * =========================
  */
 export default function Sales() {
+  const navigate = useNavigate();
   const { activeClientId, activeClientData } = useClient();
   const { user } = useAuth();
   const { activeShift, loadingShift } = useShift();
@@ -351,10 +358,15 @@ export default function Sales() {
   const [saleDate, setSaleDate] = useState(todayYYYYMMDD());
   const [invoiceNo, setInvoiceNo] = useState(makeInvoiceNo());
   const [paymentMode, setPaymentMode] = useState("CASH");
+  const [settlementMode, setSettlementMode] = useState("full"); // full | split
+  const [payCash, setPayCash] = useState("");
+  const [payBank, setPayBank] = useState("");
+  const [payCredit, setPayCredit] = useState("");
   const paymentModeOptions = useMemo(
     () =>
       buildPaymentModeOptions({
         bankAccounts,
+        includeCredit: true,
         ...legacyPaymentModeFlags(paymentMode),
       }),
     [bankAccounts, paymentMode]
@@ -389,6 +401,7 @@ export default function Sales() {
 
   // UI states
   const [saving, setSaving] = useState(false);
+  const billingLock = useRef(false);
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
@@ -547,11 +560,7 @@ export default function Sales() {
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q || selectedItemId) return [];
-    return items
-      .filter((it) =>
-        `${it.itemCode || ""} ${it.itemName || ""}`.toLowerCase().includes(q)
-      )
-      .slice(0, 8);
+    return items.filter((it) => itemMatchesSearchQuery(it, q)).slice(0, 8);
   }, [items, search, selectedItemId]);
 
   // ✅ Totals + Tax (item-wise)
@@ -597,7 +606,7 @@ export default function Sales() {
     if (!c) return;
 
     setCustomerName(c.name || "");
-    setCustomerPhone(c.phone || c.mobile || "");
+    setCustomerPhone(c.phone || c.mobile || c.contact || "");
     setAddress1(c.address1 || c.address || "");
     setAddress2(c.address2 || "");
     setAddress3(c.address3 || "");
@@ -612,7 +621,14 @@ export default function Sales() {
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 
-  function addLine({ item, qtyVal, sellingPriceValue, desc, taxPct: taxPctVal }) {
+  function addLine({
+    item,
+    qtyVal,
+    sellingPriceValue,
+    desc,
+    taxPct: taxPctVal,
+    unitLabel = "",
+  }) {
     const q = num(qtyVal);
     const price = num(sellingPriceValue);
 
@@ -634,6 +650,7 @@ export default function Sales() {
       taxAmount,
       total,
       description: desc || "",
+      unitLabel: unitLabel || "",
     };
 
     setCart((prev) => [...prev, row]);
@@ -667,6 +684,178 @@ export default function Sales() {
     setLineSellingPrice("");
     setItemDesc("");
     setTimeout(() => searchRef.current?.focus?.(), 0);
+  }
+
+  /** Retail barcode / exact-code Enter → add qty 1, or bump an undescribed line. */
+  function onBarcodeMatch(item) {
+    setErr("");
+    const price = num(item?.sellingPrice);
+    if (!item?.id) return;
+    if (!price || price <= 0) return setErr("Selling Price must be > 0.");
+
+    // Only merge into a line with no description. Described lines stay separate
+    // so the same product can be sold with different notes / prices / qtys.
+    const existing = cart.find(
+      (row) =>
+        row.itemId === item.id && !String(row.description || "").trim()
+    );
+    if (existing) {
+      updateLine(existing.lineId, { qty: num(existing.qty) + 1 });
+    } else {
+      addLine({
+        item,
+        qtyVal: 1,
+        sellingPriceValue: price,
+        desc: "",
+        taxPct,
+      });
+    }
+
+    setSearch("");
+    setSelectedItemId("");
+    setQty("1");
+    setLineSellingPrice("");
+    setItemDesc("");
+    setTimeout(() => searchRef.current?.focus?.(), 0);
+  }
+
+  function resetCustomerFields() {
+    setCustomerId("");
+    setCustomerName("");
+    setCustomerPhone("");
+    setAddress1("");
+    setAddress2("");
+    setAddress3("");
+  }
+
+  function resetPaymentFields() {
+    setSettlementMode("full");
+    setPaymentMode("CASH");
+    setPayCash("");
+    setPayBank("");
+    setPayCredit("");
+  }
+
+  function onClearCart() {
+    if (cart.length === 0) return;
+    const ok = window.confirm("Clear all items from this order?");
+    if (!ok) return;
+    setCart([]);
+    setMsg("");
+    setErr("");
+    setTimeout(() => searchRef.current?.focus?.(), 0);
+  }
+
+  function onNewOrder() {
+    setEditingInvoice(null);
+    setCart([]);
+    setInvoiceNo(makeInvoiceNo());
+    setSaleDate(
+      activeShift?.businessDate
+        ? String(activeShift.businessDate).slice(0, 10)
+        : todayYYYYMMDD()
+    );
+    resetPaymentFields();
+    setOrderType("COUNTER");
+    resetCustomerFields();
+    setSearch("");
+    setSelectedItemId("");
+    setQty("1");
+    setLineSellingPrice("");
+    setItemDesc("");
+    setTaxPct("0");
+    setErr("");
+    setMsg("");
+    setTab("new");
+    setTimeout(() => searchRef.current?.focus?.(), 0);
+  }
+
+  function onCloseModule() {
+    navigate("/dashboard");
+  }
+
+  /** Café menu tap → add qty 1. */
+  function onQuickAddItem(item) {
+    setErr("");
+    const price = num(item?.sellingPrice);
+    if (!item?.id) return;
+    if (!price || price <= 0) return setErr("Selling Price must be > 0.");
+    addLine({
+      item,
+      qtyVal: 1,
+      sellingPriceValue: price,
+      desc: "",
+      taxPct,
+    });
+  }
+
+  /**
+   * Wholesale add — inventory always in pieces; unit/tier noted on the line.
+   */
+  function onWholesaleAdd({
+    item,
+    qtyEntered,
+    unit,
+    priceTier,
+    pieceQty,
+    taxPct: lineTax,
+    desc,
+    packSize,
+  }) {
+    setErr("");
+    if (!item?.id) return setErr("Please select an item.");
+    const pieces = num(pieceQty);
+    if (!pieces || pieces <= 0) return setErr("Qty must be > 0.");
+
+    const wholesale = num(item.wholesalePrice ?? item.wholesale_price);
+    const retail = num(item.sellingPrice);
+    const piecePrice =
+      priceTier === "WHOLESALE"
+        ? wholesale > 0
+          ? wholesale
+          : retail
+        : retail;
+    if (!piecePrice || piecePrice <= 0) return setErr("Selling Price must be > 0.");
+
+    const unitLabel =
+      unit === "CARTON"
+        ? `${num(qtyEntered)} carton × ${packSize} pcs · ${String(priceTier).toLowerCase()}`
+        : `piece · ${String(priceTier).toLowerCase()}`;
+
+    addLine({
+      item,
+      qtyVal: pieces,
+      sellingPriceValue: piecePrice,
+      desc: [desc, unitLabel].filter(Boolean).join(" · "),
+      taxPct: lineTax,
+      unitLabel,
+    });
+
+    setSearch("");
+    setSelectedItemId("");
+    setQty("1");
+    setLineSellingPrice("");
+    setItemDesc("");
+    setTimeout(() => searchRef.current?.focus?.(), 0);
+  }
+
+  async function onPrintModeChange(e) {
+    const v = e.target.value;
+    setPrintMode(v);
+    try {
+      if (!activeClientId) return;
+      await setDoc(
+        doc(db, "client_settings", activeClientId),
+        {
+          clientId: activeClientId,
+          defaultPrinterMode: v,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.error("Failed to save printer default:", err);
+    }
   }
 
   function removeLine(lineId) {
@@ -707,9 +896,10 @@ export default function Sales() {
 
     if (!customerId && !name && !phone) return null;
 
-    // If selected from dropdown → update
+    // If selected from dropdown → update (backfill simple ID if missing)
     if (customerId) {
-      await updateDoc(doc(db, "parties", customerId), {
+      const selected = customers.find((c) => c.id === customerId);
+      const patch = {
         name: name || "",
         phone: phone || "",
         address1: a1 || "",
@@ -717,7 +907,11 @@ export default function Sales() {
         address3: a3 || "",
         updatedAt: serverTimestamp(),
         lastSaleAtMs: chosenMs,
-      });
+      };
+      if (!getPartyCode(selected)) {
+        patch.partyCode = nextPartyCode(customers, "C");
+      }
+      await updateDoc(doc(db, "parties", customerId), patch);
       return customerId;
     }
 
@@ -733,23 +927,29 @@ export default function Sales() {
       const snap = await getDocs(qy);
       if (!snap.empty) {
         const d = snap.docs[0];
-        await updateDoc(doc(db, "parties", d.id), {
-          name: name || d.data().name || phone,
+        const existing = d.data() || {};
+        const patch = {
+          name: name || existing.name || phone,
           phone,
-          address1: a1 || d.data().address1 || "",
-          address2: a2 || d.data().address2 || "",
-          address3: a3 || d.data().address3 || "",
+          address1: a1 || existing.address1 || "",
+          address2: a2 || existing.address2 || "",
+          address3: a3 || existing.address3 || "",
           updatedAt: serverTimestamp(),
           lastSaleAtMs: chosenMs,
-        });
+        };
+        if (!getPartyCode(existing)) {
+          patch.partyCode = nextPartyCode(customers, "C");
+        }
+        await updateDoc(doc(db, "parties", d.id), patch);
         return d.id;
       }
     }
 
-    // Create new
+    // Create new with simple auto ID (C001, C002, …)
     const ref = await addDoc(collection(db, "parties"), {
       clientId: activeClientId,
       type: "Customer",
+      partyCode: nextPartyCode(customers, "C"),
       name: name || phone || "Customer",
       phone,
       address1: a1 || "",
@@ -769,19 +969,23 @@ export default function Sales() {
       query(
         collection(db, "transactions"),
         where("refId", "==", invoiceId),
-        limit(10)
+        limit(20)
       )
     );
-    return snap.docs.filter((d) => {
-      const data = d.data();
-      return (
-        data?.clientId === activeClientId &&
-        data?.refType === "sales_invoice"
-      );
-    });
+    return snap.docs
+      .filter((d) => {
+        const data = d.data();
+        return (
+          data?.clientId === activeClientId &&
+          data?.refType === "sales_invoice"
+        );
+      })
+      .map((d) => ({ id: d.id, ref: d.ref, ...d.data() }));
   }
 
   async function finishAndBilling({ doPrint }) {
+    if (billingLock.current || saving) return;
+
     setErr("");
     setMsg("");
 
@@ -792,17 +996,44 @@ export default function Sales() {
     }
     if (!invoiceNo.trim()) return setErr("Invoice No required.");
     if (cart.length === 0) return setErr("Add at least one item.");
-    if (
-      resolvedPayment.paymentMode === "BANK" &&
-      !resolvedPayment.bankAccountId
-    ) {
-      return setErr("Select a bank account for bank payments.");
-    }
     if (cart.some((item) => num(item.qty) <= 0)) {
       return setErr("Every item quantity must be greater than zero.");
     }
     if (cart.some((item) => num(item.sellingPrice) <= 0)) {
       return setErr("Every item Selling Price must be greater than zero.");
+    }
+
+    const saleTenders = resolveSaleTenders({
+      settlement: settlementMode,
+      paymentMode: resolvedPayment.paymentMode,
+      bankAccountId: resolvedPayment.bankAccountId,
+      bankAccountName: findBankAccountName(
+        bankAccounts,
+        resolvedPayment.bankAccountId
+      ),
+      cashAmount: payCash,
+      bankAmount: payBank,
+      creditAmount: payCredit,
+      grandTotal: totals.grandTotal,
+    });
+    const tenderSummary = tenderTotals(saleTenders);
+    const grandRounded = roundMoney(totals.grandTotal);
+
+    if (saleTenders.length === 0) {
+      return setErr("Enter at least one payment amount.");
+    }
+    if (Math.abs(tenderSummary.allocated - grandRounded) > 0.009) {
+      return setErr(
+        `Payment amounts must equal total (${money(grandRounded)}). Allocated ${money(
+          tenderSummary.allocated
+        )}.`
+      );
+    }
+    if (tenderSummary.bank > 0 && !resolvedPayment.bankAccountId) {
+      return setErr("Select a bank account for bank payments.");
+    }
+    if (tenderSummary.credit > 0 && !customerId && !customerName.trim()) {
+      return setErr("Credit sale requires a customer. Select or enter a customer.");
     }
 
     // ✅ Delivery validation: name + mobile + address1 required
@@ -812,6 +1043,10 @@ export default function Sales() {
       if (!address1.trim()) return setErr("Delivery: Address 1 is required.");
     }
 
+    billingLock.current = true;
+    setSaving(true);
+
+    try {
     const lockedSaleDate =
       !editingInvoice && activeShift?.businessDate
         ? activeShift.businessDate
@@ -825,6 +1060,14 @@ export default function Sales() {
     } catch (e) {
       console.error("Customer upsert failed:", e);
       // we continue saving invoice even if customer update fails (optional behavior)
+    }
+
+    if (tenderSummary.credit > 0 && !linkedCustomerId) {
+      billingLock.current = false;
+      setSaving(false);
+      return setErr(
+        "Credit sale requires a saved customer. Select a customer from the list or enter a name."
+      );
     }
 
     const isEditing = Boolean(editingInvoice?.id);
@@ -847,35 +1090,49 @@ export default function Sales() {
     const existingAccountingDocs = isEditing
       ? await findSaleTransactionDocs(invoiceRef.id)
       : [];
-    const accountingRef =
-      existingAccountingDocs[0]?.ref ||
-      doc(db, "transactions", `sales_invoice_${invoiceRef.id}`);
 
-    const saleTransaction = buildTransactionPayload({
-      clientId: activeClientId,
-      date: lockedSaleDate,
-      type: "sales",
-      category: "Sales",
-      mode: resolvedPayment.paymentMode,
-      bankAccountId: resolvedPayment.bankAccountId || "",
-      bankAccountName: findBankAccountName(
-        bankAccounts,
-        resolvedPayment.bankAccountId
-      ),
-      partyType: "Customer",
-      partyId: linkedCustomerId,
-      partyName: customerName.trim() || "Cash",
-      description: `Sales invoice ${invoiceNo.trim()}`,
-      amountBeforeTax: totals.grandTotalBeforeTax,
-      taxAmount: totals.taxAmount,
-      totalAmount: totals.grandTotal,
-      source: "pos",
-      refType: "sales_invoice",
-      refId: invoiceRef.id,
-      shiftId: activeShift.id,
-      invoiceNo: invoiceNo.trim(),
-      orderType,
-      status: "POSTED",
+    const primaryMode =
+      saleTenders.length === 1 ? saleTenders[0].mode : "SPLIT";
+    const primaryBank = saleTenders.find((line) => line.key === "bank") || null;
+    const primaryAccountingRef = doc(
+      db,
+      "transactions",
+      saleTenderTxnId(invoiceRef.id, saleTenders[0].key)
+    );
+
+    const tenderPayloads = saleTenders.map((line) => {
+      const txnRef = doc(
+        db,
+        "transactions",
+        saleTenderTxnId(invoiceRef.id, line.key)
+      );
+      return {
+        ref: txnRef,
+        line,
+        payload: buildTransactionPayload({
+          clientId: activeClientId,
+          date: lockedSaleDate,
+          type: "sales",
+          category: "Sales",
+          mode: line.mode,
+          bankAccountId: line.bankAccountId || "",
+          bankAccountName: line.bankAccountName || "",
+          partyType: "Customer",
+          partyId: linkedCustomerId,
+          partyName: customerName.trim() || "Walk-in",
+          description: `Sales invoice ${invoiceNo.trim()}`,
+          amountBeforeTax: line.amount,
+          taxAmount: 0,
+          totalAmount: line.amount,
+          source: "pos",
+          refType: "sales_invoice",
+          refId: invoiceRef.id,
+          shiftId: activeShift.id,
+          invoiceNo: invoiceNo.trim(),
+          orderType,
+          status: "POSTED",
+        }),
+      };
     });
 
     const invoicePayload = {
@@ -884,7 +1141,7 @@ export default function Sales() {
 
       invoiceNo: invoiceNo.trim(),
       saleAtMs: chosenMs,
-      saleAt: saleTransaction.date,
+      saleAt: tenderPayloads[0].payload.date,
 
       // Customer
       customerId: linkedCustomerId || null,
@@ -895,12 +1152,19 @@ export default function Sales() {
       address3: address3 || "",
 
       orderType,
-      paymentMode: resolvedPayment.paymentMode,
-      bankAccountId: resolvedPayment.bankAccountId || "",
-      bankAccountName: findBankAccountName(
-        bankAccounts,
-        resolvedPayment.bankAccountId
-      ),
+      paymentMode: primaryMode,
+      bankAccountId: primaryBank?.bankAccountId || "",
+      bankAccountName: primaryBank?.bankAccountName || "",
+      paymentTenders: saleTenders.map((line) => ({
+        mode: line.mode,
+        amount: line.amount,
+        bankAccountId: line.bankAccountId || "",
+        bankAccountName: line.bankAccountName || "",
+      })),
+      settlementMode: saleTenders.length > 1 ? "split" : "full",
+      amountPaid: tenderSummary.paid,
+      amountCredit: tenderSummary.credit,
+      balanceDue: tenderSummary.credit,
       printerMode: printMode,
 
       // Totals
@@ -917,14 +1181,12 @@ export default function Sales() {
       status: "ACTIVE",
       stockPosted: true,
       shiftId: activeShift.id,
-      accountingTransactionId: accountingRef.id,
+      accountingTransactionId: primaryAccountingRef.id,
       updatedAt: serverTimestamp(),
       updatedAtMs: Date.now(),
       updatedBy: user?.uid || null,
     };
 
-    setSaving(true);
-    try {
       const itemsCol = collection(db, "sales_invoices", invoiceRef.id, "items");
       const newLineRefs = cart.map(() => doc(itemsCol));
       const oldQty = quantitiesByItem(existingItems);
@@ -942,7 +1204,37 @@ export default function Sales() {
         for (const itemRef of itemRefs) {
           inventorySnaps.push(await tx.get(itemRef));
         }
-        const accountingSnap = await tx.get(accountingRef);
+
+        // Firestore requires every doc read before any write.
+        const existingTxnSnaps = [];
+        for (const existingDoc of existingAccountingDocs) {
+          existingTxnSnaps.push(await tx.get(existingDoc.ref));
+        }
+        const tenderSnaps = [];
+        for (const entry of tenderPayloads) {
+          // Skip duplicate get if already in existingAccountingDocs
+          const already = existingAccountingDocs.find((d) => d.id === entry.ref.id);
+          if (already) {
+            tenderSnaps.push(
+              existingTxnSnaps[
+                existingAccountingDocs.findIndex((d) => d.id === entry.ref.id)
+              ]
+            );
+          } else {
+            tenderSnaps.push(await tx.get(entry.ref));
+          }
+        }
+        const legacyAccountingRef = doc(
+          db,
+          "transactions",
+          `sales_invoice_${invoiceRef.id}`
+        );
+        const legacyInExisting = existingAccountingDocs.some(
+          (d) => d.id === legacyAccountingRef.id
+        );
+        const legacySnap = legacyInExisting
+          ? null
+          : await tx.get(legacyAccountingRef);
 
         if (
           !shiftSnap.exists() ||
@@ -1053,7 +1345,7 @@ export default function Sales() {
               refId: invoiceRef.id,
               shiftId: activeShift.id,
               invoiceNo: invoicePayload.invoiceNo,
-              date: saleTransaction.date,
+              date: tenderPayloads[0].payload.date,
               dateMs: chosenMs,
               createdAt: serverTimestamp(),
               createdBy: user?.uid || null,
@@ -1061,21 +1353,43 @@ export default function Sales() {
           }
         });
 
-        tx.set(
-          accountingRef,
-          {
-            ...saleTransaction,
-            createdAt: accountingSnap.exists()
-              ? accountingSnap.data()?.createdAt || serverTimestamp()
-              : serverTimestamp(),
-            createdBy: accountingSnap.exists()
-              ? accountingSnap.data()?.createdBy || user?.uid || null
-              : user?.uid || null,
-            updatedAt: serverTimestamp(),
-            updatedBy: user?.uid || null,
-          },
-          { merge: accountingSnap.exists() }
+        const keepTxnIds = new Set(
+          tenderPayloads.map((entry) => entry.ref.id)
         );
+
+        existingAccountingDocs.forEach((existingDoc, index) => {
+          if (!keepTxnIds.has(existingDoc.id) && existingTxnSnaps[index]?.exists()) {
+            tx.delete(existingDoc.ref);
+          }
+        });
+        if (
+          !keepTxnIds.has(legacyAccountingRef.id) &&
+          legacySnap?.exists()
+        ) {
+          tx.delete(legacyAccountingRef);
+        }
+
+        tenderPayloads.forEach((entry, index) => {
+          const snap = tenderSnaps[index];
+          tx.set(
+            entry.ref,
+            {
+              ...entry.payload,
+              createdAt: snap?.exists()
+                ? snap.data()?.createdAt || serverTimestamp()
+                : serverTimestamp(),
+              createdBy: snap?.exists()
+                ? snap.data()?.createdBy || user?.uid || null
+                : user?.uid || null,
+              createdAtMs: snap?.exists()
+                ? snap.data()?.createdAtMs || Date.now()
+                : Date.now(),
+              updatedAt: serverTimestamp(),
+              updatedBy: user?.uid || null,
+            },
+            { merge: Boolean(snap?.exists()) }
+          );
+        });
       });
 
       setMsg(isEditing ? "Invoice updated successfully." : "Order saved successfully.");
@@ -1103,7 +1417,7 @@ export default function Sales() {
       setInvoiceNo(makeInvoiceNo());
       setEditingInvoice(null);
       setSaleDate(todayYYYYMMDD());
-      setPaymentMode("CASH");
+      resetPaymentFields();
       setOrderType("COUNTER");
       setCustomerId("");
       setCustomerName("");
@@ -1122,6 +1436,7 @@ export default function Sales() {
       console.error(e);
       setErr(e?.message || "Failed to save order.");
     } finally {
+      billingLock.current = false;
       setSaving(false);
     }
   }
@@ -1153,7 +1468,7 @@ export default function Sales() {
         `Invoice: ${inv.invoiceNo}\nDate: ${
           formatDateValue(inv.saleAtMs, "-")
         }\nCustomer: ${inv.customerName || "-"}\nPhone: ${inv.customerPhone || "-"}\nPayment: ${
-          inv.paymentMode || "-"
+          formatPaymentLabel(inv)
         }\nOrderType: ${inv.orderType || "-"}\nStatus: ${inv.status || "ACTIVE"}\nTax: ${money(
           inv.taxAmount || 0
         )}\n\nItems:\n${lines}\n\nGrand Total: ${money(inv.grandTotal)}`
@@ -1210,9 +1525,49 @@ export default function Sales() {
       // Fill invoice meta + customer
       setSaleDate(inv.saleAtMs ? msToYYYYMMDD(inv.saleAtMs) : todayYYYYMMDD());
       setInvoiceNo(inv.invoiceNo || makeInvoiceNo());
-      setPaymentMode(
-        tenderFormValue(inv.paymentMode || "CASH", inv.bankAccountId)
-      );
+
+      const savedTenders = Array.isArray(inv.paymentTenders)
+        ? inv.paymentTenders
+        : null;
+      if (savedTenders && savedTenders.length > 1) {
+        setSettlementMode("split");
+        const cashLine = savedTenders.find(
+          (line) => String(line.mode || "").toUpperCase() === "CASH"
+        );
+        const bankLine = savedTenders.find((line) => {
+          const mode = String(line.mode || "").toUpperCase();
+          return (
+            mode === "BANK" ||
+            mode === "BANK_TRANSFER" ||
+            mode.startsWith("BANK:")
+          );
+        });
+        const creditLine = savedTenders.find(
+          (line) => String(line.mode || "").toUpperCase() === "CREDIT"
+        );
+        setPayCash(cashLine ? String(cashLine.amount ?? "") : "");
+        setPayBank(bankLine ? String(bankLine.amount ?? "") : "");
+        setPayCredit(creditLine ? String(creditLine.amount ?? "") : "");
+        setPaymentMode(
+          tenderFormValue(
+            bankLine?.mode || inv.paymentMode || "CASH",
+            bankLine?.bankAccountId || inv.bankAccountId
+          )
+        );
+      } else {
+        setSettlementMode(
+          String(inv.settlementMode || "").toLowerCase() === "split"
+            ? "split"
+            : "full"
+        );
+        setPayCash("");
+        setPayBank("");
+        setPayCredit("");
+        setPaymentMode(
+          tenderFormValue(inv.paymentMode || "CASH", inv.bankAccountId)
+        );
+      }
+
       setOrderType(inv.orderType || "COUNTER");
       setPrintMode(inv.printerMode || printMode);
 
@@ -1281,14 +1636,22 @@ export default function Sales() {
       );
       const itemsList = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       const existingAccountingDocs = await findSaleTransactionDocs(inv.id);
-      const saleTxnRef =
-        existingAccountingDocs[0]?.ref ||
-        doc(db, "transactions", `sales_invoice_${inv.id}`);
-      const reversalRef = doc(
-        db,
-        "transactions",
-        `sales_invoice_cancel_${inv.id}`
-      );
+      const saleTxnDocs =
+        existingAccountingDocs.length > 0
+          ? existingAccountingDocs
+          : [
+              {
+                id: `sales_invoice_${inv.id}`,
+                ref: doc(db, "transactions", `sales_invoice_${inv.id}`),
+                mode: inv.paymentMode || "cash",
+                bankAccountId: inv.bankAccountId || "",
+                bankAccountName: inv.bankAccountName || "",
+                totalAmount: num(inv.grandTotal),
+                amountIn: num(inv.grandTotal),
+                amountBeforeTax: num(inv.grandTotalBeforeTax),
+                taxAmount: num(inv.taxAmount),
+              },
+            ];
       const invoiceRef = doc(db, "sales_invoices", inv.id);
       const qtyByItem = quantitiesByItem(itemsList);
       const itemIds = [...qtyByItem.keys()];
@@ -1300,42 +1663,57 @@ export default function Sales() {
         ? msToYYYYMMDD(inv.saleAtMs)
         : todayYYYYMMDD();
 
-      const originalSale = buildTransactionPayload({
-        clientId: activeClientId,
-        date: businessDate,
-        type: "sales",
-        category: "Sales",
-        mode: inv.paymentMode || "cash",
-        partyType: "Customer",
-        partyId: inv.customerId || null,
-        partyName: inv.customerName || "Cash",
-        description: `Sales invoice ${inv.invoiceNo || ""}`,
-        amountBeforeTax: num(inv.grandTotalBeforeTax),
-        taxAmount: num(inv.taxAmount),
-        totalAmount: num(inv.grandTotal),
-        source: "pos",
-        refType: "sales_invoice",
-        refId: inv.id,
-        shiftId: inv.shiftId || "",
-        invoiceNo: inv.invoiceNo,
-        orderType: inv.orderType,
-        status: "REVERSED",
-      });
-      const reversal = buildTransactionPayload({
-        ...originalSale,
-        date: businessDate,
-        type: "sales",
-        category: "Sales Reversal",
-        amountBeforeTax: -num(inv.grandTotalBeforeTax),
-        taxAmount: -num(inv.taxAmount),
-        totalAmount: -num(inv.grandTotal),
-        amountIn: -num(inv.grandTotal),
-        amountOut: 0,
-        source: "pos_cancel",
-        refType: "sales_invoice_cancel",
-        refId: inv.id,
-        reversalOf: saleTxnRef.id,
-        status: "POSTED",
+      const reversalPlans = saleTxnDocs.map((saleDoc) => {
+        const amount = num(saleDoc.amountIn || saleDoc.totalAmount || 0);
+        const originalSale = buildTransactionPayload({
+          clientId: activeClientId,
+          date: businessDate,
+          type: "sales",
+          category: "Sales",
+          mode: saleDoc.mode || inv.paymentMode || "cash",
+          bankAccountId: saleDoc.bankAccountId || inv.bankAccountId || "",
+          bankAccountName: saleDoc.bankAccountName || inv.bankAccountName || "",
+          partyType: "Customer",
+          partyId: inv.customerId || null,
+          partyName: inv.customerName || "Walk-in",
+          description: `Sales invoice ${inv.invoiceNo || ""}`,
+          amountBeforeTax: num(saleDoc.amountBeforeTax || amount),
+          taxAmount: num(saleDoc.taxAmount || 0),
+          totalAmount: amount,
+          source: "pos",
+          refType: "sales_invoice",
+          refId: inv.id,
+          shiftId: inv.shiftId || "",
+          invoiceNo: inv.invoiceNo,
+          orderType: inv.orderType,
+          status: "REVERSED",
+        });
+        const reversal = buildTransactionPayload({
+          ...originalSale,
+          date: businessDate,
+          type: "sales",
+          category: "Sales Reversal",
+          amountBeforeTax: -num(originalSale.amountBeforeTax),
+          taxAmount: -num(originalSale.taxAmount),
+          totalAmount: -amount,
+          amountIn: -amount,
+          amountOut: 0,
+          source: "pos_cancel",
+          refType: "sales_invoice_cancel",
+          refId: inv.id,
+          reversalOf: saleDoc.id,
+          status: "POSTED",
+        });
+        return {
+          saleDoc,
+          originalSale,
+          reversal,
+          reversalRef: doc(
+            db,
+            "transactions",
+            `sales_invoice_cancel_${saleDoc.id}`
+          ),
+        };
       });
 
       await runTransaction(db, async (tx) => {
@@ -1344,11 +1722,18 @@ export default function Sales() {
         for (const itemRef of itemRefs) {
           inventorySnaps.push(await tx.get(itemRef));
         }
-        const saleTxnSnap = await tx.get(saleTxnRef);
-        const reversalSnap = await tx.get(reversalRef);
+        const saleTxnSnaps = [];
+        const reversalSnaps = [];
+        for (const plan of reversalPlans) {
+          saleTxnSnaps.push(await tx.get(plan.saleDoc.ref));
+          reversalSnaps.push(await tx.get(plan.reversalRef));
+        }
 
         if (!invoiceSnap.exists()) throw new Error("Invoice no longer exists.");
-        if (invoiceSnap.data()?.status === "CANCELLED" || reversalSnap.exists()) {
+        if (
+          invoiceSnap.data()?.status === "CANCELLED" ||
+          reversalSnaps.some((snap) => snap.exists())
+        ) {
           throw new Error("Invoice has already been cancelled.");
         }
 
@@ -1390,39 +1775,42 @@ export default function Sales() {
               refId: inv.id,
               shiftId: inv.shiftId || "",
               invoiceNo: inv.invoiceNo || "",
-              date: originalSale.date,
-              dateMs: originalSale.dateMs,
+              date: reversalPlans[0].originalSale.date,
+              dateMs: reversalPlans[0].originalSale.dateMs,
               createdAt: serverTimestamp(),
               createdBy: user?.uid || null,
             });
           });
         }
 
-        tx.set(
-          saleTxnRef,
-          {
-            ...originalSale,
+        reversalPlans.forEach((plan, index) => {
+          const saleTxnSnap = saleTxnSnaps[index];
+          tx.set(
+            plan.saleDoc.ref,
+            {
+              ...plan.originalSale,
+              cancelReason: reason,
+              reversedAt: serverTimestamp(),
+              reversedBy: user?.uid || null,
+              createdAt: saleTxnSnap.exists()
+                ? saleTxnSnap.data()?.createdAt || serverTimestamp()
+                : serverTimestamp(),
+              createdBy: saleTxnSnap.exists()
+                ? saleTxnSnap.data()?.createdBy || user?.uid || null
+                : user?.uid || null,
+              updatedAt: serverTimestamp(),
+              updatedBy: user?.uid || null,
+            },
+            { merge: saleTxnSnap.exists() }
+          );
+          tx.set(plan.reversalRef, {
+            ...plan.reversal,
             cancelReason: reason,
-            reversedAt: serverTimestamp(),
-            reversedBy: user?.uid || null,
-            createdAt: saleTxnSnap.exists()
-              ? saleTxnSnap.data()?.createdAt || serverTimestamp()
-              : serverTimestamp(),
-            createdBy: saleTxnSnap.exists()
-              ? saleTxnSnap.data()?.createdBy || user?.uid || null
-              : user?.uid || null,
+            createdAt: serverTimestamp(),
+            createdBy: user?.uid || null,
             updatedAt: serverTimestamp(),
             updatedBy: user?.uid || null,
-          },
-          { merge: saleTxnSnap.exists() }
-        );
-        tx.set(reversalRef, {
-          ...reversal,
-          cancelReason: reason,
-          createdAt: serverTimestamp(),
-          createdBy: user?.uid || null,
-          updatedAt: serverTimestamp(),
-          updatedBy: user?.uid || null,
+          });
         });
       });
 
@@ -1451,55 +1839,139 @@ export default function Sales() {
     );
   }
 
+  const shopType = normalizeShopType(activeClientData?.shop_type);
+  const SalesLayout = getSalesLayout(shopType);
+  const isRetailPos = shopType === "retail";
+  const retailOwnsChrome = isRetailPos && tab === "new";
+
+  const salesLayoutProps = {
+    saleDate,
+    setSaleDate,
+    editingInvoice,
+    invoiceNo,
+    setInvoiceNo,
+    orderType,
+    setOrderType,
+    paymentMode,
+    setPaymentMode,
+    paymentModeOptions,
+    settlementMode,
+    setSettlementMode,
+    payCash,
+    setPayCash,
+    payBank,
+    setPayBank,
+    payCredit,
+    setPayCredit,
+    printMode,
+    onPrintModeChange,
+    customerId,
+    onSelectCustomer,
+    loadingCustomers,
+    customers,
+    customerName,
+    setCustomerName,
+    setCustomerId,
+    customerPhone,
+    setCustomerPhone,
+    address1,
+    setAddress1,
+    address2,
+    setAddress2,
+    address3,
+    setAddress3,
+    search,
+    setSearch,
+    setSelectedItemId,
+    searchRef,
+    filteredItems,
+    items,
+    selectedItem,
+    selectedItemId,
+    qty,
+    setQty,
+    lineSellingPrice,
+    setLineSellingPrice,
+    taxPct,
+    setTaxPct,
+    itemDesc,
+    setItemDesc,
+    qtyRef,
+    taxPctRef,
+    sellingPriceRef,
+    addBtnRef,
+    addItemToCart,
+    loadingItems,
+    onBarcodeMatch,
+    onQuickAddItem,
+    onWholesaleAdd,
+    cart,
+    totals,
+    grandTotal: totals.grandTotal,
+    updateLine,
+    removeLine,
+    saving,
+    finishAndBilling,
+    setTab,
+    onNewOrder,
+    onClearCart,
+    onCloseModule,
+  };
+
   /**
    * =========================
    * UI
    * =========================
    */
   return (
-    <div className="p-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold text-slate-100">Sales / Billing</h1>
-          <p className="text-slate-400 mt-1">
-            Customer + item pricing + Tax + Print (A4 / Thermal)
-          </p>
-        </div>
+    <div className={retailOwnsChrome ? "p-4 md:p-5" : "p-6"}>
+      {/* Header — retail new-order chrome lives inside RetailSales */}
+      {!retailOwnsChrome ? (
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-100">Sales / Billing</h1>
+            <p className="text-slate-400 mt-1">{shopTypeLabel(shopType)} layout</p>
+          </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          <button
-            onClick={() => setTab("new")}
-            className={`px-4 py-2 rounded-lg text-sm border ${
-              tab === "new"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "bg-slate-950/40 text-slate-200 border-slate-800"
-            }`}
-          >
-            New Order
-          </button>
-          <button
-            onClick={() => setTab("history")}
-            className={`px-4 py-2 rounded-lg text-sm border ${
-              tab === "history"
-                ? "bg-slate-100 text-slate-900 border-slate-200"
-                : "bg-slate-950/40 text-slate-200 border-slate-800"
-            }`}
-          >
-            History
-          </button>
-          <ModuleExitButton ariaLabel="Close sales module" />
+          <div className="flex items-center gap-2 flex-wrap">
+            <ModuleHelpButton moduleId="sales" />
+            <button
+              onClick={() => setTab("new")}
+              className={`px-4 py-2 rounded-lg text-sm border ${
+                tab === "new"
+                  ? "bg-slate-100 text-slate-900 border-slate-200"
+                  : "bg-slate-950/40 text-slate-200 border-slate-800"
+              }`}
+            >
+              New Order
+            </button>
+            <button
+              onClick={() => setTab("history")}
+              className={`px-4 py-2 rounded-lg text-sm border ${
+                tab === "history"
+                  ? "bg-slate-100 text-slate-900 border-slate-200"
+                  : "bg-slate-950/40 text-slate-200 border-slate-800"
+              }`}
+            >
+              History
+            </button>
+            <ModuleExitButton ariaLabel="Close sales module" />
+          </div>
         </div>
-      </div>
+      ) : null}
 
       {err ? (
-        <div className="mt-4 rounded-lg border border-red-800 bg-red-950/40 text-red-200 px-3 py-2 text-sm">
+        <div
+          className={`${retailOwnsChrome ? "mb-3" : "mt-4"} rounded-lg border border-red-800 bg-red-950/40 text-red-200 px-3 py-2 text-sm`}
+        >
           {err}
         </div>
       ) : null}
 
       {msg ? (
-        <div className="mt-4 rounded-lg border border-green-800 bg-green-950/30 text-green-200 px-3 py-2 text-sm">
+        <div
+          className={`${retailOwnsChrome ? "mb-3" : "mt-4"} rounded-lg border border-green-800 bg-green-950/30 text-green-200 px-3 py-2 text-sm`}
+        >
           {msg}
         </div>
       ) : null}
@@ -1563,7 +2035,9 @@ export default function Sales() {
                         <td className="p-2 text-slate-200">{inv.customerName || "-"}</td>
                         <td className="p-2 text-slate-300">{inv.customerPhone || "-"}</td>
                         <td className="p-2 text-slate-300">{inv.orderType || "-"}</td>
-                        <td className="p-2 text-slate-300">{inv.paymentMode || "-"}</td>
+                        <td className="p-2 text-slate-300">
+                          {formatPaymentLabel(inv)}
+                        </td>
                         <td className="p-2">
                           <span
                             className={`text-xs px-2 py-1 rounded-full border ${
@@ -1625,7 +2099,7 @@ export default function Sales() {
         </div>
       ) : null}
 
-      {/* ================= NEW ORDER ================= */}
+      {/* ================= NEW ORDER (layout by shop_type) ================= */}
       {tab === "new" ? (
         <>
           {editingInvoice ? (
@@ -1648,542 +2122,9 @@ export default function Sales() {
               </button>
             </div>
           ) : null}
-        <div className={`${editingInvoice ? "mt-3" : "mt-6"} grid grid-cols-1 xl:grid-cols-12 gap-4`}>
-          {/* LEFT */}
-          <div className="xl:col-span-7 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
-            {/* Invoice meta */}
-            <div className="mt-3 grid grid-cols-1 md:grid-cols-12 gap-3">
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Sale Date</label>
-                <DateInput
-                  value={saleDate}
-                  disabled={!editingInvoice}
-                  onChange={(e) => setSaleDate(e.target.value)}
-                  className="mt-1 h-10 w-full rounded-lg border border-slate-700 bg-slate-900 text-slate-100"
-                />
-                {!editingInvoice ? (
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    Locked to active shift
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="md:col-span-8">
-                <label className="text-sm text-slate-300">Invoice No</label>
-                <input
-                  value={invoiceNo}
-                  onChange={(e) => setInvoiceNo(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                />
-              </div>
-
-              {/* Order Type */}
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Order Type</label>
-                <select
-                  value={orderType}
-                  onChange={(e) => setOrderType(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                >
-                  <option value="COUNTER">Counter Sale</option>
-                  <option value="TAKEAWAY">Take Away</option>
-                  <option value="CARHOP">Car Hop</option>
-                  <option value="DELIVERY">Delivery</option>
-                </select>
-              </div>
-
-              {/* Payment Mode */}
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Payment Mode</label>
-                <select
-                  value={paymentMode}
-                  onChange={(e) => setPaymentMode(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                >
-                  {paymentModeOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                  {normalizeTransactionMode(paymentMode) === "credit" ? (
-                    <option value="CREDIT">Credit (Legacy Record)</option>
-                  ) : null}
-                </select>
-              </div>
-
-              {/* Printer Mode */}
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Printer</label>
-                <select
-                  value={printMode}
-                  onChange={async (e) => {
-                    const v = e.target.value;
-                    setPrintMode(v);
-
-                    try {
-                      if (!activeClientId) return;
-
-                      await setDoc(
-                        doc(db, "client_settings", activeClientId),
-                        {
-                          clientId: activeClientId,
-                          defaultPrinterMode: v,
-                          updatedAt: serverTimestamp(),
-                        },
-                        { merge: true }
-                      );
-                    } catch (err) {
-                      console.error("Failed to save printer default:", err);
-                    }
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                >
-                  <option value="A4">A4</option>
-                  <option value="THERMAL">Thermal</option>
-                </select>
-              </div>
-
-              {/* Select customer */}
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Select Customer (optional)</label>
-                <select
-                  value={customerId}
-                  onChange={(e) => onSelectCustomer(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  disabled={loadingCustomers}
-                >
-                  <option value="">
-                    {loadingCustomers ? "Loading customers..." : "— Select customer —"}
-                  </option>
-                  {customers.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                <div className="text-xs text-slate-500 mt-1">
-                  Customer list comes from <b>Parties</b> (Type: Customer / Both).
-                </div>
-              </div>
-
-              {/* Customer manual/add */}
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Customer Name</label>
-                <input
-                  value={customerName}
-                  onChange={(e) => {
-                    setCustomerName(e.target.value);
-                    setCustomerId("");
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="Enter customer name..."
-                />
-              </div>
-
-              <div className="md:col-span-6">
-                <label className="text-sm text-slate-300">Contact Number</label>
-                <input
-                  value={customerPhone}
-                  onChange={(e) => {
-                    setCustomerPhone(e.target.value);
-                    setCustomerId("");
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="Phone / WhatsApp..."
-                />
-              </div>
-
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Address 1</label>
-                <input
-                  value={address1}
-                  onChange={(e) => {
-                    setAddress1(e.target.value);
-                    setCustomerId("");
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="House / Building..."
-                />
-              </div>
-
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Address 2</label>
-                <input
-                  value={address2}
-                  onChange={(e) => {
-                    setAddress2(e.target.value);
-                    setCustomerId("");
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="Street / Area..."
-                />
-              </div>
-
-              <div className="md:col-span-4">
-                <label className="text-sm text-slate-300">Address 3</label>
-                <input
-                  value={address3}
-                  onChange={(e) => {
-                    setAddress3(e.target.value);
-                    setCustomerId("");
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="City / State..."
-                />
-              </div>
-            </div>
-
-            {/* Add item manually */}
-            <div className="mt-4 border-t border-slate-800 pt-4">
-              <h3 className="text-slate-100 font-semibold">Add / Select Item</h3>
-
-              <div className="mt-2">
-                <label className="text-sm text-slate-300">Search Item</label>
-                <input
-                  ref={searchRef}
-                  value={search}
-                  onChange={(e) => {
-                    setSearch(e.target.value);
-                    setSelectedItemId("");
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      if (filteredItems.length > 0) {
-                        const it = filteredItems[0];
-                        setSelectedItemId(it.id);
-                        setSearch(
-                          `${getItemBaseCode(it) || "NO CODE"} — ${it.itemName || ""}`
-                        );
-                        setQty("1");
-                        setLineSellingPrice(String(num(it.sellingPrice)));
-                        setTimeout(() => taxPctRef.current?.focus?.(), 0);
-                      }
-                    }
-                  }}
-                  className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  placeholder="Search by item code or name..."
-                />
-
-                {filteredItems.length > 0 ? (
-                  <div className="mt-2 max-h-64 overflow-auto rounded-xl border border-slate-800">
-                    {filteredItems.map((it) => (
-                      <button
-                        key={it.id}
-                        type="button"
-                        onClick={() => {
-                          setSelectedItemId(it.id);
-                          setSearch(
-                            `${getItemBaseCode(it) || "NO CODE"} — ${it.itemName || ""}`
-                          );
-                          setQty("1");
-                          setLineSellingPrice(String(num(it.sellingPrice)));
-                          setTimeout(() => taxPctRef.current?.focus?.(), 0);
-                        }}
-                        className="w-full text-left px-3 py-2 border-b border-slate-900 hover:bg-slate-900/40"
-                      >
-                        <div className="flex items-center justify-between">
-                          <div className="text-slate-100 font-medium text-sm">{it.itemName}</div>
-                          <div className="text-slate-400 text-xs">
-                            Code: {getItemBaseCode(it) || "-"}
-                          </div>
-                        </div>
-                        <div className="text-slate-500 text-xs">
-                          Stock: {money(it.currentStock)} • Price: {money(it.sellingPrice)}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="mt-3">
-                <label className="text-sm text-slate-300">Item Description (optional)</label>
-                <input
-                  value={itemDesc}
-                  onChange={(e) => setItemDesc(e.target.value)}
-                  className="mt-1 w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-slate-200 text-sm"
-                  placeholder="Notes for invoice / KOT / warehouse..."
-                />
-              </div>
-
-              <div className="mt-3 grid grid-cols-1 md:grid-cols-12 gap-3">
-                <div className="md:col-span-3">
-                  <label className="text-sm text-slate-300">Tax %</label>
-                  <input
-                    ref={taxPctRef}
-                    type="number"
-                    inputMode="decimal"
-                    value={taxPct}
-                    onChange={(e) => setTaxPct(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        qtyRef.current?.focus?.();
-                      }
-                    }}
-                    className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                    placeholder="0"
-                  />
-                </div>
-
-                <div className="md:col-span-3">
-                  <label className="text-sm text-slate-300">QTY</label>
-                  <input
-                    ref={qtyRef}
-                    type="number"
-                    inputMode="decimal"
-                    value={qty}
-                    onChange={(e) => setQty(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        sellingPriceRef.current?.focus?.();
-                      }
-                    }}
-                    className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                  />
-                </div>
-
-                <div className="md:col-span-3">
-                  <label className="text-sm text-slate-300">Selling Price</label>
-                  <input
-                    ref={sellingPriceRef}
-                    type="number"
-                    inputMode="decimal"
-                    min="0"
-                    step="any"
-                    value={lineSellingPrice}
-                    onChange={(e) => setLineSellingPrice(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addBtnRef.current?.click?.();
-                      }
-                    }}
-                    className="mt-1 w-full rounded-lg bg-slate-900 border border-slate-700 px-3 py-2 text-slate-100"
-                    placeholder="0.00"
-                  />
-                </div>
-
-                <div className="md:col-span-3">
-                  <label className="text-sm text-slate-300">Total</label>
-                  <input
-                    readOnly
-                    value={money(
-                      calcLineTotal(
-                        qty || 0,
-                        lineSellingPrice === ""
-                          ? selectedItem?.sellingPrice ?? 0
-                          : lineSellingPrice,
-                        taxPct || 0
-                      )
-                    )}
-                    className="mt-1 w-full rounded-lg bg-slate-900/60 border border-slate-700 px-3 py-2 text-slate-100 font-semibold"
-                  />
-                </div>
-
-                <div className="md:col-span-12 flex justify-end gap-2 mt-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSearch("");
-                      setSelectedItemId("");
-                      setQty("1");
-                      setLineSellingPrice("");
-                      setTimeout(() => searchRef.current?.focus?.(), 0);
-                    }}
-                    className="rounded-lg border border-slate-700 text-slate-200 px-4 py-1.5 text-sm hover:bg-slate-900/50"
-                  >
-                    Clear Item
-                  </button>
-
-                  <button
-                    ref={addBtnRef}
-                    type="button"
-                    onClick={addItemToCart}
-                    className="rounded-lg bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 font-semibold disabled:opacity-60"
-                    disabled={!selectedItem || loadingItems}
-                  >
-                    + Add Next Item
-                  </button>
-                </div>
-              </div>
-            </div>
+          <div className={editingInvoice ? "mt-3" : ""}>
+            <SalesLayout {...salesLayoutProps} />
           </div>
-
-          {/* RIGHT: Cart + Billing */}
-          <div className="xl:col-span-5 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
-            <div className="flex items-center justify-between gap-2 flex-wrap">
-              <h2 className="text-slate-100 font-semibold">Order Items</h2>
-              <div className="text-xs text-slate-400">Columns: Total includes Tax</div>
-            </div>
-
-            {cart.length === 0 ? (
-              <div className="mt-4 text-slate-400 text-sm">
-                No items added. Add an item from search.
-              </div>
-            ) : (
-              <div className="mt-4 overflow-x-auto rounded-xl border border-slate-800">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-900/60 border-b border-slate-800">
-                    <tr className="text-left text-slate-200 text-xs">
-                      <th className="p-2">#</th>
-                      <th className="p-2">Code</th>
-                      <th className="p-2">Item</th>
-                      <th className="p-2 text-right">Qty</th>
-                      <th className="p-2 text-right">Price</th>
-                      <th className="p-2 text-right">Tax%</th>
-                      <th className="p-2 text-right">Total</th>
-                      <th className="p-2">Action</th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    {cart.flatMap((row, idx) => [
-                      <tr key={`${row.lineId}-main`} className="border-b border-slate-900">
-                        <td className="p-2 text-slate-300">{idx + 1}</td>
-                        <td className="p-2 text-slate-300">{row.itemCode || "-"}</td>
-                        <td className="p-2">
-                          <div className="text-slate-100 font-medium">{row.itemName}</div>
-                        </td>
-
-                        <td className="p-2">
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0.0001"
-                            step="any"
-                            value={row.qty}
-                            onChange={(e) => updateLine(row.lineId, { qty: e.target.value })}
-                            className="w-20 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-                          />
-                        </td>
-
-                        <td className="p-2">
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            min="0"
-                            step="any"
-                            value={row.sellingPrice}
-                            onChange={(e) =>
-                              updateLine(row.lineId, {
-                                sellingPrice: e.target.value,
-                              })
-                            }
-                            className="w-24 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-                          />
-                        </td>
-
-                        <td className="p-2">
-                          <input
-                            type="number"
-                            inputMode="decimal"
-                            value={row.taxPct ?? 0}
-                            onChange={(e) => updateLine(row.lineId, { taxPct: e.target.value })}
-                            className="w-20 text-right rounded-lg bg-slate-900 border border-slate-700 px-2 py-1 text-slate-100"
-                            placeholder="0"
-                          />
-                        </td>
-
-                        <td className="p-2 text-right text-slate-100 font-semibold">
-                          {money(row.total)}
-                        </td>
-
-                        <td className="p-2">
-                          <button
-                            type="button"
-                            onClick={() => removeLine(row.lineId)}
-                            className="rounded-lg border border-red-800 text-red-200 px-2 py-1 hover:bg-red-950/30"
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>,
-
-                      <tr
-                        key={`${row.lineId}-desc`}
-                        className="border-b border-slate-900 bg-slate-950/40"
-                      >
-                        <td className="p-2 text-slate-500" />
-                        <td className="p-2 text-slate-500" colSpan={2}>
-                          <span className="text-xs text-slate-400">
-                            Item Description (invoice + KOT / warehouse)
-                          </span>
-                        </td>
-                        <td className="p-2" colSpan={5}>
-                          <input
-                            value={row.description || ""}
-                            onChange={(e) =>
-                              updateLine(row.lineId, { description: e.target.value })
-                            }
-                            className="w-full rounded-lg bg-slate-900 border border-slate-700 px-2 py-1.5 text-slate-100 text-sm"
-                            placeholder="Enter description..."
-                          />
-                        </td>
-                      </tr>,
-                    ])}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            {/* Totals + Billing */}
-            <div className="mt-4 border-t border-slate-800 pt-4 space-y-2 text-sm">
-              <div className="flex justify-between text-slate-300">
-                <span>Sub Total</span>
-                <span className="text-slate-100 font-medium">{money(totals.subTotal)}</span>
-              </div>
-              <div className="flex justify-between text-slate-300">
-                <span>Grand Total (Before Tax)</span>
-                <span className="text-slate-100 font-medium">
-                  {money(totals.grandTotalBeforeTax)}
-                </span>
-              </div>
-              <div className="flex justify-between text-slate-300">
-                <span>Tax (Item-wise)</span>
-                <span className="text-slate-100 font-medium">{money(totals.taxAmount)}</span>
-              </div>
-              <div className="flex justify-between text-slate-200 text-base">
-                <span className="font-semibold">Grand Total</span>
-                <span className="font-semibold">{money(totals.grandTotal)}</span>
-              </div>
-
-              <div className="pt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => finishAndBilling({ doPrint: false })}
-                  disabled={saving || cart.length === 0}
-                  className="rounded-lg bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 font-semibold disabled:opacity-60"
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingInvoice
-                    ? "Update Invoice"
-                    : "Finish Order"}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => finishAndBilling({ doPrint: true })}
-                  disabled={saving || cart.length === 0}
-                  className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 font-semibold disabled:opacity-60"
-                >
-                  {saving
-                    ? "Saving..."
-                    : editingInvoice
-                    ? `Update + Print (${printMode})`
-                    : `Billing + Print (${printMode})`}
-                </button>
-              </div>
-
-              <div className="text-xs text-slate-500">
-                Saved to <b>sales_invoices</b> + subcollection <b>items</b> + <b>transactions</b>.
-              </div>
-            </div>
-          </div>
-        </div>
         </>
       ) : null}
     </div>

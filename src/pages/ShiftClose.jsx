@@ -18,9 +18,11 @@ import { useClient } from "../context/ClientContext";
 import { useShift } from "../context/shift-context";
 import DateInput from "../components/DateInput.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
+import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import BankAccountSearchSelect from "../components/BankAccountSearchSelect.jsx";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
 import { useShiftExpectedCash } from "../hooks/useShiftExpectedCash.js";
+import { usePosSalesTotals } from "../hooks/usePosSalesTotals.js";
 import { useEstimatedLiquidity } from "../hooks/useEstimatedBankBalance.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
 
@@ -58,6 +60,52 @@ function moneyHint(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+
+/**
+ * Canonical Z-report sales math:
+ *   Net  = Cash + Bank
+ *   Gross = Net + Credit = Cash + Bank + Credit
+ */
+function deriveZReportSalesTotals({ cashTotal = 0, bankTotal = 0, creditSalesTotal = 0 }) {
+  const cash = Number(cashTotal) || 0;
+  const bank = Number(bankTotal) || 0;
+  const credit = Number(creditSalesTotal) || 0;
+  const netSales = Math.round((cash + bank) * 100) / 100;
+  const grossSales = Math.round((netSales + credit) * 100) / 100;
+  return { cashTotal: cash, bankTotal: bank, creditSalesTotal: credit, netSales, grossSales };
+}
+
+function createBankEntry(overrides = {}) {
+  return {
+    rowId: crypto.randomUUID(),
+    bankAccountId: "",
+    bankAccountName: "",
+    amount: "",
+    ...overrides,
+  };
+}
+
+/** Apply POS bank total into the bank breakdown rows. */
+function applyPosBankToEntries(amount, accounts = []) {
+  const value = formatAmountDisplay(amount);
+  if (!Number(amount)) {
+    return [createBankEntry()];
+  }
+  const activeAccounts = (accounts || []).filter(
+    (account) => account?.id && account.isActive !== false
+  );
+  const first = activeAccounts[0];
+  if (!first) {
+    return [createBankEntry({ amount: value })];
+  }
+  return [
+    createBankEntry({
+      bankAccountId: first.id,
+      bankAccountName: first.accountName || "Account",
+      amount: value,
+    }),
+  ];
 }
 
 function ExpectedCashHint({
@@ -151,15 +199,6 @@ function createCreditEntry() {
     rowId: crypto.randomUUID(),
     partyId: "",
     partyName: "",
-    amount: "",
-  };
-}
-
-function createBankEntry() {
-  return {
-    rowId: crypto.randomUUID(),
-    bankAccountId: "",
-    bankAccountName: "",
     amount: "",
   };
 }
@@ -427,6 +466,192 @@ function CreditEntryRow({
   );
 }
 
+function PosSalesModuleTotals({
+  clientId,
+  businessDate,
+  shiftId,
+  onApplyCash,
+  onApplyBank,
+  formCash,
+  formBank,
+  formCredit,
+  formGross,
+}) {
+  const totals = usePosSalesTotals({ clientId, businessDate, shiftId });
+  const posNet = Math.round((totals.cashTotal + totals.bankTotal) * 100) / 100;
+
+  const mismatches = [];
+  if (!totals.loading && totals.invoiceCount > 0) {
+    if (formCash != null && toCents(formCash) !== toCents(totals.cashTotal)) {
+      mismatches.push(
+        `Cash Z ${moneyHint(formCash)} ≠ POS ${moneyHint(totals.cashTotal)}`
+      );
+    }
+    if (formBank != null && toCents(formBank) !== toCents(totals.bankTotal)) {
+      mismatches.push(
+        `Bank Z ${moneyHint(formBank)} ≠ POS ${moneyHint(totals.bankTotal)}`
+      );
+    }
+    if (
+      formCredit != null &&
+      toCents(formCredit) !== toCents(totals.creditTotal)
+    ) {
+      mismatches.push(
+        `Credit Z ${moneyHint(formCredit)} ≠ POS ${moneyHint(totals.creditTotal)}`
+      );
+    }
+    if (formGross != null && toCents(formGross) !== toCents(totals.grossTotal)) {
+      mismatches.push(
+        `Gross Z ${moneyHint(formGross)} ≠ POS ${moneyHint(totals.grossTotal)}`
+      );
+    }
+  }
+
+  return (
+    <div className="mt-3 rounded-xl border border-sky-900/50 bg-sky-950/20 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-semibold uppercase tracking-wide text-sky-300/90">
+          Sales module totals
+        </p>
+        <p className="text-[11px] text-slate-500">
+          {totals.loading
+            ? "Loading…"
+            : `${totals.invoiceCount} invoice${totals.invoiceCount === 1 ? "" : "s"}`}
+        </p>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] uppercase tracking-wide text-slate-500">
+              Cash sales
+            </span>
+            {onApplyCash ? (
+              <button
+                type="button"
+                disabled={totals.loading}
+                onClick={() => onApplyCash(totals.cashTotal)}
+                className="text-[11px] font-medium text-sky-300 hover:text-sky-200 disabled:opacity-50"
+              >
+                Use
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+            {totals.loading ? "…" : moneyHint(totals.cashTotal)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] uppercase tracking-wide text-slate-500">
+              Bank sales
+            </span>
+            {onApplyBank ? (
+              <button
+                type="button"
+                disabled={totals.loading}
+                onClick={() => onApplyBank(totals.bankTotal)}
+                className="text-[11px] font-medium text-sky-300 hover:text-sky-200 disabled:opacity-50"
+              >
+                Use
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+            {totals.loading ? "…" : moneyHint(totals.bankTotal)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+          <span className="text-[11px] uppercase tracking-wide text-slate-500">
+            Credit sales
+          </span>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+            {totals.loading ? "…" : moneyHint(totals.creditTotal)}
+          </p>
+        </div>
+        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+          <span className="text-[11px] uppercase tracking-wide text-slate-500">
+            Gross (POS)
+          </span>
+          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+            {totals.loading ? "…" : moneyHint(totals.grossTotal)}
+          </p>
+          {!totals.loading ? (
+            <p className="mt-0.5 text-[10px] text-slate-500">
+              Net {moneyHint(posNet)}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      {mismatches.length > 0 ? (
+        <div className="mt-2 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-100/90">
+          <p className="font-semibold text-amber-200">
+            Z-report totals differ from Sales module
+          </p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {mismatches.map((line) => (
+              <li key={line}>{line}</li>
+            ))}
+          </ul>
+          <p className="mt-1 text-amber-200/70">
+            Use Cash/Bank from POS when the terminal matches Sales, or keep Z
+            figures when the terminal includes offline sales.
+          </p>
+        </div>
+      ) : null}
+
+      <div className="mt-3 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/40">
+        <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_72px_88px] gap-2 border-b border-slate-800 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+          <span>Invoice</span>
+          <span>Customer</span>
+          <span>Tender</span>
+          <span className="text-right">Amount</span>
+        </div>
+        {totals.loading ? (
+          <p className="px-3 py-3 text-xs text-slate-500">Loading sales…</p>
+        ) : totals.items.length === 0 ? (
+          <p className="px-3 py-3 text-xs text-slate-500">
+            No Sales module invoices for this shift/date.
+          </p>
+        ) : (
+          <ul className="max-h-48 overflow-y-auto overscroll-contain divide-y divide-slate-800/80">
+            {totals.items.map((item) => (
+              <li
+                key={item.id}
+                className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_72px_88px] gap-2 px-3 py-2 text-xs"
+              >
+                <span className="truncate font-mono text-slate-200" title={item.invoiceNo}>
+                  {item.invoiceNo}
+                </span>
+                <span className="truncate text-slate-300" title={item.partyName}>
+                  {item.partyName}
+                </span>
+                <span
+                  className={
+                    item.tender === "Cash"
+                      ? "text-emerald-300"
+                      : item.tender === "Bank"
+                        ? "text-sky-300"
+                        : item.tender === "Credit"
+                          ? "text-amber-300"
+                          : "text-slate-400"
+                  }
+                >
+                  {item.tender}
+                </span>
+                <span className="text-right tabular-nums font-medium text-slate-100">
+                  {moneyHint(item.amount)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 export default function ShiftClose() {
   const { user } = useAuth();
   const { activeClientId, activeClientData } = useClient();
@@ -576,6 +801,15 @@ export default function ShiftClose() {
     () => sumEntryAmounts(creditEntries),
     [creditEntries]
   );
+  const derivedNewTotals = useMemo(
+    () =>
+      deriveZReportSalesTotals({
+        cashTotal: zReport.cashTotal,
+        bankTotal: bankTotalFromBreakdown,
+        creditSalesTotal: creditTotalFromBreakdown,
+      }),
+    [zReport.cashTotal, bankTotalFromBreakdown, creditTotalFromBreakdown]
+  );
   const editBankTotalFromBreakdown = useMemo(
     () => sumEntryAmounts(editBankEntries),
     [editBankEntries]
@@ -583,6 +817,19 @@ export default function ShiftClose() {
   const editCreditTotalFromBreakdown = useMemo(
     () => sumEntryAmounts(editCreditEntries),
     [editCreditEntries]
+  );
+  const derivedEditTotals = useMemo(
+    () =>
+      deriveZReportSalesTotals({
+        cashTotal: editZReport?.cashTotal,
+        bankTotal: editBankTotalFromBreakdown,
+        creditSalesTotal: editCreditTotalFromBreakdown,
+      }),
+    [
+      editZReport?.cashTotal,
+      editBankTotalFromBreakdown,
+      editCreditTotalFromBreakdown,
+    ]
   );
 
   function setZField(field, value) {
@@ -751,25 +998,39 @@ export default function ShiftClose() {
         editBankEntries
       );
       const bankTotal = sumEntryAmounts(normalizedBankEntries);
+      const cashTotal = nonNegativeNumber(editZReport.cashTotal, "Cash total");
+      const derived = deriveZReportSalesTotals({
+        cashTotal,
+        bankTotal,
+        creditSalesTotal,
+      });
       const payload = {
         ...editZReport,
         openingFloat: nonNegativeNumber(
           editOpeningFloat,
           "Opening float"
         ),
-        grossSales: nonNegativeNumber(editZReport.grossSales, "Gross sales"),
-        netSales: nonNegativeNumber(editZReport.netSales, "Net sales"),
-        cashTotal: nonNegativeNumber(editZReport.cashTotal, "Cash total"),
-        bankTotal,
-        creditSalesTotal,
+        cashTotal: derived.cashTotal,
+        bankTotal: derived.bankTotal,
+        creditSalesTotal: derived.creditSalesTotal,
+        netSales: derived.netSales,
+        grossSales: derived.grossSales,
       };
       if (
         toCents(payload.grossSales) !==
-        toCents(payload.netSales) + toCents(payload.creditSalesTotal)
+        toCents(payload.cashTotal) +
+          toCents(payload.bankTotal) +
+          toCents(payload.creditSalesTotal)
       ) {
         throw new Error(
-          "Gross Sales must equal Net Sales plus Credit Sales Total."
+          "Gross Sales must equal Cash + Bank + Credit Sales Total."
         );
+      }
+      if (
+        toCents(payload.netSales) !==
+        toCents(payload.cashTotal) + toCents(payload.bankTotal)
+      ) {
+        throw new Error("Net Sales must equal Cash Total + Bank Total.");
       }
 
       await updateClosedZReport({
@@ -824,6 +1085,12 @@ export default function ShiftClose() {
       const bankTotal = sumEntryAmounts(normalizedBankEntries);
       const businessDate =
         activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD();
+      const cashTotal = nonNegativeNumber(zReport.cashTotal, "Cash total");
+      const derived = deriveZReportSalesTotals({
+        cashTotal,
+        bankTotal,
+        creditSalesTotal,
+      });
       const payload = {
         ...zReport,
         businessDate,
@@ -831,19 +1098,27 @@ export default function ShiftClose() {
           floatingCash == null ? closeOpeningFloat : floatingCash,
           "Opening float"
         ),
-        grossSales: nonNegativeNumber(zReport.grossSales, "Gross sales"),
-        netSales: nonNegativeNumber(zReport.netSales, "Net sales"),
-        cashTotal: nonNegativeNumber(zReport.cashTotal, "Cash total"),
-        bankTotal,
-        creditSalesTotal,
+        cashTotal: derived.cashTotal,
+        bankTotal: derived.bankTotal,
+        creditSalesTotal: derived.creditSalesTotal,
+        netSales: derived.netSales,
+        grossSales: derived.grossSales,
       };
       if (
         toCents(payload.grossSales) !==
-        toCents(payload.netSales) + toCents(payload.creditSalesTotal)
+        toCents(payload.cashTotal) +
+          toCents(payload.bankTotal) +
+          toCents(payload.creditSalesTotal)
       ) {
         throw new Error(
-          "Gross Sales must equal Net Sales plus Credit Sales Total."
+          "Gross Sales must equal Cash + Bank + Credit Sales Total."
         );
+      }
+      if (
+        toCents(payload.netSales) !==
+        toCents(payload.cashTotal) + toCents(payload.bankTotal)
+      ) {
+        throw new Error("Net Sales must equal Cash Total + Bank Total.");
       }
       await saveZReport({
         closingCashCounted: nonNegativeNumber(
@@ -890,7 +1165,10 @@ export default function ShiftClose() {
             {activeClientData?.name || activeClientId}
           </p>
         </div>
-        <ModuleExitButton ariaLabel="Close Z-report entry module" />
+        <div className="flex items-center gap-2">
+          <ModuleHelpButton moduleId="z-report" />
+          <ModuleExitButton ariaLabel="Close Z-report entry module" />
+        </div>
       </div>
 
       {shiftError || error ? (
@@ -984,17 +1262,17 @@ export default function ShiftClose() {
               <label key={field} className="text-sm text-slate-300">
                 {label}
                 <input
-                  required
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={zReport[field]}
-                  onChange={(event) => setZField(field, event.target.value)}
-                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                  readOnly
+                  tabIndex={-1}
+                  value={formatAmountDisplay(derivedNewTotals[field])}
+                  className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
                 />
               </label>
             ))}
           </div>
+          <p className="mt-2 text-[11px] text-slate-500">
+            Net = Cash + Bank · Gross = Cash + Bank + Credit
+          </p>
 
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
             <label className="text-sm text-slate-300">
@@ -1028,6 +1306,24 @@ export default function ShiftClose() {
               />
             </label>
           </div>
+
+          <PosSalesModuleTotals
+            clientId={activeClientId}
+            businessDate={
+              activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD()
+            }
+            shiftId={activeShift?.id}
+            formCash={zReport.cashTotal}
+            formBank={bankTotalFromBreakdown}
+            formCredit={creditTotalFromBreakdown}
+            formGross={derivedNewTotals.grossSales}
+            onApplyCash={(amount) =>
+              setZField("cashTotal", formatAmountDisplay(amount))
+            }
+            onApplyBank={(amount) =>
+              setBankEntries(applyPosBankToEntries(amount, bankAccounts))
+            }
+          />
 
           <section className="mt-5 border-t border-slate-800 pt-5">
             <h3 className="font-semibold text-white">Bank Sales Breakdown</h3>
@@ -1217,7 +1513,7 @@ export default function ShiftClose() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-white">
-                  Edit Closed Z-Report
+                  Edit Z-Report
                 </h2>
                 <p className="mt-1 text-xs text-slate-400">
                   Linked shift: {editingReport.shiftId}
@@ -1313,19 +1609,17 @@ export default function ShiftClose() {
                 <label key={field} className="text-sm text-slate-300">
                   {label}
                   <input
-                    required
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={editZReport[field]}
-                    onChange={(event) =>
-                      setEditZField(field, event.target.value)
-                    }
-                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
+                    readOnly
+                    tabIndex={-1}
+                    value={formatAmountDisplay(derivedEditTotals[field])}
+                    className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
                   />
                 </label>
               ))}
             </div>
+            <p className="mt-2 text-[11px] text-slate-500">
+              Net = Cash + Bank · Gross = Cash + Bank + Credit
+            </p>
 
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
               <label className="text-sm text-slate-300">
@@ -1361,6 +1655,22 @@ export default function ShiftClose() {
                 />
               </label>
             </div>
+
+            <PosSalesModuleTotals
+              clientId={activeClientId}
+              businessDate={editZReport.businessDate}
+              shiftId={editingReport?.shiftId}
+              formCash={editZReport.cashTotal}
+              formBank={editBankTotalFromBreakdown}
+              formCredit={editCreditTotalFromBreakdown}
+              formGross={derivedEditTotals.grossSales}
+              onApplyCash={(amount) =>
+                setEditZField("cashTotal", formatAmountDisplay(amount))
+              }
+              onApplyBank={(amount) =>
+                setEditBankEntries(applyPosBankToEntries(amount, bankAccounts))
+              }
+            />
 
             <section className="mt-5 border-t border-slate-800 pt-5">
               <h3 className="font-semibold text-white">Bank Sales Breakdown</h3>

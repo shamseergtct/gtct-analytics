@@ -14,11 +14,6 @@ function todayYYYYMMDD() {
   return `${date.getFullYear()}-${month}-${day}`;
 }
 
-function formatAmountDisplay(value) {
-  const amount = Number(value) || 0;
-  return Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
-}
-
 export default function ShiftStatusBar() {
   const { role } = useAuth();
   const { activeClientId } = useClient();
@@ -214,19 +209,6 @@ export default function ShiftStatusBar() {
                   className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
                 />
               </label>
-              <label className="block text-sm text-slate-300">
-                Opening Float
-                <input
-                  readOnly
-                  tabIndex={-1}
-                  value={
-                    loadingPreviousCash && floatingCash == null
-                      ? "…"
-                      : formatAmountDisplay(floatingCash ?? 0)
-                  }
-                  className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-                />
-              </label>
               <div className="flex justify-end gap-2 pt-1">
                 <button
                   type="button"
@@ -240,7 +222,11 @@ export default function ShiftStatusBar() {
                   disabled={saving || floatingCash == null}
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
                 >
-                  {saving ? "Opening…" : "Open Shift"}
+                  {saving
+                    ? "Opening…"
+                    : floatingCash == null || loadingPreviousCash
+                      ? "Loading…"
+                      : "Open Shift"}
                 </button>
               </div>
             </form>

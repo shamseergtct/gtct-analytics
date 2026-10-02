@@ -37,7 +37,12 @@ import {
 import { formatIsoDate } from "../utils/dateFormat.js";
 import {
   REPORT_VIEW_TYPES,
+  PAYMENT_FILTER_OPTIONS,
   aggregateLedgerRows,
+  detectPaymentFiltersPresent,
+  filterRowsByParty,
+  filterRowsByPayment,
+  listPartiesFromRows,
   reportViewSupportsAggregation,
 } from "../utils/reportAggregation.js";
 
@@ -49,6 +54,7 @@ const MAIN_TABS = [
 
 const LEDGER_TYPES = [
   { key: "pnl", label: "P&L Statement" },
+  { key: "sales", label: "Sales Report" },
   { key: "ledger", label: "Transaction Ledger" },
   { key: "cashflow", label: "Cash Flow Statement" },
   { key: "customers", label: "Customer Ledgers" },
@@ -96,6 +102,8 @@ export default function ReportsHub() {
   const [selectedPartyId, setSelectedPartyId] = useState("");
   const [loadingParties, setLoadingParties] = useState(false);
   const [viewType, setViewType] = useState("invoice");
+  const [paymentFilter, setPaymentFilter] = useState("all");
+  const [partyFilter, setPartyFilter] = useState("all");
   const [compareYoY, setCompareYoY] = useState(false);
 
   const range = useMemo(
@@ -115,8 +123,54 @@ export default function ReportsHub() {
     ledger?.layout,
     ledgerType
   );
+
+  const paymentFiltersPresent = useMemo(() => {
+    if (
+      (ledgerType !== "sales" && ledgerType !== "expense") ||
+      !ledger?.rows?.length
+    ) {
+      return new Set();
+    }
+    return detectPaymentFiltersPresent(ledger.rows);
+  }, [ledgerType, ledger?.rows]);
+
+  const partyFilterOptions = useMemo(() => {
+    if (
+      (ledgerType !== "sales" && ledgerType !== "expense") ||
+      !ledger?.rows?.length
+    ) {
+      return [];
+    }
+    return listPartiesFromRows(ledger.rows);
+  }, [ledgerType, ledger?.rows]);
+
+  const showPaymentFilter =
+    (ledgerType === "sales" || ledgerType === "expense") &&
+    paymentFiltersPresent.size >= 1;
+  const showPartyFilter =
+    (ledgerType === "sales" || ledgerType === "expense") &&
+    partyFilterOptions.length > 0;
+
   const displayedLedger = useMemo(() => {
-    if (!ledger || !supportsViewType || viewType === "invoice") return ledger;
+    if (!ledger) return ledger;
+
+    let sourceRows = ledger.rows || [];
+    const usesSalesStyleFilters =
+      ledgerType === "sales" || ledgerType === "expense";
+    if (usesSalesStyleFilters) {
+      sourceRows = filterRowsByPayment(sourceRows, paymentFilter);
+      sourceRows = filterRowsByParty(sourceRows, partyFilter);
+    }
+
+    const salesFiltersActive =
+      usesSalesStyleFilters &&
+      (paymentFilter !== "all" || partyFilter !== "all");
+
+    if (!supportsViewType || viewType === "invoice") {
+      if (!salesFiltersActive) return ledger;
+      return { ...ledger, rows: sourceRows };
+    }
+
     const balanceMode =
       ledgerType === "vendors"
         ? "ap"
@@ -124,7 +178,7 @@ export default function ReportsHub() {
           ? "ar"
           : "cash";
     const aggregated = aggregateLedgerRows({
-      rows: ledger.rows || [],
+      rows: sourceRows,
       columns: ledger.columns || [],
       viewType,
       partyLabel: selectedParty?.name || ledger?.summary?.partyName || "",
@@ -135,13 +189,34 @@ export default function ReportsHub() {
       columns: aggregated.columns,
       rows: aggregated.rows,
     };
-  }, [ledger, supportsViewType, viewType, selectedParty?.name, ledgerType]);
+  }, [
+    ledger,
+    supportsViewType,
+    viewType,
+    selectedParty?.name,
+    ledgerType,
+    paymentFilter,
+    partyFilter,
+  ]);
 
   useEffect(() => {
     setSelectedPartyId("");
     setPartyOptions([]);
     setViewType("invoice");
+    setPaymentFilter("all");
+    setPartyFilter("all");
   }, [ledgerType, activeClientId]);
+
+  useEffect(() => {
+    if (partyFilter === "all") return;
+    if (
+      !partyFilterOptions.some(
+        (name) => name.toLowerCase() === partyFilter.toLowerCase()
+      )
+    ) {
+      setPartyFilter("all");
+    }
+  }, [partyFilterOptions, partyFilter]);
 
   useEffect(() => {
     if (!activeClientId || !showPartyPicker) return undefined;
@@ -489,6 +564,21 @@ export default function ReportsHub() {
                   <p className="text-sm text-slate-400 print:text-slate-600">
                     {[
                       rangeLabel,
+                      ledger?.summary?.sales
+                        ? `Sales ${ledger.summary.sales}`
+                        : "",
+                      ledger?.summary?.expenses
+                        ? `Expenses ${ledger.summary.expenses}`
+                        : "",
+                      ledger?.summary?.cash
+                        ? `Cash ${ledger.summary.cash}`
+                        : "",
+                      ledger?.summary?.bank
+                        ? `Bank ${ledger.summary.bank}`
+                        : "",
+                      ledger?.summary?.credit
+                        ? `Credit ${ledger.summary.credit}`
+                        : "",
                       ledger?.summary?.acquired
                         ? `Acquired ${ledger.summary.acquired}`
                         : "",
@@ -500,6 +590,9 @@ export default function ReportsHub() {
                         : "",
                       ledger?.summary?.grandTotal
                         ? `Grand total ${ledger.summary.grandTotal}`
+                        : "",
+                      ledger?.summary?.totalOut
+                        ? `Total out ${ledger.summary.totalOut}`
                         : "",
                     ]
                       .filter(Boolean)
@@ -562,21 +655,66 @@ export default function ReportsHub() {
                 </div>
               ) : null}
 
-              {supportsViewType ? (
-                <label className="block max-w-xs text-xs font-semibold uppercase tracking-wider text-slate-500 print:hidden">
-                  Report type
-                  <select
-                    value={viewType}
-                    onChange={(event) => setViewType(event.target.value)}
-                    className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
-                  >
-                    {REPORT_VIEW_TYPES.map((item) => (
-                      <option key={item.key} value={item.key}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+              {supportsViewType || showPaymentFilter || showPartyFilter ? (
+                <div className="flex flex-wrap items-end gap-3 print:hidden">
+                  {supportsViewType ? (
+                    <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Report type
+                      <select
+                        value={viewType}
+                        onChange={(event) => setViewType(event.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
+                      >
+                        {REPORT_VIEW_TYPES.map((item) => (
+                          <option key={item.key} value={item.key}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  {showPartyFilter ? (
+                    <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Party
+                      <select
+                        value={partyFilter}
+                        onChange={(event) => setPartyFilter(event.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
+                      >
+                        <option value="all">All parties</option>
+                        {partyFilterOptions.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  {showPaymentFilter ? (
+                    <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Payment
+                      <select
+                        value={paymentFilter}
+                        onChange={(event) =>
+                          setPaymentFilter(event.target.value)
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
+                      >
+                        {PAYMENT_FILTER_OPTIONS.filter(
+                          (item) =>
+                            item.key === "all" ||
+                            paymentFiltersPresent.has(item.key)
+                        ).map((item) => (
+                          <option key={item.key} value={item.key}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                </div>
               ) : null}
 
               {loading && !ledger ? (

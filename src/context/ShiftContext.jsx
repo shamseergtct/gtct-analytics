@@ -694,20 +694,33 @@ export function ShiftProvider({ children }) {
           bankAccountSnapshots.map((snapshot) => [snapshot.id, snapshot])
         );
 
-      if (
-        !shiftSnapshot.exists() ||
-        shiftSnapshot.data()?.clientId !== activeClientId ||
-        shiftSnapshot.data()?.status !== "CLOSED" ||
-        shiftSnapshot.data()?.zReportId !== zReportId
-      ) {
-        throw new Error("The linked closed shift is invalid.");
-      }
-      if (
-        shiftSnapshot.data()?.businessDate &&
-        businessDate !== shiftSnapshot.data().businessDate
-      ) {
-        throw new Error("Z-report date must match the linked shift date.");
-      }
+        const shiftData = shiftSnapshot.data() || {};
+        const shiftStatus = String(shiftData.status || "").trim().toUpperCase();
+        // Z-reports and shift close are separate: shifts are often closed with
+        // zReportId left null (or never set). Allow edit when the Z-report's
+        // shiftId points at this shift, and any stored zReportId matches.
+        const shiftZReportId = String(shiftData.zReportId || "").trim();
+        const shiftLinkedOk =
+          !shiftZReportId || shiftZReportId === String(zReportId || "").trim();
+
+        if (
+          !shiftSnapshot.exists() ||
+          shiftData.clientId !== activeClientId ||
+          !["CLOSED", "OPEN"].includes(shiftStatus) ||
+          !shiftLinkedOk
+        ) {
+          throw new Error(
+            shiftZReportId && !shiftLinkedOk
+              ? "This Z-report is not linked to the selected shift."
+              : "The linked shift could not be validated for editing."
+          );
+        }
+        if (
+          shiftData.businessDate &&
+          businessDate !== shiftData.businessDate
+        ) {
+          throw new Error("Z-report date must match the linked shift date.");
+        }
 
       oldTransactionSnapshots.forEach((snapshot) => {
         if (!snapshot.exists()) return;
@@ -806,7 +819,9 @@ export function ShiftProvider({ children }) {
         openingFloat: num(zReport.openingFloat),
         closingCashCounted: num(closingCashCounted),
         shiftOpenedAtMs: num(shiftSnapshot.data()?.openedAtMs),
-        shiftStatus: "CLOSED",
+        shiftStatus: String(shiftSnapshot.data()?.status || "CLOSED")
+          .trim()
+          .toUpperCase() || "CLOSED",
         voidTotal: deleteField(),
         creditEntries: normalizedCreditEntries.map(
           ({ partyId, partyName, amount, transactionId }) => ({
