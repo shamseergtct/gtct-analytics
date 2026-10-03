@@ -855,6 +855,230 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
+    // External Sales / Sales Bill Entry masters + bills (additive; not POS sales)
+    function validExternalMasterWrite() {
+      return request.resource.data.clientId is string
+        && canManageClient(request.resource.data.clientId)
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 80
+        && request.resource.data.isActive is bool
+        && request.resource.data.updatedBy == request.auth.uid;
+    }
+
+    function validDeliveryBoyWrite() {
+      return validExternalMasterWrite()
+        && request.resource.data.commissionEnabled is bool
+        && request.resource.data.commissionRate is number
+        && request.resource.data.commissionRate >= 0
+        && request.resource.data.commissionRate <= 100
+        && (
+          request.resource.data.commissionEnabled == false
+          || request.resource.data.commissionRate >= 0
+        );
+    }
+
+    function validExternalBillPayment() {
+      return request.resource.data.bankAccountId is string
+        && request.resource.data.bankAccountNameSnapshot is string
+        && request.resource.data.customerId is string
+        && request.resource.data.customerName is string
+        && (
+          // Delivery bills are on the delivery boy's account (no tender mode)
+          (
+            request.resource.data.saleType == 'DELIVERY'
+            && request.resource.data.paymentMode == 'DELIVERY_ACCOUNT'
+            && request.resource.data.bankAccountId == ''
+          )
+          || (
+            request.resource.data.saleType != 'DELIVERY'
+            && (
+              (
+                request.resource.data.paymentMode == 'CASH'
+                && request.resource.data.bankAccountId == ''
+              )
+              || (
+                request.resource.data.paymentMode == 'BANK'
+                && request.resource.data.bankAccountId.size() > 0
+                && request.resource.data.bankAccountNameSnapshot.size() > 0
+              )
+              || (
+                request.resource.data.paymentMode == 'CREDIT'
+                && request.resource.data.customerId.size() > 0
+                && request.resource.data.customerName.size() > 0
+                && request.resource.data.bankAccountId == ''
+              )
+            )
+          )
+        );
+    }
+
+    function validExternalBillFields() {
+      return request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.terminalId is string
+        && request.resource.data.terminalId.size() > 0
+        && request.resource.data.terminalNameSnapshot is string
+        && request.resource.data.billNumber is string
+        && request.resource.data.billNumber.size() > 0
+        && request.resource.data.billNumber.size() <= 40
+        && request.resource.data.billAmount is number
+        && request.resource.data.billAmount >= 0
+        && request.resource.data.saleType in ['DELIVERY', 'DINE_IN', 'PICK_UP']
+        && request.resource.data.deliveryCharge is number
+        && request.resource.data.deliveryCharge >= 0
+        && request.resource.data.commissionEnabled is bool
+        && request.resource.data.commissionRate is number
+        && request.resource.data.commissionRate >= 0
+        && request.resource.data.commissionAmount is number
+        && request.resource.data.commissionAmount >= 0
+        && request.resource.data.salesSource == 'EXTERNAL_BILL_ENTRY'
+        && request.resource.data.voided == false
+        && validExternalBillPayment()
+        && (
+          request.resource.data.saleType != 'DELIVERY'
+          || (
+            request.resource.data.deliveryBoyId is string
+            && request.resource.data.deliveryBoyId.size() > 0
+          )
+        );
+    }
+
+    function validExternalBillCreate() {
+      return request.resource.data.clientId is string
+        && canManageClient(request.resource.data.clientId)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && validExternalBillFields();
+    }
+
+    function validExternalBillEdit() {
+      return resource.data.voided == false
+        && request.resource.data.voided == false
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.businessDate == resource.data.businessDate
+        && request.resource.data.terminalId == resource.data.terminalId
+        && request.resource.data.billNumber == resource.data.billNumber
+        && request.resource.data.salesSource == resource.data.salesSource
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && validExternalBillFields();
+    }
+
+    match /billing_terminals/{terminalId} {
+      allow read: if canReadTenantResource();
+      allow create: if validExternalMasterWrite()
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && validExternalMasterWrite();
+      allow delete: if false;
+    }
+
+    match /delivery_boys/{boyId} {
+      allow read: if canReadTenantResource();
+      allow create: if validDeliveryBoyWrite()
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && (
+          // Full edit (name / commission / active)
+          validDeliveryBoyWrite()
+          // Activate / deactivate only (legacy docs without commission fields)
+          || (
+            request.resource.data.name == resource.data.name
+            && request.resource.data.isActive is bool
+            && request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.clientId == resource.data.clientId
+          )
+        );
+      allow delete: if false;
+    }
+
+    function validDeliveryBoyCollectionFields() {
+      return request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.deliveryBoyId is string
+        && request.resource.data.deliveryBoyId.size() > 0
+        && request.resource.data.deliveryBoyNameSnapshot is string
+        && request.resource.data.payableAmount is number
+        && request.resource.data.payableAmount >= 0
+        && request.resource.data.paidCash is number
+        && request.resource.data.paidCash >= 0
+        && request.resource.data.paidBank is number
+        && request.resource.data.paidBank >= 0
+        && request.resource.data.balanceAmount is number
+        && request.resource.data.balanceAmount >= 0
+        && request.resource.data.bankAccountId is string
+        && request.resource.data.bankAccountNameSnapshot is string
+        && (request.resource.data.paidCash + request.resource.data.paidBank) > 0
+        && (request.resource.data.paidCash + request.resource.data.paidBank)
+          <= request.resource.data.payableAmount
+        && (
+          request.resource.data.paidBank == 0
+          || (
+            request.resource.data.bankAccountId.size() > 0
+            && request.resource.data.bankAccountNameSnapshot.size() > 0
+          )
+        );
+    }
+
+    match /delivery_boy_collections/{collectionId} {
+      allow read: if canReadTenantResource();
+      allow create: if request.resource.data.clientId is string
+        && canManageClient(request.resource.data.clientId)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && validDeliveryBoyCollectionFields();
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.businessDate == resource.data.businessDate
+        && request.resource.data.deliveryBoyId == resource.data.deliveryBoyId
+        && validDeliveryBoyCollectionFields();
+      allow delete: if false;
+    }
+
+    match /external_sales_bills/{billId} {
+      allow read: if canReadTenantResource();
+      allow create: if validExternalBillCreate();
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.updatedBy == request.auth.uid
+        && (
+          // Soft-void only (preserve identity keys)
+          (
+            resource.data.voided == false
+            && request.resource.data.voided == true
+            && request.resource.data.businessDate == resource.data.businessDate
+            && request.resource.data.terminalId == resource.data.terminalId
+            && request.resource.data.billNumber == resource.data.billNumber
+            && request.resource.data.billAmount == resource.data.billAmount
+            && request.resource.data.saleType == resource.data.saleType
+            && request.resource.data.deliveryCharge == resource.data.deliveryCharge
+            && request.resource.data.commissionAmount == resource.data.commissionAmount
+            && request.resource.data.commissionRate == resource.data.commissionRate
+            && request.resource.data.commissionEnabled == resource.data.commissionEnabled
+            && request.resource.data.salesSource == resource.data.salesSource
+            && request.resource.data.createdBy == resource.data.createdBy
+          )
+          // Edit an existing active bill (same shop/date/terminal/bill number)
+          || validExternalBillEdit()
+          // Re-enter a previously voided bill number (same deterministic id)
+          || (
+            resource.data.voided == true
+            && request.resource.data.createdBy == resource.data.createdBy
+            && request.resource.data.updatedBy == request.auth.uid
+            && request.resource.data.businessDate == resource.data.businessDate
+            && request.resource.data.terminalId == resource.data.terminalId
+            && request.resource.data.billNumber == resource.data.billNumber
+            && validExternalBillFields()
+          )
+        );
+      allow delete: if false;
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

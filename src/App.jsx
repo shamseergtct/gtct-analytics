@@ -13,6 +13,7 @@ import ReportsHub from "./pages/ReportsHub";
 import PartyReports from "./pages/PartyReports";
 import SuperAdmin from "./pages/SuperAdmin";
 import Sales from "./pages/Sales"; // ✅ NEW
+import ExternalSales from "./pages/ExternalSales";
 import ShiftClose from "./pages/ShiftClose";
 import PurchaseExpenseEntry from "./pages/PurchaseExpenseEntry";
 import PaymentReceiptEntry from "./pages/PaymentReceiptEntry";
@@ -81,6 +82,17 @@ export default function App() {
             <RoleRoute allow={["admin", "super_admin"]}>
               <RequireActiveShift>
                 <Sales />
+              </RequireActiveShift>
+            </RoleRoute>
+          }
+        />
+        {/* External Sales / Sales Bill Entry (not a POS checkout) */}
+        <Route
+          path="/external-sales"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <RequireActiveShift>
+                <ExternalSales />
               </RequireActiveShift>
             </RoleRoute>
           }

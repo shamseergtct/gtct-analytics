@@ -201,6 +201,51 @@ export const HELP_MODULES = [
     ],
   },
   {
+    id: "external-sales",
+    title: "External Sales / Sales Bill Entry",
+    path: "/external-sales",
+    summary:
+      "Capture summarized bills from an external POS for monitoring — not a GTCT checkout.",
+    sections: [
+      {
+        title: "Setup",
+        items: [
+          "Add billing terminals (Main POS, Counter 1, …) and activate only those in use.",
+          "Add delivery boys; deactivate instead of deleting so history stays intact.",
+          "Each delivery boy has their own commission on/off and rate % (on delivery charge only).",
+        ],
+      },
+      {
+        title: "Bill entry",
+        items: [
+          "Each active terminal has its own entry form; business date is shared.",
+          "Dine In / Pick Up: payment mode is Cash, a saved bank account, or Credit (Credit needs a customer).",
+          "Delivery bills are on the delivery boy's account (no payment mode). Settle under Collect.",
+          "Delivery shows location, delivery boy, and delivery charge.",
+          "After save, the form stays open for the next bill.",
+          "Bill numbers are unique per shop + date + terminal.",
+        ],
+      },
+      {
+        title: "Collect from delivery boy",
+        items: [
+          "Record payable amount, then pay by cash and/or bank.",
+          "Bill amount already includes delivery charge. Payable = bill amount − commission (when enabled).",
+          "If amount was already collected, selecting the boy again shows only the remaining balance.",
+          "Balance = amount to collect − Cash − Bank and updates as you type.",
+        ],
+      },
+      {
+        title: "Daily list",
+        items: [
+          "Filter by date, terminal, sale type, or delivery boy.",
+          "Summaries show totals, terminal totals, and delivery-boy commission.",
+          "Void keeps the bill for history but removes it from totals.",
+        ],
+      },
+    ],
+  },
+  {
     id: "transactions",
     title: "Transactions",
     path: "/transactions",
@@ -292,6 +337,7 @@ export function getHelpModule(moduleId) {
 /** Map a route path to a help module id. */
 export function helpModuleIdFromPath(pathname) {
   const path = String(pathname || "");
+  if (path.startsWith("/external-sales")) return "external-sales";
   if (path.startsWith("/sales")) return "sales";
   if (path.startsWith("/inventory")) return "inventory";
   if (path.startsWith("/shift-close")) return "z-report";
