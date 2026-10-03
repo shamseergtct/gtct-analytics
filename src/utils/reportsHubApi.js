@@ -11,6 +11,7 @@ import {
   where,
 } from "firebase/firestore";
 import { db } from "../firebase";
+import { formatMoney } from "./money.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -18,7 +19,7 @@ function num(value) {
 }
 
 function money(value) {
-  return num(value).toFixed(2);
+  return formatMoney(value);
 }
 
 function txnDateLabel(row) {

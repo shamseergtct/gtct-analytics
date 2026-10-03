@@ -38,6 +38,7 @@ import {
   parsePaymentModeSelection,
   paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
+import { formatMoney, moneyInputStep, roundMoney } from "../utils/money.js";
 
 const PURCHASE_CATEGORIES = ["COMMODITY", "CONSUMABLES", "ASSET"];
 const EXPENSE_CATEGORIES = [
@@ -383,7 +384,7 @@ export default function PurchaseExpenseEntry() {
   }
 
   function buildCurrentEntry() {
-    const parsedAmount = Number(amount);
+    const parsedAmount = roundMoney(amount);
     const cleanPartyName = String(selectedParty?.name || "").trim();
     const cleanReceiptNote = receiptNote.trim();
 
@@ -693,7 +694,7 @@ export default function PurchaseExpenseEntry() {
 
     setError("");
     setMessage("");
-    const parsedAmount = Number(savedEdit.amount);
+    const parsedAmount = roundMoney(savedEdit.amount);
     const selectedEditParty = parties.find(
       (party) => party.id === savedEdit.partyId
     );
@@ -1013,7 +1014,7 @@ export default function PurchaseExpenseEntry() {
               required
               type="number"
               min="0.01"
-              step="0.01"
+              step={moneyInputStep()}
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
               className={FIELD_CLASS}
@@ -1226,9 +1227,12 @@ export default function PurchaseExpenseEntry() {
               Batch Total
             </p>
             <p className="text-xl font-bold text-white">
-              {queuedEntries
-                .reduce((total, entry) => total + Number(entry.amount || 0), 0)
-                .toFixed(2)}
+              {formatMoney(
+                queuedEntries.reduce(
+                  (total, entry) => total + Number(entry.amount || 0),
+                  0
+                )
+              )}
             </p>
           </div>
         </div>
@@ -1265,7 +1269,7 @@ export default function PurchaseExpenseEntry() {
                       {entry.bankAccountName ? `Bank: ${entry.bankAccountName}` : String(entry.paymentMode || "").replaceAll("_", " ")}
                     </td>
                     <td className="px-4 py-3 text-right font-semibold text-white">
-                      {Number(entry.amount).toFixed(2)}
+                      {formatMoney(entry.amount)}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex justify-end gap-2">
@@ -1391,7 +1395,7 @@ export default function PurchaseExpenseEntry() {
                           {String(entry.paymentMode || "-").replaceAll("_", " ")}
                         </td>
                         <td className="px-4 py-3 text-right font-semibold text-white">
-                          {Number(entry.amount || 0).toFixed(2)}
+                          {formatMoney(entry.amount || 0)}
                         </td>
                         <td className="px-4 py-3 text-right">
                           <button
@@ -1492,7 +1496,7 @@ export default function PurchaseExpenseEntry() {
                   <input
                     type="number"
                     min="0.01"
-                    step="0.01"
+                    step={moneyInputStep()}
                     value={savedEdit.amount}
                     onChange={(event) =>
                       setSavedEdit((current) => ({

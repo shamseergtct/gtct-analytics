@@ -2,9 +2,10 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { formatIsoDate } from "./dateFormat.js";
+import { formatMoney } from "./money.js";
 
 function money(v) {
-  return Number(v || 0).toFixed(2);
+  return formatMoney(v);
 }
 
 function safeText(s) {

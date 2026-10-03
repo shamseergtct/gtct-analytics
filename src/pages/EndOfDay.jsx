@@ -36,6 +36,7 @@ import DateInput from "../components/DateInput.jsx";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import { calculateEodSnapshot } from "../utils/eodCalculations.js";
 import { toBusinessDate } from "../utils/transactionContract.js";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 function todayYYYYMMDD() {
   const date = new Date();
@@ -46,8 +47,7 @@ function todayYYYYMMDD() {
 
 function money(value) {
   if (value == null || value === "") return "—";
-  const parsed = Number(value);
-  return (Number.isFinite(parsed) ? parsed : 0).toFixed(2);
+  return formatMoney(value);
 }
 
 function reportId(clientId, date) {

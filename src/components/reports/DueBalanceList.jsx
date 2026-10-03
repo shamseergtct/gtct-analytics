@@ -1,11 +1,9 @@
+import { formatMoney, formatMoneyLocale } from "../../utils/money.js";
 function moneyDisplay(value) {
   if (value == null || value === "") return "";
   const parsed = Number(String(value).replace(/,/g, ""));
   if (!Number.isFinite(parsed)) return String(value);
-  return parsed.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return formatMoneyLocale(parsed);
 }
 
 export default function DueBalanceList({

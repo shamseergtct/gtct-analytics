@@ -42,12 +42,13 @@ import {
   formatPaymentLabel,
   itemMatchesSearchQuery,
   resolveSaleTenders,
-  roundMoney,
   saleTenderTxnId,
   tenderTotals,
 } from "../components/sales/salesHelpers.js";
 import { getPartyCode, nextPartyCode } from "../utils/partyCode.js";
 import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
+import { useMoney } from "../hooks/useMoney.js";
+import { formatMoney, numMoney } from "../utils/money.js";
 
 /**
  * =========================
@@ -55,12 +56,7 @@ import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
  * =========================
  */
 function num(v) {
-  if (v === "" || v === null || v === undefined) return 0;
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
-}
-function money(v) {
-  return num(v).toFixed(2);
+  return numMoney(v);
 }
 function calcBaseTotal(qty, sellingPrice) {
   return Math.max(0, num(qty) * num(sellingPrice));
@@ -132,7 +128,8 @@ function getItemBaseCode(item) {
  * Printing (A4 / Thermal)
  * =========================
  */
-function printInvoice({ shopName, invoice, items, mode }) {
+function printInvoice({ shopName, invoice, items, mode, decimals }) {
+  const money = (v) => formatMoney(v, decimals);
   const title = `Invoice ${invoice.invoiceNo || ""}`;
   const safeShop = escapeHtml(shopName || "Shop");
   const invNo = escapeHtml(invoice.invoiceNo || "");
@@ -255,7 +252,7 @@ function printInvoice({ shopName, invoice, items, mode }) {
             <div><b>Customer:</b> ${custName || "-"}</div>
             <div><b>Phone:</b> ${phone || "-"}</div>
             ${(a1 || a2 || a3) ? `<div><b>Address:</b> ${[a1,a2,a3].filter(Boolean).join(", ")}</div>` : ""}
-            <div><b>Payment:</b> ${escapeHtml(formatPaymentLabel(invoice))}</div>
+            <div><b>Payment:</b> ${escapeHtml(formatPaymentLabel(invoice, decimals))}</div>
             <div><b>Order Type:</b> ${escapeHtml(invoice.orderType || "-")}</div>
           </div>
 
@@ -333,6 +330,7 @@ export default function Sales() {
   const { user } = useAuth();
   const { activeShift, loadingShift } = useShift();
   const { accounts: bankAccounts } = useBankAccounts(activeClientId);
+  const { money, round, decimals, toMinor } = useMoney();
 
   // Tabs
   const [tab, setTab] = useState("new"); // new | history
@@ -563,16 +561,18 @@ export default function Sales() {
     return items.filter((it) => itemMatchesSearchQuery(it, q)).slice(0, 8);
   }, [items, search, selectedItemId]);
 
-  // ✅ Totals + Tax (item-wise)
+  // ✅ Totals + Tax (item-wise) — rounded to client currency decimals
   const totals = useMemo(() => {
-    const subTotal = cart.reduce((s, x) => s + num(x.baseTotal), 0);
+    const subTotal = round(cart.reduce((s, x) => s + num(x.baseTotal), 0));
     const discountTotal = 0;
-    const grandTotalBeforeTax = cart.reduce((s, x) => s + num(x.baseTotal), 0);
-    const taxAmount = cart.reduce((s, x) => s + num(x.taxAmount), 0);
-    const grandTotal = grandTotalBeforeTax + taxAmount;
+    const grandTotalBeforeTax = round(
+      cart.reduce((s, x) => s + num(x.baseTotal), 0)
+    );
+    const taxAmount = round(cart.reduce((s, x) => s + num(x.taxAmount), 0));
+    const grandTotal = round(grandTotalBeforeTax + taxAmount);
 
     return { subTotal, discountTotal, grandTotalBeforeTax, taxAmount, grandTotal };
-  }, [cart]);
+  }, [cart, round]);
 
   const historyFiltered = useMemo(() => {
     const q = invSearch.trim().toLowerCase();
@@ -632,9 +632,9 @@ export default function Sales() {
     const q = num(qtyVal);
     const price = num(sellingPriceValue);
 
-    const baseTotal = calcBaseTotal(q, price);
-    const taxAmount = calcTaxAmount(q, price, taxPctVal);
-    const total = baseTotal + taxAmount;
+    const baseTotal = round(calcBaseTotal(q, price));
+    const taxAmount = round(calcTaxAmount(q, price, taxPctVal));
+    const total = round(baseTotal + taxAmount);
     const itemCode = getItemBaseCode(item).trim();
 
     const row = {
@@ -870,13 +870,11 @@ export default function Sales() {
         next.qty = num(next.qty);
         next.sellingPrice = num(next.sellingPrice);
         next.taxPct = num(next.taxPct);
-        next.baseTotal = calcBaseTotal(next.qty, next.sellingPrice);
-        next.taxAmount = calcTaxAmount(
-          next.qty,
-          next.sellingPrice,
-          next.taxPct
+        next.baseTotal = round(calcBaseTotal(next.qty, next.sellingPrice));
+        next.taxAmount = round(
+          calcTaxAmount(next.qty, next.sellingPrice, next.taxPct)
         );
-        next.total = next.baseTotal + next.taxAmount;
+        next.total = round(next.baseTotal + next.taxAmount);
         return next;
       })
     );
@@ -1015,14 +1013,15 @@ export default function Sales() {
       bankAmount: payBank,
       creditAmount: payCredit,
       grandTotal: totals.grandTotal,
+      decimals,
     });
-    const tenderSummary = tenderTotals(saleTenders);
-    const grandRounded = roundMoney(totals.grandTotal);
+    const tenderSummary = tenderTotals(saleTenders, decimals);
+    const grandRounded = round(totals.grandTotal);
 
     if (saleTenders.length === 0) {
       return setErr("Enter at least one payment amount.");
     }
-    if (Math.abs(tenderSummary.allocated - grandRounded) > 0.009) {
+    if (toMinor(tenderSummary.allocated) !== toMinor(grandRounded)) {
       return setErr(
         `Payment amounts must equal total (${money(grandRounded)}). Allocated ${money(
           tenderSummary.allocated
@@ -1410,6 +1409,7 @@ export default function Sales() {
             description: x.description,
           })),
           mode: printMode,
+          decimals,
         });
       }
 
@@ -1468,7 +1468,7 @@ export default function Sales() {
         `Invoice: ${inv.invoiceNo}\nDate: ${
           formatDateValue(inv.saleAtMs, "-")
         }\nCustomer: ${inv.customerName || "-"}\nPhone: ${inv.customerPhone || "-"}\nPayment: ${
-          formatPaymentLabel(inv)
+          formatPaymentLabel(inv, decimals)
         }\nOrderType: ${inv.orderType || "-"}\nStatus: ${inv.status || "ACTIVE"}\nTax: ${money(
           inv.taxAmount || 0
         )}\n\nItems:\n${lines}\n\nGrand Total: ${money(inv.grandTotal)}`
@@ -1500,6 +1500,7 @@ export default function Sales() {
           description: x.description,
         })),
         mode: inv.printerMode || "A4",
+        decimals,
       });
     } catch (e) {
       console.error(e);
@@ -1580,11 +1581,9 @@ export default function Sales() {
 
       // Convert items to cart rows
       const cartRows = list.map((it) => {
-        const baseTotal = calcBaseTotal(it.qty, it.sellingPrice);
-        const taxAmount = calcTaxAmount(
-          it.qty,
-          it.sellingPrice,
-          it.taxPct || 0
+        const baseTotal = round(calcBaseTotal(it.qty, it.sellingPrice));
+        const taxAmount = round(
+          calcTaxAmount(it.qty, it.sellingPrice, it.taxPct || 0)
         );
         return {
           lineId: makeLineId(),
@@ -1597,7 +1596,7 @@ export default function Sales() {
           taxPct: num(it.taxPct || 0),
           baseTotal,
           taxAmount,
-          total: baseTotal + taxAmount,
+          total: round(baseTotal + taxAmount),
           description: it.description || "",
         };
       });
@@ -2036,7 +2035,7 @@ export default function Sales() {
                         <td className="p-2 text-slate-300">{inv.customerPhone || "-"}</td>
                         <td className="p-2 text-slate-300">{inv.orderType || "-"}</td>
                         <td className="p-2 text-slate-300">
-                          {formatPaymentLabel(inv)}
+                          {formatPaymentLabel(inv, decimals)}
                         </td>
                         <td className="p-2">
                           <span

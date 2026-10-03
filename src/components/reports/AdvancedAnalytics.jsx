@@ -18,6 +18,7 @@ import {
 import { RefreshCw, TrendingDown, TrendingUp, Minus } from "lucide-react";
 import { fetchAdvancedAnalytics } from "../../utils/advancedAnalyticsApi.js";
 import { formatReportRangeLabel } from "../../utils/reportDateRange.js";
+import { formatMoney, formatMoneyLocale } from "../../utils/money.js";
 
 const DONUT_COLORS = [
   "#3b82f6",
@@ -32,11 +33,7 @@ const DONUT_COLORS = [
 ];
 
 function money(value) {
-  const parsed = Number(value);
-  return (Number.isFinite(parsed) ? parsed : 0).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return formatMoneyLocale(value);
 }
 
 function pct(value) {

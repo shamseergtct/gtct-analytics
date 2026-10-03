@@ -7,13 +7,14 @@ import { fetchTxnRange } from "../utils/txnReportsApi.js";
 import { generateTxnRangePDF } from "../utils/txnRangePdf.js";
 import DateInput from "../components/DateInput.jsx";
 import { formatIsoRange } from "../utils/dateFormat.js";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 function num(v) {
   const x = Number(v || 0);
   return Number.isFinite(x) ? x : 0;
 }
 function money(v) {
-  return num(v).toFixed(2);
+  return formatMoney(v);
 }
 function todayYYYYMMDD() {
   const d = new Date();

@@ -13,6 +13,7 @@ import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
 import MasterEntryForm from "../components/MasterEntryForm";
 import { formatIsoDate } from "../utils/dateFormat.js";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 function toYYYYMMDD(d) {
   const x = new Date(d);
@@ -30,7 +31,7 @@ function endOfDay(yyyyMMdd) {
   return new Date(y, m - 1, d, 23, 59, 59, 999);
 }
 function money(v) {
-  return Number(v || 0).toFixed(2);
+  return formatMoney(v);
 }
 function num(v) {
   const n = Number(v);

@@ -1,7 +1,8 @@
 import DateInput from "../DateInput.jsx";
-import { money, num, roundMoney } from "./salesHelpers.js";
+import { num } from "./salesHelpers.js";
 import { normalizeTransactionMode } from "../../utils/transactionContract.js";
 import { isBankAccountSelection } from "../../utils/paymentModes.js";
+import { useMoney } from "../../hooks/useMoney.js";
 
 const FIELD =
   "mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-slate-100";
@@ -49,15 +50,16 @@ export default function InvoiceMetaFields({
   setAddress3,
   grandTotal = 0,
 }) {
+  const { money, round } = useMoney();
   const creditRequired =
     normalizeTransactionMode(paymentMode) === "credit" ||
     (settlementMode === "split" && num(payCredit) > 0);
-  const total = roundMoney(grandTotal);
+  const total = round(grandTotal);
   const allocated =
     settlementMode === "split"
-      ? roundMoney(num(payCash) + num(payBank) + num(payCredit))
+      ? round(num(payCash) + num(payBank) + num(payCredit))
       : total;
-  const remaining = roundMoney(total - allocated);
+  const remaining = round(total - allocated);
 
   function switchSettlement(next) {
     setSettlementMode?.(next);

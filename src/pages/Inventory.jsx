@@ -44,6 +44,7 @@ import {
 } from "../utils/inventoryBulk.js";
 import { getInventoryLayout } from "../components/inventory/index.js";
 import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 const CATEGORIES = ["COMMODITY", "CONSUMABLES", "ASSET"];
 const FAST_WINDOW_DAYS = 30;
@@ -63,7 +64,7 @@ function num(value) {
 }
 
 function money(value) {
-  return num(value).toFixed(2);
+  return formatMoney(value);
 }
 
 function itemCost(item) {

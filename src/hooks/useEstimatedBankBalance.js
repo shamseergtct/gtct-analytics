@@ -9,6 +9,7 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { calculateEodSnapshot } from "../utils/eodCalculations.js";
+import { formatMoney } from "../utils/money.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -64,7 +65,7 @@ export function getInsufficientFundsError({
     }
     const available = num(cashBalance) - num(reservedCash);
     if (available < parsed) {
-      return `Insufficient cash (available ${available.toFixed(2)}, need ${parsed.toFixed(2)}). Record a Loan Receipt or Bank → Cash transfer first.`;
+      return `Insufficient cash (available ${formatMoney(available)}, need ${formatMoney(parsed)}). Record a Loan Receipt or Bank → Cash transfer first.`;
     }
   }
 
@@ -74,7 +75,7 @@ export function getInsufficientFundsError({
     }
     const available = num(bankBalance) - num(reservedBank);
     if (available < parsed) {
-      return `Insufficient bank funds (available ${available.toFixed(2)}, need ${parsed.toFixed(2)}). Record a Loan Receipt or Cash → Bank transfer first.`;
+      return `Insufficient bank funds (available ${formatMoney(available)}, need ${formatMoney(parsed)}). Record a Loan Receipt or Cash → Bank transfer first.`;
     }
   }
 
@@ -99,7 +100,14 @@ export function sumReservedSpend(entries = [], excludeId = "") {
 }
 
 /**
- * Live cash + bank standing balances for a business date (same math as EOD).
+ * Live cash + bank standing balances for a business date.
+ *
+ * Formula:
+ *   last closed day closing balance
+ *   + current open-day / open-shift activity
+ *     (POS sales, Z-report cash/bank, payments, receipts, purchases, transfers, …)
+ *
+ * Opening float (`floatingCash`) stays previous-day cash only (locker-adjusted).
  */
 export function useEstimatedLiquidity(clientId, businessDate) {
   const [cashBalance, setCashBalance] = useState(null);
@@ -107,6 +115,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
   const [floatingCash, setFloatingCash] = useState(null);
   const [lockerBalance, setLockerBalance] = useState(null);
   const [previousCashInHand, setPreviousCashInHand] = useState(null);
+  const [hasPreviousClosing, setHasPreviousClosing] = useState(false);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
@@ -116,6 +125,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       setFloatingCash(null);
       setLockerBalance(null);
       setPreviousCashInHand(null);
+      setHasPreviousClosing(false);
       setLoading(false);
       return undefined;
     }
@@ -123,6 +133,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
     let cancelled = false;
     let previousReport = null;
     let dayTransactions = [];
+    let dayZReports = [];
 
     queueMicrotask(() => {
       if (!cancelled) setLoading(true);
@@ -134,7 +145,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
         selectedDate: businessDate,
         transactions: dayTransactions,
         shifts: [],
-        zReports: [],
+        zReports: dayZReports,
         previousReport,
       });
       setCashBalance(num(snapshot.closingCashInHand));
@@ -142,6 +153,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       setFloatingCash(num(snapshot.floatingCash));
       setLockerBalance(num(snapshot.closingLockerBalance));
       setPreviousCashInHand(num(snapshot.previousCashInHand));
+      setHasPreviousClosing(Boolean(previousReport));
       setLoading(false);
     }
 
@@ -160,6 +172,12 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       where("clientId", "==", clientId),
       where("dateMs", ">=", startMs),
       where("dateMs", "<", endMs)
+    );
+
+    const dayZReportQuery = query(
+      collection(db, "z_reports"),
+      where("clientId", "==", clientId),
+      where("businessDate", "==", businessDate)
     );
 
     const unsubPrevious = onSnapshot(
@@ -192,10 +210,26 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       }
     );
 
+    const unsubZReports = onSnapshot(
+      dayZReportQuery,
+      (snapshot) => {
+        dayZReports = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        republish();
+      },
+      () => {
+        dayZReports = [];
+        republish();
+      }
+    );
+
     return () => {
       cancelled = true;
       unsubPrevious();
       unsubTxns();
+      unsubZReports();
     };
   }, [clientId, businessDate]);
 
@@ -206,6 +240,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       floatingCash: null,
       lockerBalance: null,
       previousCashInHand: null,
+      hasPreviousClosing: false,
       loading: false,
     };
   }
@@ -216,6 +251,7 @@ export function useEstimatedLiquidity(clientId, businessDate) {
     floatingCash,
     lockerBalance,
     previousCashInHand,
+    hasPreviousClosing,
     loading,
   };
 }

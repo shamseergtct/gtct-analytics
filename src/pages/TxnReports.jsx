@@ -10,6 +10,7 @@ import {
   formatDateValue,
   formatIsoRange,
 } from "../utils/dateFormat.js";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 
 
@@ -47,7 +48,7 @@ function num(v) {
   return Number.isFinite(x) ? x : 0;
 }
 function money(v) {
-  return num(v).toFixed(2);
+  return formatMoney(v);
 }
 function todayYYYYMMDD() {
   const d = new Date();

@@ -1,3 +1,4 @@
+import { formatMoney } from "./money.js";
 /** Inventory item CSV bulk import/export helpers (scoped to one shop/client). */
 
 export const INVENTORY_CSV_HEADERS = [
@@ -127,12 +128,10 @@ export function exportInventoryCsv({ items = [], shopName = "" } = {}) {
         csvEscape(item.itemCode || ""),
         csvEscape(item.itemName || ""),
         csvEscape(
-          Number.isFinite(Number(item.cost)) ? Number(item.cost).toFixed(2) : "0.00"
+          formatMoney(item.cost)
         ),
         csvEscape(
-          Number.isFinite(Number(item.sellingPrice))
-            ? Number(item.sellingPrice).toFixed(2)
-            : "0.00"
+          formatMoney(item.sellingPrice)
         ),
       ].join(",")
     );

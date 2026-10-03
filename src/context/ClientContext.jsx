@@ -11,6 +11,10 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "./AuthContext";
+import {
+  resolveCurrencyDecimals,
+  setActiveCurrencyDecimals,
+} from "../utils/money.js";
 
 const ClientContext = createContext(null);
 const LS_KEY = "gtct_active_client_id";
@@ -122,6 +126,7 @@ export function ClientProvider({ children }) {
   useEffect(() => {
     if (!activeClientId) {
       setActiveClientData(null);
+      setActiveCurrencyDecimals(2);
       return;
     }
 
@@ -131,9 +136,12 @@ export function ClientProvider({ children }) {
       (snap) => {
         if (!snap.exists()) {
           setActiveClientData(null);
+          setActiveCurrencyDecimals(2);
           return;
         }
-        setActiveClientData({ id: snap.id, ...snap.data() });
+        const data = { id: snap.id, ...snap.data() };
+        setActiveClientData(data);
+        setActiveCurrencyDecimals(resolveCurrencyDecimals(data, data.currency));
       },
       (err) => console.error("Active client snapshot error:", err)
     );
@@ -147,6 +155,9 @@ export function ClientProvider({ children }) {
     else localStorage.removeItem(LS_KEY);
   };
 
+  const currency = String(activeClientData?.currency || "").trim().toUpperCase() || "";
+  const currencyDecimals = resolveCurrencyDecimals(activeClientData, currency || "AED");
+
   const value = useMemo(
     () => ({
       clients,
@@ -154,8 +165,10 @@ export function ClientProvider({ children }) {
       activeClientId,
       activeClientData,
       setActiveClient,
+      currency,
+      currencyDecimals,
     }),
-    [clients, loadingClients, activeClientId, activeClientData]
+    [clients, loadingClients, activeClientId, activeClientData, currency, currencyDecimals]
   );
 
   return <ClientContext.Provider value={value}>{children}</ClientContext.Provider>;

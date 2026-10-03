@@ -6,13 +6,14 @@ import {
   formatIsoDate,
   formatIsoRange,
 } from "./dateFormat.js";
+import { formatMoney } from "./money.js";
 
 function num(v) {
   const n = Number(v || 0);
   return Number.isFinite(n) ? n : 0;
 }
 function money(v) {
-  return num(v).toFixed(2);
+  return formatMoney(v);
 }
 function safeText(s) {
   return String(s ?? "").replace(/\s+/g, " ").trim();

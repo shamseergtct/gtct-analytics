@@ -6,16 +6,17 @@ import {
   getItemBaseCode,
   itemRetailPrice,
   itemWholesalePrice,
-  money,
   num,
   unitsPerCarton,
 } from "./salesHelpers.js";
+import { useMoney } from "../../hooks/useMoney.js";
 
 /**
  * Wholesale + retail hybrid — unit (piece/carton) + price tier selection.
  * Converts cartons to piece qty before calling the shared billing engine.
  */
 export default function WholesaleSales(props) {
+  const { money, decimals } = useMoney();
   const {
     search,
     setSearch,
@@ -49,7 +50,7 @@ export default function WholesaleSales(props) {
   }, [selectedItem, priceTier, unit, packSize]);
 
   const pieceQty = unit === "CARTON" ? num(qty) * packSize : num(qty);
-  const linePreview = calcLineTotal(num(qty), unitPrice, taxPct);
+  const linePreview = calcLineTotal(num(qty), unitPrice, taxPct, decimals);
 
   function selectItem(it) {
     setSelectedItemId(it.id);

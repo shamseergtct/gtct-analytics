@@ -29,6 +29,7 @@ import {
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
 import { findBankAccountName } from "../utils/paymentModes.js";
 import { Eye, EyeOff, Lock, Pencil, Unlock, X } from "lucide-react";
+import { formatMoney, moneyInputStep, roundMoney } from "../utils/money.js";
 
 const TRANSFER_TYPES = [
   ["CASH_TO_BANK", "Cash → Bank"],
@@ -257,7 +258,7 @@ export default function InternalTransferEntry() {
         return "Previous cash balance is still loading. Try again in a moment.";
       }
       if (floatingCash < parsed) {
-        return `Insufficient previous cash for locker (available ${floatingCash.toFixed(2)}, need ${parsed.toFixed(2)}). Locker transfers use previous balance only, not today's sales.`;
+        return `Insufficient previous cash for locker (available ${formatMoney(floatingCash)}, need ${formatMoney(parsed)}). Locker transfers use previous balance only, not today's sales.`;
       }
       return null;
     }
@@ -266,7 +267,7 @@ export default function InternalTransferEntry() {
         return "Locker balance is still loading. Try again in a moment.";
       }
       if (lockerBalance < parsed) {
-        return `Insufficient locker funds (available ${lockerBalance.toFixed(2)}, need ${parsed.toFixed(2)}).`;
+        return `Insufficient locker funds (available ${formatMoney(lockerBalance)}, need ${formatMoney(parsed)}).`;
       }
       return null;
     }
@@ -278,7 +279,7 @@ export default function InternalTransferEntry() {
         return "Cash balance is still loading. Try again in a moment.";
       }
       if (cashBalance < parsed) {
-        return `Insufficient cash (available ${cashBalance.toFixed(2)}, need ${parsed.toFixed(2)}). Record a Loan Receipt first.`;
+        return `Insufficient cash (available ${formatMoney(cashBalance)}, need ${formatMoney(parsed)}). Record a Loan Receipt first.`;
       }
       return null;
     }
@@ -287,7 +288,7 @@ export default function InternalTransferEntry() {
         return "Bank balance is still loading. Try again in a moment.";
       }
       if (bankBalance < parsed) {
-        return `Insufficient bank funds (available ${bankBalance.toFixed(2)}, need ${parsed.toFixed(2)}). Record a Loan Receipt first.`;
+        return `Insufficient bank funds (available ${formatMoney(bankBalance)}, need ${formatMoney(parsed)}). Record a Loan Receipt first.`;
       }
     }
     return null;
@@ -391,7 +392,7 @@ export default function InternalTransferEntry() {
     setError("");
     setMessage("");
 
-    const parsedAmount = Number(amount);
+    const parsedAmount = roundMoney(amount);
     if (!activeClientId) {
       setError("Select an active shop first.");
       return;
@@ -559,7 +560,7 @@ export default function InternalTransferEntry() {
 
     setError("");
     setMessage("");
-    const parsedAmount = Number(editForm.amount);
+    const parsedAmount = roundMoney(editForm.amount);
     if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
       setError("Amount must be greater than zero.");
       return;
@@ -613,7 +614,7 @@ export default function InternalTransferEntry() {
       }
       if (available < parsedAmount) {
         setError(
-          `Insufficient cash (available ${available.toFixed(2)}, need ${parsedAmount.toFixed(2)}). Record a Loan Receipt first.`
+          `Insufficient cash (available ${formatMoney(available)}, need ${formatMoney(parsedAmount)}). Record a Loan Receipt first.`
         );
         return;
       }
@@ -628,7 +629,7 @@ export default function InternalTransferEntry() {
       }
       if (available < parsedAmount) {
         setError(
-          `Insufficient previous cash for locker (available ${available.toFixed(2)}, need ${parsedAmount.toFixed(2)}). Locker transfers use previous balance only, not today's sales.`
+          `Insufficient previous cash for locker (available ${formatMoney(available)}, need ${formatMoney(parsedAmount)}). Locker transfers use previous balance only, not today's sales.`
         );
         return;
       }
@@ -641,7 +642,7 @@ export default function InternalTransferEntry() {
       }
       if (available < parsedAmount) {
         setError(
-          `Insufficient locker funds (available ${available.toFixed(2)}, need ${parsedAmount.toFixed(2)}).`
+          `Insufficient locker funds (available ${formatMoney(available)}, need ${formatMoney(parsedAmount)}).`
         );
         return;
       }
@@ -657,7 +658,7 @@ export default function InternalTransferEntry() {
       }
       if (available < parsedAmount) {
         setError(
-          `Insufficient bank funds (available ${available.toFixed(2)}, need ${parsedAmount.toFixed(2)}). Record a Loan Receipt first.`
+          `Insufficient bank funds (available ${formatMoney(available)}, need ${formatMoney(parsedAmount)}). Record a Loan Receipt first.`
         );
         return;
       }
@@ -896,7 +897,7 @@ export default function InternalTransferEntry() {
               required
               type="number"
               min="0.01"
-              step="0.01"
+              step={moneyInputStep()}
               value={amount}
               onChange={(event) => setAmount(event.target.value)}
               className={`${CONTROL_CLASS} max-w-full`}
@@ -983,7 +984,7 @@ export default function InternalTransferEntry() {
                 Day Total
               </p>
               <p className="text-lg font-bold text-white">
-                {historyTotal.toFixed(2)}
+                {formatMoney(historyTotal)}
               </p>
             </div>
             <button
@@ -1051,7 +1052,7 @@ export default function InternalTransferEntry() {
                         {entry.note || "-"}
                       </td>
                       <td className="px-4 py-3 text-right font-semibold text-white">
-                        {Number(entry.amount || 0).toFixed(2)}
+                        {formatMoney(entry.amount || 0)}
                       </td>
                       <td className="px-4 py-3 text-right">
                         <button
@@ -1146,7 +1147,7 @@ export default function InternalTransferEntry() {
                 <input
                   type="number"
                   min="0.01"
-                  step="0.01"
+                  step={moneyInputStep()}
                   value={editForm.amount}
                   onChange={(event) =>
                     setEditForm((current) => ({

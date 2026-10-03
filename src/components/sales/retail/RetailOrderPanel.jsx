@@ -1,11 +1,12 @@
 import { useEffect, useRef } from "react";
 import { Minus, Plus, ScanBarcode, Trash2 } from "lucide-react";
-import { money, num, roundMoney, tenderTotals } from "../salesHelpers.js";
+import { num, tenderTotals } from "../salesHelpers.js";
 import { normalizeTransactionMode } from "../../../utils/transactionContract.js";
 import {
   isBankAccountSelection,
   parsePaymentModeSelection,
 } from "../../../utils/paymentModes.js";
+import { useMoney } from "../../../hooks/useMoney.js";
 
 /**
  * Right-rail order list + anchored checkout for Retail POS.
@@ -33,12 +34,13 @@ export default function RetailOrderPanel({
   finishAndBilling,
   onClearCart,
 }) {
+  const { money, round, decimals } = useMoney();
   const isCredit =
     normalizeTransactionMode(paymentMode) === "credit" ||
     (settlementMode === "split" && num(payCredit) > 0);
   const listRef = useRef(null);
   const prevLen = useRef(cart.length);
-  const grandTotal = roundMoney(totals.grandTotal);
+  const grandTotal = round(totals.grandTotal);
 
   const splitPreview = tenderTotals(
     resolvePreviewTenders({
@@ -48,9 +50,10 @@ export default function RetailOrderPanel({
       payBank,
       payCredit,
       grandTotal,
-    })
+    }),
+    decimals
   );
-  const remaining = roundMoney(grandTotal - splitPreview.allocated);
+  const remaining = round(grandTotal - splitPreview.allocated);
 
   useEffect(() => {
     if (cart.length > prevLen.current) {
@@ -96,7 +99,7 @@ export default function RetailOrderPanel({
   function fillCreditRemainder() {
     const cash = num(payCash);
     const bank = num(payBank);
-    const rest = roundMoney(grandTotal - cash - bank);
+    const rest = round(grandTotal - cash - bank);
     setPayCredit?.(rest > 0 ? String(rest) : "");
   }
 

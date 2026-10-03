@@ -14,13 +14,14 @@ import DateInput from "../components/DateInput.jsx";
 import { formatDateValue } from "../utils/dateFormat.js";
 
 import { generatePartyPDF } from "../utils/partyPdfGenerator";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 function money(v) {
-  return num(v).toFixed(2);
+  return formatMoney(v);
 }
 function toYYYYMMDD(d) {
   const x = new Date(d);

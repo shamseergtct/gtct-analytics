@@ -1,6 +1,7 @@
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { formatDateTimeValue } from "./dateFormat.js";
+import { formatMoney } from "./money.js";
 
 function safeText(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -121,8 +122,7 @@ export function exportReportPdf({
 }
 
 function money(value) {
-  const n = Number(value);
-  return (Number.isFinite(n) ? n : 0).toFixed(2);
+  return formatMoney(value);
 }
 
 function escapeHtml(value) {

@@ -16,14 +16,25 @@ import {
   normalizeShopType,
   shopTypeLabel,
 } from "../utils/shopTypes.js";
+import {
+  MAX_CURRENCY_DECIMALS,
+  MIN_CURRENCY_DECIMALS,
+  clampCurrencyDecimals,
+  defaultDecimalsForCurrency,
+  moneyPreviewSample,
+  normalizeCurrencyCode,
+  resolveCurrencyDecimals,
+} from "../utils/money.js";
 
 function nowYear() {
   return new Date().getFullYear();
 }
 
 function makeDefaultClientSettings(currency = "AED") {
+  const code = normalizeCurrencyCode(currency || "AED") || "AED";
   return {
-    currency: String(currency || "AED").trim().toUpperCase(),
+    currency: code,
+    currencyDecimals: defaultDecimalsForCurrency(code),
     shop_type: DEFAULT_SHOP_TYPE,
 
     // ✅ Warehouses (editable list per client)
@@ -122,6 +133,7 @@ export default function Clients() {
       location: c.location || "",
       contact_number: c.contact_number || "",
       currency: (c.currency || defaults.currency || "AED").toUpperCase(),
+      currencyDecimals: resolveCurrencyDecimals(c, c.currency || defaults.currency),
       shop_type: normalizeShopType(c.shop_type ?? defaults.shop_type),
       warehouses: Array.isArray(c.warehouses) && c.warehouses.length ? c.warehouses : defaults.warehouses,
       invoice: { ...defaults.invoice, ...(c.invoice || {}) },
@@ -157,10 +169,17 @@ export default function Clients() {
       }))
       .filter((w) => w.name);
 
+    const currency = normalizeCurrencyCode(form.currency || "AED") || "AED";
+    const currencyDecimals = clampCurrencyDecimals(
+      form.currencyDecimals,
+      defaultDecimalsForCurrency(currency)
+    );
+
     const payload = {
       name: form.name.trim(),
       location: String(form.location || "").trim(),
-      currency: String(form.currency || "AED").trim().toUpperCase(),
+      currency,
+      currencyDecimals,
       contact_number: String(form.contact_number || "").trim(),
       shop_type: normalizeShopType(form.shop_type),
 
@@ -338,8 +357,9 @@ export default function Clients() {
                           ) : null}
                         </div>
                         <div className="text-xs text-slate-400">
-                          Currency: {c.currency || "AED"} • Type:{" "}
-                          {shopTypeLabel(c.shop_type)} • Warehouses:{" "}
+                          Currency: {c.currency || "AED"} (
+                          {moneyPreviewSample(resolveCurrencyDecimals(c, c.currency))}
+                          ) • Type: {shopTypeLabel(c.shop_type)} • Warehouses:{" "}
                           {Array.isArray(c.warehouses) ? c.warehouses.length : 0}
                         </div>
                       </td>
@@ -455,20 +475,67 @@ export default function Clients() {
                   <input
                     className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
                     value={form.currency}
-                    onChange={(e) => setForm({ ...form, currency: e.target.value })}
+                    onChange={(e) => {
+                      const currency = e.target.value;
+                      setForm({
+                        ...form,
+                        currency,
+                        currencyDecimals: defaultDecimalsForCurrency(currency),
+                      });
+                    }}
                     placeholder="AED"
                   />
                 </div>
 
                 <div>
-                  <label className="text-sm text-slate-300">Location</label>
-                  <input
-                    className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
-                    value={form.location}
-                    onChange={(e) => setForm({ ...form, location: e.target.value })}
-                    placeholder="Bahrain / Kerala"
-                  />
+                  <label className="text-sm text-slate-300">
+                    Decimal places
+                  </label>
+                  <select
+                    className="mt-1 h-[42px] w-full rounded-xl bg-slate-900 border border-slate-800 px-3 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                    value={clampCurrencyDecimals(
+                      form.currencyDecimals,
+                      defaultDecimalsForCurrency(form.currency)
+                    )}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        currencyDecimals: clampCurrencyDecimals(e.target.value),
+                      })
+                    }
+                  >
+                    {Array.from(
+                      { length: MAX_CURRENCY_DECIMALS - MIN_CURRENCY_DECIMALS + 1 },
+                      (_, i) => MIN_CURRENCY_DECIMALS + i
+                    ).map((d) => (
+                      <option key={d} value={d}>
+                        {d} — example {moneyPreviewSample(d)}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Amounts store and display as{" "}
+                    <span className="text-slate-300 tabular-nums">
+                      {form.currency || "CUR"} {moneyPreviewSample(
+                        clampCurrencyDecimals(
+                          form.currencyDecimals,
+                          defaultDecimalsForCurrency(form.currency)
+                        )
+                      )}
+                    </span>
+                    . Math rounds to this precision everywhere.
+                  </p>
                 </div>
+              </div>
+
+              <div>
+                <label className="text-sm text-slate-300">Location</label>
+                <input
+                  className="mt-1 w-full rounded-xl bg-slate-900 border border-slate-800 px-3 py-2 text-slate-100 outline-none focus:ring-2 focus:ring-slate-500"
+                  value={form.location}
+                  onChange={(e) => setForm({ ...form, location: e.target.value })}
+                  placeholder="City / Region / Country"
+                />
               </div>
 
               <div>

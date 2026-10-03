@@ -45,6 +45,7 @@ import {
   listPartiesFromRows,
   reportViewSupportsAggregation,
 } from "../utils/reportAggregation.js";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 const MAIN_TABS = [
   { key: "quick", label: "Quick Snapshot", icon: BarChart3 },
@@ -67,11 +68,7 @@ const LEDGER_TYPES = [
 ];
 
 function money(value) {
-  const parsed = Number(value);
-  return (Number.isFinite(parsed) ? parsed : 0).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return formatMoneyLocale(value);
 }
 
 function KpiCard({ label, value, tone = "text-white" }) {

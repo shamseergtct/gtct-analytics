@@ -25,6 +25,13 @@ import { useShiftExpectedCash } from "../hooks/useShiftExpectedCash.js";
 import { usePosSalesTotals } from "../hooks/usePosSalesTotals.js";
 import { useEstimatedLiquidity } from "../hooks/useEstimatedBankBalance.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
+import { useMoney } from "../hooks/useMoney.js";
+import {
+  formatMoney,
+  formatMoneyLocale,
+  roundMoney,
+  toMinorUnits,
+} from "../utils/money.js";
 
 function todayYYYYMMDD() {
   const date = new Date();
@@ -41,25 +48,20 @@ function nonNegativeNumber(value, label) {
   return parsed;
 }
 
-function toCents(value) {
-  return Math.round(Number(value || 0) * 100);
+function toCents(value, decimals) {
+  return toMinorUnits(value, decimals);
 }
 
 function sumEntryAmounts(entries) {
   return entries.reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
 }
 
-function formatAmountDisplay(value) {
-  const amount = Number(value) || 0;
-  return Number.isInteger(amount) ? String(amount) : amount.toFixed(2);
+function formatAmountDisplay(value, decimals) {
+  return formatMoney(value, decimals);
 }
 
-function moneyHint(value) {
-  const amount = Number(value) || 0;
-  return amount.toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+function moneyHint(value, decimals) {
+  return formatMoneyLocale(value, decimals);
 }
 
 /**
@@ -67,12 +69,17 @@ function moneyHint(value) {
  *   Net  = Cash + Bank
  *   Gross = Net + Credit = Cash + Bank + Credit
  */
-function deriveZReportSalesTotals({ cashTotal = 0, bankTotal = 0, creditSalesTotal = 0 }) {
-  const cash = Number(cashTotal) || 0;
-  const bank = Number(bankTotal) || 0;
-  const credit = Number(creditSalesTotal) || 0;
-  const netSales = Math.round((cash + bank) * 100) / 100;
-  const grossSales = Math.round((netSales + credit) * 100) / 100;
+function deriveZReportSalesTotals({
+  cashTotal = 0,
+  bankTotal = 0,
+  creditSalesTotal = 0,
+  decimals,
+} = {}) {
+  const cash = roundMoney(cashTotal, decimals);
+  const bank = roundMoney(bankTotal, decimals);
+  const credit = roundMoney(creditSalesTotal, decimals);
+  const netSales = roundMoney(cash + bank, decimals);
+  const grossSales = roundMoney(netSales + credit, decimals);
   return { cashTotal: cash, bankTotal: bank, creditSalesTotal: credit, netSales, grossSales };
 }
 
@@ -87,8 +94,8 @@ function createBankEntry(overrides = {}) {
 }
 
 /** Apply POS bank total into the bank breakdown rows. */
-function applyPosBankToEntries(amount, accounts = []) {
-  const value = formatAmountDisplay(amount);
+function applyPosBankToEntries(amount, accounts = [], decimals) {
+  const value = formatAmountDisplay(amount, decimals);
   if (!Number(amount)) {
     return [createBankEntry()];
   }
@@ -114,6 +121,7 @@ function ExpectedCashHint({
   openingFloat,
   shiftId,
   cashTotal,
+  shiftOpeningFloat,
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
@@ -123,6 +131,7 @@ function ExpectedCashHint({
     openingFloat,
     shiftId,
     cashTotal,
+    shiftOpeningFloat,
   });
 
   useEffect(() => {
@@ -159,26 +168,26 @@ function ExpectedCashHint({
               Expected Cash
             </p>
             <p className="text-sm font-semibold text-white">
-              {hint.loading
-                ? "…"
-                : moneyHint(
-                    Number(hint.openingFloat || 0) +
-                      Number(hint.todaySales || 0) +
-                      Number(hint.loanNet || 0)
-                  )}
+              {hint.loading ? "…" : moneyHint(hint.expectedCash)}
             </p>
           </div>
           <div className="mt-3 space-y-1.5 border-t border-slate-800 pt-3 text-xs text-slate-300">
             <div className="flex justify-between gap-3">
-              <span>Opening Float</span>
+              <span>Last closed day</span>
               <span className="tabular-nums text-slate-200">
                 {moneyHint(hint.openingFloat)}
               </span>
             </div>
             <div className="flex justify-between gap-3">
-              <span>Today&apos;s Sales</span>
+              <span>Today&apos;s cash sales</span>
               <span className="tabular-nums text-slate-200">
                 {moneyHint(hint.todaySales)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span>Other cash in/out</span>
+              <span className="tabular-nums text-slate-200">
+                {moneyHint(hint.otherNet)}
               </span>
             </div>
             <div className="flex justify-between gap-3">
@@ -230,6 +239,7 @@ function bankEntriesFromDoc(report) {
 }
 
 function BankEntryRow({ entry, accounts, onChange, onRemove }) {
+  const { step, sample } = useMoney();
   return (
     <div className="grid grid-cols-1 gap-3 rounded-xl border border-slate-800 bg-slate-950/50 p-3 sm:grid-cols-[minmax(0,1fr)_180px_42px] sm:items-end">
       <BankAccountSearchSelect
@@ -254,11 +264,11 @@ function BankEntryRow({ entry, accounts, onChange, onRemove }) {
         <input
           type="number"
           min="0"
-          step="0.01"
+          step={step}
           value={entry.amount}
           onChange={(event) => onChange({ ...entry, amount: event.target.value })}
           className="mt-1.5 h-[42px] w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="0.00"
+          placeholder={sample}
         />
       </label>
 
@@ -281,6 +291,7 @@ function CreditEntryRow({
   onRemove,
   onQuickAddCustomer,
 }) {
+  const { step, sample } = useMoney();
   const containerRef = useRef(null);
   const [search, setSearch] = useState(entry.partyName || "");
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -446,11 +457,11 @@ function CreditEntryRow({
         <input
           type="number"
           min="0"
-          step="0.01"
+          step={step}
           value={entry.amount}
           onChange={(event) => onChange({ ...entry, amount: event.target.value })}
           className="mt-1.5 h-[42px] w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="0.00"
+          placeholder={sample}
         />
       </label>
 
@@ -477,8 +488,9 @@ function PosSalesModuleTotals({
   formCredit,
   formGross,
 }) {
+  const { decimals } = useMoney();
   const totals = usePosSalesTotals({ clientId, businessDate, shiftId });
-  const posNet = Math.round((totals.cashTotal + totals.bankTotal) * 100) / 100;
+  const posNet = roundMoney(totals.cashTotal + totals.bankTotal, decimals);
 
   const mismatches = [];
   if (!totals.loading && totals.invoiceCount > 0) {
@@ -655,6 +667,7 @@ function PosSalesModuleTotals({
 export default function ShiftClose() {
   const { user } = useAuth();
   const { activeClientId, activeClientData } = useClient();
+  const { step: moneyStep } = useMoney();
   const {
     activeShift,
     loadingShift,
@@ -668,8 +681,16 @@ export default function ShiftClose() {
   const [zReport, setZReport] = useState(EMPTY_Z_REPORT);
   const openBusinessDate =
     activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD();
-  const { floatingCash } =
-    useEstimatedLiquidity(activeClientId, openBusinessDate);
+  const { floatingCash, hasPreviousClosing } = useEstimatedLiquidity(
+    activeClientId,
+    openBusinessDate
+  );
+  const shiftOpeningFloat = Number(activeShift?.openingFloat);
+  const resolvedOpeningFloat = hasPreviousClosing
+    ? Number(floatingCash ?? 0)
+    : Number.isFinite(shiftOpeningFloat)
+      ? shiftOpeningFloat
+      : Number(floatingCash ?? closeOpeningFloat ?? 0);
   const [creditEntries, setCreditEntries] = useState([createCreditEntry()]);
   const [bankEntries, setBankEntries] = useState([createBankEntry()]);
   const [customerParties, setCustomerParties] = useState([]);
@@ -698,8 +719,16 @@ export default function ShiftClose() {
 
   useEffect(() => {
     if (floatingCash == null) return;
-    setCloseOpeningFloat(formatAmountDisplay(floatingCash));
-  }, [floatingCash]);
+    if (hasPreviousClosing) {
+      setCloseOpeningFloat(formatAmountDisplay(floatingCash));
+      return;
+    }
+    if (Number.isFinite(shiftOpeningFloat)) {
+      setCloseOpeningFloat(formatAmountDisplay(shiftOpeningFloat));
+    } else {
+      setCloseOpeningFloat(formatAmountDisplay(floatingCash));
+    }
+  }, [floatingCash, hasPreviousClosing, shiftOpeningFloat]);
 
   useEffect(() => {
     if (!activeClientId) return undefined;
@@ -1095,7 +1124,7 @@ export default function ShiftClose() {
         ...zReport,
         businessDate,
         openingFloat: nonNegativeNumber(
-          floatingCash == null ? closeOpeningFloat : floatingCash,
+          resolvedOpeningFloat,
           "Opening float"
         ),
         cashTotal: derived.cashTotal,
@@ -1224,11 +1253,7 @@ export default function ShiftClose() {
               <input
                 readOnly
                 tabIndex={-1}
-                value={
-                  floatingCash == null
-                    ? closeOpeningFloat
-                    : formatAmountDisplay(floatingCash)
-                }
+                value={formatAmountDisplay(resolvedOpeningFloat)}
                 className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
               />
             </label>
@@ -1238,8 +1263,9 @@ export default function ShiftClose() {
                 <ExpectedCashHint
                   clientId={activeClientId}
                   businessDate={zReport.businessDate}
-                  openingFloat={
-                    floatingCash == null ? closeOpeningFloat : floatingCash
+                  openingFloat={resolvedOpeningFloat}
+                  shiftOpeningFloat={
+                    Number.isFinite(shiftOpeningFloat) ? shiftOpeningFloat : null
                   }
                   shiftId={activeShift?.id}
                   cashTotal={zReport.cashTotal}
@@ -1249,7 +1275,7 @@ export default function ShiftClose() {
                 required
                 type="number"
                 min="0"
-                step="0.01"
+                step={moneyStep}
                 value={closingCashCounted}
                 onChange={(event) => setClosingCashCounted(event.target.value)}
                 className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
@@ -1281,7 +1307,7 @@ export default function ShiftClose() {
                 required
                 type="number"
                 min="0"
-                step="0.01"
+                step={moneyStep}
                 value={zReport.cashTotal}
                 onChange={(event) => setZField("cashTotal", event.target.value)}
                 className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
@@ -1475,10 +1501,10 @@ export default function ShiftClose() {
                     </td>
                     <td className="px-4 py-3">{report.reportNo || "-"}</td>
                     <td className="px-4 py-3 text-right">
-                      {Number(report.netSales || 0).toFixed(2)}
+                      {formatMoney(report.netSales || 0)}
                     </td>
                     <td className="px-4 py-3 text-right">
-                      {Number(report.cashTotal || 0).toFixed(2)}
+                      {formatMoney(report.cashTotal || 0)}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -1575,7 +1601,7 @@ export default function ShiftClose() {
                   required
                   type="number"
                   min="0"
-                  step="0.01"
+                  step={moneyStep}
                   value={editOpeningFloat}
                   onChange={(event) => setEditOpeningFloat(event.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-white outline-none focus:ring-2 focus:ring-blue-500"
@@ -1596,7 +1622,7 @@ export default function ShiftClose() {
                   required
                   type="number"
                   min="0"
-                  step="0.01"
+                  step={moneyStep}
                   value={editClosingCash}
                   onChange={(event) => setEditClosingCash(event.target.value)}
                   className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
@@ -1628,7 +1654,7 @@ export default function ShiftClose() {
                   required
                   type="number"
                   min="0"
-                  step="0.01"
+                  step={moneyStep}
                   value={editZReport.cashTotal}
                   onChange={(event) =>
                     setEditZField("cashTotal", event.target.value)

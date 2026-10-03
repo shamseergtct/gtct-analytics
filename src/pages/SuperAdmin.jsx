@@ -24,6 +24,15 @@ import {
   normalizeShopType,
   shopTypeLabel,
 } from "../utils/shopTypes.js";
+import {
+  MAX_CURRENCY_DECIMALS,
+  MIN_CURRENCY_DECIMALS,
+  clampCurrencyDecimals,
+  defaultDecimalsForCurrency,
+  moneyPreviewSample,
+  normalizeCurrencyCode,
+  resolveCurrencyDecimals,
+} from "../utils/money.js";
 
 // ✅ Secondary auth (does not affect current session)
 function getSecondaryAuth() {
@@ -43,8 +52,10 @@ function nowYear() {
 
 // ✅ Client-level defaults: warehouses + invoice numbering + tax/discount
 function defaultClientSettings(currency = "INR") {
+  const code = normalizeCurrencyCode(currency || "INR") || "INR";
   return {
-    currency: String(currency || "INR").trim().toUpperCase(),
+    currency: code,
+    currencyDecimals: defaultDecimalsForCurrency(code),
     shop_type: DEFAULT_SHOP_TYPE,
 
     warehouses: [{ id: "main", name: "Main Warehouse" }],
@@ -92,6 +103,9 @@ export default function SuperAdmin() {
   const [shopId, setShopId] = useState("");
   const [shopName, setShopName] = useState("");
   const [shopCurrency, setShopCurrency] = useState("INR");
+  const [shopCurrencyDecimals, setShopCurrencyDecimals] = useState(
+    defaultDecimalsForCurrency("INR")
+  );
   const [shopType, setShopType] = useState(DEFAULT_SHOP_TYPE);
   const [creatingShop, setCreatingShop] = useState(false);
 
@@ -102,6 +116,7 @@ export default function SuperAdmin() {
   const [shopEditForm, setShopEditForm] = useState({
     name: "",
     currency: "INR",
+    currencyDecimals: defaultDecimalsForCurrency("INR"),
     shop_type: DEFAULT_SHOP_TYPE,
     isActive: true,
   });
@@ -249,6 +264,10 @@ export default function SuperAdmin() {
     const name = String(shopName || "").trim();
     const currencyInput = String(shopCurrency || "").trim() || "INR";
     const resolvedShopType = normalizeShopType(shopType);
+    const currencyDecimals = clampCurrencyDecimals(
+      shopCurrencyDecimals,
+      defaultDecimalsForCurrency(currencyInput)
+    );
 
     if (!id || !name) {
       setErr("Shop ID and Name are required.");
@@ -267,6 +286,7 @@ export default function SuperAdmin() {
         clientId: id,
         name,
         currency: defaults.currency,
+        currencyDecimals,
         shop_type: resolvedShopType,
 
         // ✅ NEW DEFAULT SETTINGS
@@ -285,6 +305,7 @@ export default function SuperAdmin() {
       setShopId("");
       setShopName("");
       setShopCurrency("INR");
+      setShopCurrencyDecimals(defaultDecimalsForCurrency("INR"));
       setShopType(DEFAULT_SHOP_TYPE);
       setMsg(`✅ Shop created: ${name}`);
       await loadShops();
@@ -303,9 +324,11 @@ export default function SuperAdmin() {
     setErr("");
     setMsg("");
     setEditingShop(s);
+    const currency = String(s?.currency || "INR").trim().toUpperCase();
     setShopEditForm({
       name: String(s?.name || "").trim(),
-      currency: String(s?.currency || "INR").trim().toUpperCase(),
+      currency,
+      currencyDecimals: resolveCurrencyDecimals(s, currency),
       shop_type: normalizeShopType(s?.shop_type),
       isActive: s?.isActive === false ? false : true,
     });
@@ -321,6 +344,10 @@ export default function SuperAdmin() {
     const id = editingShop.id;
     const name = String(shopEditForm.name || "").trim();
     const currency = String(shopEditForm.currency || "").trim().toUpperCase();
+    const currencyDecimals = clampCurrencyDecimals(
+      shopEditForm.currencyDecimals,
+      defaultDecimalsForCurrency(currency)
+    );
     const resolvedShopType = normalizeShopType(shopEditForm.shop_type);
 
     if (!name) return setErr("Shop name is required.");
@@ -331,6 +358,7 @@ export default function SuperAdmin() {
       await updateDoc(doc(db, "clients", id), {
         name,
         currency,
+        currencyDecimals,
         shop_type: resolvedShopType,
         isActive: Boolean(shopEditForm.isActive),
         updatedAt: Date.now(),
@@ -345,6 +373,7 @@ export default function SuperAdmin() {
                 ...x,
                 name,
                 currency,
+                currencyDecimals,
                 shop_type: resolvedShopType,
                 isActive: Boolean(shopEditForm.isActive),
               }
@@ -630,18 +659,54 @@ export default function SuperAdmin() {
                 </select>
               </div>
 
-              <div>
-                <div className="text-xs opacity-80 mb-1">Currency</div>
-                <input
-                  className="w-full p-2 rounded bg-slate-950 border border-slate-800"
-                  value={shopCurrency}
-                  onChange={(e) => setShopCurrency(e.target.value)}
-                  placeholder="INR, BHD, AED..."
-                />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Currency</div>
+                  <input
+                    className="w-full p-2 rounded bg-slate-950 border border-slate-800"
+                    value={shopCurrency}
+                    onChange={(e) => {
+                      const currency = e.target.value;
+                      setShopCurrency(currency);
+                      setShopCurrencyDecimals(defaultDecimalsForCurrency(currency));
+                    }}
+                    placeholder="INR, BHD, AED..."
+                  />
+                </div>
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Decimal places</div>
+                  <select
+                    className="h-10 w-full rounded bg-slate-950 border border-slate-800 px-2 text-sm"
+                    value={clampCurrencyDecimals(
+                      shopCurrencyDecimals,
+                      defaultDecimalsForCurrency(shopCurrency)
+                    )}
+                    onChange={(e) =>
+                      setShopCurrencyDecimals(clampCurrencyDecimals(e.target.value))
+                    }
+                  >
+                    {Array.from(
+                      { length: MAX_CURRENCY_DECIMALS - MIN_CURRENCY_DECIMALS + 1 },
+                      (_, i) => MIN_CURRENCY_DECIMALS + i
+                    ).map((d) => (
+                      <option key={d} value={d}>
+                        {d} — {moneyPreviewSample(d)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="text-xs opacity-70">
                 ✅ This will auto-create defaults: Warehouses + Invoice settings + Tax/Discount.
+                Amounts use {shopCurrency || "CUR"}{" "}
+                {moneyPreviewSample(
+                  clampCurrencyDecimals(
+                    shopCurrencyDecimals,
+                    defaultDecimalsForCurrency(shopCurrency)
+                  )
+                )}
+                .
               </div>
 
               <button
@@ -689,8 +754,10 @@ export default function SuperAdmin() {
                           {s.name || "Unnamed Shop"}
                         </div>
                         <div className="text-xs opacity-70 truncate">
-                          Currency: {s.currency || "-"} • Type:{" "}
-                          {shopTypeLabel(s.shop_type)} • ID: {s.id} • Warehouses:{" "}
+                          Currency: {s.currency || "-"} (
+                          {moneyPreviewSample(resolveCurrencyDecimals(s, s.currency))}
+                          ) • Type: {shopTypeLabel(s.shop_type)} • ID: {s.id} •
+                          Warehouses:{" "}
                           {Array.isArray(s.warehouses) ? s.warehouses.length : 0}
                         </div>
 
@@ -1020,25 +1087,56 @@ export default function SuperAdmin() {
                   <input
                     className="w-full p-2 rounded bg-slate-900 border border-slate-800"
                     value={shopEditForm.currency}
-                    onChange={(e) =>
-                      setShopEditForm((p) => ({ ...p, currency: e.target.value }))
-                    }
+                    onChange={(e) => {
+                      const currency = e.target.value;
+                      setShopEditForm((p) => ({
+                        ...p,
+                        currency,
+                        currencyDecimals: defaultDecimalsForCurrency(currency),
+                      }));
+                    }}
                     placeholder="INR, BHD, AED..."
                   />
                 </div>
 
-                <div className="flex items-center gap-2 pt-6">
-                  <input
-                    type="checkbox"
-                    checked={shopEditForm.isActive}
+                <div>
+                  <div className="text-xs opacity-80 mb-1">Decimal places</div>
+                  <select
+                    className="h-10 w-full rounded bg-slate-900 border border-slate-800 px-2 text-sm"
+                    value={clampCurrencyDecimals(
+                      shopEditForm.currencyDecimals,
+                      defaultDecimalsForCurrency(shopEditForm.currency)
+                    )}
                     onChange={(e) =>
-                      setShopEditForm((p) => ({ ...p, isActive: e.target.checked }))
+                      setShopEditForm((p) => ({
+                        ...p,
+                        currencyDecimals: clampCurrencyDecimals(e.target.value),
+                      }))
                     }
-                  />
-                  <span className="text-sm">
-                    Active (unchecked = Inactive)
-                  </span>
+                  >
+                    {Array.from(
+                      { length: MAX_CURRENCY_DECIMALS - MIN_CURRENCY_DECIMALS + 1 },
+                      (_, i) => MIN_CURRENCY_DECIMALS + i
+                    ).map((d) => (
+                      <option key={d} value={d}>
+                        {d} — {moneyPreviewSample(d)}
+                      </option>
+                    ))}
+                  </select>
                 </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={shopEditForm.isActive}
+                  onChange={(e) =>
+                    setShopEditForm((p) => ({ ...p, isActive: e.target.checked }))
+                  }
+                />
+                <span className="text-sm">
+                  Active (unchecked = Inactive)
+                </span>
               </div>
 
               <div className="flex justify-end gap-2 pt-1">

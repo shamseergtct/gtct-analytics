@@ -1,9 +1,6 @@
+import { formatMoney, formatMoneyLocale } from "../../utils/money.js";
 function money(value) {
-  const parsed = Number(value);
-  return (Number.isFinite(parsed) ? parsed : 0).toLocaleString(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  return formatMoneyLocale(value);
 }
 
 function LineRow({ label, amount, bold = false, tone }) {

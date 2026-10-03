@@ -1,17 +1,21 @@
 /** Shared display helpers for sales layout components. */
 
+import {
+  formatMoney,
+  numMoney,
+  roundMoney as roundMoneyAmount,
+} from "../../utils/money.js";
+
 export function num(v) {
-  if (v === "" || v === null || v === undefined) return 0;
-  const x = Number(v);
-  return Number.isFinite(x) ? x : 0;
+  return numMoney(v);
 }
 
-export function money(v) {
-  return num(v).toFixed(2);
+export function money(v, decimals) {
+  return formatMoney(v, decimals);
 }
 
-export function roundMoney(v) {
-  return Math.round(num(v) * 100) / 100;
+export function roundMoney(v, decimals) {
+  return roundMoneyAmount(v, decimals);
 }
 
 /** Stable Firestore id for a POS tender line on an invoice. */
@@ -34,8 +38,9 @@ export function resolveSaleTenders({
   bankAmount = 0,
   creditAmount = 0,
   grandTotal = 0,
+  decimals,
 } = {}) {
-  const total = roundMoney(grandTotal);
+  const total = roundMoney(grandTotal, decimals);
 
   if (String(settlement || "full").toLowerCase() !== "split") {
     const mode = String(paymentMode || "CASH").trim().toUpperCase() || "CASH";
@@ -55,9 +60,9 @@ export function resolveSaleTenders({
     ].filter((line) => line.amount > 0);
   }
 
-  const cash = roundMoney(cashAmount);
-  const bank = roundMoney(bankAmount);
-  const credit = roundMoney(creditAmount);
+  const cash = roundMoney(cashAmount, decimals);
+  const bank = roundMoney(bankAmount, decimals);
+  const credit = roundMoney(creditAmount, decimals);
   const lines = [];
 
   if (cash > 0) {
@@ -91,12 +96,12 @@ export function resolveSaleTenders({
   return lines;
 }
 
-export function tenderTotals(tenders = []) {
+export function tenderTotals(tenders = [], decimals) {
   let cash = 0;
   let bank = 0;
   let credit = 0;
   for (const line of tenders) {
-    const amount = roundMoney(line?.amount);
+    const amount = roundMoney(line?.amount, decimals);
     const mode = String(line?.mode || "").toUpperCase();
     if (mode === "CREDIT") credit += amount;
     else if (mode === "BANK" || mode === "BANK_TRANSFER" || mode.startsWith("BANK:")) {
@@ -104,15 +109,15 @@ export function tenderTotals(tenders = []) {
     } else cash += amount;
   }
   return {
-    cash: roundMoney(cash),
-    bank: roundMoney(bank),
-    credit: roundMoney(credit),
-    paid: roundMoney(cash + bank),
-    allocated: roundMoney(cash + bank + credit),
+    cash: roundMoney(cash, decimals),
+    bank: roundMoney(bank, decimals),
+    credit: roundMoney(credit, decimals),
+    paid: roundMoney(cash + bank, decimals),
+    allocated: roundMoney(cash + bank + credit, decimals),
   };
 }
 
-export function formatPaymentLabel(invoiceOrTenders) {
+export function formatPaymentLabel(invoiceOrTenders, decimals) {
   const tenders = Array.isArray(invoiceOrTenders)
     ? invoiceOrTenders
     : Array.isArray(invoiceOrTenders?.paymentTenders)
@@ -135,7 +140,7 @@ export function formatPaymentLabel(invoiceOrTenders) {
                 : mode === "QR"
                   ? "QR"
                   : "Cash";
-        return `${label} ${money(line.amount)}`;
+        return `${label} ${money(line.amount, decimals)}`;
       })
       .join(" + ");
   }
@@ -155,8 +160,11 @@ export function calcTaxAmount(qty, sellingPrice, taxPct) {
   return Math.max(0, (base * num(taxPct)) / 100);
 }
 
-export function calcLineTotal(qty, sellingPrice, taxPct) {
-  return calcBaseTotal(qty, sellingPrice) + calcTaxAmount(qty, sellingPrice, taxPct);
+export function calcLineTotal(qty, sellingPrice, taxPct, decimals) {
+  return roundMoney(
+    calcBaseTotal(qty, sellingPrice) + calcTaxAmount(qty, sellingPrice, taxPct),
+    decimals
+  );
 }
 
 export function getItemBaseCode(item) {

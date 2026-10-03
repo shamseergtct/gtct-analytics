@@ -10,6 +10,7 @@ import {
   normalizeTransactionMode,
   normalizeTransactionType,
 } from "../utils/transactionContract.js";
+import { roundMoney } from "../utils/money.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -170,10 +171,10 @@ export function usePosSalesTotals({ clientId, businessDate, shiftId }) {
 
     return {
       loading,
-      cashTotal,
-      bankTotal,
-      creditTotal,
-      grossTotal,
+      cashTotal: roundMoney(cashTotal),
+      bankTotal: roundMoney(bankTotal),
+      creditTotal: roundMoney(creditTotal),
+      grossTotal: roundMoney(grossTotal),
       invoiceCount: invoiceKeys.size,
       items,
     };

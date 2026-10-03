@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { ScanBarcode } from "lucide-react";
-import { getItemBaseCode, getItemBarcode, money } from "../salesHelpers.js";
+import { getItemBaseCode, getItemBarcode } from "../salesHelpers.js";
+import { useMoney } from "../../../hooks/useMoney.js";
 
 /**
  * Primary barcode / product search control for Retail POS.
@@ -21,6 +22,7 @@ export default function RetailBarcodeSearch({
   setActiveIndex,
   noMatch,
 }) {
+  const { money } = useMoney();
   const listRef = useRef(null);
 
   useEffect(() => {

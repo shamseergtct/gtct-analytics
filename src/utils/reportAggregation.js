@@ -1,4 +1,5 @@
 import { formatIsoDate } from "./dateFormat.js";
+import { formatMoney } from "./money.js";
 
 export const REPORT_VIEW_TYPES = [
   { key: "invoice", label: "Invoice wise" },
@@ -135,8 +136,7 @@ function parseAmount(value) {
 }
 
 function money(value) {
-  const amount = Number(value) || 0;
-  return amount.toFixed(2);
+  return formatMoney(value);
 }
 
 function hasDebitCredit(columns = []) {

@@ -1,4 +1,4 @@
-import { money } from "./salesHelpers.js";
+import { useMoney } from "../../hooks/useMoney.js";
 
 /** Shared cart table + totals + finish/billing actions. */
 export default function CartBillingPanel({
@@ -12,6 +12,7 @@ export default function CartBillingPanel({
   finishAndBilling,
   emptyHint = "No items added. Add an item from search.",
 }) {
+  const { money } = useMoney();
   return (
     <div className="rounded-2xl border border-slate-800 bg-slate-950/40 p-4 xl:col-span-5">
       <div className="flex flex-wrap items-center justify-between gap-2">

@@ -19,6 +19,7 @@ import {
 import { generateDailyPulseReport } from "../utils/reportCalculations";
 import { generateDailyPDF, generateQuickPDF } from "../utils/pdfGenerator";
 import { fetchDailySession, upsertDailySession } from "../utils/dailySessionStore";
+import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
 function toYYYYMMDD(d) {
   const x = new Date(d);
@@ -41,8 +42,7 @@ function num(v) {
   return Number.isFinite(n) ? n : 0;
 }
 function money(v) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n.toFixed(2) : "0.00";
+  return formatMoney(v);
 }
 
 // -------------------------

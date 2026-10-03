@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
 import InvoiceMetaFields from "./InvoiceMetaFields.jsx";
 import CartBillingPanel from "./CartBillingPanel.jsx";
-import { getItemBaseCode, money, num } from "./salesHelpers.js";
+import { getItemBaseCode, num } from "./salesHelpers.js";
+import { useMoney } from "../../hooks/useMoney.js";
 
 const ORDER_TYPES = [
   { value: "COUNTER", label: "Counter" },
@@ -14,6 +15,7 @@ const ORDER_TYPES = [
  * Café / restaurant layout — touch-friendly item grid + prominent order type.
  */
 export default function CafeSales(props) {
+  const { money } = useMoney();
   const {
     items,
     loadingItems,

@@ -29,6 +29,7 @@ import {
   parsePaymentModeSelection,
   paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
+import { formatMoney, moneyInputStep, roundMoney } from "../utils/money.js";
 
 function num(v) {
   const n = Number(v);
@@ -758,7 +759,7 @@ export default function MasterEntryForm({
         <div>
           <label className="text-sm text-slate-300">Total Amount</label>
           <input
-            value={totalAmount.toFixed(2)}
+            value={formatMoney(totalAmount)}
             readOnly
             className="mt-1 w-full rounded-xl bg-slate-950/70 border border-slate-800 px-3 py-2 text-slate-200 outline-none"
           />
@@ -839,7 +840,7 @@ export default function MasterEntryForm({
             <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2">
               <div className="text-sm text-slate-300">Computed Discount Amount</div>
               <div className="text-sm font-semibold text-amber-200 tabular-nums">
-                {computedDiscountAmount.toFixed(2)}
+                {formatMoney(computedDiscountAmount)}
               </div>
             </div>
 

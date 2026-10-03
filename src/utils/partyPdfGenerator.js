@@ -5,13 +5,14 @@ import {
   formatDateValue,
   formatIsoDate,
 } from "./dateFormat.js";
+import { formatMoney } from "./money.js";
 
 function num(v) {
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
 }
 function money(v) {
-  return num(v).toFixed(2);
+  return formatMoney(v);
 }
 
 function safeStr(v, fallback = "-") {
