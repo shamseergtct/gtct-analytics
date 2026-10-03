@@ -149,6 +149,8 @@ export default function EndOfDay() {
         directShiftSnapshot,
         zReportSnapshot,
         previousReportSnapshot,
+        externalBillSnapshot,
+        deliveryCollectionSnapshot,
       ] = await Promise.all([
         getDocs(
           query(
@@ -181,12 +183,28 @@ export default function EndOfDay() {
             limit(1)
           )
         ),
+        getDocs(
+          query(
+            collection(db, "external_sales_bills"),
+            where("clientId", "==", activeClientId),
+            where("businessDate", "==", selectedDate)
+          )
+        ),
+        getDocs(
+          query(
+            collection(db, "delivery_boy_collections"),
+            where("clientId", "==", activeClientId),
+            where("businessDate", "==", selectedDate)
+          )
+        ),
       ]);
       console.debug(`${timingLabel} query counts`, {
         transactions: transactionSnapshot.size,
         directShifts: directShiftSnapshot.size,
         zReports: zReportSnapshot.size,
         previousReports: previousReportSnapshot.size,
+        externalBills: externalBillSnapshot.size,
+        deliveryCollections: deliveryCollectionSnapshot.size,
       });
       const zReports = zReportSnapshot.docs.map((item) => ({
         id: item.id,
@@ -261,6 +279,14 @@ export default function EndOfDay() {
         previousReport: previousReportDoc
           ? { id: previousReportDoc.id, ...previousReportDoc.data() }
           : null,
+        externalBills: externalBillSnapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        })),
+        deliveryBoyCollections: deliveryCollectionSnapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        })),
       });
       setPreview(snapshot);
       return snapshot;

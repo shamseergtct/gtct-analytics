@@ -239,12 +239,9 @@ export function ShiftProvider({ children }) {
     ).trim();
 
     if (!businessDate) throw new Error("Business date is required.");
-    if (!String(zReport?.reportNo || "").trim()) {
-      throw new Error("Z-report number is required.");
-    }
-    if (!String(zReport?.terminalId || "").trim()) {
-      throw new Error("Terminal ID is required.");
-    }
+    // One Z-report per day — identity is the business date (no terminal UI).
+    const reportNo = String(zReport?.reportNo || businessDate).trim() || businessDate;
+    const terminalId = String(zReport?.terminalId || "DAY").trim() || "DAY";
     const amountFields = [
       ["opening float", zReport.openingFloat],
       ["closing cash counted", closingCashCounted],
@@ -393,8 +390,8 @@ export function ShiftProvider({ children }) {
         tx.set(zReportRef, {
           clientId: activeClientId,
           shiftId: shiftRef.id,
-          reportNo: String(zReport.reportNo).trim(),
-          terminalId: String(zReport.terminalId).trim(),
+          reportNo,
+          terminalId,
           businessDate,
           businessDateAt: toBusinessDate(businessDate),
           grossSales: num(zReport.grossSales),
@@ -405,6 +402,9 @@ export function ShiftProvider({ children }) {
           cardTotal: bankTotal,
           qrTotal: 0,
           creditSalesTotal: num(zReport.creditSalesTotal),
+          // Z cash/bank are terminal-only; External/Collect stay additive in EOD.
+          cashIncludesExternal: false,
+          bankIncludesExternal: false,
           openingFloat: num(zReport.openingFloat),
           closingCashCounted: num(closingCashCounted),
           shiftOpenedAtMs: num(shiftSnap.data()?.openedAtMs),
@@ -436,7 +436,7 @@ export function ShiftProvider({ children }) {
               partyType: entry.partyType,
               partyId: entry.partyId,
               partyName: entry.partyName,
-              description: `Z-Report ${String(zReport.reportNo).trim()} credit sale`,
+              description: `Z-Report ${businessDate} credit sale`,
               amountBeforeTax: entry.amount,
               totalAmount: entry.amount,
               amountIn: entry.amount,
@@ -567,12 +567,8 @@ export function ShiftProvider({ children }) {
     const businessDate = String(zReport?.businessDate || "").trim();
 
     if (!businessDate) throw new Error("Business date is required.");
-    if (!String(zReport?.reportNo || "").trim()) {
-      throw new Error("Z-report number is required.");
-    }
-    if (!String(zReport?.terminalId || "").trim()) {
-      throw new Error("Terminal ID is required.");
-    }
+    const reportNo = String(zReport?.reportNo || businessDate).trim() || businessDate;
+    const terminalId = String(zReport?.terminalId || "DAY").trim() || "DAY";
     const amountFields = [
       ["opening float", zReport.openingFloat],
       ["closing cash counted", closingCashCounted],
@@ -788,7 +784,7 @@ export function ShiftProvider({ children }) {
             partyType: entry.partyType,
             partyId: entry.partyId,
             partyName: entry.partyName,
-            description: `Z-Report ${String(zReport.reportNo).trim()} credit sale`,
+            description: `Z-Report ${businessDate} credit sale`,
             amountBeforeTax: entry.amount,
             totalAmount: entry.amount,
             amountIn: entry.amount,
@@ -805,8 +801,8 @@ export function ShiftProvider({ children }) {
       });
 
       tx.update(zReportRef, {
-        reportNo: String(zReport.reportNo).trim(),
-        terminalId: String(zReport.terminalId).trim(),
+        reportNo,
+        terminalId,
         businessDate,
         businessDateAt: toBusinessDate(businessDate),
         grossSales: num(zReport.grossSales),
@@ -816,6 +812,8 @@ export function ShiftProvider({ children }) {
         cardTotal: bankTotal,
         qrTotal: 0,
         creditSalesTotal: num(zReport.creditSalesTotal),
+        cashIncludesExternal: false,
+        bankIncludesExternal: false,
         openingFloat: num(zReport.openingFloat),
         closingCashCounted: num(closingCashCounted),
         shiftOpenedAtMs: num(shiftSnapshot.data()?.openedAtMs),

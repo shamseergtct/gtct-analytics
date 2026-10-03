@@ -193,7 +193,8 @@ export default function DeliveryBoyManager({
       />
 
       <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-        <table className="min-w-full text-left text-sm text-slate-300">
+        <div className="overflow-x-auto overscroll-x-contain">
+        <table className="min-w-[640px] w-full text-left text-sm text-slate-300 sm:min-w-full">
           <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
             <tr>
               <th className="px-4 py-3">Name</th>
@@ -271,6 +272,7 @@ export default function DeliveryBoyManager({
             )}
           </tbody>
         </table>
+        </div>
       </div>
 
       {isOpen ? (

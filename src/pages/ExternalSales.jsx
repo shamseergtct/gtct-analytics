@@ -17,6 +17,7 @@ import ExternalSalesList from "../components/externalSales/ExternalSalesList.jsx
 import TerminalManager from "../components/externalSales/TerminalManager.jsx";
 import DeliveryBoyManager from "../components/externalSales/DeliveryBoyManager.jsx";
 import DeliveryBoyCollection from "../components/externalSales/DeliveryBoyCollection.jsx";
+import { sortBillingTerminals } from "../utils/externalSales.js";
 
 const TABS = [
   { id: "entry", label: "Bill Entry" },
@@ -69,11 +70,9 @@ export default function ExternalSales() {
     return onSnapshot(
       q,
       (snapshot) => {
-        const rows = snapshot.docs
-          .map((item) => ({ id: item.id, ...item.data() }))
-          .sort((a, b) =>
-            String(a.name || "").localeCompare(String(b.name || ""))
-          );
+        const rows = sortBillingTerminals(
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        );
         setTerminals(rows);
         setLoadingTerminals(false);
       },
@@ -147,19 +146,19 @@ export default function ExternalSales() {
   }
 
   return (
-    <div className="space-y-5">
+    <div className="min-w-0 space-y-4 sm:space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-bold text-white">
-            <ClipboardList className="h-6 w-6 text-blue-400" />
-            External Sales
+        <div className="min-w-0 flex-1">
+          <h1 className="flex items-center gap-2 text-xl font-bold text-white sm:text-2xl">
+            <ClipboardList className="h-5 w-5 shrink-0 text-blue-400 sm:h-6 sm:w-6" />
+            <span className="truncate">External Sales</span>
           </h1>
           <p className="mt-1 text-sm text-slate-400">
             Capture summarized sales bills from your existing billing software
             for {shopLabel}. This is not a POS checkout.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           <ModuleHelpButton moduleId="external-sales" />
           <ModuleExitButton />
         </div>
@@ -176,21 +175,23 @@ export default function ExternalSales() {
         </div>
       ) : null}
 
-      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-3">
-        {TABS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => setTab(item.id)}
-            className={`rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
-              tab === item.id
-                ? "bg-blue-600 text-white"
-                : "bg-slate-900 text-slate-300 hover:bg-slate-800"
-            }`}
-          >
-            {item.label}
-          </button>
-        ))}
+      <div className="-mx-1 overflow-x-auto overscroll-x-contain border-b border-slate-800 pb-3">
+        <div className="flex min-w-max gap-2 px-1 sm:min-w-0 sm:flex-wrap">
+          {TABS.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setTab(item.id)}
+              className={`rounded-lg px-3 py-2 text-sm font-semibold whitespace-nowrap transition-colors ${
+                tab === item.id
+                  ? "bg-blue-600 text-white"
+                  : "bg-slate-900 text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {tab === "entry" ? (
@@ -214,6 +215,7 @@ export default function ExternalSales() {
 
       {tab === "list" ? (
         <ExternalSalesList
+          clientId={activeClientId}
           bills={bills}
           loading={loadingBills}
           error={billsError}

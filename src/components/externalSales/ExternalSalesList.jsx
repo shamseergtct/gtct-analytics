@@ -15,6 +15,7 @@ import {
   FIELD_CLASS,
   LABEL_CLASS,
 } from "./externalSalesUi.js";
+import TerminalBillGapChecker from "./TerminalBillGapChecker.jsx";
 
 function SummaryCard({ label, value }) {
   return (
@@ -28,6 +29,7 @@ function SummaryCard({ label, value }) {
 }
 
 export default function ExternalSalesList({
+  clientId,
   bills,
   loading,
   error,
@@ -170,6 +172,15 @@ export default function ExternalSalesList({
         </label>
       </div>
 
+      <TerminalBillGapChecker
+        clientId={clientId}
+        businessDate={filterDate}
+        terminals={terminals}
+        bills={bills}
+        onMessage={onMessage}
+        onError={onError}
+      />
+
       <label className="inline-flex items-center gap-2 text-sm text-slate-400">
         <input
           type="checkbox"
@@ -206,10 +217,11 @@ export default function ExternalSalesList({
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
           <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
             Terminal Totals
           </div>
+          <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
@@ -239,13 +251,15 @@ export default function ExternalSalesList({
               )}
             </tbody>
           </table>
+          </div>
         </div>
 
-        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
           <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
             Delivery Boy Summary
           </div>
-          <table className="min-w-full text-left text-sm text-slate-300">
+          <div className="overflow-x-auto">
+          <table className="min-w-[520px] w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2">Delivery Boy</th>
@@ -289,12 +303,13 @@ export default function ExternalSalesList({
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm text-slate-300">
+      <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="overflow-x-auto overscroll-x-contain">
+          <table className="min-w-[960px] w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-3">Date</th>

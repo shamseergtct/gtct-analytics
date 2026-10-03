@@ -68,7 +68,7 @@ function TerminalBillForm({
   const [billNumber, setBillNumber] = useState("");
   const [billAmount, setBillAmount] = useState("");
   const [saleType, setSaleType] = useState("DELIVERY");
-  const [paymentMode, setPaymentMode] = useState("CASH");
+  const [paymentMode, setPaymentMode] = useState(DELIVERY_ACCOUNT_PAYMENT);
   const [customerId, setCustomerId] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
   const [deliveryBoyId, setDeliveryBoyId] = useState("");
@@ -93,7 +93,21 @@ function TerminalBillForm({
   }, [activeBoys, deliveryBoys, deliveryBoyId]);
 
   const deliveryMode = isDeliverySaleType(saleType);
+  const effectivePaymentOptions = useMemo(() => {
+    if (!deliveryMode) return paymentModeOptions;
+    return [
+      {
+        value: DELIVERY_ACCOUNT_PAYMENT,
+        label: "Delivery Boy Account",
+      },
+      ...paymentModeOptions,
+    ];
+  }, [deliveryMode, paymentModeOptions]);
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
+  const isDeliveryAccount =
+    deliveryMode &&
+    (paymentMode === DELIVERY_ACCOUNT_PAYMENT ||
+      resolvedPayment.paymentMode === DELIVERY_ACCOUNT_PAYMENT);
   const isCredit = resolvedPayment.paymentMode === "CREDIT";
   const selectedBoy = useMemo(
     () => boyOptions.find((row) => row.id === deliveryBoyId) || null,
@@ -135,7 +149,7 @@ function TerminalBillForm({
     setDeliveryCharge("");
     setNotes("");
     setCustomerId("");
-    setPaymentMode("CASH");
+    setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
     setSaleType("DELIVERY");
     resetEditState();
     setLocalError("");
@@ -150,13 +164,19 @@ function TerminalBillForm({
         ? formatMoney(bill.billAmount, currencyDecimals)
         : ""
     );
-    setSaleType(normalizeExternalSaleType(bill.saleType) || "DELIVERY");
-    setPaymentMode(
-      paymentModeSelectionFromSaved(
-        bill.paymentMode || "CASH",
-        bill.bankAccountId || ""
-      )
-    );
+    const type = normalizeExternalSaleType(bill.saleType) || "DELIVERY";
+    setSaleType(type);
+    const savedMode = String(bill.paymentMode || "").trim();
+    if (type === "DELIVERY" && (!savedMode || savedMode === DELIVERY_ACCOUNT_PAYMENT)) {
+      setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
+    } else {
+      setPaymentMode(
+        paymentModeSelectionFromSaved(
+          savedMode || "CASH",
+          bill.bankAccountId || ""
+        )
+      );
+    }
     setCustomerId(bill.customerId || "");
     setCustomerLocation(bill.customerLocation || "");
     setDeliveryBoyId(bill.deliveryBoyId || "");
@@ -293,11 +313,12 @@ function TerminalBillForm({
     let customerPartyId = "";
     let customerName = "";
 
-    if (type === "DELIVERY") {
-      // Delivery is always on the delivery boy's account — no tender selection.
+    if (type === "DELIVERY" && paymentMode === DELIVERY_ACCOUNT_PAYMENT) {
       savedPaymentMode = DELIVERY_ACCOUNT_PAYMENT;
     } else {
-      if (!paymentModeOptions.some((option) => option.value === paymentMode)) {
+      if (
+        !effectivePaymentOptions.some((option) => option.value === paymentMode)
+      ) {
         setLocalError("Select a valid payment mode.");
         return;
       }
@@ -315,6 +336,7 @@ function TerminalBillForm({
           setLocalError("Selected bank account is not available.");
           return;
         }
+        savedPaymentMode = "BANK";
       } else if (resolvedPayment.paymentMode === "CREDIT") {
         const customer = customers.find((row) => row.id === customerId);
         if (!customer) {
@@ -327,8 +349,13 @@ function TerminalBillForm({
           setLocalError("Selected customer has no name.");
           return;
         }
-      } else if (resolvedPayment.paymentMode !== "CASH") {
-        setLocalError("Payment mode must be Cash, a bank account, or Credit.");
+        savedPaymentMode = "CREDIT";
+      } else if (resolvedPayment.paymentMode === "CASH") {
+        savedPaymentMode = "CASH";
+      } else {
+        setLocalError(
+          "Payment mode must be Delivery Boy Account, Cash, a bank account, or Credit."
+        );
         return;
       }
     }
@@ -470,15 +497,17 @@ function TerminalBillForm({
   return (
     <form
       onSubmit={handleSave}
-      className={`flex h-full flex-col space-y-4 rounded-2xl border p-4 ${
+      className={`flex h-full min-w-0 flex-col space-y-3 rounded-2xl border p-3 sm:space-y-4 sm:p-4 ${
         editMode
           ? "border-amber-700/70 bg-amber-950/10"
           : "border-slate-800 bg-slate-900/40"
       }`}
     >
-      <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-3">
-        <div>
-          <h2 className="text-lg font-semibold text-white">{terminal.name}</h2>
+      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-slate-800 pb-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-base font-semibold text-white sm:text-lg">
+            {terminal.name}
+          </h2>
           <p className="text-xs text-slate-500">
             {editMode ? "Editing existing bill" : "Terminal bill entry"}
           </p>
@@ -512,7 +541,7 @@ function TerminalBillForm({
         </div>
       ) : null}
 
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid min-w-0 gap-3 sm:grid-cols-2">
         <label className={LABEL_CLASS}>
           Bill Number
           <input
@@ -560,8 +589,10 @@ function TerminalBillForm({
               const next = event.target.value;
               setSaleType(next);
               if (isDeliverySaleType(next)) {
-                setCustomerId("");
+                setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
+              } else {
                 setPaymentMode("CASH");
+                setCustomerId("");
               }
             }}
             className={FIELD_CLASS}
@@ -574,45 +605,42 @@ function TerminalBillForm({
           </select>
         </label>
 
-        {deliveryMode ? (
-          <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-xs text-slate-300 sm:col-span-1 flex items-end">
-            <div>
-              <div className="text-[11px] uppercase tracking-wide text-slate-500">
-                Payment
-              </div>
-              <div className="mt-1 font-semibold text-white">
-                Delivery Boy Account
-              </div>
-              <div className="mt-0.5 text-slate-500">
-                Settled later under Collect
-              </div>
-            </div>
-          </div>
-        ) : (
-          <label className={LABEL_CLASS}>
-            Payment Mode
-            <select
-              required
-              value={paymentMode}
-              onChange={(event) => {
-                const next = event.target.value;
-                setPaymentMode(next);
-                if (parsePaymentModeSelection(next).paymentMode !== "CREDIT") {
-                  setCustomerId("");
-                }
-              }}
-              className={FIELD_CLASS}
-            >
-              {paymentModeOptions.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+        <label className={LABEL_CLASS}>
+          Payment Mode
+          <select
+            required
+            value={paymentMode}
+            onChange={(event) => {
+              const next = event.target.value;
+              setPaymentMode(next);
+              if (
+                next === DELIVERY_ACCOUNT_PAYMENT ||
+                parsePaymentModeSelection(next).paymentMode !== "CREDIT"
+              ) {
+                setCustomerId("");
+              }
+            }}
+            className={FIELD_CLASS}
+          >
+            {effectivePaymentOptions.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          {deliveryMode && isDeliveryAccount ? (
+            <span className="mt-1 block text-[11px] text-slate-500">
+              Settled later under Collect
+            </span>
+          ) : null}
+          {deliveryMode && !isDeliveryAccount ? (
+            <span className="mt-1 block text-[11px] text-slate-500">
+              Paid to shop — not added to delivery boy payable
+            </span>
+          ) : null}
+        </label>
 
-        {!deliveryMode && isCredit ? (
+        {isCredit ? (
           <label className={`${LABEL_CLASS} sm:col-span-2`}>
             Customer Name
             <select
@@ -702,21 +730,17 @@ function TerminalBillForm({
         </div>
       ) : null}
 
-      {!deliveryMode && isCredit && !customers.length ? (
+      {isCredit && !customers.length ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-2.5 text-xs text-amber-100">
           No customers found. Add a Customer party first to use Credit.
         </div>
       ) : null}
 
-      <div className="mt-auto flex flex-wrap items-center gap-3 pt-1">
+      <div className="mt-auto flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <button
           type="submit"
-          disabled={
-            saving ||
-            lookingUp ||
-            (!deliveryMode && isCredit && !customers.length)
-          }
-          className={BTN_PRIMARY}
+          disabled={saving || lookingUp || (isCredit && !customers.length)}
+          className={`${BTN_PRIMARY} w-full sm:w-auto`}
         >
           {saving
             ? editMode
@@ -729,7 +753,7 @@ function TerminalBillForm({
         <button
           type="button"
           onClick={() => clearBillFields({ keepDeliveryBoy: deliveryMode })}
-          className="text-sm font-medium text-slate-400 hover:text-slate-200"
+          className="w-full py-2 text-center text-sm font-medium text-slate-400 hover:text-slate-200 sm:w-auto sm:py-0 sm:text-left"
         >
           Clear
         </button>
@@ -795,9 +819,9 @@ export default function ExternalSalesForm({
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-4 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-        <label className={`${LABEL_CLASS} w-full max-w-xs`}>
+    <div className="min-w-0 space-y-4">
+      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4 sm:p-4">
+        <label className={`${LABEL_CLASS} w-full sm:max-w-xs`}>
           Business Date
           <DateInput
             value={effectiveBusinessDate}
@@ -806,13 +830,13 @@ export default function ExternalSalesForm({
             required
           />
         </label>
-        <p className="pb-2 text-sm text-slate-500">
+        <p className="text-sm text-slate-500 sm:pb-2">
           Shared for all terminal forms below. Tab out of Bill Number to check
           for duplicates.
         </p>
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 2xl:grid-cols-3">
         {activeTerminals.map((terminal) => (
           <TerminalBillForm
             key={terminal.id}

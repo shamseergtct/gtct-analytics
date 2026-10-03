@@ -30,7 +30,21 @@ import {
   ArrowLeft,
   Home,
   CircleHelp,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
+
+const SIDEBAR_STORAGE_KEY = "gtct.sidebarOpen";
+
+function readSidebarOpen() {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_STORAGE_KEY);
+    if (raw === null) return true;
+    return raw !== "0" && raw !== "false";
+  } catch {
+    return true;
+  }
+}
 
 export default function Layout() {
   const { user, role, isSuperAdmin, logout, displayName } = useAuth();
@@ -41,6 +55,15 @@ export default function Layout() {
   const nav = useNavigate();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpen);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarOpen ? "1" : "0");
+    } catch {
+      // ignore storage failures
+    }
+  }, [sidebarOpen]);
 
   const isPartner = role === "partner";
   const partnerCanSwitchShop = isPartner && !loadingClients && clients.length >= 2;
@@ -150,16 +173,34 @@ export default function Layout() {
     role === "super_admin" ? "Super Admin" : role === "partner" ? "Partner" : "Admin";
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100">
+    <div className="min-h-dvh min-w-0 bg-slate-950 text-slate-100">
       <header className="fixed top-0 left-0 right-0 z-40 h-16 border-b border-slate-800/70 bg-slate-950/80 backdrop-blur">
-        <div className="h-full flex items-center justify-between px-4 lg:pl-72">
-          <div className="flex items-center gap-2 sm:gap-3">
+        <div
+          className={`flex h-full min-w-0 items-center justify-between gap-2 px-3 sm:px-4 transition-[padding] duration-200 ${
+            sidebarOpen ? "lg:pl-72" : "lg:pl-4"
+          }`}
+        >
+          <div className="flex min-w-0 items-center gap-1.5 sm:gap-3">
             <button
               className="lg:hidden inline-flex items-center justify-center rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 hover:bg-slate-800"
               onClick={() => setMobileOpen(true)}
               aria-label="Open menu"
             >
               <Menu className="h-5 w-5" />
+            </button>
+
+            <button
+              type="button"
+              className="hidden lg:inline-flex items-center justify-center rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 hover:bg-slate-800"
+              onClick={() => setSidebarOpen((open) => !open)}
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+              title={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+            >
+              {sidebarOpen ? (
+                <PanelLeftClose className="h-5 w-5" />
+              ) : (
+                <PanelLeftOpen className="h-5 w-5" />
+              )}
             </button>
 
             <div className="flex items-center gap-1.5">
@@ -200,11 +241,11 @@ export default function Layout() {
             {activeBadge}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex min-w-0 shrink-0 items-center gap-1.5 sm:gap-3">
             {showClientDropdownDesktop ? (
-              <div className="hidden md:block">
+              <div className="hidden md:block max-w-[220px]">
                 <select
-                  className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
+                  className="w-full max-w-[220px] truncate rounded-xl border border-slate-800 bg-slate-900 px-3 py-2 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-slate-500 disabled:opacity-60"
                   value={activeClientId || ""}
                   disabled={loadingClients || noAccessibleShops}
                   onChange={(e) => {
@@ -251,39 +292,53 @@ export default function Layout() {
 
             <button
               onClick={handleLogout}
-              className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-semibold text-slate-950 hover:opacity-90"
+              className="inline-flex items-center gap-2 rounded-xl bg-white px-2.5 py-2 text-sm font-semibold text-slate-950 hover:opacity-90 sm:px-3"
             >
               <LogOut className="h-4 w-4" />
-              Logout
+              <span className="hidden sm:inline">Logout</span>
             </button>
           </div>
         </div>
       </header>
 
-      <aside className="hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:w-68 lg:flex-col lg:border-r lg:border-slate-800/70 lg:bg-slate-950">
-        <div className="h-16 border-b border-slate-800/70 px-5 flex items-center">
+      <aside
+        className={`hidden lg:fixed lg:inset-y-0 lg:left-0 lg:z-30 lg:flex lg:w-68 lg:flex-col lg:border-r lg:border-slate-800/70 lg:bg-slate-950 transition-transform duration-200 ${
+          sidebarOpen ? "lg:translate-x-0" : "lg:-translate-x-full"
+        }`}
+        aria-hidden={!sidebarOpen}
+      >
+        <div className="h-16 border-b border-slate-800/70 px-5 flex items-center justify-between gap-2">
           <button
             type="button"
             onClick={handleHome}
-            className="flex items-center gap-2 rounded-xl text-left hover:opacity-90"
+            className="flex min-w-0 items-center gap-2 rounded-xl text-left hover:opacity-90"
             title="Home"
           >
-            <div className="h-9 w-9 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center">
+            <div className="h-9 w-9 shrink-0 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-center">
               <BarChart3 className="h-5 w-5 text-slate-200" />
             </div>
-            <div className="leading-tight">
-              <div className="font-bold">GTCT Analytics</div>
-              <div className="text-xs text-slate-400">
+            <div className="min-w-0 leading-tight">
+              <div className="font-bold truncate">GTCT Analytics</div>
+              <div className="text-xs text-slate-400 truncate">
                 {activeClientData?.name ||
                   (noAccessibleShops ? "No shops assigned" : "No client selected")}
               </div>
             </div>
           </button>
+          <button
+            type="button"
+            className="inline-flex shrink-0 items-center justify-center rounded-xl border border-slate-800 bg-slate-900 px-2.5 py-2 hover:bg-slate-800"
+            onClick={() => setSidebarOpen(false)}
+            aria-label="Close sidebar"
+            title="Close sidebar"
+          >
+            <PanelLeftClose className="h-4 w-4" />
+          </button>
         </div>
 
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           {navItems.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} className={linkClass}>
+            <NavLink key={to} to={to} className={linkClass} tabIndex={sidebarOpen ? 0 : -1}>
               {Icon ? <Icon className="h-4 w-4" /> : null}
               {label}
             </NavLink>
@@ -384,9 +439,13 @@ export default function Layout() {
         </div>
       ) : null}
 
-      <main className="pt-16 lg:pl-72">
+      <main
+        className={`min-w-0 pt-16 transition-[padding] duration-200 ${
+          sidebarOpen ? "lg:pl-72" : "lg:pl-0"
+        }`}
+      >
         <ShiftStatusBar />
-        <div className="p-4 sm:p-6">
+        <div className="mx-auto w-full min-w-0 max-w-[1600px] p-3 sm:p-4 md:p-6">
           <Outlet />
         </div>
       </main>

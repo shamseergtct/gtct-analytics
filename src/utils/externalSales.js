@@ -40,6 +40,95 @@ export function normalizeBillNumber(value) {
     .replace(/\s+/g, " ");
 }
 
+/** Screen order for billing terminal cards (Setup ↑↓). */
+export function compareBillingTerminals(a, b) {
+  const orderA = Number(a?.sortOrder);
+  const orderB = Number(b?.sortOrder);
+  const hasA = Number.isFinite(orderA);
+  const hasB = Number.isFinite(orderB);
+  if (hasA && hasB && orderA !== orderB) return orderA - orderB;
+  if (hasA && !hasB) return -1;
+  if (!hasA && hasB) return 1;
+  return String(a?.name || "").localeCompare(String(b?.name || ""));
+}
+
+export function sortBillingTerminals(terminals = []) {
+  return [...terminals].sort(compareBillingTerminals);
+}
+
+/**
+ * Parse a bill number as a whole-number sequence (digits only).
+ * Used for start/end range checks and missing-bill detection.
+ */
+export function parseBillSequence(value) {
+  const normalized = normalizeBillNumber(value);
+  if (!/^\d+$/.test(normalized)) return null;
+  const n = Number(normalized);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+const MAX_BILL_RANGE_SPAN = 5000;
+
+/**
+ * Find missing whole-number bill sequences between start and end
+ * for the given entered bills (voided bills do not count as present).
+ */
+export function findMissingBillNumbers({
+  startBillNumber,
+  endBillNumber,
+  bills = [],
+}) {
+  const start = parseBillSequence(startBillNumber);
+  const end = parseBillSequence(endBillNumber);
+  if (start == null || end == null) {
+    throw new Error("Start and last bill numbers must be whole numbers (digits only).");
+  }
+  if (end < start) {
+    throw new Error("Last bill number must be greater than or equal to the starting bill number.");
+  }
+  if (end - start + 1 > MAX_BILL_RANGE_SPAN) {
+    throw new Error(
+      `Bill range is too large (max ${MAX_BILL_RANGE_SPAN} bills). Narrow the start/last numbers.`
+    );
+  }
+
+  const present = new Set();
+  for (const bill of bills) {
+    if (bill?.voided === true) continue;
+    const seq = parseBillSequence(bill?.billNumber);
+    if (seq != null && seq >= start && seq <= end) {
+      present.add(seq);
+    }
+  }
+
+  const missing = [];
+  for (let seq = start; seq <= end; seq += 1) {
+    if (!present.has(seq)) missing.push(String(seq));
+  }
+
+  return {
+    start,
+    end,
+    expectedCount: end - start + 1,
+    enteredCount: present.size,
+    missingCount: missing.length,
+    missing,
+  };
+}
+
+/** Deterministic doc id for per-terminal daily bill range. */
+export function externalTerminalBillRangeDocId({
+  clientId,
+  businessDate,
+  terminalId,
+}) {
+  return [
+    slugPart(clientId),
+    slugPart(businessDate),
+    slugPart(terminalId),
+  ].join("__");
+}
+
 /** Safe Firestore doc id fragment. */
 function slugPart(value) {
   return String(value || "")
@@ -112,6 +201,24 @@ export const EXTERNAL_ENTRY_SOURCE_MANUAL = "MANUAL";
 export const EXTERNAL_PAYMENT_MODES = ["CASH", "BANK", "CREDIT", "DELIVERY_ACCOUNT"];
 export const DELIVERY_ACCOUNT_PAYMENT = "DELIVERY_ACCOUNT";
 
+/** Delivery bills owed by the boy (vs paid directly to the shop). */
+export function isDeliveryBoyAccountPayment(billOrMode) {
+  if (billOrMode && typeof billOrMode === "object") {
+    if (normalizeExternalSaleType(billOrMode.saleType) !== "DELIVERY") {
+      return false;
+    }
+    const mode = String(billOrMode.paymentMode || "")
+      .trim()
+      .toUpperCase();
+    // Legacy delivery bills with no mode were on the boy's account.
+    return !mode || mode === DELIVERY_ACCOUNT_PAYMENT;
+  }
+  const mode = String(billOrMode || "")
+    .trim()
+    .toUpperCase();
+  return !mode || mode === DELIVERY_ACCOUNT_PAYMENT;
+}
+
 export function externalPaymentModeLabel(bill) {
   const mode = String(bill?.paymentMode || "").toUpperCase();
   if (mode === "DELIVERY_ACCOUNT") return "Delivery Boy Account";
@@ -122,10 +229,7 @@ export function externalPaymentModeLabel(bill) {
   }
   if (mode === "CREDIT") return "Credit";
   if (mode === "CASH" || !mode) {
-    // Legacy delivery bills without mode still show Cash; new delivery uses DELIVERY_ACCOUNT.
-    if (normalizeExternalSaleType(bill?.saleType) === "DELIVERY" && !bill?.paymentMode) {
-      return "Delivery Boy Account";
-    }
+    if (isDeliveryBoyAccountPayment(bill)) return "Delivery Boy Account";
     return "Cash";
   }
   return mode;
@@ -145,6 +249,8 @@ export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
     if (!boyId || bill.voided === true) continue;
     if (normalizeExternalSaleType(bill.saleType) !== "DELIVERY") continue;
     if (bill.deliveryBoyId !== boyId) continue;
+    // Paid directly to shop (cash/bank/credit) does not add to boy payable.
+    if (!isDeliveryBoyAccountPayment(bill)) continue;
     gross += numMoney(bill.billAmount);
     commission += numMoney(bill.commissionAmount);
     billCount += 1;
@@ -218,6 +324,113 @@ export function calculateDeliveryCommission({
   };
 }
 
+/**
+ * Cash / bank / credit / delivery-boy-account totals for non-voided bills.
+ * Shop tenders (cash/bank/credit) are paid at the counter; delivery account
+ * is owed by the boy until Collect.
+ */
+export function summarizeExternalBillTenders(bills = []) {
+  const summary = {
+    billCount: 0,
+    cashTotal: 0,
+    bankTotal: 0,
+    creditTotal: 0,
+    deliveryAccountTotal: 0,
+    shopGrossTotal: 0,
+    grossTotal: 0,
+    bankByAccount: {},
+  };
+
+  for (const bill of bills) {
+    if (bill?.voided === true) continue;
+    const amount = numMoney(bill.billAmount);
+    if (amount <= 0) continue;
+
+    summary.billCount += 1;
+    summary.grossTotal += amount;
+
+    if (isDeliveryBoyAccountPayment(bill)) {
+      summary.deliveryAccountTotal += amount;
+      continue;
+    }
+
+    const mode = String(bill.paymentMode || "")
+      .trim()
+      .toUpperCase();
+
+    if (mode === "BANK") {
+      summary.bankTotal += amount;
+      summary.shopGrossTotal += amount;
+      const accountId = String(bill.bankAccountId || "").trim() || "_unassigned";
+      if (!summary.bankByAccount[accountId]) {
+        summary.bankByAccount[accountId] = {
+          bankAccountId: accountId === "_unassigned" ? "" : accountId,
+          bankAccountName: bill.bankAccountNameSnapshot || "Bank",
+          amount: 0,
+        };
+      }
+      summary.bankByAccount[accountId].amount += amount;
+    } else if (mode === "CREDIT") {
+      summary.creditTotal += amount;
+      summary.shopGrossTotal += amount;
+    } else {
+      // CASH (or blank on non-delivery)
+      summary.cashTotal += amount;
+      summary.shopGrossTotal += amount;
+    }
+  }
+
+  summary.cashTotal = roundMoney(summary.cashTotal);
+  summary.bankTotal = roundMoney(summary.bankTotal);
+  summary.creditTotal = roundMoney(summary.creditTotal);
+  summary.deliveryAccountTotal = roundMoney(summary.deliveryAccountTotal);
+  summary.shopGrossTotal = roundMoney(summary.shopGrossTotal);
+  summary.grossTotal = roundMoney(summary.grossTotal);
+  summary.bankByAccount = Object.values(summary.bankByAccount).map((row) => ({
+    ...row,
+    amount: roundMoney(row.amount),
+  }));
+
+  return summary;
+}
+
+/** Cash/bank received from delivery-boy Collect settlements. */
+export function summarizeDeliveryBoyCollections(collections = []) {
+  let cashTotal = 0;
+  let bankTotal = 0;
+  let settledTotal = 0;
+  const bankByAccount = {};
+
+  for (const row of collections) {
+    const cash = Math.max(0, numMoney(row.paidCash));
+    const bank = Math.max(0, numMoney(row.paidBank));
+    cashTotal += cash;
+    bankTotal += bank;
+    settledTotal += cash + bank;
+    if (bank > 0) {
+      const accountId = String(row.bankAccountId || "").trim() || "_unassigned";
+      if (!bankByAccount[accountId]) {
+        bankByAccount[accountId] = {
+          bankAccountId: accountId === "_unassigned" ? "" : accountId,
+          bankAccountName: row.bankAccountNameSnapshot || "Bank",
+          amount: 0,
+        };
+      }
+      bankByAccount[accountId].amount += bank;
+    }
+  }
+
+  return {
+    cashTotal: roundMoney(cashTotal),
+    bankTotal: roundMoney(bankTotal),
+    settledTotal: roundMoney(settledTotal),
+    bankByAccount: Object.values(bankByAccount).map((row) => ({
+      ...row,
+      amount: roundMoney(row.amount),
+    })),
+  };
+}
+
 export function summarizeExternalBills(bills = []) {
   const summary = {
     totalBills: 0,
@@ -232,6 +445,7 @@ export function summarizeExternalBills(bills = []) {
   };
 
   for (const bill of bills) {
+    if (bill?.voided === true) continue;
     const amount = numMoney(bill.billAmount);
     const charge = numMoney(bill.deliveryCharge);
     const commission = numMoney(bill.commissionAmount);

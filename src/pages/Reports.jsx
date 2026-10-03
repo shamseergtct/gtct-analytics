@@ -1242,8 +1242,11 @@ export default function Reports() {
             {report?.zReportReconciliation ? (
               <>
                 <div className="text-xs text-slate-400">
-                  Report {report.zReportReconciliation.reportNo} · Terminal{" "}
-                  {report.zReportReconciliation.terminalId}
+                  Z-report for{" "}
+                  {formatIsoDate(
+                    report.zReportReconciliation.businessDate || toDate,
+                    "-"
+                  )}
                 </div>
                 {[
                   ["Gross Sales", "grossSales"],

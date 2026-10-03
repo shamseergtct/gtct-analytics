@@ -96,20 +96,21 @@ export const HELP_MODULES = [
     summary: "Enter and edit shift Z-reports for cash reconciliation.",
     sections: [
       {
-        title: "Sales module totals",
+        title: "Z-report entry",
         items: [
-          "Cash sales, bank sales, and gross totals are fetched from POS invoices.",
-          "The invoice list under Sales module totals shows each billed sale.",
-          "Use on Cash sales to copy the POS cash total into Cash Total.",
-          "Bank total still comes from the bank breakdown rows (account required).",
+          "Cash, Bank, and Credit fields are terminal Z-report amounts only — do not add POS, External, or Collect into them.",
+          "Net = Cash + Bank and Gross = Net + Credit update automatically from those Z fields.",
+          "Live day totals (POS + External + Collect) appear on a separate line for reference and are not written into Z fields.",
+          "Delivery boy account bills stay outstanding until Collect; Collect cash/bank counts as sale in live totals and expected cash.",
         ],
       },
       {
         title: "Closing cash",
         items: [
           "Enter Closing Cash Counted from the physical drawer count.",
-          "Expected cash can be reviewed from the help icon near Closing Cash Counted.",
-          "Gross Sales should equal Net Sales plus Credit Sales Total.",
+          "Expected cash uses Z cash when entered, plus External and Collect cash (POS cash is used only when Z cash is blank).",
+          "Only one Z-report per business date — Terminal ID and Z-report number are not required.",
+          "If a report already exists for the date, create is blocked — open Update Z-Report to change it.",
         ],
       },
     ],
@@ -211,6 +212,7 @@ export const HELP_MODULES = [
         title: "Setup",
         items: [
           "Add billing terminals (Main POS, Counter 1, …) and activate only those in use.",
+          "Use ↑ ↓ on Setup → Terminals to set left-to-right order on Bill Entry.",
           "Add delivery boys; deactivate instead of deleting so history stays intact.",
           "Each delivery boy has their own commission on/off and rate % (on delivery charge only).",
         ],
@@ -220,7 +222,8 @@ export const HELP_MODULES = [
         items: [
           "Each active terminal has its own entry form; business date is shared.",
           "Dine In / Pick Up: payment mode is Cash, a saved bank account, or Credit (Credit needs a customer).",
-          "Delivery bills are on the delivery boy's account (no payment mode). Settle under Collect.",
+          "Delivery defaults to Delivery Boy Account (settle under Collect). You can also choose Cash, Bank, or Credit when the customer pays the shop.",
+          "Only Delivery Boy Account bills add to the delivery boy's Collect payable.",
           "Delivery shows location, delivery boy, and delivery charge.",
           "After save, the form stays open for the next bill.",
           "Bill numbers are unique per shop + date + terminal.",
@@ -239,6 +242,8 @@ export const HELP_MODULES = [
         title: "Daily list",
         items: [
           "Filter by date, terminal, sale type, or delivery boy.",
+          "For each terminal, enter today’s starting and last bill number, save the range, then Find missing to list gaps.",
+          "Missing check uses whole-number bill sequences; voided bills count as missing.",
           "Summaries show totals, terminal totals, and delivery-boy commission.",
           "Void keeps the bill for history but removes it from totals.",
         ],

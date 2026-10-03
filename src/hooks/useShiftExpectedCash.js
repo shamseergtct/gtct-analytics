@@ -16,6 +16,7 @@ import {
   normalizeTransactionMode,
   normalizeTransactionType,
 } from "../utils/transactionContract.js";
+import { summarizeExternalBillTenders } from "../utils/externalSales.js";
 import { roundMoney } from "../utils/money.js";
 
 function num(value) {
@@ -44,14 +45,43 @@ function salesAmount(transaction) {
 }
 
 /**
+ * Expected drawer cash sales for the day:
+ *   Z-report cash (terminal entry only, when declared)
+ *   + live POS cash (when Z cash not declared for the shift)
+ *   + External cash bills + delivery Collect cash
+ *   + other shifts' uncovered Z cash
+ *
+ * Z cash is never assumed to already include External/Collect.
+ */
+export function resolveExpectedCashSales({
+  declaredCash = 0,
+  posCash = 0,
+  externalCash = 0,
+  collectionCash = 0,
+  savedZCash = 0,
+} = {}) {
+  const declared = Math.max(0, num(declaredCash));
+  const pos = Math.max(0, num(posCash));
+  const external = Math.max(0, num(externalCash));
+  const collected = Math.max(0, num(collectionCash));
+  const appCash = roundMoney(external + collected);
+  const savedZ = Math.max(0, num(savedZCash));
+  const zOrPos = declared > 0 ? declared : pos;
+
+  return {
+    todaySales: roundMoney(zOrPos + appCash + savedZ),
+    usedDeclared: declared > 0,
+    includedExternal: appCash,
+    includedPos: declared > 0 ? 0 : pos,
+  };
+}
+
+/**
  * Expected drawer cash for Z-report:
  *   Last closed day cash (opening float)
- *   + today's cash sales (POS and/or Z-report cash)
+ *   + today's cash sales (Z + live POS/External/Collect)
  *   + other cash in/out (receipts, payments, purchases, transfers)
  *   + loan net
- *
- * Form `cashTotal` replaces POS/Z cash for the current shift when declared,
- * so the hint matches what the cashier is entering.
  */
 export function useShiftExpectedCash({
   clientId,
@@ -63,19 +93,29 @@ export function useShiftExpectedCash({
 }) {
   const [dayTransactions, setDayTransactions] = useState([]);
   const [dayZReports, setDayZReports] = useState([]);
+  const [dayExternalBills, setDayExternalBills] = useState([]);
+  const [dayCollections, setDayCollections] = useState([]);
   const [previousReport, setPreviousReport] = useState(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+
     if (!clientId || !businessDate) {
-      setDayTransactions([]);
-      setDayZReports([]);
-      setPreviousReport(null);
-      setLoading(false);
-      return undefined;
+      queueMicrotask(() => {
+        if (cancelled) return;
+        setDayTransactions([]);
+        setDayZReports([]);
+        setDayExternalBills([]);
+        setDayCollections([]);
+        setPreviousReport(null);
+        setLoading(false);
+      });
+      return () => {
+        cancelled = true;
+      };
     }
 
-    let cancelled = false;
     queueMicrotask(() => {
       if (!cancelled) setLoading(true);
     });
@@ -99,6 +139,18 @@ export function useShiftExpectedCash({
 
     const dayZReportQuery = query(
       collection(db, "z_reports"),
+      where("clientId", "==", clientId),
+      where("businessDate", "==", businessDate)
+    );
+
+    const dayExternalQuery = query(
+      collection(db, "external_sales_bills"),
+      where("clientId", "==", clientId),
+      where("businessDate", "==", businessDate)
+    );
+
+    const dayCollectionQuery = query(
+      collection(db, "delivery_boy_collections"),
       where("clientId", "==", clientId),
       where("businessDate", "==", businessDate)
     );
@@ -152,11 +204,45 @@ export function useShiftExpectedCash({
       }
     );
 
+    const unsubExternal = onSnapshot(
+      dayExternalQuery,
+      (snapshot) => {
+        if (cancelled) return;
+        setDayExternalBills(
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        );
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setDayExternalBills([]);
+        setLoading(false);
+      }
+    );
+
+    const unsubCollections = onSnapshot(
+      dayCollectionQuery,
+      (snapshot) => {
+        if (cancelled) return;
+        setDayCollections(
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        );
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setDayCollections([]);
+        setLoading(false);
+      }
+    );
+
     return () => {
       cancelled = true;
       unsubPrevious();
       unsubTxns();
       unsubZReports();
+      unsubExternal();
+      unsubCollections();
     };
   }, [clientId, businessDate]);
 
@@ -166,9 +252,12 @@ export function useShiftExpectedCash({
     const previousDayCash = num(
       previousReport?.closingCashInHand ?? previousReport?.actualCash
     );
+    const externalTenders = summarizeExternalBillTenders(dayExternalBills);
+    const collectionCashTotal = dayCollections.reduce(
+      (total, row) => total + Math.max(0, num(row?.paidCash)),
+      0
+    );
 
-    // Opening float = last closed day cash (passed in), with fallback to the
-    // float stored on the open shift when no EOD closing exists yet.
     const openingFloatAmount = roundMoney(
       openingFloat != null && String(openingFloat).trim() !== ""
         ? num(openingFloat)
@@ -190,6 +279,8 @@ export function useShiftExpectedCash({
         : [],
       zReports: dayZReports,
       previousReport,
+      externalBills: dayExternalBills,
+      deliveryBoyCollections: dayCollections,
     });
 
     const shiftsWithSystemCashSales = new Set(
@@ -211,7 +302,6 @@ export function useShiftExpectedCash({
     dayTransactions.forEach((transaction) => {
       if (!isCashMode(transaction)) return;
       if (transaction?.internalTransfer === true) {
-        // Cash↔bank / petti moves affect drawer; locker is in opening float.
         const kind = String(
           transaction?.transferType || transaction?.category || ""
         )
@@ -232,7 +322,6 @@ export function useShiftExpectedCash({
 
       if (type === "sales") {
         const txnShift = String(transaction?.shiftId || "");
-        // Form cash total is the reconciliation figure for this shift.
         if (declaredCashSales > 0 && shiftKey && txnShift === shiftKey) {
           return;
         }
@@ -249,24 +338,27 @@ export function useShiftExpectedCash({
         if (!reportShiftId) {
           return shiftsWithSystemCashSales.size === 0 && declaredCashSales <= 0;
         }
-        // Current form cash replaces this shift's Z cash while entering.
         if (declaredCashSales > 0 && shiftKey && reportShiftId === shiftKey) {
           return false;
         }
-        // POS cash for the shift already covers sales — Z is reconciliation only.
         if (shiftsWithSystemCashSales.has(reportShiftId)) return false;
         return true;
       })
       .reduce((total, report) => total + num(report?.cashTotal), 0);
 
-    const todaySales = roundMoney(
-      declaredCashSales + posCashSales + savedZCash
-    );
+    const resolved = resolveExpectedCashSales({
+      declaredCash: declaredCashSales,
+      posCash: posCashSales,
+      externalCash: externalTenders.cashTotal,
+      collectionCash: collectionCashTotal,
+      savedZCash,
+    });
+    const todaySales = resolved.todaySales;
     loanNet = roundMoney(loanNet);
-    otherNet = roundMoney(otherNet);
+    const expenseNet = roundMoney(otherNet);
 
     const expectedCash = roundMoney(
-      openingFloatAmount + todaySales + loanNet + otherNet
+      openingFloatAmount + todaySales + loanNet + expenseNet
     );
 
     return {
@@ -275,10 +367,14 @@ export function useShiftExpectedCash({
       previousBalance: openingFloatAmount,
       previousDayCash,
       todaySales,
+      posCashSales: roundMoney(posCashSales),
+      externalCashSales: roundMoney(externalTenders.cashTotal),
+      collectionCash: roundMoney(collectionCashTotal),
+      expenseNet,
+      zCashEntered: roundMoney(declaredCashSales),
       loanNet,
-      otherNet,
+      otherNet: expenseNet,
       expectedCash,
-      // EOD engine (same day) — useful cross-check.
       eodExpectedCash: roundMoney(
         openingFloatAmount +
           num(snapshot.totalCashIn) -
@@ -290,6 +386,8 @@ export function useShiftExpectedCash({
   }, [
     businessDate,
     cashTotal,
+    dayCollections,
+    dayExternalBills,
     dayTransactions,
     dayZReports,
     loading,

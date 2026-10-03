@@ -884,31 +884,27 @@ service cloud.firestore {
         && request.resource.data.customerId is string
         && request.resource.data.customerName is string
         && (
-          // Delivery bills are on the delivery boy's account (no tender mode)
+          // Default delivery settlement: on delivery boy's account
           (
             request.resource.data.saleType == 'DELIVERY'
             && request.resource.data.paymentMode == 'DELIVERY_ACCOUNT'
             && request.resource.data.bankAccountId == ''
           )
+          // Delivery paid directly to shop, or non-delivery tender
           || (
-            request.resource.data.saleType != 'DELIVERY'
-            && (
-              (
-                request.resource.data.paymentMode == 'CASH'
-                && request.resource.data.bankAccountId == ''
-              )
-              || (
-                request.resource.data.paymentMode == 'BANK'
-                && request.resource.data.bankAccountId.size() > 0
-                && request.resource.data.bankAccountNameSnapshot.size() > 0
-              )
-              || (
-                request.resource.data.paymentMode == 'CREDIT'
-                && request.resource.data.customerId.size() > 0
-                && request.resource.data.customerName.size() > 0
-                && request.resource.data.bankAccountId == ''
-              )
-            )
+            request.resource.data.paymentMode == 'CASH'
+            && request.resource.data.bankAccountId == ''
+          )
+          || (
+            request.resource.data.paymentMode == 'BANK'
+            && request.resource.data.bankAccountId.size() > 0
+            && request.resource.data.bankAccountNameSnapshot.size() > 0
+          )
+          || (
+            request.resource.data.paymentMode == 'CREDIT'
+            && request.resource.data.customerId.size() > 0
+            && request.resource.data.customerName.size() > 0
+            && request.resource.data.bankAccountId == ''
           )
         );
     }
@@ -1076,6 +1072,40 @@ service cloud.firestore {
             && validExternalBillFields()
           )
         );
+      allow delete: if false;
+    }
+
+    function validExternalTerminalBillRangeFields() {
+      return request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.terminalId is string
+        && request.resource.data.terminalId.size() > 0
+        && request.resource.data.terminalNameSnapshot is string
+        && request.resource.data.startBillNumber is string
+        && request.resource.data.startBillNumber.matches('^[0-9]+$')
+        && request.resource.data.endBillNumber is string
+        && request.resource.data.endBillNumber.matches('^[0-9]+$')
+        && request.resource.data.startSeq is number
+        && request.resource.data.endSeq is number
+        && request.resource.data.startSeq >= 0
+        && request.resource.data.endSeq >= request.resource.data.startSeq
+        && request.resource.data.endSeq - request.resource.data.startSeq < 5000;
+    }
+
+    match /external_terminal_bill_ranges/{rangeId} {
+      allow read: if canReadTenantResource();
+      allow create: if request.resource.data.clientId is string
+        && canManageClient(request.resource.data.clientId)
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && validExternalTerminalBillRangeFields();
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.businessDate == resource.data.businessDate
+        && request.resource.data.terminalId == resource.data.terminalId
+        && validExternalTerminalBillRangeFields();
       allow delete: if false;
     }
 

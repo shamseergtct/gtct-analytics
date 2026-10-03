@@ -2,6 +2,10 @@ import {
   normalizeTransactionMode,
   normalizeTransactionType,
 } from "./transactionContract.js";
+import {
+  summarizeDeliveryBoyCollections,
+  summarizeExternalBillTenders,
+} from "./externalSales.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -65,6 +69,8 @@ export function calculateEodSnapshot({
   zReports = [],
   previousReport = null,
   selectedDate,
+  externalBills = [],
+  deliveryBoyCollections = [],
 }) {
   const validTransactions = transactions.filter(isIncluded);
   const dayTransactions = validTransactions.filter(
@@ -80,6 +86,38 @@ export function calculateEodSnapshot({
     (report) => String(report?.businessDate || "") === selectedDate
   );
 
+  const dayExternalBills = (externalBills || []).filter(
+    (bill) => String(bill?.businessDate || "") === selectedDate
+  );
+  const dayCollections = (deliveryBoyCollections || []).filter(
+    (row) => String(row?.businessDate || "") === selectedDate
+  );
+  const externalTenders = summarizeExternalBillTenders(dayExternalBills);
+  const collectionTenders = summarizeDeliveryBoyCollections(dayCollections);
+  const externalShopSales =
+    externalTenders.cashTotal +
+    externalTenders.bankTotal +
+    externalTenders.creditTotal;
+  // Delivery-boy account bills are still day revenue (settled later via Collect).
+  const externalSalesTotal =
+    externalShopSales + externalTenders.deliveryAccountTotal;
+  const zIncludesExternalCash = selectedZReports.some(
+    (report) => report?.cashIncludesExternal === true
+  );
+  const zIncludesExternalBank = selectedZReports.some(
+    (report) => report?.bankIncludesExternal === true
+  );
+  // If Z already merged External cash/bank, keep only the unmerged External
+  // pieces (credit + delivery account, and any tender not marked included).
+  let externalSalesForSystem = externalSalesTotal;
+  if (zIncludesExternalCash) {
+    externalSalesForSystem -= externalTenders.cashTotal;
+  }
+  if (zIncludesExternalBank) {
+    externalSalesForSystem -= externalTenders.bankTotal;
+  }
+  externalSalesForSystem = Math.max(0, externalSalesForSystem);
+
   // Sales exclude internals and never include loans/transfers.
   const salesTransactions = dayTransactions.filter(
     (transaction) =>
@@ -94,10 +132,11 @@ export function calculateEodSnapshot({
     return num(transaction?.totalAmount) || num(transaction?.amount);
   }
 
-  const systemSales = salesTransactions.reduce(
+  const posSales = salesTransactions.reduce(
     (total, transaction) => total + salesAmount(transaction),
     0
   );
+  const systemSales = posSales + externalSalesForSystem;
   // Shifts that already have Sales-module (POS) invoices — Z-report sales for
   // those shifts are reconciliation only and must not double-count revenue.
   const shiftsWithSystemSales = new Set(
@@ -105,6 +144,9 @@ export function calculateEodSnapshot({
       .map((transaction) => String(transaction?.shiftId || ""))
       .filter(Boolean)
   );
+  // POS days: Z fills gaps for shifts with no POS invoices.
+  // External bills are additive (date-scoped) and do not suppress Z — shops often
+  // keep terminal Z plus External Bill Entry side by side.
   const zReportSales = selectedZReports.reduce((total, report) => {
     const grossSales =
       report?.grossSales === undefined || report?.grossSales === null
@@ -116,7 +158,7 @@ export function calculateEodSnapshot({
     .filter((report) => {
       const shiftId = String(report?.shiftId || "");
       // No shift link → keep Z sales only when there is no POS sales at all.
-      if (!shiftId) return systemSales <= 0;
+      if (!shiftId) return posSales <= 0;
       return !shiftsWithSystemSales.has(shiftId);
     })
     .reduce((total, report) => {
@@ -126,7 +168,7 @@ export function calculateEodSnapshot({
           : num(report.grossSales);
       return total + grossSales;
     }, 0);
-  // Sales module first; Z-report fills gaps for shifts without POS billing.
+  // POS + External + Z gaps (Z is omitted for shifts that already have POS).
   const totalSales = systemSales + uncoveredZReportSales;
 
   // Expenses are operational purchase/expense only — never loans or transfers.
@@ -151,7 +193,7 @@ export function calculateEodSnapshot({
       "cash"
     );
   });
-  const systemCashSales = salesTransactions
+  const posCashSales = salesTransactions
     .filter(
       (transaction) =>
         normalizeTransactionMode(
@@ -159,10 +201,19 @@ export function calculateEodSnapshot({
         ) === "cash"
     )
     .reduce((total, transaction) => total + salesAmount(transaction), 0);
+  // When a Z-report already merged External into its cash/bank totals, do not
+  // add those External tenders again beside uncovered Z.
+  const externalCashForSystem = zIncludesExternalCash
+    ? 0
+    : externalTenders.cashTotal;
+  const externalBankForSystem = zIncludesExternalBank
+    ? 0
+    : externalTenders.bankTotal;
+  const systemCashSales = posCashSales + externalCashForSystem;
   const uncoveredZReportCashSales = selectedZReports
     .filter((report) => {
       const shiftId = String(report?.shiftId || "");
-      if (!shiftId) return systemCashSales <= 0;
+      if (!shiftId) return posCashSales <= 0;
       return !shiftsWithSystemSales.has(shiftId);
     })
     .reduce((total, report) => total + num(report?.cashTotal), 0);
@@ -172,8 +223,12 @@ export function calculateEodSnapshot({
         normalizeTransactionType(transaction?.type) !== "sales"
     )
     .reduce((total, transaction) => total + num(transaction.amountIn), 0);
+  // Collect from delivery boys puts cash in the drawer (not a new sale).
   const totalCashIn =
-    systemCashSales + uncoveredZReportCashSales + nonSaleCashIn;
+    systemCashSales +
+    uncoveredZReportCashSales +
+    nonSaleCashIn +
+    collectionTenders.cashTotal;
   const totalCashOut = drawerTransactions.reduce(
     (total, transaction) => total + num(transaction.amountOut),
     0
@@ -237,7 +292,7 @@ export function calculateEodSnapshot({
   const uncoveredZReportBank = selectedZReports
     .filter((report) => {
       const shiftId = String(report?.shiftId || "");
-      if (!shiftId) return systemSales <= 0;
+      if (!shiftId) return posSales <= 0;
       return !shiftsWithSystemSales.has(shiftId);
     })
     .reduce((total, report) => {
@@ -308,7 +363,11 @@ export function calculateEodSnapshot({
     }, 0);
 
   const todayNetBankDelta =
-    uncoveredZReportBank + todayNetBankFromTenders + todayNetBankFromTransfers;
+    uncoveredZReportBank +
+    todayNetBankFromTenders +
+    todayNetBankFromTransfers +
+    externalBankForSystem +
+    collectionTenders.bankTotal;
   const previousBankBalance = num(
     previousReport?.closingBankBalance ?? previousReport?.totalBank
   );
@@ -356,6 +415,13 @@ export function calculateEodSnapshot({
     }
   });
 
+  // External credit bills increase customer receivables.
+  todayNetReceivableDelta += externalTenders.creditTotal;
+  // Delivery-boy outstanding is also receivable until Collect.
+  todayNetReceivableDelta += externalTenders.deliveryAccountTotal;
+  // Collect settlements reduce that boy receivable.
+  todayNetReceivableDelta -= collectionTenders.settledTotal;
+
   const totalReceivable = Math.max(
     0,
     num(previousReport?.totalReceivable) + todayNetReceivableDelta
@@ -401,5 +467,13 @@ export function calculateEodSnapshot({
     dayTransactionCount: dayTransactions.length,
     zReportSales,
     systemSales,
+    posSales,
+    externalSalesTotal,
+    externalCashSales: externalTenders.cashTotal,
+    externalBankSales: externalTenders.bankTotal,
+    externalCreditSales: externalTenders.creditTotal,
+    externalDeliveryAccountSales: externalTenders.deliveryAccountTotal,
+    deliveryBoyCollectionCash: collectionTenders.cashTotal,
+    deliveryBoyCollectionBank: collectionTenders.bankTotal,
   };
 }

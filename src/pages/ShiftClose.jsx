@@ -23,6 +23,7 @@ import BankAccountSearchSelect from "../components/BankAccountSearchSelect.jsx";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
 import { useShiftExpectedCash } from "../hooks/useShiftExpectedCash.js";
 import { usePosSalesTotals } from "../hooks/usePosSalesTotals.js";
+import { useExternalSalesTotals } from "../hooks/useExternalSalesTotals.js";
 import { useEstimatedLiquidity } from "../hooks/useEstimatedBankBalance.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import { useMoney } from "../hooks/useMoney.js";
@@ -93,28 +94,6 @@ function createBankEntry(overrides = {}) {
   };
 }
 
-/** Apply POS bank total into the bank breakdown rows. */
-function applyPosBankToEntries(amount, accounts = [], decimals) {
-  const value = formatAmountDisplay(amount, decimals);
-  if (!Number(amount)) {
-    return [createBankEntry()];
-  }
-  const activeAccounts = (accounts || []).filter(
-    (account) => account?.id && account.isActive !== false
-  );
-  const first = activeAccounts[0];
-  if (!first) {
-    return [createBankEntry({ amount: value })];
-  }
-  return [
-    createBankEntry({
-      bankAccountId: first.id,
-      bankAccountName: first.accountName || "Account",
-      amount: value,
-    }),
-  ];
-}
-
 function ExpectedCashHint({
   clientId,
   businessDate,
@@ -162,7 +141,7 @@ function ExpectedCashHint({
         <CircleHelp className="h-3.5 w-3.5" />
       </button>
       {open ? (
-        <div className="absolute left-0 top-full z-30 mt-2 w-72 rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-xl shadow-black/40">
+        <div className="absolute left-0 top-full z-30 mt-2 w-80 rounded-xl border border-slate-700 bg-slate-950 p-3 shadow-xl shadow-black/40">
           <div className="flex items-center justify-between gap-2">
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
               Expected Cash
@@ -171,6 +150,9 @@ function ExpectedCashHint({
               {hint.loading ? "…" : moneyHint(hint.expectedCash)}
             </p>
           </div>
+          <p className="mt-1 text-[10px] text-slate-500">
+            Z cash is terminal-only. External + Collect always add separately.
+          </p>
           <div className="mt-3 space-y-1.5 border-t border-slate-800 pt-3 text-xs text-slate-300">
             <div className="flex justify-between gap-3">
               <span>Last closed day</span>
@@ -179,7 +161,34 @@ function ExpectedCashHint({
               </span>
             </div>
             <div className="flex justify-between gap-3">
-              <span>Today&apos;s cash sales</span>
+              <span>Z cash entered</span>
+              <span className="tabular-nums text-slate-200">
+                {moneyHint(hint.zCashEntered)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span>
+                Sales module cash
+                {Number(hint.zCashEntered) > 0 ? " (not used)" : ""}
+              </span>
+              <span className="tabular-nums text-slate-200">
+                {moneyHint(hint.posCashSales)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span>External cash bills</span>
+              <span className="tabular-nums text-slate-200">
+                {moneyHint(hint.externalCashSales)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span>Delivery collect (cash sale)</span>
+              <span className="tabular-nums text-slate-200">
+                {moneyHint(hint.collectionCash)}
+              </span>
+            </div>
+            <div className="flex justify-between gap-3">
+              <span>Today&apos;s cash sales (used)</span>
               <span className="tabular-nums text-slate-200">
                 {moneyHint(hint.todaySales)}
               </span>
@@ -187,7 +196,7 @@ function ExpectedCashHint({
             <div className="flex justify-between gap-3">
               <span>Other cash in/out</span>
               <span className="tabular-nums text-slate-200">
-                {moneyHint(hint.otherNet)}
+                {moneyHint(hint.expenseNet)}
               </span>
             </div>
             <div className="flex justify-between gap-3">
@@ -213,8 +222,6 @@ function createCreditEntry() {
 }
 
 const EMPTY_Z_REPORT = {
-  reportNo: "",
-  terminalId: "",
   businessDate: todayYYYYMMDD(),
   grossSales: "0",
   netSales: "0",
@@ -222,6 +229,12 @@ const EMPTY_Z_REPORT = {
   bankTotal: "0",
   creditSalesTotal: "0",
 };
+
+/** Stable identity for one Z-report per day (no terminal / report number UI). */
+function dayReportIdentity(businessDate) {
+  const date = String(businessDate || todayYYYYMMDD()).trim();
+  return { reportNo: date || "DAY", terminalId: "DAY" };
+}
 
 function zReportBankTotalFromDoc(report) {
   if (report?.bankTotal != null && report.bankTotal !== "") {
@@ -477,191 +490,141 @@ function CreditEntryRow({
   );
 }
 
-function PosSalesModuleTotals({
-  clientId,
-  businessDate,
-  shiftId,
-  onApplyCash,
-  onApplyBank,
-  formCash,
-  formBank,
-  formCredit,
-  formGross,
-}) {
-  const { decimals } = useMoney();
-  const totals = usePosSalesTotals({ clientId, businessDate, shiftId });
-  const posNet = roundMoney(totals.cashTotal + totals.bankTotal, decimals);
-
-  const mismatches = [];
-  if (!totals.loading && totals.invoiceCount > 0) {
-    if (formCash != null && toCents(formCash) !== toCents(totals.cashTotal)) {
-      mismatches.push(
-        `Cash Z ${moneyHint(formCash)} ≠ POS ${moneyHint(totals.cashTotal)}`
-      );
-    }
-    if (formBank != null && toCents(formBank) !== toCents(totals.bankTotal)) {
-      mismatches.push(
-        `Bank Z ${moneyHint(formBank)} ≠ POS ${moneyHint(totals.bankTotal)}`
-      );
-    }
-    if (
-      formCredit != null &&
-      toCents(formCredit) !== toCents(totals.creditTotal)
-    ) {
-      mismatches.push(
-        `Credit Z ${moneyHint(formCredit)} ≠ POS ${moneyHint(totals.creditTotal)}`
-      );
-    }
-    if (formGross != null && toCents(formGross) !== toCents(totals.grossTotal)) {
-      mismatches.push(
-        `Gross Z ${moneyHint(formGross)} ≠ POS ${moneyHint(totals.grossTotal)}`
-      );
-    }
-  }
-
+function TenderTotalCards({ cashTotal, bankTotal, creditTotal, loading }) {
   return (
-    <div className="mt-3 rounded-xl border border-sky-900/50 bg-sky-950/20 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-sky-300/90">
-          Sales module totals
-        </p>
-        <p className="text-[11px] text-slate-500">
-          {totals.loading
-            ? "Loading…"
-            : `${totals.invoiceCount} invoice${totals.invoiceCount === 1 ? "" : "s"}`}
+    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+      <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+        <span className="text-[11px] uppercase tracking-wide text-slate-500">
+          Cash
+        </span>
+        <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+          {loading ? "…" : moneyHint(cashTotal)}
         </p>
       </div>
-      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] uppercase tracking-wide text-slate-500">
-              Cash sales
-            </span>
-            {onApplyCash ? (
-              <button
-                type="button"
-                disabled={totals.loading}
-                onClick={() => onApplyCash(totals.cashTotal)}
-                className="text-[11px] font-medium text-sky-300 hover:text-sky-200 disabled:opacity-50"
-              >
-                Use
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
-            {totals.loading ? "…" : moneyHint(totals.cashTotal)}
-          </p>
-        </div>
-        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[11px] uppercase tracking-wide text-slate-500">
-              Bank sales
-            </span>
-            {onApplyBank ? (
-              <button
-                type="button"
-                disabled={totals.loading}
-                onClick={() => onApplyBank(totals.bankTotal)}
-                className="text-[11px] font-medium text-sky-300 hover:text-sky-200 disabled:opacity-50"
-              >
-                Use
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
-            {totals.loading ? "…" : moneyHint(totals.bankTotal)}
-          </p>
-        </div>
-        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
-          <span className="text-[11px] uppercase tracking-wide text-slate-500">
-            Credit sales
-          </span>
-          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
-            {totals.loading ? "…" : moneyHint(totals.creditTotal)}
-          </p>
-        </div>
-        <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
-          <span className="text-[11px] uppercase tracking-wide text-slate-500">
-            Gross (POS)
-          </span>
-          <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
-            {totals.loading ? "…" : moneyHint(totals.grossTotal)}
-          </p>
-          {!totals.loading ? (
-            <p className="mt-0.5 text-[10px] text-slate-500">
-              Net {moneyHint(posNet)}
-            </p>
-          ) : null}
-        </div>
+      <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+        <span className="text-[11px] uppercase tracking-wide text-slate-500">
+          Bank
+        </span>
+        <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+          {loading ? "…" : moneyHint(bankTotal)}
+        </p>
       </div>
-
-      {mismatches.length > 0 ? (
-        <div className="mt-2 rounded-lg border border-amber-800/60 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-100/90">
-          <p className="font-semibold text-amber-200">
-            Z-report totals differ from Sales module
-          </p>
-          <ul className="mt-1 list-disc space-y-0.5 pl-4">
-            {mismatches.map((line) => (
-              <li key={line}>{line}</li>
-            ))}
-          </ul>
-          <p className="mt-1 text-amber-200/70">
-            Use Cash/Bank from POS when the terminal matches Sales, or keep Z
-            figures when the terminal includes offline sales.
-          </p>
-        </div>
-      ) : null}
-
-      <div className="mt-3 overflow-hidden rounded-lg border border-slate-800 bg-slate-950/40">
-        <div className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_72px_88px] gap-2 border-b border-slate-800 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
-          <span>Invoice</span>
-          <span>Customer</span>
-          <span>Tender</span>
-          <span className="text-right">Amount</span>
-        </div>
-        {totals.loading ? (
-          <p className="px-3 py-3 text-xs text-slate-500">Loading sales…</p>
-        ) : totals.items.length === 0 ? (
-          <p className="px-3 py-3 text-xs text-slate-500">
-            No Sales module invoices for this shift/date.
-          </p>
-        ) : (
-          <ul className="max-h-48 overflow-y-auto overscroll-contain divide-y divide-slate-800/80">
-            {totals.items.map((item) => (
-              <li
-                key={item.id}
-                className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_72px_88px] gap-2 px-3 py-2 text-xs"
-              >
-                <span className="truncate font-mono text-slate-200" title={item.invoiceNo}>
-                  {item.invoiceNo}
-                </span>
-                <span className="truncate text-slate-300" title={item.partyName}>
-                  {item.partyName}
-                </span>
-                <span
-                  className={
-                    item.tender === "Cash"
-                      ? "text-emerald-300"
-                      : item.tender === "Bank"
-                        ? "text-sky-300"
-                        : item.tender === "Credit"
-                          ? "text-amber-300"
-                          : "text-slate-400"
-                  }
-                >
-                  {item.tender}
-                </span>
-                <span className="text-right tabular-nums font-medium text-slate-100">
-                  {moneyHint(item.amount)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+      <div className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
+        <span className="text-[11px] uppercase tracking-wide text-slate-500">
+          Credit
+        </span>
+        <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+          {loading ? "…" : moneyHint(creditTotal)}
+        </p>
       </div>
     </div>
   );
 }
+
+/**
+ * Live shop totals for the day — display only.
+ * Z Cash / Bank / Credit fields stay terminal Z-report entry only.
+ */
+function DaySalesTotalsPanel({ clientId, businessDate, shiftId }) {
+  const { decimals } = useMoney();
+  const pos = usePosSalesTotals({ clientId, businessDate, shiftId });
+  const external = useExternalSalesTotals({ clientId, businessDate });
+  const loading = pos.loading || external.loading;
+
+  const appCash = roundMoney(
+    external.shopCashTotal ??
+      (external.cashTotal || 0) + (external.collectionCash || 0),
+    decimals
+  );
+  const appBank = roundMoney(
+    external.shopBankTotal ??
+      (external.bankTotal || 0) + (external.collectionBank || 0),
+    decimals
+  );
+  // Live shop activity only — Z fields stay separate terminal entry.
+  const dayCash = roundMoney(pos.cashTotal + appCash, decimals);
+  const dayBank = roundMoney(pos.bankTotal + appBank, decimals);
+  const dayCredit = roundMoney(
+    pos.creditTotal + external.creditTotal,
+    decimals
+  );
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-sky-300/90">
+            Sales module totals
+          </p>
+          <p className="text-[11px] text-slate-500">
+            {pos.loading
+              ? "Loading…"
+              : `${pos.invoiceCount} invoice${pos.invoiceCount === 1 ? "" : "s"}`}
+          </p>
+        </div>
+        <TenderTotalCards
+          cashTotal={pos.cashTotal}
+          bankTotal={pos.bankTotal}
+          creditTotal={pos.creditTotal}
+          loading={pos.loading}
+        />
+      </div>
+
+      <div className="rounded-xl border border-violet-900/50 bg-violet-950/20 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-violet-300/90">
+            External sales totals
+          </p>
+          <p className="text-[11px] text-slate-500">
+            {external.loading
+              ? "Loading…"
+              : `${external.billCount} bill${external.billCount === 1 ? "" : "s"}`}
+          </p>
+        </div>
+        <TenderTotalCards
+          cashTotal={external.cashTotal}
+          bankTotal={external.bankTotal}
+          creditTotal={external.creditTotal}
+          loading={external.loading}
+        />
+        {!external.loading &&
+        (external.collectionCash > 0 || external.collectionBank > 0) ? (
+          <p className="mt-2 text-[11px] text-violet-200/80">
+            Delivery collect (counts as sale): Cash{" "}
+            {moneyHint(external.collectionCash)}
+            {external.collectionBank > 0
+              ? ` · Bank ${moneyHint(external.collectionBank)}`
+              : ""}
+          </p>
+        ) : null}
+        {!external.loading && external.deliveryOutstanding > 0 ? (
+          <p className="mt-1 text-[11px] text-violet-200/70">
+            Delivery boy still outstanding:{" "}
+            {moneyHint(external.deliveryOutstanding)}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300/90">
+            Live day totals (POS + External + Collect)
+          </p>
+          <p className="text-[11px] text-slate-500">
+            Reference only — not written into Z fields
+          </p>
+        </div>
+        <TenderTotalCards
+          cashTotal={dayCash}
+          bankTotal={dayBank}
+          creditTotal={dayCredit}
+          loading={loading}
+        />
+      </div>
+    </div>
+  );
+}
+
 
 
 export default function ShiftClose() {
@@ -708,6 +671,22 @@ export default function ShiftClose() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [dayZReports, setDayZReports] = useState([]);
+  const autoEditOpenedForRef = useRef("");
+
+  const currentBusinessDate =
+    activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD();
+
+  const existingReportForDate = useMemo(() => {
+    if (!currentBusinessDate) return null;
+    const rows = dayZReports.filter(
+      (report) => String(report.businessDate || "") === currentBusinessDate
+    );
+    if (!rows.length) return null;
+    return [...rows].sort(
+      (a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0)
+    )[0];
+  }, [currentBusinessDate, dayZReports]);
 
   useEffect(() => {
     if (!activeShift?.id) return;
@@ -770,6 +749,29 @@ export default function ShiftClose() {
       }
     );
   }, [activeClientId]);
+
+  useEffect(() => {
+    if (!activeClientId || !currentBusinessDate) {
+      setDayZReports([]);
+      return undefined;
+    }
+    const dayQuery = query(
+      collection(db, "z_reports"),
+      where("clientId", "==", activeClientId),
+      where("businessDate", "==", currentBusinessDate),
+      limit(10)
+    );
+    const unsub = onSnapshot(
+      dayQuery,
+      (snapshot) => {
+        setDayZReports(
+          snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        );
+      },
+      () => setDayZReports([])
+    );
+    return () => unsub();
+  }, [activeClientId, currentBusinessDate]);
 
   useEffect(() => {
     if (!activeClientId || !showRecentReports) return undefined;
@@ -948,8 +950,6 @@ export default function ShiftClose() {
       }
       setEditingReport(report);
       setEditZReport({
-        reportNo: report.reportNo || "",
-        terminalId: report.terminalId || "",
         businessDate: report.businessDate || "",
         grossSales: String(report.grossSales ?? 0),
         netSales: String(report.netSales ?? 0),
@@ -996,6 +996,12 @@ export default function ShiftClose() {
     setEditCreditEntries([]);
     setEditBankEntries([]);
     setError("");
+    if (existingReportForDate?.id) {
+      autoEditOpenedForRef.current = existingReportForDate.id;
+      setMessage(
+        "A Z-report already exists for this date. Use Update Z-Report — creating a new one is not allowed."
+      );
+    }
   }
 
   function setEditZField(field, value) {
@@ -1062,26 +1068,42 @@ export default function ShiftClose() {
         throw new Error("Net Sales must equal Cash Total + Bank Total.");
       }
 
+      const identity = dayReportIdentity(payload.businessDate);
+      const updatedReport = {
+        ...editingReport,
+        ...payload,
+        reportNo: identity.reportNo,
+        terminalId: identity.terminalId,
+        cashIncludesExternal: false,
+        bankIncludesExternal: false,
+        creditEntries: populatedEntries.map(
+          ({ partyId, partyName, amount }) => ({
+            partyId,
+            partyName,
+            amount: Number(amount),
+          })
+        ),
+        bankEntries: normalizedBankEntries,
+      };
       await updateClosedZReport({
         zReportId: editingReport.id,
         closingCashCounted: nonNegativeNumber(
           editClosingCash,
           "Closing cash counted"
         ),
-        zReport: {
-          ...payload,
-          creditEntries: populatedEntries.map(
-            ({ partyId, partyName, amount }) => ({
-              partyId,
-              partyName,
-              amount: Number(amount),
-            })
-          ),
-          bankEntries: normalizedBankEntries,
-        },
+        zReport: updatedReport,
       });
       setMessage("Z-report and credit ledger updated successfully.");
-      closeEditReport();
+      setEditingReport(updatedReport);
+      setEditZReport({
+        businessDate: updatedReport.businessDate || "",
+        grossSales: String(updatedReport.grossSales ?? 0),
+        netSales: String(updatedReport.netSales ?? 0),
+        cashTotal: String(updatedReport.cashTotal ?? 0),
+        bankTotal: String(zReportBankTotalFromDoc(updatedReport)),
+        creditSalesTotal: String(updatedReport.creditSalesTotal ?? 0),
+      });
+      setError("");
     } catch (reason) {
       setError(reason?.message || "Failed to update Z-report.");
     } finally {
@@ -1093,6 +1115,25 @@ export default function ShiftClose() {
     event.preventDefault();
     setError("");
     setMessage("");
+
+    const businessDate =
+      activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD();
+    const existing =
+      existingReportForDate ||
+      dayZReports.find(
+        (report) => String(report.businessDate || "") === businessDate
+      ) ||
+      null;
+    if (existing?.id) {
+      setSaving(false);
+      setMessage("");
+      setError(
+        "A Z-report already exists for this date. Update the existing report — new save is not allowed."
+      );
+      await openEditReport(existing);
+      return;
+    }
+
     setSaving(true);
     try {
       const populatedCreditEntries = creditEntries.filter(
@@ -1149,6 +1190,7 @@ export default function ShiftClose() {
       ) {
         throw new Error("Net Sales must equal Cash Total + Bank Total.");
       }
+      const identity = dayReportIdentity(businessDate);
       await saveZReport({
         closingCashCounted: nonNegativeNumber(
           closingCashCounted,
@@ -1156,6 +1198,10 @@ export default function ShiftClose() {
         ),
         zReport: {
           ...payload,
+          reportNo: identity.reportNo,
+          terminalId: identity.terminalId,
+          cashIncludesExternal: false,
+          bankIncludesExternal: false,
           creditEntries: populatedCreditEntries.map(
             ({ partyId, partyName, amount }) => ({
               partyId,
@@ -1186,7 +1232,7 @@ export default function ShiftClose() {
   }
 
   return (
-    <div className="mx-auto max-w-4xl space-y-5">
+    <div className="mx-auto w-full min-w-0 max-w-4xl space-y-4 sm:space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold text-white">Z-Report Entry</h1>
@@ -1211,8 +1257,48 @@ export default function ShiftClose() {
         </div>
       ) : null}
 
+      {existingReportForDate && !editingReport ? (
+        <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-3 text-sm text-amber-100">
+          A Z-report already exists for{" "}
+          <span className="font-semibold">
+            {formatIsoDate(currentBusinessDate) || currentBusinessDate}
+          </span>
+          . New save is not allowed —{" "}
+          <button
+            type="button"
+            className="font-semibold text-amber-200 underline hover:text-white"
+            onClick={() => openEditReport(existingReportForDate)}
+          >
+            open it to update
+          </button>
+          .
+        </div>
+      ) : null}
+
       {loadingShift ? (
         <div className="text-slate-300">Loading active shift…</div>
+      ) : existingReportForDate ? (
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 text-sm text-slate-300">
+          <p>
+            Business date{" "}
+            <span className="font-semibold text-white">
+              {formatIsoDate(currentBusinessDate) || currentBusinessDate}
+            </span>
+          </p>
+          <p className="mt-2 text-slate-400">
+            Editing the saved Z-report for this date. Create is disabled when a
+            report already exists.
+          </p>
+          {!editingReport ? (
+            <button
+              type="button"
+              onClick={() => openEditReport(existingReportForDate)}
+              className="mt-4 rounded-lg bg-blue-600 px-4 py-2 font-semibold text-white hover:bg-blue-500"
+            >
+              Update Z-Report
+            </button>
+          ) : null}
+        </div>
       ) : (
         <form
           onSubmit={handleSaveZReport}
@@ -1230,24 +1316,6 @@ export default function ShiftClose() {
           </div>
 
           <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="text-sm text-slate-300">
-              Z-Report Number
-              <input
-                required
-                value={zReport.reportNo}
-                onChange={(event) => setZField("reportNo", event.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-              />
-            </label>
-            <label className="text-sm text-slate-300">
-              Terminal ID
-              <input
-                required
-                value={zReport.terminalId}
-                onChange={(event) => setZField("terminalId", event.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-              />
-            </label>
             <label className="text-sm text-slate-300">
               Opening Float
               <input
@@ -1297,7 +1365,9 @@ export default function ShiftClose() {
             ))}
           </div>
           <p className="mt-2 text-[11px] text-slate-500">
-            Net = Cash + Bank · Gross = Cash + Bank + Credit
+            Enter Cash / Bank / Credit from the terminal Z-report only. Net =
+            Cash + Bank · Gross = Net + Credit. Live shop totals are shown
+            separately below and are not added into these fields.
           </p>
 
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1333,22 +1403,12 @@ export default function ShiftClose() {
             </label>
           </div>
 
-          <PosSalesModuleTotals
+          <DaySalesTotalsPanel
             clientId={activeClientId}
             businessDate={
               activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD()
             }
             shiftId={activeShift?.id}
-            formCash={zReport.cashTotal}
-            formBank={bankTotalFromBreakdown}
-            formCredit={creditTotalFromBreakdown}
-            formGross={derivedNewTotals.grossSales}
-            onApplyCash={(amount) =>
-              setZField("cashTotal", formatAmountDisplay(amount))
-            }
-            onApplyBank={(amount) =>
-              setBankEntries(applyPosBankToEntries(amount, bankAccounts))
-            }
           />
 
           <section className="mt-5 border-t border-slate-800 pt-5">
@@ -1477,9 +1537,9 @@ export default function ShiftClose() {
             <thead className="bg-slate-950/70 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-3">Date</th>
-                <th className="px-4 py-3">Z-Report Number</th>
                 <th className="px-4 py-3 text-right">Net Sales</th>
-                <th className="px-4 py-3 text-right">Total Cash</th>
+                <th className="px-4 py-3 text-right">Cash</th>
+                <th className="px-4 py-3 text-right">Bank</th>
                 <th className="px-4 py-3 text-right">Action</th>
               </tr>
             </thead>
@@ -1499,12 +1559,14 @@ export default function ShiftClose() {
                     <td className="px-4 py-3">
                       {formatIsoDate(report.businessDate, "-")}
                     </td>
-                    <td className="px-4 py-3">{report.reportNo || "-"}</td>
                     <td className="px-4 py-3 text-right">
                       {formatMoney(report.netSales || 0)}
                     </td>
                     <td className="px-4 py-3 text-right">
                       {formatMoney(report.cashTotal || 0)}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {formatMoney(zReportBankTotalFromDoc(report))}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <button
@@ -1539,10 +1601,14 @@ export default function ShiftClose() {
             <div className="flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-white">
-                  Edit Z-Report
+                  {existingReportForDate
+                    ? "Update Z-Report"
+                    : "Edit Z-Report"}
                 </h2>
                 <p className="mt-1 text-xs text-slate-400">
-                  Linked shift: {editingReport.shiftId}
+                  {existingReportForDate
+                    ? `Saved report for ${formatIsoDate(editingReport.businessDate) || editingReport.businessDate}`
+                    : `Linked shift: ${editingReport.shiftId}`}
                 </p>
               </div>
               <button
@@ -1562,28 +1628,6 @@ export default function ShiftClose() {
             ) : null}
 
             <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2">
-              <label className="text-sm text-slate-300">
-                Z-Report Number
-                <input
-                  required
-                  value={editZReport.reportNo}
-                  onChange={(event) =>
-                    setEditZField("reportNo", event.target.value)
-                  }
-                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-                />
-              </label>
-              <label className="text-sm text-slate-300">
-                Terminal ID
-                <input
-                  required
-                  value={editZReport.terminalId}
-                  onChange={(event) =>
-                    setEditZField("terminalId", event.target.value)
-                  }
-                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-                />
-              </label>
               <label className="text-sm text-slate-300">
                 Business Date
                 <DateInput
@@ -1644,7 +1688,9 @@ export default function ShiftClose() {
               ))}
             </div>
             <p className="mt-2 text-[11px] text-slate-500">
-              Net = Cash + Bank · Gross = Cash + Bank + Credit
+              Enter Cash / Bank / Credit from the terminal Z-report only. Net =
+              Cash + Bank · Gross = Net + Credit. Live shop totals are shown
+              separately below and are not added into these fields.
             </p>
 
             <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1682,20 +1728,10 @@ export default function ShiftClose() {
               </label>
             </div>
 
-            <PosSalesModuleTotals
+            <DaySalesTotalsPanel
               clientId={activeClientId}
               businessDate={editZReport.businessDate}
               shiftId={editingReport?.shiftId}
-              formCash={editZReport.cashTotal}
-              formBank={editBankTotalFromBreakdown}
-              formCredit={editCreditTotalFromBreakdown}
-              formGross={derivedEditTotals.grossSales}
-              onApplyCash={(amount) =>
-                setEditZField("cashTotal", formatAmountDisplay(amount))
-              }
-              onApplyBank={(amount) =>
-                setEditBankEntries(applyPosBankToEntries(amount, bankAccounts))
-              }
             />
 
             <section className="mt-5 border-t border-slate-800 pt-5">
@@ -1783,7 +1819,7 @@ export default function ShiftClose() {
                 onClick={closeEditReport}
                 className="rounded-lg border border-slate-700 px-4 py-2 font-medium text-slate-300 hover:bg-slate-800"
               >
-                Cancel
+                Close
               </button>
               <button
                 type="submit"
