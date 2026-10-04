@@ -174,7 +174,14 @@ export const HELP_MODULES = [
         items: [
           "Customers can have a simple ID such as C001.",
           "IDs are auto-generated for new customers from Sales or Parties.",
-          "Search parties by name, contact, or ID.",
+          "Search parties by name, contact, address, or ID.",
+        ],
+      },
+      {
+        title: "Address & opening balance",
+        items: [
+          "Optional address fields: house/building, flat, road/post, block/pin, landmark.",
+          "Opening balance posts a credit entry (to collect or to pay) used by ledgers, receivables/payables, and payment/receipt screens.",
         ],
       },
       {

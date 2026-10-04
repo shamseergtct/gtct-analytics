@@ -14,6 +14,7 @@ import {
   serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
+import { useAuth } from "../context/AuthContext.jsx";
 import { useClient } from "../context/ClientContext.jsx";
 import {
   PARTY_BULK_TYPES,
@@ -22,6 +23,14 @@ import {
   parsePartiesCsv,
 } from "../utils/partyBulk.js";
 import { getPartyCode, nextPartyCode } from "../utils/partyCode.js";
+import {
+  defaultOpeningBalanceSide,
+  deletePartyOpeningBalanceTxn,
+  syncPartyOpeningBalanceTxn,
+} from "../utils/partyOpeningBalance.js";
+import { formatMoney } from "../utils/money.js";
+import { useMoney } from "../hooks/useMoney.js";
+import DateInput from "../components/DateInput.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 
 const PARTY_TYPES = PARTY_BULK_TYPES;
@@ -29,8 +38,22 @@ const FIRESTORE_BATCH_LIMIT = 450;
 const FIELD_CLASS =
   "mt-1 h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm leading-normal text-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-600";
 
+function todayYYYYMMDD() {
+  const date = new Date();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function supportsOpeningBalance(partyType) {
+  const key = String(partyType || "").trim().toLowerCase();
+  return key === "customer" || key === "supplier" || key === "both";
+}
+
 export default function Parties() {
+  const { user } = useAuth();
   const { activeClientId, activeClientData } = useClient();
+  const { step: moneyStep, sample: moneySample } = useMoney();
 
   const [loading, setLoading] = useState(true);
   const [parties, setParties] = useState([]);
@@ -61,6 +84,15 @@ export default function Parties() {
   const [type, setType] = useState("Customer");
   const [contact, setContact] = useState("");
   const [taxNumber, setTaxNumber] = useState("");
+  const [houseOrBuilding, setHouseOrBuilding] = useState("");
+  const [flat, setFlat] = useState("");
+  const [roadOrPost, setRoadOrPost] = useState("");
+  const [blockOrPin, setBlockOrPin] = useState("");
+  const [landmark, setLandmark] = useState("");
+  const [openingBalance, setOpeningBalance] = useState("");
+  const [openingBalanceSide, setOpeningBalanceSide] = useState("receivable");
+  const [openingBalanceDate, setOpeningBalanceDate] = useState(todayYYYYMMDD());
+  const [openingBalanceTxnId, setOpeningBalanceTxnId] = useState("");
 
   async function fetchParties() {
     if (!activeClientId) {
@@ -105,7 +137,7 @@ export default function Parties() {
     if (!q) return parties;
 
     return parties.filter((p) => {
-      const s = `${getPartyCode(p)} ${p.name || ""} ${p.type || ""} ${p.contact || ""} ${p.phone || ""} ${p.taxNumber || ""}`.toLowerCase();
+      const s = `${getPartyCode(p)} ${p.name || ""} ${p.type || ""} ${p.contact || ""} ${p.phone || ""} ${p.taxNumber || ""} ${p.houseOrBuilding || ""} ${p.flat || ""} ${p.roadOrPost || ""} ${p.blockOrPin || ""} ${p.landmark || ""}`.toLowerCase();
       return s.includes(q);
     });
   }, [parties, search]);
@@ -116,6 +148,15 @@ export default function Parties() {
     setType("Customer");
     setContact("");
     setTaxNumber("");
+    setHouseOrBuilding("");
+    setFlat("");
+    setRoadOrPost("");
+    setBlockOrPin("");
+    setLandmark("");
+    setOpeningBalance("");
+    setOpeningBalanceSide("receivable");
+    setOpeningBalanceDate(todayYYYYMMDD());
+    setOpeningBalanceTxnId("");
     setModalError("");
   }
 
@@ -130,6 +171,21 @@ export default function Parties() {
     setType(party.type || "Customer");
     setContact(party.contact || "");
     setTaxNumber(party.taxNumber || "");
+    setHouseOrBuilding(party.houseOrBuilding || "");
+    setFlat(party.flat || "");
+    setRoadOrPost(party.roadOrPost || "");
+    setBlockOrPin(party.blockOrPin || "");
+    setLandmark(party.landmark || "");
+    setOpeningBalance(
+      party.openingBalance != null && party.openingBalance !== ""
+        ? String(party.openingBalance)
+        : ""
+    );
+    setOpeningBalanceSide(
+      party.openingBalanceSide || defaultOpeningBalanceSide(party.type)
+    );
+    setOpeningBalanceDate(party.openingBalanceDate || todayYYYYMMDD());
+    setOpeningBalanceTxnId(party.openingBalanceTxnId || "");
     setModalError("");
     setIsOpen(true);
   }
@@ -157,6 +213,16 @@ export default function Parties() {
       return;
     }
 
+    const openingAmount = Number(openingBalance);
+    if (
+      supportsOpeningBalance(type) &&
+      openingBalance.trim() !== "" &&
+      (!Number.isFinite(openingAmount) || openingAmount < 0)
+    ) {
+      setModalError("Opening balance must be zero or greater.");
+      return;
+    }
+
     setSaving(true);
 
     const payload = {
@@ -166,10 +232,27 @@ export default function Parties() {
       contact: contact.trim(),
       phone: contact.trim(),
       taxNumber: taxNumber.trim() || "",
+      houseOrBuilding: houseOrBuilding.trim(),
+      flat: flat.trim(),
+      roadOrPost: roadOrPost.trim(),
+      blockOrPin: blockOrPin.trim(),
+      landmark: landmark.trim(),
+      openingBalance: supportsOpeningBalance(type)
+        ? Number.isFinite(openingAmount) && openingAmount > 0
+          ? openingAmount
+          : 0
+        : 0,
+      openingBalanceSide: supportsOpeningBalance(type)
+        ? openingBalanceSide
+        : "",
+      openingBalanceDate: supportsOpeningBalance(type)
+        ? openingBalanceDate || todayYYYYMMDD()
+        : "",
       updatedAt: serverTimestamp(),
     };
 
     try {
+      let partyId = editingId;
       if (editingId) {
         const existing = parties.find((p) => p.id === editingId);
         if (!getPartyCode(existing) && (type === "Customer" || type === "Both")) {
@@ -180,11 +263,36 @@ export default function Parties() {
         if (type === "Customer" || type === "Both") {
           payload.partyCode = nextPartyCode(parties, "C");
         }
-        await addDoc(collection(db, "parties"), {
+        const created = await addDoc(collection(db, "parties"), {
           ...payload,
           createdAt: serverTimestamp(),
         });
+        partyId = created.id;
       }
+
+      const nextTxnId = supportsOpeningBalance(type)
+        ? await syncPartyOpeningBalanceTxn({
+            clientId: activeClientId,
+            partyId,
+            partyName: payload.name,
+            partyType: type,
+            amount: payload.openingBalance,
+            side: payload.openingBalanceSide || defaultOpeningBalanceSide(type),
+            date: payload.openingBalanceDate || todayYYYYMMDD(),
+            existingTxnId: openingBalanceTxnId,
+            userId: user?.uid || "",
+          })
+        : await (async () => {
+            if (openingBalanceTxnId) {
+              await deletePartyOpeningBalanceTxn(openingBalanceTxnId);
+            }
+            return "";
+          })();
+
+      await updateDoc(doc(db, "parties", partyId), {
+        openingBalanceTxnId: nextTxnId || "",
+        updatedAt: serverTimestamp(),
+      });
 
       await fetchParties();
       closeModal();
@@ -206,6 +314,9 @@ export default function Parties() {
     setPageError("");
 
     try {
+      if (party.openingBalanceTxnId) {
+        await deletePartyOpeningBalanceTxn(party.openingBalanceTxnId);
+      }
       await deleteDoc(doc(db, "parties", party.id));
       await fetchParties();
     } catch (e) {
@@ -437,6 +548,19 @@ export default function Parties() {
                     {getPartyCode(p)}
                   </span>
                 ) : null}
+                {Number(p.openingBalance) > 0 ? (
+                  <div className="mt-0.5 text-xs font-normal text-slate-500">
+                    Opening {formatMoney(p.openingBalance)}{" "}
+                    {p.openingBalanceSide === "payable" ? "to pay" : "to collect"}
+                  </div>
+                ) : null}
+                {p.houseOrBuilding || p.landmark ? (
+                  <div className="mt-0.5 text-xs font-normal text-slate-500 truncate">
+                    {[p.houseOrBuilding, p.flat, p.roadOrPost, p.blockOrPin, p.landmark]
+                      .filter(Boolean)
+                      .join(", ")}
+                  </div>
+                ) : null}
               </div>
               <div className="col-span-3 text-slate-300">{p.type}</div>
               <div className="col-span-3 text-slate-300">{p.contact || "-"}</div>
@@ -467,8 +591,8 @@ export default function Parties() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70" onClick={closeModal} />
 
-          <div className="relative w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 shadow-xl">
-            <div className="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="relative max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950 shadow-xl">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-slate-800 bg-slate-950 px-5 py-4">
               <div className="text-slate-100 font-semibold">
                 {editingId ? "Edit Party" : "Add Party"}
               </div>
@@ -493,7 +617,11 @@ export default function Parties() {
                   <label className="text-sm text-slate-300">Type</label>
                   <select
                     value={type}
-                    onChange={(e) => setType(e.target.value)}
+                    onChange={(e) => {
+                      const nextType = e.target.value;
+                      setType(nextType);
+                      setOpeningBalanceSide(defaultOpeningBalanceSide(nextType));
+                    }}
                     className={FIELD_CLASS}
                   >
                     {PARTY_TYPES.map((t) => (
@@ -524,6 +652,108 @@ export default function Parties() {
                   placeholder="VAT / GST number"
                 />
               </div>
+
+              <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                  Address
+                </p>
+                <div>
+                  <label className="text-sm text-slate-300">House or building</label>
+                  <input
+                    value={houseOrBuilding}
+                    onChange={(e) => setHouseOrBuilding(e.target.value)}
+                    className={FIELD_CLASS}
+                    placeholder="House / building name or number"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="text-sm text-slate-300">Flat</label>
+                    <input
+                      value={flat}
+                      onChange={(e) => setFlat(e.target.value)}
+                      className={FIELD_CLASS}
+                      placeholder="Flat / apartment"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-slate-300">Road or post</label>
+                    <input
+                      value={roadOrPost}
+                      onChange={(e) => setRoadOrPost(e.target.value)}
+                      className={FIELD_CLASS}
+                      placeholder="Road / street / post"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="text-sm text-slate-300">Block or pin</label>
+                    <input
+                      value={blockOrPin}
+                      onChange={(e) => setBlockOrPin(e.target.value)}
+                      className={FIELD_CLASS}
+                      placeholder="Block / PIN / area code"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-sm text-slate-300">Landmark</label>
+                    <input
+                      value={landmark}
+                      onChange={(e) => setLandmark(e.target.value)}
+                      className={FIELD_CLASS}
+                      placeholder="Nearby landmark"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {supportsOpeningBalance(type) ? (
+                <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Opening balance
+                    </p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Posts a credit opening entry so balances show in ledgers,
+                      receivables/payables, and payment/receipt screens.
+                    </p>
+                  </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="text-sm text-slate-300">Amount</label>
+                      <input
+                        type="number"
+                        min="0"
+                        step={moneyStep}
+                        value={openingBalance}
+                        onChange={(e) => setOpeningBalance(e.target.value)}
+                        className={FIELD_CLASS}
+                        placeholder={moneySample}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-sm text-slate-300">Balance type</label>
+                      <select
+                        value={openingBalanceSide}
+                        onChange={(e) => setOpeningBalanceSide(e.target.value)}
+                        className={FIELD_CLASS}
+                      >
+                        <option value="receivable">To collect (receivable)</option>
+                        <option value="payable">To pay (payable)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-sm text-slate-300">As of date</label>
+                    <DateInput
+                      value={openingBalanceDate}
+                      onChange={(e) => setOpeningBalanceDate(e.target.value)}
+                      className={`${FIELD_CLASS} mt-1`}
+                    />
+                  </div>
+                </div>
+              ) : null}
 
               {modalError ? (
                 <div className="rounded-lg border border-red-800 bg-red-950/40 text-red-200 px-3 py-2 text-sm">
