@@ -46,6 +46,7 @@ import {
   reportViewSupportsAggregation,
 } from "../utils/reportAggregation.js";
 import { formatMoney, formatMoneyLocale } from "../utils/money.js";
+import { useBankAccounts } from "../hooks/useBankAccounts.js";
 
 const MAIN_TABS = [
   { key: "quick", label: "Quick Snapshot", icon: BarChart3 },
@@ -58,6 +59,9 @@ const LEDGER_TYPES = [
   { key: "sales", label: "Sales Report" },
   { key: "ledger", label: "Transaction Ledger" },
   { key: "cashflow", label: "Cash Flow Statement" },
+  { key: "cash", label: "Cash Report" },
+  { key: "bank", label: "Bank Report" },
+  { key: "locker", label: "Locker Report" },
   { key: "customers", label: "Customer Ledgers" },
   { key: "vendors", label: "Vendor Ledgers" },
   { key: "loans", label: "Loan Report" },
@@ -65,6 +69,22 @@ const LEDGER_TYPES = [
   { key: "payables", label: "Payables List" },
   { key: "expense", label: "Expense Breakdown" },
   { key: "z_audit", label: "Z-Report Audit" },
+];
+
+const LIQUIDITY_MOVEMENT_OPTIONS = [
+  { key: "all", label: "All movements" },
+  { key: "sales", label: "Sales" },
+  { key: "receipt", label: "Receipts" },
+  { key: "payment", label: "Payments" },
+  { key: "expense", label: "Purchases / Expenses" },
+  { key: "loan", label: "Loans" },
+  { key: "transfer", label: "Transfers" },
+];
+
+const LOCKER_DIRECTION_OPTIONS = [
+  { key: "all", label: "All directions" },
+  { key: "cash_to_locker", label: "Cash → Locker" },
+  { key: "locker_to_cash", label: "Locker → Cash" },
 ];
 
 function money(value) {
@@ -86,6 +106,7 @@ function KpiCard({ label, value, tone = "text-white" }) {
 
 export default function ReportsHub() {
   const { activeClientId, activeClientData } = useClient();
+  const { accounts: bankAccounts } = useBankAccounts(activeClientId);
   const [mainTab, setMainTab] = useState("quick");
   const [ledgerType, setLedgerType] = useState("pnl");
   const [preset, setPreset] = useState("month");
@@ -101,7 +122,12 @@ export default function ReportsHub() {
   const [viewType, setViewType] = useState("invoice");
   const [paymentFilter, setPaymentFilter] = useState("all");
   const [partyFilter, setPartyFilter] = useState("all");
+  const [liquidityMovementFilter, setLiquidityMovementFilter] = useState("all");
+  const [bankAccountFilter, setBankAccountFilter] = useState("all");
+  const [lockerDirectionFilter, setLockerDirectionFilter] = useState("all");
   const [compareYoY, setCompareYoY] = useState(false);
+  const isLiquidityReport =
+    ledgerType === "cash" || ledgerType === "bank" || ledgerType === "locker";
 
   const range = useMemo(
     () => resolveReportDateRange(preset, customFrom, customTo),
@@ -159,6 +185,75 @@ export default function ReportsHub() {
       sourceRows = filterRowsByParty(sourceRows, partyFilter);
     }
 
+    if (isLiquidityReport) {
+      sourceRows = sourceRows.filter((row) => {
+        if (row?.id === "__opening__" || row?._isOpening) return true;
+        if (
+          liquidityMovementFilter !== "all" &&
+          String(row?._movement || "") !== liquidityMovementFilter
+        ) {
+          return false;
+        }
+        if (ledgerType === "bank" && bankAccountFilter !== "all") {
+          if (String(row?._accountId || "") !== bankAccountFilter) {
+            return false;
+          }
+        }
+        if (ledgerType === "locker" && lockerDirectionFilter !== "all") {
+          if (String(row?._direction || "") !== lockerDirectionFilter) {
+            return false;
+          }
+        }
+        return true;
+      });
+
+      // Rebuild running balance after filters (keep opening row first).
+      const openingRow = sourceRows.find(
+        (row) => row?.id === "__opening__" || row?._isOpening
+      );
+      const movementRows = sourceRows.filter(
+        (row) => !(row?.id === "__opening__" || row?._isOpening)
+      );
+      let balance = Number(
+        openingRow?._balance ?? ledger?.liquidity?.opening ?? 0
+      );
+      if (!Number.isFinite(balance)) balance = 0;
+      const recomputed = movementRows.map((row) => {
+        const amountIn = Number(row._in || 0);
+        const amountOut = Number(row._out || 0);
+        balance += amountIn - amountOut;
+        return {
+          ...row,
+          balance: formatMoney(balance),
+          _balance: balance,
+        };
+      });
+      const filteredRows = openingRow
+        ? [openingRow, ...recomputed]
+        : recomputed;
+      const totalIn = recomputed.reduce(
+        (sum, row) => sum + Number(row._in || 0),
+        0
+      );
+      const totalOut = recomputed.reduce(
+        (sum, row) => sum + Number(row._out || 0),
+        0
+      );
+      const opening = Number(ledger?.liquidity?.opening || 0);
+      return {
+        ...ledger,
+        rows: filteredRows,
+        summary: {
+          ...ledger.summary,
+          opening: formatMoney(opening),
+          totalIn: formatMoney(totalIn),
+          totalOut: formatMoney(totalOut),
+          closing: formatMoney(opening + totalIn - totalOut),
+          count: String(recomputed.length),
+        },
+      };
+    }
+
     const salesFiltersActive =
       usesSalesStyleFilters &&
       (paymentFilter !== "all" || partyFilter !== "all");
@@ -194,6 +289,10 @@ export default function ReportsHub() {
     ledgerType,
     paymentFilter,
     partyFilter,
+    isLiquidityReport,
+    liquidityMovementFilter,
+    bankAccountFilter,
+    lockerDirectionFilter,
   ]);
 
   useEffect(() => {
@@ -202,6 +301,9 @@ export default function ReportsHub() {
     setViewType("invoice");
     setPaymentFilter("all");
     setPartyFilter("all");
+    setLiquidityMovementFilter("all");
+    setBankAccountFilter("all");
+    setLockerDirectionFilter("all");
   }, [ledgerType, activeClientId]);
 
   useEffect(() => {
@@ -373,7 +475,13 @@ export default function ReportsHub() {
         ? Boolean(ledger?.cashflow)
         : ledger?.layout === "due_list"
           ? Boolean(ledger?.rows?.some((row) => row.id !== "__grand_total__"))
-          : Boolean(displayedLedger?.rows?.length);
+          : ledger?.layout === "liquidity"
+            ? Boolean(
+                displayedLedger?.rows?.some(
+                  (row) => !(row.id === "__opening__" || row._isOpening)
+                ) || Number(ledger?.liquidity?.opening || 0) !== 0
+              )
+            : Boolean(displayedLedger?.rows?.length);
 
   if (!activeClientId) {
     return (
@@ -591,6 +699,18 @@ export default function ReportsHub() {
                       ledger?.summary?.totalOut
                         ? `Total out ${ledger.summary.totalOut}`
                         : "",
+                      displayedLedger?.summary?.opening && isLiquidityReport
+                        ? `Opening ${displayedLedger.summary.opening}`
+                        : "",
+                      displayedLedger?.summary?.totalIn && isLiquidityReport
+                        ? `In ${displayedLedger.summary.totalIn}`
+                        : "",
+                      displayedLedger?.summary?.totalOut && isLiquidityReport
+                        ? `Out ${displayedLedger.summary.totalOut}`
+                        : "",
+                      displayedLedger?.summary?.closing && isLiquidityReport
+                        ? `Closing ${displayedLedger.summary.closing}`
+                        : "",
                     ]
                       .filter(Boolean)
                       .join(" · ")}
@@ -652,9 +772,12 @@ export default function ReportsHub() {
                 </div>
               ) : null}
 
-              {supportsViewType || showPaymentFilter || showPartyFilter ? (
+              {supportsViewType ||
+              showPaymentFilter ||
+              showPartyFilter ||
+              isLiquidityReport ? (
                 <div className="flex flex-wrap items-end gap-3 print:hidden">
-                  {supportsViewType ? (
+                  {supportsViewType && !isLiquidityReport ? (
                     <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
                       Report type
                       <select
@@ -711,6 +834,64 @@ export default function ReportsHub() {
                       </select>
                     </label>
                   ) : null}
+
+                  {isLiquidityReport && ledgerType !== "locker" ? (
+                    <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Movement
+                      <select
+                        value={liquidityMovementFilter}
+                        onChange={(event) =>
+                          setLiquidityMovementFilter(event.target.value)
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
+                      >
+                        {LIQUIDITY_MOVEMENT_OPTIONS.map((item) => (
+                          <option key={item.key} value={item.key}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  {ledgerType === "bank" ? (
+                    <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Bank account
+                      <select
+                        value={bankAccountFilter}
+                        onChange={(event) =>
+                          setBankAccountFilter(event.target.value)
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
+                      >
+                        <option value="all">All accounts</option>
+                        {bankAccounts.map((account) => (
+                          <option key={account.id} value={account.id}>
+                            {account.accountName || account.id}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  {ledgerType === "locker" ? (
+                    <label className="block min-w-[11rem] max-w-xs flex-1 text-xs font-semibold uppercase tracking-wider text-slate-500">
+                      Direction
+                      <select
+                        value={lockerDirectionFilter}
+                        onChange={(event) =>
+                          setLockerDirectionFilter(event.target.value)
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-sm font-normal normal-case tracking-normal text-white"
+                      >
+                        {LOCKER_DIRECTION_OPTIONS.map((item) => (
+                          <option key={item.key} value={item.key}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -721,6 +902,29 @@ export default function ReportsHub() {
                 </div>
               ) : (
                 <div className="report-print-surface rounded-2xl border border-slate-800 bg-slate-900/40 p-3 sm:p-4 print:border-0 print:bg-white print:p-0">
+                  {isLiquidityReport && displayedLedger?.summary ? (
+                    <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      <KpiCard
+                        label="Opening"
+                        value={displayedLedger.summary.opening}
+                      />
+                      <KpiCard
+                        label="Total In"
+                        value={displayedLedger.summary.totalIn}
+                        tone="text-emerald-300"
+                      />
+                      <KpiCard
+                        label="Total Out"
+                        value={displayedLedger.summary.totalOut}
+                        tone="text-rose-300"
+                      />
+                      <KpiCard
+                        label="Closing"
+                        value={displayedLedger.summary.closing}
+                        tone="text-sky-300"
+                      />
+                    </div>
+                  ) : null}
                   {ledger?.layout === "pnl" ? (
                     <ProfitLossStatement
                       pnl={ledger?.pnl}

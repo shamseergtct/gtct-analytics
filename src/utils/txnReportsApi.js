@@ -80,12 +80,22 @@ function isLoanTxn(t) {
   return String(t?.liabilityType || "").toUpperCase() === "LOAN";
 }
 
-function isExcludedTxn(t) {
+function isExcludedTxn(t, { includeTransfers = false } = {}) {
   if (!t) return true;
-  if (t?.internalTransfer === true) return true;
+  const status = String(t?.status || "POSTED").toUpperCase();
+  if (["DRAFT", "VOID", "CANCELLED", "REVERSED"].includes(status)) {
+    return true;
+  }
 
   const ty = normType(t?.type);
-  if (ty === "transfer" || ty === "refill") return true;
+  if (ty === "refill") return true;
+
+  if (includeTransfers) {
+    return false;
+  }
+
+  if (t?.internalTransfer === true) return true;
+  if (ty === "transfer") return true;
 
   return false;
 }
@@ -129,6 +139,7 @@ export async function fetchTxnRange({
   mode,
   partyId,
   category,
+  includeTransfers = false,
 }) {
   if (!clientId) throw new Error("No active client selected");
   if (!fromDate || !toDate) throw new Error("Select From and To dates");
@@ -157,7 +168,7 @@ export async function fetchTxnRange({
   const rows = [];
   snap.forEach((docSnap) => {
     const d = docSnap.data();
-    if (isExcludedTxn(d)) return;
+    if (isExcludedTxn(d, { includeTransfers })) return;
 
     if (wantType && normType(d?.type) !== wantType) return;
 

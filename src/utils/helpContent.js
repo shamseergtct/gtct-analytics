@@ -98,17 +98,17 @@ export const HELP_MODULES = [
       {
         title: "Z-report entry",
         items: [
-          "Cash, Bank, and Credit fields are terminal Z-report amounts only — do not add POS, External, or Collect into them.",
-          "Net = Cash + Bank and Gross = Net + Credit update automatically from those Z fields.",
-          "Live day totals (POS + External + Collect) appear on a separate line for reference and are not written into Z fields.",
-          "Delivery boy account bills stay outstanding until Collect; Collect cash/bank counts as sale in live totals and expected cash.",
+          "Day Sales shows Sales module, External bills, and Z sales entry separately.",
+          "Day totals card sums Net Sale (cash + bank), Credit Sale, and Gross Sale across Sales module + External + Z entry.",
+          "Enter Cash, Bank, and Credit as multi-row breakdowns; Cash and Credit require a customer on each row.",
+          "Z Cash Total is the sum of cash entries (same pattern as bank and credit).",
         ],
       },
       {
         title: "Closing cash",
         items: [
           "Enter Closing Cash Counted from the physical drawer count.",
-          "Expected cash uses Z cash when entered, plus External and Collect cash (POS cash is used only when Z cash is blank).",
+          "Expected cash uses the Z cash total from your cash entries.",
           "Only one Z-report per business date — Terminal ID and Z-report number are not required.",
           "If a report already exists for the date, create is blocked — open Update Z-Report to change it.",
         ],
@@ -243,7 +243,7 @@ export const HELP_MODULES = [
         items: [
           "Business date is at the top; bill filters (terminal, sale type, payment mode, delivery boy, search) sit just above All Bills.",
           "Credit Report lists credit-tender bills separately from the full bill list.",
-          "For each terminal, enter today’s starting and last bill number, save the range, then Find missing to list gaps.",
+          "Today’s Bill Control: enter each terminal’s start/last bill number, Save range, then Find missing bills.",
           "Missing check uses whole-number bill sequences; voided bills count as missing.",
           "Void keeps the bill for history but removes it from totals.",
         ],
@@ -297,7 +297,7 @@ export const HELP_MODULES = [
       {
         title: "Where to look",
         items: [
-          "Reports Hub — quick KPIs and detailed ledgers (including Sales Report).",
+          "Reports Hub — quick KPIs and detailed ledgers (Sales, Cash, Bank, Locker, and more).",
           "Daily Pulse — day-level performance snapshot.",
           "Range Reports — multi-day transaction reports.",
           "Party Reports — party-centric statements.",

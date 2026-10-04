@@ -218,6 +218,9 @@ export function ShiftProvider({ children }) {
     const shiftRef = doc(db, "shifts", currentActiveShift.id);
     const settingsRef = doc(db, "client_settings", activeClientId);
     const zReportRef = doc(collection(db, "z_reports"));
+    const cashEntries = Array.isArray(zReport?.cashEntries)
+      ? zReport.cashEntries
+      : [];
     const creditEntries = Array.isArray(zReport?.creditEntries)
       ? zReport.creditEntries
       : [];
@@ -262,11 +265,22 @@ export function ShiftProvider({ children }) {
         "Gross Sales must equal Net Sales plus Credit Sales Total."
       );
     }
+    if (cashEntries.length > 100) {
+      throw new Error("A shift cannot contain more than 100 cash entries.");
+    }
     if (creditEntries.length > 100) {
       throw new Error("A shift cannot contain more than 100 credit entries.");
     }
     if (bankEntries.length > 100) {
       throw new Error("A shift cannot contain more than 100 bank entries.");
+    }
+    for (const entry of cashEntries) {
+      if (!String(entry?.partyId || "").trim()) {
+        throw new Error("Every cash entry requires a customer.");
+      }
+      if (num(entry?.amount) <= 0) {
+        throw new Error("Every cash entry amount must be greater than zero.");
+      }
     }
     for (const entry of creditEntries) {
       if (!String(entry?.partyId || "").trim()) {
@@ -283,6 +297,14 @@ export function ShiftProvider({ children }) {
       if (num(entry?.amount) <= 0) {
         throw new Error("Every bank entry amount must be greater than zero.");
       }
+    }
+    if (
+      cashEntries.reduce((sum, entry) => sum + toCents(entry.amount), 0) !==
+      toCents(zReport.cashTotal)
+    ) {
+      throw new Error(
+        "The individual cash entries must equal the Cash Total."
+      );
     }
     if (
       creditEntries.reduce((sum, entry) => sum + toCents(entry.amount), 0) !==
@@ -307,7 +329,10 @@ export function ShiftProvider({ children }) {
       await runTransaction(db, async (tx) => {
         transactionAttempts += 1;
         const uniquePartyIds = Array.from(
-          new Set(creditEntries.map((entry) => String(entry.partyId)))
+          new Set([
+            ...cashEntries.map((entry) => String(entry.partyId)),
+            ...creditEntries.map((entry) => String(entry.partyId)),
+          ])
         );
         const uniqueBankAccountIds = Array.from(
           new Set(bankEntries.map((entry) => String(entry.bankAccountId)))
@@ -345,6 +370,24 @@ export function ShiftProvider({ children }) {
         ) {
           throw new Error("A different shift is active for this shop.");
         }
+
+        const normalizedCashEntries = cashEntries.map((entry) => {
+          const partySnapshot = partySnapshotById.get(String(entry.partyId));
+          const party = partySnapshot.data();
+          const partyType = String(party?.type || "").trim().toLowerCase();
+          if (
+            !partySnapshot.exists() ||
+            party?.clientId !== activeClientId ||
+            !["customer", "both"].includes(partyType)
+          ) {
+            throw new Error("A cash entry contains an invalid customer.");
+          }
+          return {
+            partyId: partySnapshot.id,
+            partyName: String(party.name || entry.partyName || "").trim(),
+            amount: num(entry.amount),
+          };
+        });
 
         const normalizedCreditEntries = creditEntries.map((entry, index) => {
           const partySnapshot = partySnapshotById.get(String(entry.partyId));
@@ -402,13 +445,13 @@ export function ShiftProvider({ children }) {
           cardTotal: bankTotal,
           qrTotal: 0,
           creditSalesTotal: num(zReport.creditSalesTotal),
-          // Z cash/bank are terminal-only; External/Collect stay additive in EOD.
-          cashIncludesExternal: false,
-          bankIncludesExternal: false,
+          cashIncludesExternal: zReport.cashIncludesExternal === true,
+          bankIncludesExternal: zReport.bankIncludesExternal === true,
           openingFloat: num(zReport.openingFloat),
           closingCashCounted: num(closingCashCounted),
           shiftOpenedAtMs: num(shiftSnap.data()?.openedAtMs),
           shiftStatus: "OPEN",
+          cashEntries: normalizedCashEntries,
           creditEntries: normalizedCreditEntries.map(
             ({ partyId, partyName, amount, transactionId }) => ({
               partyId,
@@ -549,6 +592,9 @@ export function ShiftProvider({ children }) {
       throw new Error("Z-report ID is required.");
     }
 
+    const cashEntries = Array.isArray(zReport?.cashEntries)
+      ? zReport.cashEntries
+      : [];
     const creditEntries = Array.isArray(zReport?.creditEntries)
       ? zReport.creditEntries
       : [];
@@ -589,11 +635,22 @@ export function ShiftProvider({ children }) {
         "Gross Sales must equal Net Sales plus Credit Sales Total."
       );
     }
+    if (cashEntries.length > 100) {
+      throw new Error("A Z-report cannot contain more than 100 cash entries.");
+    }
     if (creditEntries.length > 100) {
       throw new Error("A Z-report cannot contain more than 100 credit entries.");
     }
     if (bankEntries.length > 100) {
       throw new Error("A Z-report cannot contain more than 100 bank entries.");
+    }
+    for (const entry of cashEntries) {
+      if (!String(entry?.partyId || "").trim()) {
+        throw new Error("Every cash entry requires a customer.");
+      }
+      if (num(entry?.amount) <= 0) {
+        throw new Error("Every cash entry amount must be greater than zero.");
+      }
     }
     for (const entry of creditEntries) {
       if (!String(entry?.partyId || "").trim()) {
@@ -610,6 +667,14 @@ export function ShiftProvider({ children }) {
       if (num(entry?.amount) <= 0) {
         throw new Error("Every bank entry amount must be greater than zero.");
       }
+    }
+    if (
+      cashEntries.reduce((sum, entry) => sum + toCents(entry.amount), 0) !==
+      toCents(zReport.cashTotal)
+    ) {
+      throw new Error(
+        "The individual cash entries must equal the Cash Total."
+      );
     }
     if (
       creditEntries.reduce((sum, entry) => sum + toCents(entry.amount), 0) !==
@@ -653,7 +718,10 @@ export function ShiftProvider({ children }) {
           .filter(Boolean)
           .map((transactionId) => doc(db, "transactions", transactionId));
         const uniquePartyIds = Array.from(
-          new Set(creditEntries.map((entry) => String(entry.partyId)))
+          new Set([
+            ...cashEntries.map((entry) => String(entry.partyId)),
+            ...creditEntries.map((entry) => String(entry.partyId)),
+          ])
         );
         const uniqueBankAccountIds = Array.from(
           new Set(bankEntries.map((entry) => String(entry.bankAccountId)))
@@ -729,6 +797,24 @@ export function ShiftProvider({ children }) {
         ) {
           throw new Error("A linked credit transaction failed validation.");
         }
+      });
+
+      const normalizedCashEntries = cashEntries.map((entry) => {
+        const partySnapshot = partySnapshotById.get(String(entry.partyId));
+        const party = partySnapshot.data();
+        const partyType = String(party?.type || "").trim().toLowerCase();
+        if (
+          !partySnapshot.exists() ||
+          party?.clientId !== activeClientId ||
+          !["customer", "both"].includes(partyType)
+        ) {
+          throw new Error("A cash entry contains an invalid customer.");
+        }
+        return {
+          partyId: partySnapshot.id,
+          partyName: String(party.name || entry.partyName || "").trim(),
+          amount: num(entry.amount),
+        };
       });
 
       const normalizedCreditEntries = creditEntries.map((entry, index) => {
@@ -812,8 +898,8 @@ export function ShiftProvider({ children }) {
         cardTotal: bankTotal,
         qrTotal: 0,
         creditSalesTotal: num(zReport.creditSalesTotal),
-        cashIncludesExternal: false,
-        bankIncludesExternal: false,
+        cashIncludesExternal: zReport.cashIncludesExternal === true,
+        bankIncludesExternal: zReport.bankIncludesExternal === true,
         openingFloat: num(zReport.openingFloat),
         closingCashCounted: num(closingCashCounted),
         shiftOpenedAtMs: num(shiftSnapshot.data()?.openedAtMs),
@@ -821,6 +907,7 @@ export function ShiftProvider({ children }) {
           .trim()
           .toUpperCase() || "CLOSED",
         voidTotal: deleteField(),
+        cashEntries: normalizedCashEntries,
         creditEntries: normalizedCreditEntries.map(
           ({ partyId, partyName, amount, transactionId }) => ({
             partyId,

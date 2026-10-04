@@ -816,6 +816,8 @@ service cloud.firestore {
         && request.resource.data.creditEntries.size() <= 100
         && request.resource.data.bankEntries is list
         && request.resource.data.bankEntries.size() <= 100
+        && request.resource.data.cashEntries is list
+        && request.resource.data.cashEntries.size() <= 100
         && !request.resource.data.keys().hasAny(['voidTotal'])
         && get(
           /databases/$(database)/documents/shifts/$(request.resource.data.shiftId)
@@ -850,6 +852,8 @@ service cloud.firestore {
         && request.resource.data.creditEntries.size() <= 100
         && request.resource.data.bankEntries is list
         && request.resource.data.bankEntries.size() <= 100
+        && request.resource.data.cashEntries is list
+        && request.resource.data.cashEntries.size() <= 100
         && !request.resource.data.keys().hasAny(['voidTotal']);
 
       allow delete: if isSuperAdmin();

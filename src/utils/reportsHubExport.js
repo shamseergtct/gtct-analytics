@@ -403,13 +403,24 @@ export function printPnLDocument({ shopName, rangeLabel, pnl }) {
     )
     .join("");
 
+  const revenueLinesHtml = (pnl?.revenueLines || []).length
+    ? pnl.revenueLines
+        .map(
+          (line) =>
+            `<div class="line"><span>${escapeHtml(line.label)}</span><span class="amt">${escapeHtml(
+              money(line.amount)
+            )}</span></div>`
+        )
+        .join("")
+    : `<div class="line"><span>Sales Revenue</span><span class="amt">${escapeHtml(
+        money(pnl?.totalRevenue)
+      )}</span></div>`;
+
   const bodyHtml = `
     <div class="section">
       <h3>Revenue</h3>
       <div class="section-body">
-        <div class="line"><span>Sales Revenue</span><span class="amt">${escapeHtml(
-          money(pnl?.totalRevenue)
-        )}</span></div>
+        ${revenueLinesHtml}
         <div class="line bold"><span>Total Revenue</span><span class="amt">${escapeHtml(
           money(pnl?.totalRevenue)
         )}</span></div>
@@ -493,9 +504,15 @@ export function exportPnLCsv({
     csvEscape(rangeLabel || ""),
     "",
     "Section,Line Item,Amount",
-    `Revenue,Sales Revenue,${money(pnl?.totalRevenue)}`,
-    `Revenue,Total Revenue,${money(pnl?.totalRevenue)}`,
   ];
+  if ((pnl?.revenueLines || []).length) {
+    pnl.revenueLines.forEach((line) => {
+      lines.push(`Revenue,${csvEscape(line.label)},${money(line.amount)}`);
+    });
+  } else {
+    lines.push(`Revenue,Sales Revenue,${money(pnl?.totalRevenue)}`);
+  }
+  lines.push(`Revenue,Total Revenue,${money(pnl?.totalRevenue)}`);
   (pnl?.expenseCategories || []).forEach((row) => {
     lines.push(
       `Operating Expenses,${csvEscape(row.label)},${money(row.amount)}`
@@ -540,8 +557,15 @@ export function exportPnLPdf({ shopName, rangeLabel, pnl }) {
   doc.setTextColor(20);
   y += 32;
 
+  const revenueBody = (pnl?.revenueLines || []).length
+    ? pnl.revenueLines.map((line) => [
+        "Revenue",
+        line.label,
+        money(line.amount),
+      ])
+    : [["Revenue", "Sales Revenue", money(pnl?.totalRevenue)]];
   const body = [
-    ["Revenue", "Sales Revenue", money(pnl?.totalRevenue)],
+    ...revenueBody,
     ["Revenue", "Total Revenue", money(pnl?.totalRevenue)],
     ...(pnl?.expenseCategories || []).map((row) => [
       "Operating Expenses",

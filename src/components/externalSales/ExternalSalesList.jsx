@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
+import { ChevronDown } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import DateInput from "../DateInput.jsx";
@@ -125,6 +126,7 @@ export default function ExternalSalesList({
   const [boyFilter, setBoyFilter] = useState("");
   const [search, setSearch] = useState("");
   const [showVoided, setShowVoided] = useState(false);
+  const [openTerminalLists, setOpenTerminalLists] = useState({});
 
   const currencyPrefix = currency ? `${currency} ` : "";
 
@@ -512,115 +514,148 @@ export default function ExternalSalesList({
         </div>
 
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm font-semibold text-white">All Bills</div>
-            <div className="text-xs text-slate-500">
-              {filtered.length} shown · bill no. smallest → largest · per
-              terminal
-            </div>
-          </div>
+          <div className="text-sm font-semibold text-white">All Bills</div>
 
           {loading ? (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-sm text-slate-500">
               Loading bills…
             </div>
           ) : billsByTerminal.length ? (
-            billsByTerminal.map((group) => (
-              <div
-                key={group.terminalId || group.terminalName}
-                className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
-                  <div className="text-sm font-semibold text-white">
-                    {group.terminalName}
-                  </div>
-                  <div className="text-xs text-slate-500">
-                    {group.bills.length} bill
-                    {group.bills.length === 1 ? "" : "s"}
-                  </div>
+            billsByTerminal.map((group) => {
+              const groupKey = group.terminalId || group.terminalName;
+              const isOpen = openTerminalLists[groupKey] !== false;
+              const panelId = `terminal-bills-${groupKey}`;
+
+              return (
+                <div
+                  key={groupKey}
+                  className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40"
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenTerminalLists((prev) => ({
+                        ...prev,
+                        [groupKey]: !isOpen,
+                      }))
+                    }
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-900/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/50"
+                    aria-expanded={isOpen}
+                    aria-controls={panelId}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm font-semibold text-white">
+                        {group.terminalName}
+                      </div>
+                      <div className="mt-0.5 text-xs tabular-nums text-slate-500">
+                        {group.bills.length} bill
+                        {group.bills.length === 1 ? "" : "s"}
+                      </div>
+                    </div>
+                    <ChevronDown
+                      className={`h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${
+                        isOpen ? "rotate-180" : ""
+                      }`}
+                      aria-hidden="true"
+                    />
+                  </button>
+
+                  {isOpen ? (
+                    <div
+                      id={panelId}
+                      className="overflow-x-auto overscroll-x-contain border-t border-slate-800"
+                    >
+                      <table className="min-w-[900px] w-full text-left text-sm text-slate-300">
+                        <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
+                          <tr>
+                            <th className="px-4 py-3">Bill No.</th>
+                            <th className="px-4 py-3">Type</th>
+                            <th className="px-4 py-3">Payment</th>
+                            <th className="px-4 py-3">Amount</th>
+                            <th className="px-4 py-3">Customer</th>
+                            <th className="px-4 py-3">Location</th>
+                            <th className="px-4 py-3">Delivery Boy</th>
+                            <th className="px-4 py-3">Delivery Charge</th>
+                            <th className="px-4 py-3">Commission</th>
+                            <th className="px-4 py-3 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {group.bills.map((bill) => (
+                            <tr
+                              key={bill.id}
+                              className={`border-t border-slate-800/80 hover:bg-slate-950/40 ${
+                                bill.voided ? "opacity-60" : ""
+                              }`}
+                            >
+                              <td className="px-4 py-3 font-medium tabular-nums text-white">
+                                {bill.billNumber}
+                                {bill.voided ? (
+                                  <span className="ml-2 text-xs text-amber-300">
+                                    Voided
+                                  </span>
+                                ) : null}
+                              </td>
+                              <td className="px-4 py-3">
+                                {externalSaleTypeLabel(bill.saleType)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {externalPaymentModeLabel(bill)}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {currencyPrefix}
+                                {formatMoney(
+                                  bill.billAmount,
+                                  currencyDecimals
+                                )}
+                              </td>
+                              <td className="px-4 py-3">
+                                {bill.customerName || "—"}
+                              </td>
+                              <td className="px-4 py-3">
+                                {bill.customerLocation || "—"}
+                              </td>
+                              <td className="px-4 py-3">
+                                {bill.deliveryBoyNameSnapshot || "—"}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {currencyPrefix}
+                                {formatMoney(
+                                  bill.deliveryCharge,
+                                  currencyDecimals
+                                )}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap">
+                                {currencyPrefix}
+                                {formatMoney(
+                                  bill.commissionAmount,
+                                  currencyDecimals
+                                )}
+                              </td>
+                              <td className="px-4 py-3 text-right">
+                                {bill.voided ? (
+                                  <span className="text-xs text-slate-500">
+                                    —
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => voidBill(bill)}
+                                    className={BTN_SECONDARY}
+                                  >
+                                    Void
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : null}
                 </div>
-                <div className="overflow-x-auto overscroll-x-contain">
-                  <table className="min-w-[900px] w-full text-left text-sm text-slate-300">
-                    <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
-                      <tr>
-                        <th className="px-4 py-3">Bill No.</th>
-                        <th className="px-4 py-3">Type</th>
-                        <th className="px-4 py-3">Payment</th>
-                        <th className="px-4 py-3">Amount</th>
-                        <th className="px-4 py-3">Customer</th>
-                        <th className="px-4 py-3">Location</th>
-                        <th className="px-4 py-3">Delivery Boy</th>
-                        <th className="px-4 py-3">Delivery Charge</th>
-                        <th className="px-4 py-3">Commission</th>
-                        <th className="px-4 py-3 text-right">Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {group.bills.map((bill) => (
-                        <tr
-                          key={bill.id}
-                          className={`border-t border-slate-800/80 hover:bg-slate-950/40 ${
-                            bill.voided ? "opacity-60" : ""
-                          }`}
-                        >
-                          <td className="px-4 py-3 font-medium tabular-nums text-white">
-                            {bill.billNumber}
-                            {bill.voided ? (
-                              <span className="ml-2 text-xs text-amber-300">
-                                Voided
-                              </span>
-                            ) : null}
-                          </td>
-                          <td className="px-4 py-3">
-                            {externalSaleTypeLabel(bill.saleType)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {externalPaymentModeLabel(bill)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {currencyPrefix}
-                            {formatMoney(bill.billAmount, currencyDecimals)}
-                          </td>
-                          <td className="px-4 py-3">
-                            {bill.customerName || "—"}
-                          </td>
-                          <td className="px-4 py-3">
-                            {bill.customerLocation || "—"}
-                          </td>
-                          <td className="px-4 py-3">
-                            {bill.deliveryBoyNameSnapshot || "—"}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {currencyPrefix}
-                            {formatMoney(bill.deliveryCharge, currencyDecimals)}
-                          </td>
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {currencyPrefix}
-                            {formatMoney(
-                              bill.commissionAmount,
-                              currencyDecimals
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            {bill.voided ? (
-                              <span className="text-xs text-slate-500">—</span>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => voidBill(bill)}
-                                className={BTN_SECONDARY}
-                              >
-                                Void
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ))
+              );
+            })
           ) : (
             <div className="rounded-2xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-sm text-slate-500">
               No external sales bills match these filters.

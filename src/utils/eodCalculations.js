@@ -99,24 +99,11 @@ export function calculateEodSnapshot({
     externalTenders.bankTotal +
     externalTenders.creditTotal;
   // Delivery-boy account bills are still day revenue (settled later via Collect).
+  // Z sales entry is additive with Sales-module + External (never treated as
+  // already including those sources — cashIncludesExternal flags are legacy).
   const externalSalesTotal =
     externalShopSales + externalTenders.deliveryAccountTotal;
-  const zIncludesExternalCash = selectedZReports.some(
-    (report) => report?.cashIncludesExternal === true
-  );
-  const zIncludesExternalBank = selectedZReports.some(
-    (report) => report?.bankIncludesExternal === true
-  );
-  // If Z already merged External cash/bank, keep only the unmerged External
-  // pieces (credit + delivery account, and any tender not marked included).
-  let externalSalesForSystem = externalSalesTotal;
-  if (zIncludesExternalCash) {
-    externalSalesForSystem -= externalTenders.cashTotal;
-  }
-  if (zIncludesExternalBank) {
-    externalSalesForSystem -= externalTenders.bankTotal;
-  }
-  externalSalesForSystem = Math.max(0, externalSalesForSystem);
+  const externalSalesForSystem = externalSalesTotal;
 
   // Sales exclude internals and never include loans/transfers.
   const salesTransactions = dayTransactions.filter(
@@ -201,14 +188,9 @@ export function calculateEodSnapshot({
         ) === "cash"
     )
     .reduce((total, transaction) => total + salesAmount(transaction), 0);
-  // When a Z-report already merged External into its cash/bank totals, do not
-  // add those External tenders again beside uncovered Z.
-  const externalCashForSystem = zIncludesExternalCash
-    ? 0
-    : externalTenders.cashTotal;
-  const externalBankForSystem = zIncludesExternalBank
-    ? 0
-    : externalTenders.bankTotal;
+  // Always include External shop cash/bank beside POS and Z entry.
+  const externalCashForSystem = externalTenders.cashTotal;
+  const externalBankForSystem = externalTenders.bankTotal;
   const systemCashSales = posCashSales + externalCashForSystem;
   const uncoveredZReportCashSales = selectedZReports
     .filter((report) => {

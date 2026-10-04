@@ -47,6 +47,7 @@ export default function ProfitLossStatement({ pnl, emptyMessage }) {
     totalExpenses = 0,
     netProfit = 0,
     expenseCategories = [],
+    revenueLines = [],
   } = pnl;
 
   const profitTone =
@@ -61,7 +62,17 @@ export default function ProfitLossStatement({ pnl, emptyMessage }) {
           Revenue
         </h3>
         <div className="mt-1">
-          <LineRow label="Sales Revenue" amount={totalRevenue} />
+          {revenueLines.length ? (
+            revenueLines.map((line) => (
+              <LineRow
+                key={line.key}
+                label={line.label}
+                amount={line.amount}
+              />
+            ))
+          ) : (
+            <LineRow label="Sales Revenue" amount={totalRevenue} />
+          )}
           <div className="border-t border-slate-800 pt-1 print:border-slate-200">
             <LineRow label="Total Revenue" amount={totalRevenue} bold />
           </div>

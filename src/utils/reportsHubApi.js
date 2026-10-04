@@ -6,12 +6,17 @@ import { FULL_PERIOD_START } from "./reportDateRange.js";
 import {
   collection,
   getDocs,
+  limit,
   orderBy,
   query,
   where,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { formatMoney } from "./money.js";
+import {
+  summarizeDeliveryBoyCollections,
+  summarizeExternalBillTenders,
+} from "./externalSales.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -255,7 +260,7 @@ function businessDateSortMs(yyyyMmDd) {
  * Combine income + expense entries, sort oldest→newest by date then createdAt,
  * then compute rolling balance.
  */
-function buildRollingBalanceRows(entries) {
+function buildRollingBalanceRows(entries, openingBalance = 0) {
   const sorted = [...entries].sort((a, b) => {
     const dateDiff = num(a._sortDateMs) - num(b._sortDateMs);
     if (dateDiff !== 0) return dateDiff;
@@ -263,7 +268,7 @@ function buildRollingBalanceRows(entries) {
     if (createdDiff !== 0) return createdDiff;
     return String(a.ref || "").localeCompare(String(b.ref || ""));
   });
-  let balance = 0;
+  let balance = num(openingBalance);
   return sorted.map((entry) => {
     const amountIn = num(entry._in);
     const amountOut = num(entry._out);
@@ -273,12 +278,149 @@ function buildRollingBalanceRows(entries) {
       date: entry.date,
       ref: entry.ref,
       party: entry.party,
+      account: entry.account || "",
+      type: entry.type || "",
       description: entry.description,
       in: amountIn ? money(amountIn) : "",
       out: amountOut ? money(amountOut) : "",
       balance: money(balance),
+      _in: amountIn,
+      _out: amountOut,
+      _balance: balance,
+      _accountId: entry._accountId || "",
+      _movement: entry._movement || "",
+      _direction: entry._direction || "",
     };
   });
+}
+
+function transferTypeOf(row) {
+  return String(row?.transferType || row?.category || "")
+    .trim()
+    .toUpperCase();
+}
+
+function isTransferRow(row) {
+  return (
+    row?.internalTransfer === true ||
+    String(row?.type || "")
+      .trim()
+      .toLowerCase() === "transfer"
+  );
+}
+
+function isCashTender(row) {
+  const mode = String(row?.mode || row?.paymentMode || "")
+    .trim()
+    .toLowerCase();
+  return mode === "cash" || mode.startsWith("cas");
+}
+
+function isBankTender(row) {
+  const mode = String(row?.mode || row?.paymentMode || "")
+    .trim()
+    .toLowerCase();
+  return (
+    mode === "card" ||
+    mode === "qr" ||
+    mode === "bank_transfer" ||
+    mode.startsWith("ban") ||
+    /^bank/.test(mode)
+  );
+}
+
+function isCreditTender(row) {
+  const mode = String(row?.mode || row?.paymentMode || "")
+    .trim()
+    .toLowerCase();
+  return mode === "credit" || mode.startsWith("cre");
+}
+
+function txnAmount(row) {
+  return (
+    num(row?.totalAmount) ||
+    Math.max(num(row?.amountIn), num(row?.amountOut))
+  );
+}
+
+function liquidityEntryBase(row, overrides = {}) {
+  const businessDate =
+    typeof row.date === "string"
+      ? row.date.slice(0, 10)
+      : row.date?.toDate
+        ? toIso(row.date.toDate())
+        : row.dateMs
+          ? toIso(new Date(num(row.dateMs)))
+          : "";
+  const createdAtMs =
+    num(row.createdAtMs) ||
+    (row.createdAt?.toMillis?.() ?? 0) ||
+    num(row.dateMs) ||
+    (row.date?.toMillis?.() ?? 0);
+  return {
+    id: row.id,
+    date: txnDateLabel(row) || formatIsoDate(businessDate) || businessDate,
+    ref: txnRefLabel(row),
+    party: String(row.partyName || "—"),
+    account: "",
+    type: "",
+    description: String(row.description || row.category || row.type || "—"),
+    _in: 0,
+    _out: 0,
+    _sortDateMs:
+      businessDateSortMs(businessDate) ||
+      num(row.dateMs) ||
+      (row.date?.toMillis?.() ?? 0),
+    _sortCreatedAtMs: createdAtMs,
+    _accountId: String(row.bankAccountId || ""),
+    _movement: "",
+    _direction: "",
+    ...overrides,
+  };
+}
+
+async function fetchOpeningDailyReport(clientId, fromDate) {
+  const before = dayBeforeIso(fromDate);
+  if (!before) return null;
+  const reportsQuery = query(
+    collection(db, "daily_reports"),
+    where("clientId", "==", clientId),
+    where("date", "<=", before),
+    orderBy("date", "desc"),
+    limit(1)
+  );
+  const snap = await getDocs(reportsQuery);
+  if (snap.empty) return null;
+  return { id: snap.docs[0].id, ...snap.docs[0].data() };
+}
+
+async function fetchExternalBillsInRange(clientId, fromDate, toDate) {
+  // Equality-only query avoids optional composite indexes; filter range in JS.
+  const billsQuery = query(
+    collection(db, "external_sales_bills"),
+    where("clientId", "==", clientId)
+  );
+  const snap = await getDocs(billsQuery);
+  return snap.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((bill) => {
+      const date = String(bill?.businessDate || "").slice(0, 10);
+      return date >= fromDate && date <= toDate;
+    });
+}
+
+async function fetchCollectionsInRange(clientId, fromDate, toDate) {
+  const collectionsQuery = query(
+    collection(db, "delivery_boy_collections"),
+    where("clientId", "==", clientId)
+  );
+  const snap = await getDocs(collectionsQuery);
+  return snap.docs
+    .map((item) => ({ id: item.id, ...item.data() }))
+    .filter((row) => {
+      const date = String(row?.businessDate || "").slice(0, 10);
+      return date >= fromDate && date <= toDate;
+    });
 }
 
 async function fetchZReportsInRange(clientId, fromDate, toDate) {
@@ -382,8 +524,81 @@ async function fetchSalesInvoicesByClient(clientId) {
   return byId;
 }
 
+function zReportGrossSales(report) {
+  if (report?.grossSales != null && report.grossSales !== "") {
+    return num(report.grossSales);
+  }
+  return num(report?.netSales) + num(report?.creditSalesTotal);
+}
+
+function zReportBankAmount(report) {
+  if (report?.bankTotal != null && report.bankTotal !== "") {
+    return num(report.bankTotal);
+  }
+  return num(report?.cardTotal) + num(report?.qrTotal);
+}
+
 /**
- * Sales-module (POS) revenue first; Z-report net sales only for dates with no POS sales.
+ * External bill tenders as Sales-report style rows (Cash / Bank / Credit).
+ * Delivery-boy account bills count as credit-like day sales.
+ */
+function buildExternalSalesEntries(bills = []) {
+  const byDate = new Map();
+  for (const bill of bills) {
+    if (bill?.voided === true) continue;
+    const date = String(bill?.businessDate || "").slice(0, 10);
+    if (!date) continue;
+    if (!byDate.has(date)) byDate.set(date, []);
+    byDate.get(date).push(bill);
+  }
+
+  const entries = [];
+  for (const [businessDate, dayBills] of byDate) {
+    const tenders = summarizeExternalBillTenders(dayBills);
+    const push = ({ tender, amount, idSuffix, party }) => {
+      if (amount <= 0) return;
+      entries.push({
+        id: `ext-${idSuffix}-${businessDate}`,
+        date: formatIsoDate(businessDate) || businessDate,
+        ref: "—",
+        party,
+        description: tender,
+        _in: amount,
+        _out: 0,
+        _sortDateMs: businessDateSortMs(businessDate),
+        _sortCreatedAtMs: 0,
+      });
+    };
+    push({
+      tender: "Cash",
+      amount: num(tenders.cashTotal),
+      idSuffix: "cash",
+      party: "External Sales",
+    });
+    push({
+      tender: "Bank",
+      amount: num(tenders.bankTotal),
+      idSuffix: "bank",
+      party: "External Sales",
+    });
+    push({
+      tender: "Credit",
+      amount: num(tenders.creditTotal),
+      idSuffix: "credit",
+      party: "External Sales",
+    });
+    push({
+      tender: "Credit",
+      amount: num(tenders.deliveryAccountTotal),
+      idSuffix: "delivery",
+      party: "Delivery Boy Account",
+    });
+  }
+  return entries;
+}
+
+/**
+ * Sales-module (POS) revenue first; Z-report gross only for dates with no POS sales.
  */
 function combinePosAndZReportRevenue(salesRows = [], zReports = []) {
   const posByDate = new Map();
@@ -402,7 +617,7 @@ function combinePosAndZReportRevenue(salesRows = [], zReports = []) {
   zReports.forEach((report) => {
     const date = String(report?.businessDate || "").slice(0, 10);
     if (!date || posByDate.has(date)) return;
-    zFallback += num(report?.netSales);
+    zFallback += zReportGrossSales(report);
   });
 
   return {
@@ -427,7 +642,14 @@ export async function fetchDetailedLedger({
   const columns = ledgerColumns();
 
   if (reportType === "pnl") {
-    const [zReports, purchaseRows, expenseRows, salesRows] = await Promise.all([
+    const [
+      zReports,
+      purchaseRows,
+      expenseRows,
+      salesRows,
+      externalBills,
+      collections,
+    ] = await Promise.all([
       fetchZReportsInRange(clientId, fromDate, toDate),
       fetchTxnRange({
         clientId,
@@ -447,9 +669,23 @@ export async function fetchDetailedLedger({
         toDate,
         typeKey: "sales",
       }),
+      fetchExternalBillsInRange(clientId, fromDate, toDate),
+      fetchCollectionsInRange(clientId, fromDate, toDate),
     ]);
 
-    const { totalRevenue } = combinePosAndZReportRevenue(salesRows, zReports);
+    const { posTotal, zFallback, datesWithPosSales } =
+      combinePosAndZReportRevenue(salesRows, zReports);
+
+    // External shop tenders + delivery-account bills (Collect is settlement, not new sale).
+    const externalTenders = summarizeExternalBillTenders(externalBills);
+    const externalRevenue =
+      num(externalTenders.cashTotal) +
+      num(externalTenders.bankTotal) +
+      num(externalTenders.creditTotal) +
+      num(externalTenders.deliveryAccountTotal);
+    // Z entry is additive with External. When POS exists on a date, Z is gap-fill only.
+    const zRevenue = zFallback;
+    const totalRevenue = posTotal + externalRevenue + zRevenue;
 
     const categoryTotals = new Map();
     [...purchaseRows, ...expenseRows].forEach((row) => {
@@ -474,12 +710,33 @@ export async function fetchDetailedLedger({
     );
     const netProfit = totalRevenue - totalExpenses;
 
+    const revenueLines = [
+      { key: "pos", label: "Sales module (POS)", amount: posTotal },
+      { key: "external", label: "External sales", amount: externalRevenue },
+      { key: "z", label: "Z-report sales", amount: zRevenue },
+    ].filter((line) => line.amount > 0);
+
     // Flat rows for CSV/PDF export compatibility.
     const exportRows = [
+      ...(revenueLines.length
+        ? revenueLines.map((line) => ({
+            id: `rev-${line.key}`,
+            section: "Revenue",
+            label: line.label,
+            amount: money(line.amount),
+          }))
+        : [
+            {
+              id: "revenue",
+              section: "Revenue",
+              label: "Sales Revenue",
+              amount: money(0),
+            },
+          ]),
       {
-        id: "revenue",
+        id: "total-revenue",
         section: "Revenue",
-        label: "Sales Revenue",
+        label: "Total Revenue",
         amount: money(totalRevenue),
       },
       ...expenseCategories.map((row) => ({
@@ -516,13 +773,19 @@ export async function fetchDetailedLedger({
         totalExpenses,
         netProfit,
         expenseCategories,
+        revenueLines,
+        posRevenue: posTotal,
+        externalRevenue,
+        zRevenue,
+        collectionCount: collections.length,
+        datesWithPosSales: datesWithPosSales.size,
         zReportCount: zReports.length,
       },
     };
   }
 
   if (reportType === "sales") {
-    const [salesRows, zReports, invoiceById] = await Promise.all([
+    const [salesRows, zReports, invoiceById, externalBills] = await Promise.all([
       fetchTxnRange({
         clientId,
         fromDate,
@@ -531,6 +794,7 @@ export async function fetchDetailedLedger({
       }),
       fetchZReportsInRange(clientId, fromDate, toDate),
       fetchSalesInvoicesByClient(clientId),
+      fetchExternalBillsInRange(clientId, fromDate, toDate),
     ]);
 
     const { datesWithPosSales } = combinePosAndZReportRevenue(
@@ -583,33 +847,43 @@ export async function fetchDetailedLedger({
       });
     });
 
+    // External bills are always additive with POS / Z.
+    buildExternalSalesEntries(externalBills).forEach((entry) => {
+      const tender = String(entry.description || "");
+      if (tender === "Credit") creditTotal += entry._in;
+      else if (tender.startsWith("Bank")) bankTotal += entry._in;
+      else if (tender === "Cash") cashTotal += entry._in;
+      entries.push(entry);
+    });
+
     zReports.forEach((report) => {
       const businessDate = String(report.businessDate || "").slice(0, 10);
       if (!businessDate || datesWithPosSales.has(businessDate)) return;
-      const netSales = num(report.netSales);
-      if (!Number.isFinite(netSales) || netSales === 0) return;
       const cash = num(report.cashTotal);
-      const bank =
-        report.bankTotal != null
-          ? num(report.bankTotal)
-          : num(report.cardTotal) + num(report.qrTotal);
+      const bank = zReportBankAmount(report);
       const credit = num(report.creditSalesTotal);
+      const gross = zReportGrossSales(report);
+      if (gross <= 0 && cash + bank + credit <= 0) return;
       cashTotal += cash;
       bankTotal += bank;
       creditTotal += credit;
-      entries.push({
-        id: `z-sales-${report.id}`,
-        date: formatIsoDate(businessDate) || businessDate,
-        ref: String(report.reportNo || "").trim() || "Z-Report",
-        party: "Z-Report",
-        description: `Cash ${money(cash)} · Bank ${money(bank)} · Credit ${money(
-          credit
-        )}`,
-        _in: netSales,
-        _out: 0,
-        _sortDateMs: businessDateSortMs(businessDate),
-        _sortCreatedAtMs: businessDateSortMs(businessDate),
-      });
+      const pushZ = (tender, amount, suffix) => {
+        if (amount <= 0) return;
+        entries.push({
+          id: `z-sales-${suffix}-${report.id}`,
+          date: formatIsoDate(businessDate) || businessDate,
+          ref: String(report.reportNo || "").trim() || "Z-Report",
+          party: "Z-Report",
+          description: tender,
+          _in: amount,
+          _out: 0,
+          _sortDateMs: businessDateSortMs(businessDate),
+          _sortCreatedAtMs: num(report.createdAtMs),
+        });
+      };
+      pushZ("Cash", cash, "cash");
+      pushZ("Bank", bank, "bank");
+      pushZ("Credit", credit, "credit");
     });
 
     entries.sort((a, b) => {
@@ -664,6 +938,7 @@ export async function fetchDetailedLedger({
       receiptRows,
       paymentRows,
       salesRows,
+      externalBills,
     ] = await Promise.all([
       fetchZReportsInRange(clientId, fromDate, toDate),
       fetchTxnRange({
@@ -702,6 +977,7 @@ export async function fetchDetailedLedger({
         toDate,
         typeKey: "sales",
       }),
+      fetchExternalBillsInRange(clientId, fromDate, toDate),
     ]);
 
     function mapTxnEntry(row, { inflow = 0, outflow = 0, fallbackDescription }) {
@@ -768,27 +1044,38 @@ export async function fetchDetailedLedger({
         };
       })
       .filter(Boolean);
+    const externalRevenueEntries = buildExternalSalesEntries(externalBills).map(
+      (entry) => ({
+        ...entry,
+        description:
+          entry.party === "Delivery Boy Account"
+            ? "External delivery account sale"
+            : `External ${String(entry.description || "sale").toLowerCase()} sale`,
+      })
+    );
+    const zRevenueEntries = zReports
+      .map((report) => {
+        const businessDate = String(report.businessDate || "").slice(0, 10);
+        if (!businessDate || datesWithPosSales.has(businessDate)) return null;
+        const gross = zReportGrossSales(report);
+        if (!Number.isFinite(gross) || gross <= 0) return null;
+        return {
+          id: `z-rev-${report.id}`,
+          date: formatIsoDate(businessDate) || businessDate,
+          ref: String(report.reportNo || "").trim() || "—",
+          party: "Daily Sales",
+          description: "Z-Report Revenue",
+          _in: gross,
+          _out: 0,
+          _sortDateMs: businessDateSortMs(businessDate),
+          _sortCreatedAtMs: num(report.createdAtMs),
+        };
+      })
+      .filter(Boolean);
     const revenueEntries = [
       ...posRevenueEntries,
-      ...zReports
-        .map((report) => {
-          const businessDate = String(report.businessDate || "").slice(0, 10);
-          if (!businessDate || datesWithPosSales.has(businessDate)) return null;
-          const netSales = num(report.netSales);
-          if (!Number.isFinite(netSales) || netSales === 0) return null;
-          return {
-            id: `z-rev-${report.id}`,
-            date: formatIsoDate(businessDate) || businessDate,
-            ref: String(report.reportNo || "").trim() || "—",
-            party: "Daily Sales",
-            description: "Z-Report Revenue",
-            _in: netSales,
-            _out: 0,
-            _sortDateMs: businessDateSortMs(businessDate),
-            _sortCreatedAtMs: num(report.createdAtMs),
-          };
-        })
-        .filter(Boolean),
+      ...externalRevenueEntries,
+      ...zRevenueEntries,
     ];
 
     // Outflows: all purchases/expenses regardless of payment mode (credit included).
@@ -1092,25 +1379,22 @@ export async function fetchDetailedLedger({
   }
 
   if (reportType === "cashflow") {
-    const [zReports, allTxns] = await Promise.all([
+    const [zReports, allTxns, externalBills, collections] = await Promise.all([
       fetchZReportsInRange(clientId, fromDate, toDate),
       fetchTxnRange({
         clientId,
         fromDate,
         toDate,
         typeKey: "",
+        includeTransfers: true,
       }),
+      fetchExternalBillsInRange(clientId, fromDate, toDate),
+      fetchCollectionsInRange(clientId, fromDate, toDate),
     ]);
 
     let cashSales = 0;
     let bankSales = 0;
-    zReports.forEach((report) => {
-      cashSales += num(report.cashTotal);
-      bankSales +=
-        report.bankTotal != null && report.bankTotal !== ""
-          ? num(report.bankTotal)
-          : num(report.cardTotal) + num(report.qrTotal);
-    });
+    const posSalesDates = new Set();
 
     let receipts = 0;
     let payments = 0;
@@ -1161,6 +1445,20 @@ export async function fetchDetailedLedger({
         return;
       }
 
+      if (type === "sales") {
+        const date =
+          typeof row.date === "string"
+            ? row.date.slice(0, 10)
+            : row.date?.toDate
+              ? toIso(row.date.toDate())
+              : "";
+        if (date) posSalesDates.add(date);
+        const saleAmount = salesTxnAmount(row) || amount;
+        if (isCashTender(row)) cashSales += saleAmount;
+        else if (isBankTender(row)) bankSales += saleAmount;
+        return;
+      }
+
       if (type === "receipt") {
         receipts += num(row.amountIn) || amount;
         return;
@@ -1193,6 +1491,20 @@ export async function fetchDetailedLedger({
       }
     });
 
+    // Z fills sales gaps when a day has no POS sales; External/Collect always add.
+    zReports.forEach((report) => {
+      const date = String(report.businessDate || "").slice(0, 10);
+      if (!date || posSalesDates.has(date)) return;
+      cashSales += num(report.cashTotal);
+      bankSales += zReportBankAmount(report);
+    });
+    const externalTenders = summarizeExternalBillTenders(externalBills);
+    const collectionTenders = summarizeDeliveryBoyCollections(collections);
+    cashSales +=
+      num(externalTenders.cashTotal) + num(collectionTenders.cashTotal);
+    bankSales +=
+      num(externalTenders.bankTotal) + num(collectionTenders.bankTotal);
+
     const totalCashIn =
       cashSales + receipts + loansIn + bankToCash + lockerToCash;
     const totalCashOut =
@@ -1210,8 +1522,14 @@ export async function fetchDetailedLedger({
         key: "inflows",
         title: "Cash & Bank Inflows",
         lines: [
-          { label: "Cash Sales (Z-Report)", amount: cashSales },
-          { label: "Bank Sales (Z-Report)", amount: bankSales },
+          {
+            label: "Cash Sales (POS + Z + External)",
+            amount: cashSales,
+          },
+          {
+            label: "Bank Sales (POS + Z + External)",
+            amount: bankSales,
+          },
           { label: "Receipts", amount: receipts },
           { label: "Loans Received", amount: loansIn },
           { label: "Bank → Cash Transfers", amount: bankToCash },
@@ -1281,6 +1599,565 @@ export async function fetchDetailedLedger({
         netCashChange,
         netBankChange,
         netLiquidityChange,
+      },
+    };
+  }
+
+  if (
+    reportType === "cash" ||
+    reportType === "bank" ||
+    reportType === "locker"
+  ) {
+    const [openingReport, zReports, allTxns, externalBills, collections] =
+      await Promise.all([
+        fetchOpeningDailyReport(clientId, fromDate),
+        fetchZReportsInRange(clientId, fromDate, toDate),
+        fetchTxnRange({
+          clientId,
+          fromDate,
+          toDate,
+          typeKey: "",
+          includeTransfers: true,
+        }),
+        fetchExternalBillsInRange(clientId, fromDate, toDate),
+        fetchCollectionsInRange(clientId, fromDate, toDate),
+      ]);
+
+    const openingCash = num(
+      openingReport?.closingCashInHand ?? openingReport?.actualCash
+    );
+    const openingBank = num(
+      openingReport?.closingBankBalance ?? openingReport?.totalBank
+    );
+    const openingLocker = num(
+      openingReport?.closingLockerBalance ?? openingReport?.lockerBalance
+    );
+
+    const externalByDate = new Map();
+    for (const bill of externalBills) {
+      const date = String(bill?.businessDate || "").slice(0, 10);
+      if (!date) continue;
+      if (!externalByDate.has(date)) externalByDate.set(date, []);
+      externalByDate.get(date).push(bill);
+    }
+    const collectionsByDate = new Map();
+    for (const row of collections) {
+      const date = String(row?.businessDate || "").slice(0, 10);
+      if (!date) continue;
+      if (!collectionsByDate.has(date)) collectionsByDate.set(date, []);
+      collectionsByDate.get(date).push(row);
+    }
+
+    const posCashDates = new Set();
+    const posBankDates = new Set();
+    allTxns.forEach((row) => {
+      if (isTransferRow(row) || isLoanTransaction(row)) return;
+      if (
+        String(row?.type || "")
+          .trim()
+          .toLowerCase() !== "sales"
+      ) {
+        return;
+      }
+      if (isCreditTender(row)) return;
+      const date =
+        typeof row.date === "string"
+          ? row.date.slice(0, 10)
+          : row.date?.toDate
+            ? toIso(row.date.toDate())
+            : "";
+      if (!date) return;
+      if (isCashTender(row)) posCashDates.add(date);
+      if (isBankTender(row)) posBankDates.add(date);
+    });
+
+    const entries = [];
+
+    if (reportType === "cash" || reportType === "bank") {
+      // Z-report sales fill days without POS tender of that rail.
+      zReports.forEach((report) => {
+        const businessDate = String(report.businessDate || "").slice(0, 10);
+        if (!businessDate) return;
+        if (reportType === "cash") {
+          const cash = num(report.cashTotal);
+          if (cash <= 0 || posCashDates.has(businessDate)) return;
+          entries.push({
+            id: `z-cash-${report.id}`,
+            date: formatIsoDate(businessDate) || businessDate,
+            ref: String(report.reportNo || "").trim() || "—",
+            party: "Z-Report",
+            account: "",
+            type: "Sales",
+            description: "Z-Report cash sales",
+            _in: cash,
+            _out: 0,
+            _sortDateMs: businessDateSortMs(businessDate),
+            _sortCreatedAtMs: num(report.createdAtMs),
+            _accountId: "",
+            _movement: "sales",
+            _direction: "",
+          });
+        } else {
+          const bank =
+            report.bankTotal != null && report.bankTotal !== ""
+              ? num(report.bankTotal)
+              : num(report.cardTotal) + num(report.qrTotal);
+          if (bank <= 0 || posBankDates.has(businessDate)) return;
+          const bankRows =
+            Array.isArray(report.bankEntries) && report.bankEntries.length
+              ? report.bankEntries
+              : [
+                  {
+                    bankAccountId: "",
+                    bankAccountName: "Bank",
+                    amount: bank,
+                  },
+                ];
+          bankRows.forEach((entry, index) => {
+            const amount = num(entry.amount);
+            if (amount <= 0) return;
+            entries.push({
+              id: `z-bank-${report.id}-${index}`,
+              date: formatIsoDate(businessDate) || businessDate,
+              ref: String(report.reportNo || "").trim() || "—",
+              party: "Z-Report",
+              account: String(entry.bankAccountName || "Bank"),
+              type: "Sales",
+              description: "Z-Report bank sales",
+              _in: amount,
+              _out: 0,
+              _sortDateMs: businessDateSortMs(businessDate),
+              _sortCreatedAtMs: num(report.createdAtMs),
+              _accountId: String(entry.bankAccountId || ""),
+              _movement: "sales",
+              _direction: "",
+            });
+          });
+        }
+      });
+
+      // External shop cash/bank + delivery Collect (additive with Z/POS).
+      const allDates = new Set([
+        ...externalByDate.keys(),
+        ...collectionsByDate.keys(),
+      ]);
+      allDates.forEach((businessDate) => {
+        const dayBills = externalByDate.get(businessDate) || [];
+        const dayCollections = collectionsByDate.get(businessDate) || [];
+        const billTenders = summarizeExternalBillTenders(dayBills);
+        const collectTenders = summarizeDeliveryBoyCollections(dayCollections);
+        if (reportType === "cash") {
+          const cash = num(billTenders.cashTotal) + num(collectTenders.cashTotal);
+          if (cash > 0) {
+            entries.push({
+              id: `ext-cash-${businessDate}`,
+              date: formatIsoDate(businessDate) || businessDate,
+              ref: "—",
+              party: "External Sales",
+              account: "",
+              type: "Sales",
+              description:
+                collectTenders.cashTotal > 0
+                  ? "External cash + delivery collect"
+                  : "External cash sales",
+              _in: cash,
+              _out: 0,
+              _sortDateMs: businessDateSortMs(businessDate),
+              _sortCreatedAtMs: 0,
+              _accountId: "",
+              _movement: "sales",
+              _direction: "",
+            });
+          }
+        } else {
+          const bankMap = new Map();
+          for (const row of [
+            ...billTenders.bankByAccount,
+            ...collectTenders.bankByAccount,
+          ]) {
+            const key = row.bankAccountId || "_unassigned";
+            const existing = bankMap.get(key);
+            if (existing) {
+              existing.amount += num(row.amount);
+            } else {
+              bankMap.set(key, {
+                bankAccountId: row.bankAccountId || "",
+                bankAccountName: row.bankAccountName || "Bank",
+                amount: num(row.amount),
+              });
+            }
+          }
+          if (!bankMap.size && billTenders.bankTotal + collectTenders.bankTotal > 0) {
+            bankMap.set("_unassigned", {
+              bankAccountId: "",
+              bankAccountName: "Bank",
+              amount: billTenders.bankTotal + collectTenders.bankTotal,
+            });
+          }
+          Array.from(bankMap.values()).forEach((row, index) => {
+            const amount = num(row.amount);
+            if (amount <= 0) return;
+            entries.push({
+              id: `ext-bank-${businessDate}-${index}`,
+              date: formatIsoDate(businessDate) || businessDate,
+              ref: "—",
+              party: "External Sales",
+              account: String(row.bankAccountName || "Bank"),
+              type: "Sales",
+              description:
+                collectTenders.bankTotal > 0
+                  ? "External bank + delivery collect"
+                  : "External bank sales",
+              _in: amount,
+              _out: 0,
+              _sortDateMs: businessDateSortMs(businessDate),
+              _sortCreatedAtMs: 0,
+              _accountId: String(row.bankAccountId || ""),
+              _movement: "sales",
+              _direction: "",
+            });
+          });
+        }
+      });
+    }
+
+    allTxns.forEach((row) => {
+      const type = String(row?.type || "")
+        .trim()
+        .toLowerCase();
+      const amount = txnAmount(row);
+      if (amount <= 0 && !isTransferRow(row)) return;
+
+      if (reportType === "locker") {
+        if (!isTransferRow(row)) return;
+        const transferType = transferTypeOf(row);
+        if (
+          transferType !== "CASH_TO_LOCKER" &&
+          transferType !== "LOCKER_TO_CASH"
+        ) {
+          return;
+        }
+        const inflow = transferType === "LOCKER_TO_CASH" ? 0 : amount;
+        const outflow = transferType === "CASH_TO_LOCKER" ? 0 : amount;
+        // Locker balance: Cash→Locker increases locker; Locker→Cash decreases.
+        entries.push(
+          liquidityEntryBase(row, {
+            party: "Internal",
+            account: "Locker",
+            type:
+              transferType === "CASH_TO_LOCKER"
+                ? "Cash → Locker"
+                : "Locker → Cash",
+            description:
+              String(row.description || "").trim() ||
+              (transferType === "CASH_TO_LOCKER"
+                ? "Cash to Locker"
+                : "Locker to Cash"),
+            _in: transferType === "CASH_TO_LOCKER" ? amount : 0,
+            _out: transferType === "LOCKER_TO_CASH" ? amount : 0,
+            _movement: "transfer",
+            _direction:
+              transferType === "CASH_TO_LOCKER"
+                ? "cash_to_locker"
+                : "locker_to_cash",
+            _accountId: "",
+          })
+        );
+        void inflow;
+        void outflow;
+        return;
+      }
+
+      if (isTransferRow(row)) {
+        const transferType = transferTypeOf(row);
+        if (reportType === "cash") {
+          const cashInTypes = new Set([
+            "BANK_TO_CASH",
+            "PETTI_TO_CASH",
+            "LOCKER_TO_CASH",
+          ]);
+          const cashOutTypes = new Set([
+            "CASH_TO_BANK",
+            "CASH_TO_PETTI",
+            "CASH_TO_LOCKER",
+          ]);
+          if (!cashInTypes.has(transferType) && !cashOutTypes.has(transferType)) {
+            return;
+          }
+          entries.push(
+            liquidityEntryBase(row, {
+              party: "Internal",
+              type: "Transfer",
+              description:
+                String(row.description || "").trim() || transferType,
+              _in: cashInTypes.has(transferType) ? amount : 0,
+              _out: cashOutTypes.has(transferType) ? amount : 0,
+              _movement: "transfer",
+              _accountId: String(row.bankAccountId || ""),
+              account: String(row.bankAccountName || ""),
+            })
+          );
+          return;
+        }
+
+        // bank report transfers
+        const bankInTypes = new Set([
+          "CASH_TO_BANK",
+          "PETTI_TO_BANK",
+          "BANK_TO_BANK",
+        ]);
+        const bankOutTypes = new Set([
+          "BANK_TO_CASH",
+          "BANK_TO_PETTI",
+          "BANK_TO_BANK",
+        ]);
+        if (!bankInTypes.has(transferType) && !bankOutTypes.has(transferType)) {
+          return;
+        }
+        // BANK_TO_BANK: out from source account, in to destination.
+        if (transferType === "BANK_TO_BANK") {
+          entries.push(
+            liquidityEntryBase(row, {
+              id: `${row.id}-out`,
+              party: "Internal",
+              account: String(row.bankAccountName || "Bank"),
+              type: "Transfer",
+              description:
+                String(row.description || "").trim() || "Bank → Bank (out)",
+              _in: 0,
+              _out: amount,
+              _movement: "transfer",
+              _accountId: String(row.bankAccountId || ""),
+            })
+          );
+          entries.push(
+            liquidityEntryBase(row, {
+              id: `${row.id}-in`,
+              party: "Internal",
+              account: String(
+                row.destinationBankAccountName ||
+                  row.destinationBankAccountId ||
+                  "Bank"
+              ),
+              type: "Transfer",
+              description:
+                String(row.description || "").trim() || "Bank → Bank (in)",
+              _in: amount,
+              _out: 0,
+              _movement: "transfer",
+              _accountId: String(row.destinationBankAccountId || ""),
+            })
+          );
+          return;
+        }
+        entries.push(
+          liquidityEntryBase(row, {
+            party: "Internal",
+            account: String(row.bankAccountName || "Bank"),
+            type: "Transfer",
+            description:
+              String(row.description || "").trim() || transferType,
+            _in: bankInTypes.has(transferType) ? amount : 0,
+            _out: bankOutTypes.has(transferType) ? amount : 0,
+            _movement: "transfer",
+            _accountId: String(row.bankAccountId || ""),
+          })
+        );
+        return;
+      }
+
+      if (reportType === "cash") {
+        if (!isCashTender(row) || isCreditTender(row)) return;
+        if (type === "sales") {
+          entries.push(
+            liquidityEntryBase(row, {
+              type: "Sales",
+              description:
+                String(row.description || "").trim() || "Cash sale",
+              _in: salesTxnAmount(row) || amount,
+              _movement: "sales",
+            })
+          );
+          return;
+        }
+        if (type === "receipt" || type === "income") {
+          entries.push(
+            liquidityEntryBase(row, {
+              type: isLoanTransaction(row) ? "Loan" : "Receipt",
+              _in: num(row.amountIn) || amount,
+              _movement: isLoanTransaction(row) ? "loan" : "receipt",
+            })
+          );
+          return;
+        }
+        if (type === "payment") {
+          entries.push(
+            liquidityEntryBase(row, {
+              type: isLoanTransaction(row) ? "Loan" : "Payment",
+              _out: num(row.amountOut) || amount,
+              _movement: isLoanTransaction(row) ? "loan" : "payment",
+            })
+          );
+          return;
+        }
+        if (type === "purchase" || type === "expense") {
+          entries.push(
+            liquidityEntryBase(row, {
+              type: type === "purchase" ? "Purchase" : "Expense",
+              _out: pnlOutflowAmount(row) || amount,
+              _movement: "expense",
+            })
+          );
+        }
+        return;
+      }
+
+      // bank report non-transfer
+      if (!isBankTender(row) || isCreditTender(row)) return;
+      const accountName = String(row.bankAccountName || "Bank");
+      const accountId = String(row.bankAccountId || "");
+      if (type === "sales") {
+        entries.push(
+          liquidityEntryBase(row, {
+            account: accountName,
+            type: "Sales",
+            description:
+              String(row.description || "").trim() || "Bank sale",
+            _in: salesTxnAmount(row) || amount,
+            _movement: "sales",
+            _accountId: accountId,
+          })
+        );
+        return;
+      }
+      if (type === "receipt" || type === "income") {
+        entries.push(
+          liquidityEntryBase(row, {
+            account: accountName,
+            type: isLoanTransaction(row) ? "Loan" : "Receipt",
+            _in: num(row.amountIn) || amount,
+            _movement: isLoanTransaction(row) ? "loan" : "receipt",
+            _accountId: accountId,
+          })
+        );
+        return;
+      }
+      if (type === "payment") {
+        entries.push(
+          liquidityEntryBase(row, {
+            account: accountName,
+            type: isLoanTransaction(row) ? "Loan" : "Payment",
+            _out: num(row.amountOut) || amount,
+            _movement: isLoanTransaction(row) ? "loan" : "payment",
+            _accountId: accountId,
+          })
+        );
+        return;
+      }
+      if (type === "purchase" || type === "expense") {
+        entries.push(
+          liquidityEntryBase(row, {
+            account: accountName,
+            type: type === "purchase" ? "Purchase" : "Expense",
+            _out: pnlOutflowAmount(row) || amount,
+            _movement: "expense",
+            _accountId: accountId,
+          })
+        );
+      }
+    });
+
+    const opening =
+      reportType === "cash"
+        ? openingCash
+        : reportType === "bank"
+          ? openingBank
+          : openingLocker;
+
+    const movementRows = buildRollingBalanceRows(entries, opening);
+    const totalIn = entries.reduce((sum, row) => sum + num(row._in), 0);
+    const totalOut = entries.reduce((sum, row) => sum + num(row._out), 0);
+    const closing = opening + totalIn - totalOut;
+
+    const openingRow = {
+      id: "__opening__",
+      date: formatIsoDate(fromDate) || fromDate,
+      ref: "—",
+      party: "—",
+      account: reportType === "bank" ? "All accounts" : "",
+      type: "Opening",
+      description: "Opening balance",
+      in: "",
+      out: "",
+      balance: money(opening),
+      _in: 0,
+      _out: 0,
+      _balance: opening,
+      _accountId: "",
+      _movement: "opening",
+      _direction: "",
+      _isOpening: true,
+    };
+
+    const title =
+      reportType === "cash"
+        ? "Cash Report"
+        : reportType === "bank"
+          ? "Bank Report"
+          : "Locker Report";
+
+    const columns =
+      reportType === "bank"
+        ? [
+            { key: "date", label: "Date" },
+            { key: "ref", label: "Ref" },
+            { key: "account", label: "Bank Account" },
+            { key: "type", label: "Type" },
+            { key: "party", label: "Party" },
+            { key: "description", label: "Description" },
+            { key: "in", label: "In", align: "right" },
+            { key: "out", label: "Out", align: "right" },
+            { key: "balance", label: "Balance", align: "right" },
+          ]
+        : reportType === "locker"
+          ? [
+              { key: "date", label: "Date" },
+              { key: "ref", label: "Ref" },
+              { key: "type", label: "Direction" },
+              { key: "description", label: "Description" },
+              { key: "in", label: "In", align: "right" },
+              { key: "out", label: "Out", align: "right" },
+              { key: "balance", label: "Balance", align: "right" },
+            ]
+          : [
+              { key: "date", label: "Date" },
+              { key: "ref", label: "Ref" },
+              { key: "type", label: "Type" },
+              { key: "party", label: "Party" },
+              { key: "description", label: "Description" },
+              { key: "in", label: "In", align: "right" },
+              { key: "out", label: "Out", align: "right" },
+              { key: "balance", label: "Balance", align: "right" },
+            ];
+
+    return {
+      title,
+      layout: "liquidity",
+      columns,
+      rows: [openingRow, ...movementRows],
+      summary: {
+        opening: money(opening),
+        totalIn: money(totalIn),
+        totalOut: money(totalOut),
+        closing: money(closing),
+        count: String(entries.length),
+      },
+      liquidity: {
+        rail: reportType,
+        opening,
+        totalIn,
+        totalOut,
+        closing,
       },
     };
   }

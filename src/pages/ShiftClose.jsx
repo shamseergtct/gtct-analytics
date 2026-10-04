@@ -11,7 +11,7 @@ import {
   setDoc,
   where,
 } from "firebase/firestore";
-import { CircleHelp, Eye, EyeOff, Plus, Trash2, X } from "lucide-react";
+import { ChevronDown, CircleHelp, Eye, EyeOff, Plus, Trash2, X } from "lucide-react";
 import { db } from "../firebase";
 import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
@@ -221,6 +221,10 @@ function createCreditEntry() {
   };
 }
 
+function createCashEntry() {
+  return createCreditEntry();
+}
+
 const EMPTY_Z_REPORT = {
   businessDate: todayYYYYMMDD(),
   grossSales: "0",
@@ -247,7 +251,32 @@ function bankEntriesFromDoc(report) {
   if (Array.isArray(report?.bankEntries) && report.bankEntries.length) {
     return report.bankEntries;
   }
-  if (Array.isArray(report?.cardEntries)) return report.cardEntries;
+  if (Array.isArray(report?.cardEntries) && report.cardEntries.length) {
+    return report.cardEntries;
+  }
+  // Legacy reports may only have bankTotal — seed one row so edit/save
+  // does not wipe the stored total when breakdown rows are missing.
+  const legacyBank = zReportBankTotalFromDoc(report);
+  if (legacyBank > 0) {
+    return [
+      {
+        bankAccountId: "",
+        bankAccountName: "",
+        amount: legacyBank,
+      },
+    ];
+  }
+  return [];
+}
+
+function cashEntriesFromDoc(report) {
+  if (Array.isArray(report?.cashEntries) && report.cashEntries.length) {
+    return report.cashEntries;
+  }
+  const legacyCash = Number(report?.cashTotal) || 0;
+  if (legacyCash > 0) {
+    return [{ partyId: "", partyName: "", amount: legacyCash }];
+  }
   return [];
 }
 
@@ -522,106 +551,185 @@ function TenderTotalCards({ cashTotal, bankTotal, creditTotal, loading }) {
 }
 
 /**
- * Live shop totals for the day — display only.
- * Z Cash / Bank / Credit fields stay terminal Z-report entry only.
+ * Collapsible day sales view: Sales module + External + Z entry displays,
+ * plus a combined day totals card (POS + External + Z).
  */
-function DaySalesTotalsPanel({ clientId, businessDate, shiftId }) {
+function DaySalesModule({
+  clientId,
+  businessDate,
+  shiftId,
+  cashTotal = 0,
+  bankTotal = 0,
+  creditTotal = 0,
+}) {
   const { decimals } = useMoney();
   const pos = usePosSalesTotals({ clientId, businessDate, shiftId });
   const external = useExternalSalesTotals({ clientId, businessDate });
-  const loading = pos.loading || external.loading;
+  const [open, setOpen] = useState(true);
 
-  const appCash = roundMoney(
-    external.shopCashTotal ??
-      (external.cashTotal || 0) + (external.collectionCash || 0),
+  const zTotals = deriveZReportSalesTotals({
+    cashTotal,
+    bankTotal,
+    creditSalesTotal: creditTotal,
+    decimals,
+  });
+
+  const dayLoading = pos.loading || external.loading;
+  const dayCashSale = roundMoney(
+    (Number(pos.cashTotal) || 0) +
+      (Number(external.cashTotal) || 0) +
+      (Number(zTotals.cashTotal) || 0),
     decimals
   );
-  const appBank = roundMoney(
-    external.shopBankTotal ??
-      (external.bankTotal || 0) + (external.collectionBank || 0),
+  const dayBankSale = roundMoney(
+    (Number(pos.bankTotal) || 0) +
+      (Number(external.bankTotal) || 0) +
+      (Number(zTotals.bankTotal) || 0),
     decimals
   );
-  // Live shop activity only — Z fields stay separate terminal entry.
-  const dayCash = roundMoney(pos.cashTotal + appCash, decimals);
-  const dayBank = roundMoney(pos.bankTotal + appBank, decimals);
-  const dayCredit = roundMoney(
-    pos.creditTotal + external.creditTotal,
+  const dayNetSale = roundMoney(dayCashSale + dayBankSale, decimals);
+  const dayCreditSale = roundMoney(
+    (Number(pos.creditTotal) || 0) +
+      (Number(external.creditTotal) || 0) +
+      (Number(zTotals.creditSalesTotal) || 0),
     decimals
   );
+  const dayGrossSale = roundMoney(dayNetSale + dayCreditSale, decimals);
 
   return (
-    <div className="mt-3 space-y-3">
-      <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-300/90">
-            Sales module totals
-          </p>
-          <p className="text-[11px] text-slate-500">
-            {pos.loading
-              ? "Loading…"
-              : `${pos.invoiceCount} invoice${pos.invoiceCount === 1 ? "" : "s"}`}
-          </p>
+    <section className="mt-4 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-slate-900/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/50"
+        aria-expanded={open}
+        aria-controls="day-sales-module-panel"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-white">Day Sales</div>
         </div>
-        <TenderTotalCards
-          cashTotal={pos.cashTotal}
-          bankTotal={pos.bankTotal}
-          creditTotal={pos.creditTotal}
-          loading={pos.loading}
+        <ChevronDown
+          className={`h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${
+            open ? "rotate-180" : ""
+          }`}
+          aria-hidden="true"
         />
-      </div>
+      </button>
 
-      <div className="rounded-xl border border-violet-900/50 bg-violet-950/20 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-violet-300/90">
-            External sales totals
-          </p>
-          <p className="text-[11px] text-slate-500">
-            {external.loading
-              ? "Loading…"
-              : `${external.billCount} bill${external.billCount === 1 ? "" : "s"}`}
-          </p>
-        </div>
-        <TenderTotalCards
-          cashTotal={external.cashTotal}
-          bankTotal={external.bankTotal}
-          creditTotal={external.creditTotal}
-          loading={external.loading}
-        />
-        {!external.loading &&
-        (external.collectionCash > 0 || external.collectionBank > 0) ? (
-          <p className="mt-2 text-[11px] text-violet-200/80">
-            Delivery collect (counts as sale): Cash{" "}
-            {moneyHint(external.collectionCash)}
-            {external.collectionBank > 0
-              ? ` · Bank ${moneyHint(external.collectionBank)}`
-              : ""}
-          </p>
-        ) : null}
-        {!external.loading && external.deliveryOutstanding > 0 ? (
-          <p className="mt-1 text-[11px] text-violet-200/70">
-            Delivery boy still outstanding:{" "}
-            {moneyHint(external.deliveryOutstanding)}
-          </p>
-        ) : null}
-      </div>
+      {open ? (
+        <div
+          id="day-sales-module-panel"
+          className="space-y-3 border-t border-slate-800 px-4 py-4"
+        >
+          <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-300/90">
+                Day totals
+              </p>
+              <p className="text-[11px] text-slate-500">
+                Sales module + External + Z entry
+              </p>
+            </div>
+            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div className="rounded-lg border border-amber-900/40 bg-slate-950/40 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                  Net Sale
+                </div>
+                <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+                  {dayLoading ? "…" : moneyHint(dayNetSale)}
+                </p>
+                <p className="mt-1 text-[11px] tabular-nums text-slate-500">
+                  Cash {dayLoading ? "…" : moneyHint(dayCashSale)}
+                  {" · "}
+                  Bank {dayLoading ? "…" : moneyHint(dayBankSale)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-amber-900/40 bg-slate-950/40 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                  Credit Sale
+                </div>
+                <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+                  {dayLoading ? "…" : moneyHint(dayCreditSale)}
+                </p>
+              </div>
+              <div className="rounded-lg border border-amber-900/40 bg-slate-950/40 px-3 py-2">
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">
+                  Gross Sale
+                </div>
+                <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
+                  {dayLoading ? "…" : moneyHint(dayGrossSale)}
+                </p>
+              </div>
+            </div>
+          </div>
 
-      <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300/90">
-            Live day totals (POS + External + Collect)
-          </p>
-          <p className="text-[11px] text-slate-500">
-            Reference only — not written into Z fields
-          </p>
+          <div className="rounded-xl border border-sky-900/50 bg-sky-950/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-sky-300/90">
+                Sales module totals
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {pos.loading
+                  ? "Loading…"
+                  : `${pos.invoiceCount} invoice${pos.invoiceCount === 1 ? "" : "s"}`}
+              </p>
+            </div>
+            <TenderTotalCards
+              cashTotal={pos.cashTotal}
+              bankTotal={pos.bankTotal}
+              creditTotal={pos.creditTotal}
+              loading={pos.loading}
+            />
+          </div>
+
+          <div className="rounded-xl border border-violet-900/50 bg-violet-950/20 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="text-xs font-semibold uppercase tracking-wide text-violet-300/90">
+                External sales totals
+              </p>
+              <p className="text-[11px] text-slate-500">
+                {external.loading
+                  ? "Loading…"
+                  : `${external.billCount} bill${external.billCount === 1 ? "" : "s"}`}
+              </p>
+            </div>
+            <TenderTotalCards
+              cashTotal={external.cashTotal}
+              bankTotal={external.bankTotal}
+              creditTotal={external.creditTotal}
+              loading={external.loading}
+            />
+            {!external.loading &&
+            (external.collectionCash > 0 || external.collectionBank > 0) ? (
+              <p className="mt-2 text-[11px] text-violet-200/80">
+                Delivery collect (counts as sale): Cash{" "}
+                {moneyHint(external.collectionCash)}
+                {external.collectionBank > 0
+                  ? ` · Bank ${moneyHint(external.collectionBank)}`
+                  : ""}
+              </p>
+            ) : null}
+            {!external.loading && external.deliveryOutstanding > 0 ? (
+              <p className="mt-1 text-[11px] text-violet-200/70">
+                Delivery boy still outstanding:{" "}
+                {moneyHint(external.deliveryOutstanding)}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-300/90">
+              Z sales entry
+            </p>
+            <TenderTotalCards
+              cashTotal={zTotals.cashTotal}
+              bankTotal={zTotals.bankTotal}
+              creditTotal={zTotals.creditSalesTotal}
+            />
+          </div>
         </div>
-        <TenderTotalCards
-          cashTotal={dayCash}
-          bankTotal={dayBank}
-          creditTotal={dayCredit}
-          loading={loading}
-        />
-      </div>
-    </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -654,6 +762,7 @@ export default function ShiftClose() {
     : Number.isFinite(shiftOpeningFloat)
       ? shiftOpeningFloat
       : Number(floatingCash ?? closeOpeningFloat ?? 0);
+  const [cashEntries, setCashEntries] = useState([createCashEntry()]);
   const [creditEntries, setCreditEntries] = useState([createCreditEntry()]);
   const [bankEntries, setBankEntries] = useState([createBankEntry()]);
   const [customerParties, setCustomerParties] = useState([]);
@@ -665,6 +774,7 @@ export default function ShiftClose() {
   const [editZReport, setEditZReport] = useState(null);
   const [editOpeningFloat, setEditOpeningFloat] = useState("0");
   const [editClosingCash, setEditClosingCash] = useState("0");
+  const [editCashEntries, setEditCashEntries] = useState([]);
   const [editCreditEntries, setEditCreditEntries] = useState([]);
   const [editBankEntries, setEditBankEntries] = useState([]);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -824,47 +934,35 @@ export default function ShiftClose() {
     [recentZReports, zReportDateFilter]
   );
 
-  const bankTotalFromBreakdown = useMemo(
+  const liveCashTotal = useMemo(
+    () => sumEntryAmounts(cashEntries),
+    [cashEntries]
+  );
+  const liveBankTotal = useMemo(
     () => sumEntryAmounts(bankEntries),
     [bankEntries]
   );
-  const creditTotalFromBreakdown = useMemo(
+  const liveCreditTotal = useMemo(
     () => sumEntryAmounts(creditEntries),
     [creditEntries]
   );
-  const derivedNewTotals = useMemo(
-    () =>
-      deriveZReportSalesTotals({
-        cashTotal: zReport.cashTotal,
-        bankTotal: bankTotalFromBreakdown,
-        creditSalesTotal: creditTotalFromBreakdown,
-      }),
-    [zReport.cashTotal, bankTotalFromBreakdown, creditTotalFromBreakdown]
+  const editLiveCashTotal = useMemo(
+    () => sumEntryAmounts(editCashEntries),
+    [editCashEntries]
   );
-  const editBankTotalFromBreakdown = useMemo(
+  const editLiveBankTotal = useMemo(
     () => sumEntryAmounts(editBankEntries),
     [editBankEntries]
   );
-  const editCreditTotalFromBreakdown = useMemo(
+  const editLiveCreditTotal = useMemo(
     () => sumEntryAmounts(editCreditEntries),
     [editCreditEntries]
   );
-  const derivedEditTotals = useMemo(
-    () =>
-      deriveZReportSalesTotals({
-        cashTotal: editZReport?.cashTotal,
-        bankTotal: editBankTotalFromBreakdown,
-        creditSalesTotal: editCreditTotalFromBreakdown,
-      }),
-    [
-      editZReport?.cashTotal,
-      editBankTotalFromBreakdown,
-      editCreditTotalFromBreakdown,
-    ]
-  );
 
-  function setZField(field, value) {
-    setZReport((current) => ({ ...current, [field]: value }));
+  function updateCashEntry(rowId, nextEntry) {
+    setCashEntries((current) =>
+      current.map((entry) => (entry.rowId === rowId ? nextEntry : entry))
+    );
   }
 
   function updateCreditEntry(rowId, nextEntry) {
@@ -877,6 +975,28 @@ export default function ShiftClose() {
     setBankEntries((current) =>
       current.map((entry) => (entry.rowId === rowId ? nextEntry : entry))
     );
+  }
+
+  function normalizePopulatedCashEntries(entries) {
+    const populated = entries.filter(
+      (entry) =>
+        entry.partyId ||
+        entry.partyName ||
+        Number(entry.amount || 0) !== 0
+    );
+    for (const entry of populated) {
+      if (!entry.partyId || !entry.partyName) {
+        throw new Error("Select a customer for every cash entry.");
+      }
+      if (!Number.isFinite(Number(entry.amount)) || Number(entry.amount) <= 0) {
+        throw new Error("Every cash entry amount must be greater than zero.");
+      }
+    }
+    return populated.map(({ partyId, partyName, amount }) => ({
+      partyId,
+      partyName,
+      amount: Number(amount),
+    }));
   }
 
   function normalizePopulatedBankEntries(entries) {
@@ -951,17 +1071,31 @@ export default function ShiftClose() {
       setEditingReport(report);
       setEditZReport({
         businessDate: report.businessDate || "",
-        grossSales: String(report.grossSales ?? 0),
-        netSales: String(report.netSales ?? 0),
-        cashTotal: String(report.cashTotal ?? 0),
-        bankTotal: String(zReportBankTotalFromDoc(report)),
-        creditSalesTotal: String(report.creditSalesTotal ?? 0),
+        grossSales: formatAmountDisplay(report.grossSales ?? 0),
+        netSales: formatAmountDisplay(report.netSales ?? 0),
+        cashTotal: formatAmountDisplay(report.cashTotal ?? 0),
+        bankTotal: formatAmountDisplay(zReportBankTotalFromDoc(report)),
+        creditSalesTotal: formatAmountDisplay(report.creditSalesTotal ?? 0),
       });
       setEditClosingCash(
-        String(shiftSnapshot.data()?.closingCashCounted ?? 0)
+        formatAmountDisplay(shiftSnapshot.data()?.closingCashCounted ?? 0)
       );
       setEditOpeningFloat(
-        String(report.openingFloat ?? shiftSnapshot.data()?.openingFloat ?? 0)
+        formatAmountDisplay(
+          report.openingFloat ?? shiftSnapshot.data()?.openingFloat ?? 0
+        )
+      );
+      const savedCashEntries = cashEntriesFromDoc(report).map((entry) => ({
+        rowId: crypto.randomUUID(),
+        partyId: entry.partyId || "",
+        partyName: entry.partyName || "",
+        amount:
+          entry.amount === "" || entry.amount == null
+            ? ""
+            : formatAmountDisplay(entry.amount),
+      }));
+      setEditCashEntries(
+        savedCashEntries.length ? savedCashEntries : [createCashEntry()]
       );
       const savedEntries = (
         Array.isArray(report.creditEntries) ? report.creditEntries : []
@@ -969,7 +1103,10 @@ export default function ShiftClose() {
         rowId: crypto.randomUUID(),
         partyId: entry.partyId || "",
         partyName: entry.partyName || "",
-        amount: String(entry.amount ?? ""),
+        amount:
+          entry.amount === "" || entry.amount == null
+            ? ""
+            : formatAmountDisplay(entry.amount),
       }));
       setEditCreditEntries(
         savedEntries.length ? savedEntries : [createCreditEntry()]
@@ -978,7 +1115,10 @@ export default function ShiftClose() {
         rowId: crypto.randomUUID(),
         bankAccountId: entry.bankAccountId || "",
         bankAccountName: entry.bankAccountName || "",
-        amount: String(entry.amount ?? ""),
+        amount:
+          entry.amount === "" || entry.amount == null
+            ? ""
+            : formatAmountDisplay(entry.amount),
       }));
       setEditBankEntries(
         savedBankEntries.length ? savedBankEntries : [createBankEntry()]
@@ -993,6 +1133,7 @@ export default function ShiftClose() {
     setEditZReport(null);
     setEditOpeningFloat("0");
     setEditClosingCash("0");
+    setEditCashEntries([]);
     setEditCreditEntries([]);
     setEditBankEntries([]);
     setError("");
@@ -1029,16 +1170,33 @@ export default function ShiftClose() {
         }
       }
       const creditSalesTotal = sumEntryAmounts(populatedEntries);
+      const normalizedCashEntries = normalizePopulatedCashEntries(
+        editCashEntries
+      );
+      const cashTotal = sumEntryAmounts(normalizedCashEntries);
       const normalizedBankEntries = normalizePopulatedBankEntries(
         editBankEntries
       );
       const bankTotal = sumEntryAmounts(normalizedBankEntries);
-      const cashTotal = nonNegativeNumber(editZReport.cashTotal, "Cash total");
       const derived = deriveZReportSalesTotals({
         cashTotal,
         bankTotal,
         creditSalesTotal,
       });
+      const previousGrossCents =
+        toCents(editingReport.grossSales) ||
+        toCents(editingReport.cashTotal) +
+          toCents(zReportBankTotalFromDoc(editingReport)) +
+          toCents(editingReport.creditSalesTotal);
+      const nextGrossCents =
+        toCents(derived.cashTotal) +
+        toCents(derived.bankTotal) +
+        toCents(derived.creditSalesTotal);
+      if (previousGrossCents > 0 && nextGrossCents === 0) {
+        throw new Error(
+          "Cash / Bank / Credit breakdowns are empty. Add Z sales entries before saving — this would clear today's totals."
+        );
+      }
       const payload = {
         ...editZReport,
         openingFloat: nonNegativeNumber(
@@ -1074,8 +1232,10 @@ export default function ShiftClose() {
         ...payload,
         reportNo: identity.reportNo,
         terminalId: identity.terminalId,
+        // Z entry is additive with Sales-module + External (not a merge).
         cashIncludesExternal: false,
         bankIncludesExternal: false,
+        cashEntries: normalizedCashEntries,
         creditEntries: populatedEntries.map(
           ({ partyId, partyName, amount }) => ({
             partyId,
@@ -1085,25 +1245,29 @@ export default function ShiftClose() {
         ),
         bankEntries: normalizedBankEntries,
       };
+      const closingCash = nonNegativeNumber(
+        editClosingCash,
+        "Closing cash counted"
+      );
       await updateClosedZReport({
         zReportId: editingReport.id,
-        closingCashCounted: nonNegativeNumber(
-          editClosingCash,
-          "Closing cash counted"
-        ),
+        closingCashCounted: closingCash,
         zReport: updatedReport,
       });
-      setMessage("Z-report and credit ledger updated successfully.");
-      setEditingReport(updatedReport);
-      setEditZReport({
-        businessDate: updatedReport.businessDate || "",
-        grossSales: String(updatedReport.grossSales ?? 0),
-        netSales: String(updatedReport.netSales ?? 0),
-        cashTotal: String(updatedReport.cashTotal ?? 0),
-        bankTotal: String(zReportBankTotalFromDoc(updatedReport)),
-        creditSalesTotal: String(updatedReport.creditSalesTotal ?? 0),
-      });
+      if (existingReportForDate?.id) {
+        autoEditOpenedForRef.current = existingReportForDate.id;
+      }
+      setEditingReport(null);
+      setEditZReport(null);
+      setEditOpeningFloat("0");
+      setEditClosingCash("0");
+      setEditCashEntries([]);
+      setEditCreditEntries([]);
+      setEditBankEntries([]);
       setError("");
+      setMessage(
+        "Z-report saved. Re-open Update Z-Report to review or edit again."
+      );
     } catch (reason) {
       setError(reason?.message || "Failed to update Z-report.");
     } finally {
@@ -1151,11 +1315,12 @@ export default function ShiftClose() {
         }
       }
       const creditSalesTotal = sumEntryAmounts(populatedCreditEntries);
+      const normalizedCashEntries = normalizePopulatedCashEntries(cashEntries);
+      const cashTotal = sumEntryAmounts(normalizedCashEntries);
       const normalizedBankEntries = normalizePopulatedBankEntries(bankEntries);
       const bankTotal = sumEntryAmounts(normalizedBankEntries);
       const businessDate =
         activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD();
-      const cashTotal = nonNegativeNumber(zReport.cashTotal, "Cash total");
       const derived = deriveZReportSalesTotals({
         cashTotal,
         bankTotal,
@@ -1200,8 +1365,10 @@ export default function ShiftClose() {
           ...payload,
           reportNo: identity.reportNo,
           terminalId: identity.terminalId,
+          // Z entry is additive with Sales-module + External (not a merge).
           cashIncludesExternal: false,
           bankIncludesExternal: false,
+          cashEntries: normalizedCashEntries,
           creditEntries: populatedCreditEntries.map(
             ({ partyId, partyName, amount }) => ({
               partyId,
@@ -1218,6 +1385,7 @@ export default function ShiftClose() {
         ...EMPTY_Z_REPORT,
         businessDate: activeShift?.businessDate || todayYYYYMMDD(),
       });
+      setCashEntries([createCashEntry()]);
       setCreditEntries([createCreditEntry()]);
       setBankEntries([createBankEntry()]);
     } catch (reason) {
@@ -1336,7 +1504,7 @@ export default function ShiftClose() {
                     Number.isFinite(shiftOpeningFloat) ? shiftOpeningFloat : null
                   }
                   shiftId={activeShift?.id}
-                  cashTotal={zReport.cashTotal}
+                  cashTotal={liveCashTotal}
                 />
               </span>
               <input
@@ -1349,67 +1517,52 @@ export default function ShiftClose() {
                 className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
               />
             </label>
-            {[
-              ["grossSales", "Gross Sales"],
-              ["netSales", "Net Sales"],
-            ].map(([field, label]) => (
-              <label key={field} className="text-sm text-slate-300">
-                {label}
-                <input
-                  readOnly
-                  tabIndex={-1}
-                  value={formatAmountDisplay(derivedNewTotals[field])}
-                  className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-                />
-              </label>
-            ))}
-          </div>
-          <p className="mt-2 text-[11px] text-slate-500">
-            Enter Cash / Bank / Credit from the terminal Z-report only. Net =
-            Cash + Bank · Gross = Net + Credit. Live shop totals are shown
-            separately below and are not added into these fields.
-          </p>
-
-          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-            <label className="text-sm text-slate-300">
-              Cash Total
-              <input
-                required
-                type="number"
-                min="0"
-                step={moneyStep}
-                value={zReport.cashTotal}
-                onChange={(event) => setZField("cashTotal", event.target.value)}
-                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-              />
-            </label>
-            <label className="text-sm text-slate-300">
-              Bank Total
-              <input
-                readOnly
-                tabIndex={-1}
-                value={formatAmountDisplay(bankTotalFromBreakdown)}
-                className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-              />
-            </label>
-            <label className="text-sm text-slate-300">
-              Credit Sales Total
-              <input
-                readOnly
-                tabIndex={-1}
-                value={formatAmountDisplay(creditTotalFromBreakdown)}
-                className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-              />
-            </label>
           </div>
 
-          <DaySalesTotalsPanel
+          <DaySalesModule
             clientId={activeClientId}
             businessDate={
               activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD()
             }
             shiftId={activeShift?.id}
+            cashTotal={liveCashTotal}
+            bankTotal={liveBankTotal}
+            creditTotal={liveCreditTotal}
           />
+
+          <section className="mt-5 border-t border-slate-800 pt-5">
+            <h3 className="font-semibold text-white">Cash Sales Breakdown</h3>
+
+            <div className="mt-3 space-y-3">
+              {cashEntries.map((entry) => (
+                <CreditEntryRow
+                  key={entry.rowId}
+                  entry={entry}
+                  parties={customerParties}
+                  onChange={(nextEntry) =>
+                    updateCashEntry(entry.rowId, nextEntry)
+                  }
+                  onRemove={() =>
+                    setCashEntries((current) =>
+                      current.filter((item) => item.rowId !== entry.rowId)
+                    )
+                  }
+                  onQuickAddCustomer={quickAddCustomer}
+                />
+              ))}
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setCashEntries((current) => [...current, createCashEntry()])
+              }
+              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" />
+              Add Cash Entry
+            </button>
+          </section>
 
           <section className="mt-5 border-t border-slate-800 pt-5">
             <h3 className="font-semibold text-white">Bank Sales Breakdown</h3>
@@ -1501,7 +1654,12 @@ export default function ShiftClose() {
 
       <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5">
         <div className="flex flex-wrap items-end justify-between gap-3">
-          <h2 className="font-semibold text-white">Recent Z-Reports</h2>
+          <div>
+            <h2 className="font-semibold text-white">Recent Z-Reports</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Z-entry totals only (Sales module + External are in Day Sales).
+            </p>
+          </div>
           <div className="flex flex-wrap items-end gap-2">
             <label className="text-xs font-medium uppercase tracking-wider text-slate-400">
               Filter by Date
@@ -1659,7 +1817,7 @@ export default function ShiftClose() {
                     businessDate={editZReport.businessDate}
                     openingFloat={editOpeningFloat}
                     shiftId={editingReport?.shiftId}
-                    cashTotal={editZReport.cashTotal}
+                    cashTotal={editLiveCashTotal}
                   />
                 </span>
                 <input
@@ -1672,67 +1830,55 @@ export default function ShiftClose() {
                   className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
                 />
               </label>
-              {[
-                ["grossSales", "Gross Sales"],
-                ["netSales", "Net Sales"],
-              ].map(([field, label]) => (
-                <label key={field} className="text-sm text-slate-300">
-                  {label}
-                  <input
-                    readOnly
-                    tabIndex={-1}
-                    value={formatAmountDisplay(derivedEditTotals[field])}
-                    className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-                  />
-                </label>
-              ))}
-            </div>
-            <p className="mt-2 text-[11px] text-slate-500">
-              Enter Cash / Bank / Credit from the terminal Z-report only. Net =
-              Cash + Bank · Gross = Net + Credit. Live shop totals are shown
-              separately below and are not added into these fields.
-            </p>
-
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <label className="text-sm text-slate-300">
-                Cash Total
-                <input
-                  required
-                  type="number"
-                  min="0"
-                  step={moneyStep}
-                  value={editZReport.cashTotal}
-                  onChange={(event) =>
-                    setEditZField("cashTotal", event.target.value)
-                  }
-                  className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2 text-white"
-                />
-              </label>
-              <label className="text-sm text-slate-300">
-                Bank Total
-                <input
-                  readOnly
-                  tabIndex={-1}
-                  value={formatAmountDisplay(editBankTotalFromBreakdown)}
-                  className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-                />
-              </label>
-              <label className="text-sm text-slate-300">
-                Credit Sales Total
-                <input
-                  readOnly
-                  tabIndex={-1}
-                  value={formatAmountDisplay(editCreditTotalFromBreakdown)}
-                  className="mt-1 w-full cursor-default rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-2 text-slate-200 outline-none"
-                />
-              </label>
             </div>
 
-            <DaySalesTotalsPanel
+            <DaySalesModule
               clientId={activeClientId}
               businessDate={editZReport.businessDate}
               shiftId={editingReport?.shiftId}
+              cashTotal={editLiveCashTotal}
+              bankTotal={editLiveBankTotal}
+              creditTotal={editLiveCreditTotal}
             />
+
+            <section className="mt-5 border-t border-slate-800 pt-5">
+              <h3 className="font-semibold text-white">Cash Sales Breakdown</h3>
+              <div className="mt-3 space-y-3">
+                {editCashEntries.map((entry) => (
+                  <CreditEntryRow
+                    key={entry.rowId}
+                    entry={entry}
+                    parties={customerParties}
+                    onChange={(nextEntry) =>
+                      setEditCashEntries((current) =>
+                        current.map((item) =>
+                          item.rowId === entry.rowId ? nextEntry : item
+                        )
+                      )
+                    }
+                    onRemove={() =>
+                      setEditCashEntries((current) =>
+                        current.filter((item) => item.rowId !== entry.rowId)
+                      )
+                    }
+                    onQuickAddCustomer={quickAddCustomer}
+                  />
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  setEditCashEntries((current) => [
+                    ...current,
+                    createCashEntry(),
+                  ])
+                }
+                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+              >
+                <Plus className="h-4 w-4" />
+                Add Cash Entry
+              </button>
+            </section>
 
             <section className="mt-5 border-t border-slate-800 pt-5">
               <h3 className="font-semibold text-white">Bank Sales Breakdown</h3>
