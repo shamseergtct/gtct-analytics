@@ -16,12 +16,12 @@ import {
   findMissingBillNumbers,
   parseBillSequence,
 } from "../../utils/externalSales.js";
-import {
-  BTN_PRIMARY,
-  BTN_SECONDARY,
-  FIELD_NUMBER_CLASS,
-  LABEL_CLASS,
-} from "./externalSalesUi.js";
+const INLINE_INPUT =
+  "h-9 w-[5.5rem] shrink-0 rounded-lg border border-slate-700 bg-slate-950 px-2 text-sm tabular-nums text-white outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/40 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
+const INLINE_BTN_SECONDARY =
+  "inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-slate-700 px-3 text-xs font-semibold text-slate-300 hover:bg-slate-800 disabled:opacity-50";
+const INLINE_BTN_PRIMARY =
+  "inline-flex h-9 shrink-0 items-center justify-center rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50";
 
 export default function TerminalBillGapChecker({
   clientId,
@@ -239,7 +239,7 @@ export default function TerminalBillGapChecker({
         </div>
       ) : null}
 
-      <div className="space-y-3">
+      <div className="space-y-2">
         {activeTerminals.map((terminal) => {
           const draft = getDraft(terminal.id);
           const report = results[terminal.id];
@@ -250,20 +250,17 @@ export default function TerminalBillGapChecker({
           return (
             <div
               key={terminal.id}
-              className="rounded-xl border border-slate-800 bg-slate-950/40 p-3"
+              className="rounded-xl border border-slate-800 bg-slate-950/40 px-3 py-2"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-sm font-medium text-white">
+              <div className="flex flex-nowrap items-center gap-2 overflow-x-auto">
+                <div className="min-w-[6.5rem] shrink-0 text-sm font-medium text-white">
                   {terminal.name}
                 </div>
-                <div className="text-xs text-slate-500">
-                  Entered today: {enteredOnDate}
+                <div className="shrink-0 whitespace-nowrap text-[11px] text-slate-500">
+                  Entered: {enteredOnDate}
                 </div>
-              </div>
-
-              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1fr_auto_auto]">
-                <label className={LABEL_CLASS}>
-                  Starting bill no
+                <label className="flex shrink-0 items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                  Start
                   <input
                     type="text"
                     inputMode="numeric"
@@ -273,12 +270,13 @@ export default function TerminalBillGapChecker({
                         startBillNumber: event.target.value,
                       })
                     }
-                    className={FIELD_NUMBER_CLASS}
-                    placeholder="e.g. 101"
+                    className={INLINE_INPUT}
+                    placeholder="101"
+                    aria-label={`${terminal.name} starting bill number`}
                   />
                 </label>
-                <label className={LABEL_CLASS}>
-                  Last bill no
+                <label className="flex shrink-0 items-center gap-1.5 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                  Last
                   <input
                     type="text"
                     inputMode="numeric"
@@ -288,33 +286,30 @@ export default function TerminalBillGapChecker({
                         endBillNumber: event.target.value,
                       })
                     }
-                    className={FIELD_NUMBER_CLASS}
-                    placeholder="e.g. 145"
+                    className={INLINE_INPUT}
+                    placeholder="145"
+                    aria-label={`${terminal.name} last bill number`}
                   />
                 </label>
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    className={`${BTN_SECONDARY} w-full`}
-                    disabled={savingId === terminal.id || !clientId}
-                    onClick={() => saveRange(terminal)}
-                  >
-                    {savingId === terminal.id ? "Saving…" : "Save range"}
-                  </button>
-                </div>
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    className={`${BTN_PRIMARY} w-full`}
-                    onClick={() => findMissing(terminal)}
-                  >
-                    Find missing
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className={INLINE_BTN_SECONDARY}
+                  disabled={savingId === terminal.id || !clientId}
+                  onClick={() => saveRange(terminal)}
+                >
+                  {savingId === terminal.id ? "Saving…" : "Save range"}
+                </button>
+                <button
+                  type="button"
+                  className={INLINE_BTN_PRIMARY}
+                  onClick={() => findMissing(terminal)}
+                >
+                  Find missing
+                </button>
               </div>
 
               {report ? (
-                <div className="mt-3 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
+                <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm">
                   <div className="text-slate-300">
                     Range {report.start}–{report.end}:{" "}
                     <span className="text-white">

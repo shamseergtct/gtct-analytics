@@ -31,6 +31,7 @@ import {
 import {
   deliveryBoyOutstandingPayable,
   resolveDeliveryBoyCommission,
+  summarizeDeliveryBoysForCollection,
 } from "../../utils/externalSales.js";
 import {
   BTN_PRIMARY,
@@ -105,17 +106,29 @@ export default function DeliveryBoyCollection({
     [dayBills, collections, deliveryBoyId, editingId]
   );
 
-  const commissionAmount = editingId
+  const displayCommission = editingId
     ? numMoney(editSnapshots?.commissionAmount)
-    : suggested.commissionAmount;
+    : suggested.totalCommissionAmount;
+  const accountCommission = suggested.commissionAmount;
   const showCommission =
     Boolean(deliveryBoyId) &&
-    (boyCommission.enabled || commissionAmount > 0);
+    (boyCommission.enabled ||
+      displayCommission > 0 ||
+      accountCommission > 0);
   const fullyCollected =
     Boolean(deliveryBoyId) &&
     !editingId &&
     suggested.remainingPayable <= 0 &&
     suggested.alreadyCollected > 0;
+
+  const boySummaryRows = useMemo(
+    () =>
+      summarizeDeliveryBoysForCollection({
+        bills: dayBills,
+        collections,
+      }),
+    [dayBills, collections]
+  );
 
   const currencyPrefix = currency ? `${currency} ` : "";
 
@@ -385,9 +398,80 @@ export default function DeliveryBoyCollection({
           Collect from Delivery Boy
         </h2>
         <p className="text-sm text-slate-400">
-          Bill amount already includes delivery charge. Payable = bill amount
-          minus commission (when enabled). Balance = Payable − Cash − Bank.
+          Total = all delivery bills. Credit / shop paid = cash, bank, or credit
+          already paid to the shop. Commission matches Daily List (all delivery
+          bills). Balance = boy-account total − boy-account commission − already
+          collected.
         </p>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
+          Delivery Boy Summary · {effectiveDate || "—"}
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-[640px] w-full text-left text-sm text-slate-300">
+            <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-2">Delivery Boy</th>
+                <th className="px-4 py-2 text-right">Total Amount</th>
+                <th className="px-4 py-2 text-right">Credit / Shop Paid</th>
+                <th className="px-4 py-2 text-right">Commission</th>
+                <th className="px-4 py-2 text-right">Balance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {boySummaryRows.length ? (
+                boySummaryRows.map((row) => (
+                  <tr
+                    key={row.deliveryBoyId}
+                    className={`border-t border-slate-800/80 ${
+                      deliveryBoyId === row.deliveryBoyId
+                        ? "bg-blue-950/30"
+                        : ""
+                    }`}
+                  >
+                    <td className="px-4 py-2">
+                      <button
+                        type="button"
+                        disabled={Boolean(editingId)}
+                        onClick={() => setDeliveryBoyId(row.deliveryBoyId)}
+                        className="font-medium text-white hover:text-blue-300 disabled:cursor-default disabled:hover:text-white"
+                      >
+                        {row.deliveryBoyName}
+                      </button>
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {currencyPrefix}
+                      {formatMoney(row.totalAmount, currencyDecimals)}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {currencyPrefix}
+                      {formatMoney(row.shopPaidAmount, currencyDecimals)}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {currencyPrefix}
+                      {formatMoney(row.commission, currencyDecimals)}
+                    </td>
+                    <td className="px-4 py-2 text-right tabular-nums">
+                      {currencyPrefix}
+                      {formatMoney(row.balance, currencyDecimals)}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-6 text-center text-slate-500"
+                  >
+                    No delivery boy activity for this date.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <form
@@ -436,23 +520,62 @@ export default function DeliveryBoyCollection({
             </select>
           </label>
 
+          {deliveryBoyId ? (
+            <>
+              <label className={LABEL_CLASS}>
+                Total Amount {currency ? `(${currency})` : ""}
+                <input
+                  readOnly
+                  value={formatMoney(suggested.totalAmount, currencyDecimals)}
+                  className={`${FIELD_NUMBER_CLASS} border-slate-700 text-slate-200`}
+                  tabIndex={-1}
+                />
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  All delivery bills for this boy
+                </span>
+              </label>
+
+              <label className={LABEL_CLASS}>
+                Credit / Shop Paid {currency ? `(${currency})` : ""}
+                <input
+                  readOnly
+                  value={formatMoney(
+                    suggested.shopPaidAmount,
+                    currencyDecimals
+                  )}
+                  className={`${FIELD_NUMBER_CLASS} border-slate-700 text-sky-200`}
+                  tabIndex={-1}
+                />
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  Cash, bank, or credit paid to shop
+                  {suggested.creditAmount > 0
+                    ? ` · Credit ${currencyPrefix}${formatMoney(suggested.creditAmount, currencyDecimals)}`
+                    : ""}
+                </span>
+              </label>
+            </>
+          ) : null}
+
           {showCommission ? (
             <label className={LABEL_CLASS}>
               Commission {currency ? `(${currency})` : ""}
               <input
                 readOnly
-                value={formatMoney(commissionAmount, currencyDecimals)}
+                value={formatMoney(displayCommission, currencyDecimals)}
                 className={`${FIELD_NUMBER_CLASS} border-slate-700 text-amber-200`}
                 tabIndex={-1}
               />
               <span className="mt-1 block text-[11px] text-slate-500">
-                Deducted from payable
+                {!editingId &&
+                Math.abs(displayCommission - accountCommission) > 0.0005
+                  ? `All delivery bills · ${currencyPrefix}${formatMoney(accountCommission, currencyDecimals)} deducted from balance (shop-paid excluded)`
+                  : "On delivery charge · deducted from boy-account balance"}
               </span>
             </label>
           ) : null}
 
           <label className={LABEL_CLASS}>
-            {editingId ? "Payable Amount" : "Balance to Collect"}{" "}
+            {editingId ? "Payable Amount" : "Balance"}{" "}
             {currency ? `(${currency})` : ""}
             <input
               required
@@ -467,17 +590,10 @@ export default function DeliveryBoyCollection({
             />
             {deliveryBoyId && !editingId ? (
               <span className="mt-1 block text-[11px] text-slate-500">
-                Total after commission: {currencyPrefix}
-                {formatMoney(
-                  suggested.grossAmount - suggested.commissionAmount,
-                  currencyDecimals
-                )}
+                Boy account after commission
                 {suggested.alreadyCollected > 0
                   ? ` · Already collected: ${currencyPrefix}${formatMoney(suggested.alreadyCollected, currencyDecimals)}`
                   : ""}
-                {" · Remaining: "}
-                {currencyPrefix}
-                {formatMoney(suggested.remainingPayable, currencyDecimals)}
               </span>
             ) : null}
           </label>
@@ -523,7 +639,7 @@ export default function DeliveryBoyCollection({
           </label>
 
           <label className={LABEL_CLASS}>
-            Balance {currency ? `(${currency})` : ""}
+            Remaining after this payment {currency ? `(${currency})` : ""}
             <input
               readOnly
               value={formatMoney(overpaid ? 0 : balanceNum, currencyDecimals)}
@@ -538,8 +654,8 @@ export default function DeliveryBoyCollection({
             />
             <span className="mt-1 block text-[11px] text-slate-500">
               {overpaid
-                ? "Cash + Bank exceeds payable"
-                : "Payable − Cash − Bank"}
+                ? "Cash + Bank exceeds balance"
+                : "Balance − Cash − Bank"}
             </span>
           </label>
 

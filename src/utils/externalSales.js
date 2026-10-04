@@ -239,30 +239,136 @@ export function externalPaymentModeLabel(bill) {
  * Amount a delivery boy owes for a day's delivery bills.
  * Bill amount already includes delivery charge — do not add charge again.
  * Payable = bill amount − commission (commission still based on delivery charge on each bill).
+ *
+ * Also returns day totals for the Collect summary:
+ *   totalAmount = all delivery bills
+ *   shopPaidAmount = cash/bank/credit paid to shop (not on boy account)
+ *   creditAmount = credit-tender subset of shop-paid
  */
 export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
   const boyId = String(deliveryBoyId || "").trim();
-  let gross = 0;
-  let commission = 0;
-  let billCount = 0;
+  let accountGross = 0;
+  let accountCommission = 0;
+  let totalCommission = 0;
+  let accountBillCount = 0;
+  let totalAmount = 0;
+  let shopPaidAmount = 0;
+  let creditAmount = 0;
+  let totalBills = 0;
   for (const bill of bills) {
     if (!boyId || bill.voided === true) continue;
     if (normalizeExternalSaleType(bill.saleType) !== "DELIVERY") continue;
     if (bill.deliveryBoyId !== boyId) continue;
+    const amount = numMoney(bill.billAmount);
+    const billCommission = numMoney(bill.commissionAmount);
+    totalBills += 1;
+    totalAmount += amount;
+    // Match Daily List: commission on every delivery bill for the boy.
+    totalCommission += billCommission;
+    if (isDeliveryBoyAccountPayment(bill)) {
+      accountGross += amount;
+      // Only boy-account commission reduces Collect payable/balance.
+      accountCommission += billCommission;
+      accountBillCount += 1;
+      continue;
+    }
     // Paid directly to shop (cash/bank/credit) does not add to boy payable.
-    if (!isDeliveryBoyAccountPayment(bill)) continue;
-    gross += numMoney(bill.billAmount);
-    commission += numMoney(bill.commissionAmount);
-    billCount += 1;
+    shopPaidAmount += amount;
+    const mode = String(bill.paymentMode || "")
+      .trim()
+      .toUpperCase();
+    if (mode === "CREDIT") creditAmount += amount;
   }
-  const grossAmount = roundMoney(gross);
-  const commissionAmount = roundMoney(commission);
+  const grossAmount = roundMoney(accountGross);
+  const commissionAmount = roundMoney(accountCommission);
+  const totalCommissionAmount = roundMoney(totalCommission);
   return {
-    billCount,
+    billCount: accountBillCount,
+    totalBills,
     grossAmount,
+    totalAmount: roundMoney(totalAmount),
+    shopPaidAmount: roundMoney(shopPaidAmount),
+    creditAmount: roundMoney(creditAmount),
+    // Display / Daily List alignment (all delivery bills).
+    totalCommissionAmount,
+    // Deducted from Collect payable (boy-account bills only).
     commissionAmount,
     payableAmount: roundMoney(Math.max(0, grossAmount - commissionAmount)),
   };
+}
+
+/**
+ * Per-delivery-boy Collect summary rows for a business date.
+ * Columns: total amount, credit/shop paid, commission, balance to collect.
+ */
+export function summarizeDeliveryBoysForCollection({
+  bills = [],
+  collections = [],
+} = {}) {
+  const boyIds = new Set();
+  for (const bill of bills) {
+    if (bill?.voided === true) continue;
+    if (normalizeExternalSaleType(bill.saleType) !== "DELIVERY") continue;
+    if (bill.deliveryBoyId) boyIds.add(bill.deliveryBoyId);
+  }
+  for (const row of collections) {
+    if (row?.deliveryBoyId) boyIds.add(row.deliveryBoyId);
+  }
+
+  const rows = [];
+  for (const deliveryBoyId of boyIds) {
+    const outstanding = deliveryBoyOutstandingPayable({
+      bills,
+      collections,
+      deliveryBoyId,
+    });
+    const nameFromBill =
+      bills.find(
+        (bill) =>
+          bill.deliveryBoyId === deliveryBoyId &&
+          bill.voided !== true &&
+          normalizeExternalSaleType(bill.saleType) === "DELIVERY"
+      )?.deliveryBoyNameSnapshot || "";
+    const nameFromCollection =
+      collections.find((row) => row.deliveryBoyId === deliveryBoyId)
+        ?.deliveryBoyNameSnapshot || "";
+    rows.push({
+      deliveryBoyId,
+      deliveryBoyName: nameFromBill || nameFromCollection || "—",
+      bills: outstanding.totalBills,
+      totalAmount: outstanding.totalAmount,
+      shopPaidAmount: outstanding.shopPaidAmount,
+      creditAmount: outstanding.creditAmount,
+      // Same total as Daily List Delivery Boy Summary commission.
+      commission: outstanding.totalCommissionAmount,
+      accountCommission: outstanding.commissionAmount,
+      balance: outstanding.remainingPayable,
+      alreadyCollected: outstanding.alreadyCollected,
+    });
+  }
+
+  return rows.sort((a, b) =>
+    String(a.deliveryBoyName).localeCompare(String(b.deliveryBoyName))
+  );
+}
+
+/** Non-voided credit-tender bills (for Daily List credit report). */
+export function listExternalCreditBills(bills = []) {
+  return bills
+    .filter((bill) => {
+      if (bill?.voided === true) return false;
+      return (
+        String(bill?.paymentMode || "")
+          .trim()
+          .toUpperCase() === "CREDIT"
+      );
+    })
+    .sort((a, b) =>
+      String(a.billNumber || "").localeCompare(String(b.billNumber || ""), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      })
+    );
 }
 
 /**
@@ -435,6 +541,9 @@ export function summarizeExternalBills(bills = []) {
   const summary = {
     totalBills: 0,
     totalSales: 0,
+    creditSales: 0,
+    netSales: 0,
+    grossSales: 0,
     deliveryBills: 0,
     dineInBills: 0,
     pickUpBills: 0,
@@ -450,11 +559,16 @@ export function summarizeExternalBills(bills = []) {
     const charge = numMoney(bill.deliveryCharge);
     const commission = numMoney(bill.commissionAmount);
     const type = normalizeExternalSaleType(bill.saleType);
+    const mode = String(bill.paymentMode || "")
+      .trim()
+      .toUpperCase();
 
     summary.totalBills += 1;
     summary.totalSales += amount;
     summary.totalDeliveryCharges += charge;
     summary.totalCommission += commission;
+    // Credit tender only — Delivery Boy Account is not credit.
+    if (mode === "CREDIT") summary.creditSales += amount;
 
     if (type === "DELIVERY") summary.deliveryBills += 1;
     else if (type === "DINE_IN") summary.dineInBills += 1;
@@ -492,6 +606,12 @@ export function summarizeExternalBills(bills = []) {
   }
 
   summary.totalSales = roundMoney(summary.totalSales);
+  summary.creditSales = roundMoney(summary.creditSales);
+  // Gross includes credit; Net is everything else (cash/bank/delivery account).
+  summary.grossSales = summary.totalSales;
+  summary.netSales = roundMoney(
+    Math.max(0, summary.grossSales - summary.creditSales)
+  );
   summary.totalDeliveryCharges = roundMoney(summary.totalDeliveryCharges);
   summary.totalCommission = roundMoney(summary.totalCommission);
 

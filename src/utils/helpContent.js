@@ -232,19 +232,19 @@ export const HELP_MODULES = [
       {
         title: "Collect from delivery boy",
         items: [
-          "Record payable amount, then pay by cash and/or bank.",
-          "Bill amount already includes delivery charge. Payable = bill amount − commission (when enabled).",
-          "If amount was already collected, selecting the boy again shows only the remaining balance.",
-          "Balance = amount to collect − Cash − Bank and updates as you type.",
+          "Summary shows Total Amount, Credit/Shop Paid, Commission, and Balance per delivery boy.",
+          "Total = all delivery bills; Credit/Shop Paid = cash, bank, or credit already paid to the shop.",
+          "Balance = boy-account bills − commission − amounts already collected.",
+          "Record Pay by Cash and/or Bank against the remaining balance.",
         ],
       },
       {
         title: "Daily list",
         items: [
-          "Filter by date, terminal, sale type, or delivery boy.",
+          "Business date is at the top; bill filters (terminal, sale type, payment mode, delivery boy, search) sit just above All Bills.",
+          "Credit Report lists credit-tender bills separately from the full bill list.",
           "For each terminal, enter today’s starting and last bill number, save the range, then Find missing to list gaps.",
           "Missing check uses whole-number bill sequences; voided bills count as missing.",
-          "Summaries show totals, terminal totals, and delivery-boy commission.",
           "Void keeps the bill for history but removes it from totals.",
         ],
       },
