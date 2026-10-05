@@ -242,7 +242,7 @@ export default function Transactions() {
         {loading ? <div className="mt-3 text-slate-300">Loading…</div> : null}
 
         <div className="mt-3 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-          <div className="grid grid-cols-12 gap-2 px-4 py-3 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-800">
+          <div className="hidden md:grid grid-cols-12 gap-2 px-4 py-3 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-800">
             <div className="col-span-2">Type</div>
             <div className="col-span-2">Mode</div>
             <div className="col-span-3">Party</div>
@@ -262,15 +262,37 @@ export default function Transactions() {
                 <div
                   key={t.id}
                   className={[
-                    "grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40",
+                    "border-b border-slate-900 px-4 py-3 hover:bg-slate-900/40 md:grid md:grid-cols-12 md:gap-2",
                     isEditingThis ? "bg-amber-500/5" : "",
                   ].join(" ")}
                 >
-                  <div className="col-span-2 text-slate-100 font-medium">
-                    {t.type || "-"}
+                  <div className="flex items-start justify-between gap-3 md:contents">
+                    <div className="min-w-0 flex-1 md:col-span-2 md:flex-none">
+                      <div className="text-slate-100 font-medium">{t.type || "-"}</div>
+                      <div className="mt-0.5 text-sm text-slate-300 md:mt-0 md:hidden">
+                        {t.mode || "-"}
+                        {disc ? (
+                          <span className="ml-2 inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                            DISCOUNT
+                          </span>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right md:hidden">
+                      {num(t.amountIn) > 0 ? (
+                        <div className="tabular-nums text-emerald-200">
+                          +{money(t.amountIn)}
+                        </div>
+                      ) : null}
+                      {num(t.amountOut) > 0 ? (
+                        <div className="tabular-nums text-red-200">
+                          −{money(t.amountOut)}
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
-                  <div className="col-span-2 text-slate-300">
+                  <div className="hidden md:col-span-2 md:block text-slate-300">
                     {t.mode || "-"}
                     {disc ? (
                       <div className="mt-1 inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
@@ -279,29 +301,29 @@ export default function Transactions() {
                     ) : null}
                   </div>
 
-                  <div className="col-span-3 text-slate-300">
+                  <div className="mt-1 text-sm text-slate-300 md:col-span-3 md:mt-0">
                     {t.partyName || "-"}
                     {t.partyType ? (
                       <div className="text-[11px] text-slate-500">{t.partyType}</div>
                     ) : null}
                   </div>
 
-                  <div className="col-span-3 text-slate-400 truncate">
+                  <div className="mt-0.5 text-sm text-slate-400 line-clamp-2 md:col-span-3 md:mt-0 md:truncate md:line-clamp-none">
                     {t.description || "-"}
                   </div>
 
-                  <div className="col-span-1 text-right text-emerald-200">
+                  <div className="hidden md:col-span-1 md:block text-right text-emerald-200">
                     {money(t.amountIn)}
                   </div>
 
-                  <div className="col-span-1 text-right text-red-200">
+                  <div className="hidden md:col-span-1 md:block text-right text-red-200">
                     {money(t.amountOut)}
                   </div>
 
-                  <div className="col-span-12 flex justify-end gap-3 pt-2">
+                  <div className="mt-2 flex justify-end gap-2 md:col-span-12 md:pt-2">
                     <button
                       onClick={() => onClickEdit(t)}
-                      className="text-xs text-sky-300 hover:text-sky-200 disabled:opacity-50"
+                      className="min-h-9 rounded-lg border border-slate-700 px-3 text-xs text-sky-300 hover:bg-slate-900 hover:text-sky-200 disabled:opacity-50"
                       disabled={t?.internalTransfer === true}
                       title={
                         t?.internalTransfer === true
@@ -314,7 +336,7 @@ export default function Transactions() {
 
                     <button
                       onClick={() => deleteTxn(t.id)}
-                      className="text-xs text-red-300 hover:text-red-200"
+                      className="min-h-9 rounded-lg border border-slate-700 px-3 text-xs text-red-300 hover:bg-slate-900 hover:text-red-200"
                     >
                       Delete
                     </button>

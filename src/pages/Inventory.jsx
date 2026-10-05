@@ -1126,7 +1126,103 @@ export default function Inventory() {
         </label>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-slate-800">
+      {/* Mobile catalog cards */}
+      <ul className="space-y-2 md:hidden">
+        {loading ? (
+          <li className="rounded-xl border border-slate-800 px-4 py-6 text-center text-slate-500">
+            Loading items…
+          </li>
+        ) : catalogItems.length === 0 ? (
+          <li className="rounded-xl border border-slate-800 px-4 py-6 text-center italic text-slate-500">
+            {catalogSearch.trim()
+              ? "No items match your search."
+              : "No inventory items yet. Save an item on Item Entry to start the catalog."}
+          </li>
+        ) : (
+          catalogItems.map((item) => {
+            const low = num(item.currentStock) <= num(item.minStock || 0);
+            const inStockList = stockRows.some((row) => row.itemId === item.id);
+            const isSelected =
+              tab === "entry"
+                ? editingItemId === item.id
+                : tab === "stock"
+                  ? inStockList
+                  : auditItemId === item.id;
+            const actionLabel =
+              tab === "stock"
+                ? inStockList
+                  ? "Added"
+                  : "Select"
+                : tab === "audit"
+                  ? auditItemId === item.id
+                    ? "Selected"
+                    : "Select"
+                  : "Edit";
+
+            return (
+              <li key={item.id}>
+                <button
+                  type="button"
+                  onClick={() => handleCatalogItemSelect(item)}
+                  className={`w-full rounded-xl border p-3 text-left ${
+                    isSelected
+                      ? "border-blue-700/60 bg-blue-950/35"
+                      : "border-slate-800 bg-slate-950/60 hover:bg-slate-900/50"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="line-clamp-2 font-medium text-slate-100 break-words">
+                        {item.itemName || "—"}
+                      </p>
+                      <p className="mt-0.5 font-mono text-xs text-slate-500">
+                        {item.itemCode || "No code"}
+                        {item.category ? ` · ${item.category}` : ""}
+                      </p>
+                    </div>
+                    <span
+                      className={`shrink-0 inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs font-medium ${
+                        isSelected
+                          ? "border-blue-700/60 bg-blue-950/50 text-blue-200"
+                          : "border-slate-700 bg-slate-950 text-slate-200"
+                      }`}
+                    >
+                      {tab === "entry" ? <Pencil size={13} /> : null}
+                      {actionLabel}
+                    </span>
+                  </div>
+                  <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
+                    <div>
+                      <div className="text-slate-500">Cost</div>
+                      <div className="tabular-nums text-slate-200">
+                        {money(itemCost(item))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Sell</div>
+                      <div className="tabular-nums text-slate-200">
+                        {money(item.sellingPrice)}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-slate-500">Stock</div>
+                      <div
+                        className={`tabular-nums font-medium ${
+                          low ? "text-amber-300" : "text-slate-100"
+                        }`}
+                      >
+                        {money(item.currentStock)}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              </li>
+            );
+          })
+        )}
+      </ul>
+
+      <div className="hidden overflow-x-auto rounded-xl border border-slate-800 md:block">
         <table className="min-w-[820px] w-full text-sm">
           <thead className="border-b border-slate-700/50 bg-slate-800/50">
             <tr className="text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -1245,7 +1341,7 @@ export default function Inventory() {
   );
 
   return (
-    <div className="p-6">
+    <div className="p-3 sm:p-6">
       <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_auto]">
         <div>
           <h1 className="text-2xl font-semibold text-slate-100">Inventory</h1>

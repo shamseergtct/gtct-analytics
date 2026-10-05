@@ -152,7 +152,7 @@ export default function InvoiceMetaFields({
 
         {settlementMode === "split" ? (
           <div className="mt-1 space-y-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2.5">
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <div>
                 <label className="text-[10px] uppercase text-slate-500">Cash</label>
                 <input

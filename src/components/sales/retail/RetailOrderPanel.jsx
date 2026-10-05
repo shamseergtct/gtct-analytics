@@ -142,8 +142,8 @@ export default function RetailOrderPanel({
               <li key={row.lineId} className="px-3 py-2 hover:bg-slate-900/40">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[15px] font-medium text-slate-50">
-                      {row.itemName}
+                    <div className="line-clamp-2 text-[15px] font-medium leading-snug text-slate-50 break-words">
+                      {row.itemName || row.itemCode || "Item"}
                     </div>
                     <div className="mt-0.5 font-mono text-[11px] text-slate-500">
                       {row.itemCode || "—"}
@@ -154,8 +154,8 @@ export default function RetailOrderPanel({
                     type="button"
                     onClick={() => removeLine(row.lineId)}
                     disabled={saving}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-950/40 hover:text-red-300 disabled:opacity-50"
-                    aria-label={`Remove ${row.itemName}`}
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-red-950/40 hover:text-red-300 disabled:opacity-50"
+                    aria-label={`Remove ${row.itemName || "item"}`}
                   >
                     <Trash2 size={15} />
                   </button>
@@ -178,7 +178,7 @@ export default function RetailOrderPanel({
                         // Keep typing in description from triggering POS shortcuts.
                         e.stopPropagation();
                       }}
-                      className={`mt-1.5 h-8 w-full rounded-lg border bg-slate-900/60 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:ring-1 disabled:opacity-50 ${
+                      className={`mt-1.5 h-9 w-full rounded-lg border bg-slate-900/60 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:ring-1 disabled:opacity-50 ${
                         descMissing
                           ? "border-amber-500/80 focus:border-amber-400 focus:ring-amber-500/30"
                           : "border-slate-800 focus:border-blue-500 focus:ring-blue-500/30"
@@ -188,20 +188,20 @@ export default function RetailOrderPanel({
                           ? "Description required (FOC)"
                           : "Description"
                       }
-                      aria-label={`Description for ${row.itemName}`}
+                      aria-label={`Description for ${row.itemName || "item"}`}
                       aria-required={isFoc}
                     />
                   );
                 })()}
 
-                <div className="mt-1.5 flex items-center justify-between gap-2">
-                  <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900">
+                <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="inline-flex w-full items-center rounded-lg border border-slate-700 bg-slate-900 sm:w-auto">
                     <button
                       type="button"
                       aria-label="Decrease quantity"
                       disabled={saving}
                       onClick={() => bumpQty(row.lineId, row.qty, -1)}
-                      className="flex h-9 w-9 items-center justify-center text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
+                      className="flex h-10 w-11 items-center justify-center text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
                     >
                       <Minus size={14} />
                     </button>
@@ -223,41 +223,49 @@ export default function RetailOrderPanel({
                       onBlur={() => {
                         if (num(row.qty) < 1) removeLine(row.lineId);
                       }}
-                      className="h-9 w-12 border-x border-slate-700 bg-transparent text-center text-sm font-semibold text-slate-100 outline-none disabled:opacity-50"
-                      aria-label={`Quantity for ${row.itemName}`}
+                      className="h-10 min-w-0 flex-1 border-x border-slate-700 bg-transparent text-center text-sm font-semibold text-slate-100 outline-none disabled:opacity-50 sm:w-14 sm:flex-none"
+                      aria-label={`Quantity for ${row.itemName || "item"}`}
                     />
                     <button
                       type="button"
                       aria-label="Increase quantity"
                       disabled={saving}
                       onClick={() => bumpQty(row.lineId, row.qty, 1)}
-                      className="flex h-9 w-9 items-center justify-center text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
+                      className="flex h-10 w-11 items-center justify-center text-slate-300 hover:bg-slate-800 hover:text-white disabled:opacity-50"
                     >
                       <Plus size={14} />
                     </button>
                   </div>
 
-                  <label className="flex items-center gap-1.5">
-                    <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                      Price
-                    </span>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      min="0"
-                      step="any"
-                      disabled={saving}
-                      value={row.sellingPrice}
-                      onChange={(e) =>
-                        updateLine(row.lineId, { sellingPrice: e.target.value })
-                      }
-                      className="h-9 w-[4.75rem] rounded-lg border border-slate-700 bg-slate-900 px-2 text-right text-sm font-semibold tabular-nums text-slate-100 outline-none focus:border-blue-500 disabled:opacity-50"
-                      aria-label={`Price for ${row.itemName}`}
-                    />
-                  </label>
-
-                  <div className="min-w-[3.5rem] text-right text-[15px] font-semibold tabular-nums text-slate-50">
-                    {money(row.total)}
+                  <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
+                    <label className="flex min-w-0 flex-col gap-0.5">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                        Price
+                      </span>
+                      <input
+                        type="number"
+                        inputMode="decimal"
+                        min="0"
+                        step="any"
+                        disabled={saving}
+                        value={row.sellingPrice}
+                        onChange={(e) =>
+                          updateLine(row.lineId, {
+                            sellingPrice: e.target.value,
+                          })
+                        }
+                        className="h-10 w-full rounded-lg border border-slate-700 bg-slate-900 px-2 text-right text-sm font-semibold tabular-nums text-slate-100 outline-none focus:border-blue-500 disabled:opacity-50 sm:w-[5.5rem]"
+                        aria-label={`Price for ${row.itemName || "item"}`}
+                      />
+                    </label>
+                    <div className="flex min-w-0 flex-col gap-0.5 text-right">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                        Line
+                      </span>
+                      <div className="flex h-10 items-center justify-end text-[15px] font-semibold tabular-nums text-slate-50">
+                        {money(row.total)}
+                      </div>
+                    </div>
                   </div>
                 </div>
               </li>
@@ -286,26 +294,26 @@ export default function RetailOrderPanel({
           </div>
         </div>
 
-        <div className="mt-2.5 flex items-end justify-between border-t border-slate-800 pt-2.5">
+        <div className="mt-2.5 flex items-end justify-between gap-2 border-t border-slate-800 pt-2.5">
           <span className="text-sm font-semibold uppercase tracking-wide text-slate-300">
             Total
           </span>
-          <span className="text-[28px] font-bold leading-none tracking-tight tabular-nums text-emerald-300 sm:text-[30px]">
+          <span className="text-[24px] font-bold leading-none tracking-tight tabular-nums text-emerald-300 sm:text-[30px]">
             {money(totals.grandTotal)}
           </span>
         </div>
 
         <div className="mt-2.5">
-          <div className="mb-1.5 flex items-center justify-between gap-2">
+          <div className="mb-1.5 flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
             <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
               Payment
             </span>
-            <div className="inline-flex rounded-lg border border-slate-700 p-0.5">
+            <div className="inline-flex w-full rounded-lg border border-slate-700 p-0.5 sm:w-auto">
               <button
                 type="button"
                 disabled={saving}
                 onClick={() => switchSettlement("full")}
-                className={`rounded-md px-2 py-1 text-[11px] font-semibold ${
+                className={`min-h-9 flex-1 rounded-md px-2 py-1.5 text-[11px] font-semibold sm:flex-none ${
                   settlementMode !== "split"
                     ? "bg-slate-800 text-slate-100"
                     : "text-slate-400 hover:text-slate-200"
@@ -317,7 +325,7 @@ export default function RetailOrderPanel({
                 type="button"
                 disabled={saving}
                 onClick={() => switchSettlement("split")}
-                className={`rounded-md px-2 py-1 text-[11px] font-semibold ${
+                className={`min-h-9 flex-1 rounded-md px-2 py-1.5 text-[11px] font-semibold sm:flex-none ${
                   settlementMode === "split"
                     ? "bg-slate-800 text-slate-100"
                     : "text-slate-400 hover:text-slate-200"

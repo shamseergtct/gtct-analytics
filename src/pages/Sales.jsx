@@ -1936,7 +1936,7 @@ export default function Sales() {
    * =========================
    */
   return (
-    <div className={retailOwnsChrome ? "p-4 md:p-5" : "p-6"}>
+    <div className={retailOwnsChrome ? "p-2.5 sm:p-4 md:p-5" : "p-3 sm:p-6"}>
       {/* Header — retail new-order chrome lives inside RetailSales */}
       {!retailOwnsChrome ? (
         <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -2012,47 +2012,33 @@ export default function Sales() {
           ) : historyFiltered.length === 0 ? (
             <div className="mt-4 text-slate-400 text-sm">No invoices found.</div>
           ) : (
-            <div className="mt-3 rounded-xl border border-slate-800 overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-900/60 border-b border-slate-800">
-                  <tr className="text-left text-slate-200 text-xs">
-                    <th className="p-2">Date</th>
-                    <th className="p-2">Invoice</th>
-                    <th className="p-2">Customer</th>
-                    <th className="p-2">Phone</th>
-                    <th className="p-2">Order</th>
-                    <th className="p-2">Payment</th>
-                    <th className="p-2">Status</th>
-                    <th className="p-2 text-right">Total</th>
-                    <th className="p-2">Actions</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {historyFiltered.map((inv) => {
-                    const cancelled = inv.status === "CANCELLED";
-                    return (
-                      <tr key={inv.id} className="border-b border-slate-900">
-                        <td className="p-2 text-slate-300">
-                          {formatDateValue(inv.saleAtMs, "-")}
-                        </td>
-                        <td className="p-2">
-                          <div className="text-slate-100 font-semibold">
+            <>
+              {/* Mobile history cards */}
+              <ul className="mt-3 space-y-2 md:hidden">
+                {historyFiltered.map((inv) => {
+                  const cancelled = inv.status === "CANCELLED";
+                  return (
+                    <li
+                      key={inv.id}
+                      className="rounded-xl border border-slate-800 bg-slate-950/60 p-3"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-semibold text-slate-100 break-words">
                             {inv.invoiceNo || "-"}
                           </div>
-                          <div className="text-xs text-slate-500">
-                            Items: {inv.itemCount ?? "-"} • Tax: {money(inv.taxAmount || 0)}
+                          <div className="mt-0.5 text-xs text-slate-500">
+                            {formatDateValue(inv.saleAtMs, "-")}
+                            {" · "}
+                            {inv.orderType || "—"}
                           </div>
-                        </td>
-                        <td className="p-2 text-slate-200">{inv.customerName || "-"}</td>
-                        <td className="p-2 text-slate-300">{inv.customerPhone || "-"}</td>
-                        <td className="p-2 text-slate-300">{inv.orderType || "-"}</td>
-                        <td className="p-2 text-slate-300">
-                          {formatPaymentLabel(inv, decimals)}
-                        </td>
-                        <td className="p-2">
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <div className="font-semibold tabular-nums text-slate-100">
+                            {money(inv.grandTotal || 0)}
+                          </div>
                           <span
-                            className={`text-xs px-2 py-1 rounded-full border ${
+                            className={`mt-1 inline-flex text-[10px] px-2 py-0.5 rounded-full border ${
                               cancelled
                                 ? "border-red-800 text-red-200 bg-red-950/30"
                                 : "border-emerald-800 text-emerald-200 bg-emerald-950/20"
@@ -2060,53 +2046,156 @@ export default function Sales() {
                           >
                             {inv.status || "ACTIVE"}
                           </span>
-                        </td>
-                        <td className="p-2 text-right text-slate-100 font-semibold">
-                          {money(inv.grandTotal || 0)}
-                        </td>
-                        <td className="p-2 whitespace-nowrap">
-                          <div className="flex gap-2 flex-wrap">
-                            <button
-                              type="button"
-                              onClick={() => viewInvoice(inv)}
-                              className="rounded-lg border border-slate-700 text-slate-200 px-3 py-1.5 text-xs hover:bg-slate-900/50"
-                            >
-                              View
-                            </button>
+                        </div>
+                      </div>
+                      <div className="mt-2 text-sm text-slate-300">
+                        {inv.customerName || "Walk-in"}
+                        {inv.customerPhone ? (
+                          <span className="text-slate-500"> · {inv.customerPhone}</span>
+                        ) : null}
+                      </div>
+                      <div className="mt-0.5 text-xs text-slate-500">
+                        {formatPaymentLabel(inv, decimals)}
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => viewInvoice(inv)}
+                          className="min-h-9 rounded-lg border border-slate-700 px-3 text-xs text-slate-200 hover:bg-slate-900/50"
+                        >
+                          View
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => editInvoice(inv)}
+                          disabled={cancelled}
+                          className="min-h-9 rounded-lg border border-blue-700 px-3 text-xs text-blue-200 hover:bg-blue-950/30 disabled:opacity-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => printInvoiceWithItems(inv)}
+                          className="min-h-9 rounded-lg bg-emerald-600 px-3 text-xs text-white hover:bg-emerald-500"
+                        >
+                          Print
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => cancelInvoice(inv)}
+                          disabled={cancelled}
+                          className="min-h-9 rounded-lg border border-red-800 px-3 text-xs text-red-200 hover:bg-red-950/30 disabled:opacity-50"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
 
-                            <button
-                              type="button"
-                              onClick={() => editInvoice(inv)}
-                              disabled={cancelled}
-                              className="rounded-lg border border-blue-700 text-blue-200 px-3 py-1.5 text-xs hover:bg-blue-950/30 disabled:opacity-50"
-                            >
-                              Edit
-                            </button>
+              {/* Desktop history table */}
+              <div className="mt-3 hidden overflow-x-auto rounded-xl border border-slate-800 md:block">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-900/60 border-b border-slate-800">
+                    <tr className="text-left text-slate-200 text-xs">
+                      <th className="p-2">Date</th>
+                      <th className="p-2">Invoice</th>
+                      <th className="p-2">Customer</th>
+                      <th className="p-2">Phone</th>
+                      <th className="p-2">Order</th>
+                      <th className="p-2">Payment</th>
+                      <th className="p-2">Status</th>
+                      <th className="p-2 text-right">Total</th>
+                      <th className="p-2">Actions</th>
+                    </tr>
+                  </thead>
 
-                            <button
-                              type="button"
-                              onClick={() => printInvoiceWithItems(inv)}
-                              className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs"
+                  <tbody>
+                    {historyFiltered.map((inv) => {
+                      const cancelled = inv.status === "CANCELLED";
+                      return (
+                        <tr key={inv.id} className="border-b border-slate-900">
+                          <td className="p-2 text-slate-300">
+                            {formatDateValue(inv.saleAtMs, "-")}
+                          </td>
+                          <td className="p-2">
+                            <div className="text-slate-100 font-semibold">
+                              {inv.invoiceNo || "-"}
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              Items: {inv.itemCount ?? "-"} • Tax:{" "}
+                              {money(inv.taxAmount || 0)}
+                            </div>
+                          </td>
+                          <td className="p-2 text-slate-200">
+                            {inv.customerName || "-"}
+                          </td>
+                          <td className="p-2 text-slate-300">
+                            {inv.customerPhone || "-"}
+                          </td>
+                          <td className="p-2 text-slate-300">{inv.orderType || "-"}</td>
+                          <td className="p-2 text-slate-300">
+                            {formatPaymentLabel(inv, decimals)}
+                          </td>
+                          <td className="p-2">
+                            <span
+                              className={`text-xs px-2 py-1 rounded-full border ${
+                                cancelled
+                                  ? "border-red-800 text-red-200 bg-red-950/30"
+                                  : "border-emerald-800 text-emerald-200 bg-emerald-950/20"
+                              }`}
                             >
-                              Print
-                            </button>
+                              {inv.status || "ACTIVE"}
+                            </span>
+                          </td>
+                          <td className="p-2 text-right text-slate-100 font-semibold">
+                            {money(inv.grandTotal || 0)}
+                          </td>
+                          <td className="p-2 whitespace-nowrap">
+                            <div className="flex gap-2 flex-wrap">
+                              <button
+                                type="button"
+                                onClick={() => viewInvoice(inv)}
+                                className="rounded-lg border border-slate-700 text-slate-200 px-3 py-1.5 text-xs hover:bg-slate-900/50"
+                              >
+                                View
+                              </button>
 
-                            <button
-                              type="button"
-                              onClick={() => cancelInvoice(inv)}
-                              disabled={cancelled}
-                              className="rounded-lg border border-red-800 text-red-200 px-3 py-1.5 text-xs hover:bg-red-950/30 disabled:opacity-50"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                              <button
+                                type="button"
+                                onClick={() => editInvoice(inv)}
+                                disabled={cancelled}
+                                className="rounded-lg border border-blue-700 text-blue-200 px-3 py-1.5 text-xs hover:bg-blue-950/30 disabled:opacity-50"
+                              >
+                                Edit
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => printInvoiceWithItems(inv)}
+                                className="rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1.5 text-xs"
+                              >
+                                Print
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => cancelInvoice(inv)}
+                                disabled={cancelled}
+                                className="rounded-lg border border-red-800 text-red-200 px-3 py-1.5 text-xs hover:bg-red-950/30 disabled:opacity-50"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       ) : null}

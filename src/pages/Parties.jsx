@@ -524,7 +524,7 @@ export default function Parties() {
       ) : null}
       {/* List */}
       <div className="rounded-xl border border-slate-800 bg-slate-950/50 overflow-hidden">
-        <div className="grid grid-cols-12 gap-2 px-4 py-3 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-800">
+        <div className="hidden md:grid grid-cols-12 gap-2 px-4 py-3 text-xs uppercase tracking-wider text-slate-500 border-b border-slate-800">
           <div className="col-span-5">Name</div>
           <div className="col-span-3">Type</div>
           <div className="col-span-3">Contact</div>
@@ -539,15 +539,17 @@ export default function Parties() {
           filtered.map((p) => (
             <div
               key={p.id}
-              className="grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40"
+              className="border-b border-slate-900 px-4 py-3 hover:bg-slate-900/40 md:grid md:grid-cols-12 md:gap-2"
             >
-              <div className="col-span-5 text-slate-100 font-medium">
-                {p.name}
-                {getPartyCode(p) ? (
-                  <span className="ml-2 font-mono text-xs font-normal text-slate-500">
-                    {getPartyCode(p)}
-                  </span>
-                ) : null}
+              <div className="min-w-0 md:col-span-5 text-slate-100 font-medium">
+                <div className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="break-words">{p.name}</span>
+                  {getPartyCode(p) ? (
+                    <span className="font-mono text-xs font-normal text-slate-500">
+                      {getPartyCode(p)}
+                    </span>
+                  ) : null}
+                </div>
                 {Number(p.openingBalance) > 0 ? (
                   <div className="mt-0.5 text-xs font-normal text-slate-500">
                     Opening {formatMoney(p.openingBalance)}{" "}
@@ -555,20 +557,26 @@ export default function Parties() {
                   </div>
                 ) : null}
                 {p.houseOrBuilding || p.landmark ? (
-                  <div className="mt-0.5 text-xs font-normal text-slate-500 truncate">
+                  <div className="mt-0.5 text-xs font-normal text-slate-500 line-clamp-2">
                     {[p.houseOrBuilding, p.flat, p.roadOrPost, p.blockOrPin, p.landmark]
                       .filter(Boolean)
                       .join(", ")}
                   </div>
                 ) : null}
               </div>
-              <div className="col-span-3 text-slate-300">{p.type}</div>
-              <div className="col-span-3 text-slate-300">{p.contact || "-"}</div>
+              <div className="mt-1 text-sm text-slate-300 md:col-span-3 md:mt-0">
+                <span className="md:hidden text-slate-500">Type · </span>
+                {p.type}
+              </div>
+              <div className="mt-0.5 text-sm text-slate-300 md:col-span-3 md:mt-0 break-words">
+                <span className="md:hidden text-slate-500">Contact · </span>
+                {p.contact || "-"}
+              </div>
 
-              <div className="col-span-1 flex justify-end gap-2">
+              <div className="mt-2 flex gap-2 md:col-span-1 md:mt-0 md:justify-end">
                 <button
                   onClick={() => openEdit(p)}
-                  className="text-blue-400 hover:text-blue-300 text-sm"
+                  className="min-h-9 rounded-lg border border-slate-700 px-3 text-sm text-blue-400 hover:bg-slate-900 hover:text-blue-300"
                 >
                   Edit
                 </button>
@@ -576,7 +584,7 @@ export default function Parties() {
                 <button
                   onClick={() => handleDelete(p)}
                   disabled={deletingId === p.id}
-                  className="text-red-400 hover:text-red-300 text-sm disabled:opacity-60"
+                  className="min-h-9 rounded-lg border border-slate-700 px-3 text-sm text-red-400 hover:bg-slate-900 hover:text-red-300 disabled:opacity-60"
                 >
                   {deletingId === p.id ? "…" : "Del"}
                 </button>

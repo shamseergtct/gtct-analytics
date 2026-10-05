@@ -187,7 +187,7 @@ export default function RetailSales(props) {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-7.25rem)] min-h-0 flex-col gap-2.5 sm:gap-3">
+    <div className="flex min-h-0 flex-col gap-2.5 sm:gap-3 lg:h-[calc(100dvh-7.25rem)]">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 sm:gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -245,7 +245,7 @@ export default function RetailSales(props) {
 
       {/* lg (1024+) keeps two columns on 1366×768; xl was too late */}
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-2.5 lg:grid-cols-12 lg:gap-3">
-        <section className="flex min-h-0 flex-col gap-2.5 overflow-y-auto overscroll-contain lg:col-span-8">
+        <section className="order-1 flex min-h-0 flex-col gap-2.5 overflow-y-auto overscroll-contain lg:order-none lg:col-span-8">
           <RetailBarcodeSearch
             search={search}
             setSearch={setSearch}
@@ -345,7 +345,7 @@ export default function RetailSales(props) {
           </div>
         </section>
 
-        <div className="min-h-[320px] lg:col-span-4 lg:min-h-0">
+        <div className="order-2 min-h-[min(420px,70dvh)] lg:order-none lg:col-span-4 lg:min-h-0 lg:h-full">
           <RetailOrderPanel
             cart={cart}
             totals={totals}
