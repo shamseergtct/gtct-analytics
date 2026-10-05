@@ -241,7 +241,7 @@ export const HELP_MODULES = [
         items: [
           "Summary shows Total Amount, Credit/Shop Paid, Commission, and Balance per delivery boy.",
           "Total = all delivery bills; Credit/Shop Paid = cash, bank, or credit already paid to the shop.",
-          "Balance = boy-account bills − commission − amounts already collected.",
+          "Balance = boy-account bills − commission on all of that boy's delivery bills (including shop-paid) − amounts already collected.",
           "Record Pay by Cash and/or Bank against the remaining balance.",
         ],
       },

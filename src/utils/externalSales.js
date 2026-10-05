@@ -238,17 +238,17 @@ export function externalPaymentModeLabel(bill) {
 /**
  * Amount a delivery boy owes for a day's delivery bills.
  * Bill amount already includes delivery charge — do not add charge again.
- * Payable = bill amount − commission (commission still based on delivery charge on each bill).
+ * Payable = boy-account bills − commission on all of that boy's delivery bills
+ * (including cash/bank/credit paid to the shop — commission is still earned).
  *
  * Also returns day totals for the Collect summary:
  *   totalAmount = all delivery bills
- *   shopPaidAmount = cash/bank/credit paid to shop (not on boy account)
- *   creditAmount = credit-tender subset of shop-paid
+ *   shopPaidAmount / shopCollectionAmount = cash/bank paid to shop
+ *   creditAmount = credit tender
  */
 export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
   const boyId = String(deliveryBoyId || "").trim();
   let accountGross = 0;
-  let accountCommission = 0;
   let totalCommission = 0;
   let accountBillCount = 0;
   let totalAmount = 0;
@@ -263,37 +263,43 @@ export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
     const billCommission = numMoney(bill.commissionAmount);
     totalBills += 1;
     totalAmount += amount;
-    // Match Daily List: commission on every delivery bill for the boy.
+    // Match Daily List: commission on every delivery bill for the boy,
+    // even when the customer paid the shop (cash/bank/credit).
     totalCommission += billCommission;
     if (isDeliveryBoyAccountPayment(bill)) {
       accountGross += amount;
-      // Only boy-account commission reduces Collect payable/balance.
-      accountCommission += billCommission;
       accountBillCount += 1;
       continue;
     }
     // Paid directly to shop (cash/bank/credit) does not add to boy payable.
-    shopPaidAmount += amount;
     const mode = String(bill.paymentMode || "")
       .trim()
       .toUpperCase();
     if (mode === "CREDIT") creditAmount += amount;
+    else shopPaidAmount += amount;
   }
   const grossAmount = roundMoney(accountGross);
-  const commissionAmount = roundMoney(accountCommission);
   const totalCommissionAmount = roundMoney(totalCommission);
+  const shopCollectionAmount = roundMoney(shopPaidAmount);
+  const creditTotal = roundMoney(creditAmount);
   return {
     billCount: accountBillCount,
     totalBills,
     grossAmount,
     totalAmount: roundMoney(totalAmount),
-    shopPaidAmount: roundMoney(shopPaidAmount),
-    creditAmount: roundMoney(creditAmount),
+    // Cash + bank paid to shop (excludes credit).
+    shopPaidAmount: shopCollectionAmount,
+    shopCollectionAmount,
+    creditAmount: creditTotal,
+    // Back-compat alias: shop cash/bank + credit.
+    shopAndCreditPaidAmount: roundMoney(shopCollectionAmount + creditTotal),
     // Display / Daily List alignment (all delivery bills).
     totalCommissionAmount,
-    // Deducted from Collect payable (boy-account bills only).
-    commissionAmount,
-    payableAmount: roundMoney(Math.max(0, grossAmount - commissionAmount)),
+    // Deducted from Collect payable (all delivery bills for the boy).
+    commissionAmount: totalCommissionAmount,
+    payableAmount: roundMoney(
+      Math.max(0, grossAmount - totalCommissionAmount)
+    ),
   };
 }
 
@@ -338,10 +344,10 @@ export function summarizeDeliveryBoysForCollection({
       bills: outstanding.totalBills,
       totalAmount: outstanding.totalAmount,
       shopPaidAmount: outstanding.shopPaidAmount,
+      shopCollectionAmount: outstanding.shopCollectionAmount,
       creditAmount: outstanding.creditAmount,
       // Same total as Daily List Delivery Boy Summary commission.
       commission: outstanding.totalCommissionAmount,
-      accountCommission: outstanding.commissionAmount,
       balance: outstanding.remainingPayable,
       alreadyCollected: outstanding.alreadyCollected,
     });

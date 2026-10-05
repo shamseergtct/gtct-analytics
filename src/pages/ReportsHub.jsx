@@ -34,7 +34,6 @@ import {
   printPnLDocument,
   printReportDocument,
 } from "../utils/reportsHubExport.js";
-import { formatIsoDate } from "../utils/dateFormat.js";
 import {
   REPORT_VIEW_TYPES,
   PAYMENT_FILTER_OPTIONS,
@@ -47,6 +46,10 @@ import {
 } from "../utils/reportAggregation.js";
 import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
+import {
+  buildReportColumnTotalRow,
+  isReportDataRow,
+} from "../utils/reportColumnTotals.js";
 
 const MAIN_TABS = [
   { key: "quick", label: "Quick Snapshot", icon: BarChart3 },
@@ -62,6 +65,7 @@ const LEDGER_TYPES = [
   { key: "cash", label: "Cash Report" },
   { key: "bank", label: "Bank Report" },
   { key: "locker", label: "Locker Report" },
+  { key: "delivery_boys", label: "Delivery Boys Report" },
   { key: "customers", label: "Customer Ledgers" },
   { key: "vendors", label: "Vendor Ledgers" },
   { key: "loans", label: "Loan Report" },
@@ -137,7 +141,8 @@ export default function ReportsHub() {
   const shopName = activeClientData?.name || activeClientId || "Shop";
   const requiresParty =
     ledgerType === "customers" || ledgerType === "vendors";
-  const showPartyPicker = requiresParty || ledgerType === "loans";
+  const showPartyPicker =
+    requiresParty || ledgerType === "loans" || ledgerType === "delivery_boys";
   const selectedParty = useMemo(
     () => partyOptions.find((party) => party.id === selectedPartyId) || null,
     [partyOptions, selectedPartyId]
@@ -397,6 +402,19 @@ export default function ReportsHub() {
     }
   }
 
+  function rowsWithColumnTotals(source) {
+    const columns = source?.columns || [];
+    const rows = source?.rows || [];
+    const dataRows = rows.filter(isReportDataRow);
+    const existingTotal = rows.find(
+      (row) => row?.id === "__grand_total__" || row?._isTotal
+    );
+    const totalRow =
+      buildReportColumnTotalRow(columns, dataRows) || existingTotal || null;
+    if (!totalRow) return dataRows;
+    return [...dataRows, totalRow];
+  }
+
   function handleExportCsv() {
     if (ledger?.layout === "pnl") {
       if (!ledger?.pnl) return;
@@ -418,16 +436,20 @@ export default function ReportsHub() {
       });
       return;
     }
-    if (!displayedLedger?.rows?.length) return;
+    const source =
+      ledger?.layout === "due_list" ? ledger : displayedLedger;
+    if (!source?.rows?.length) return;
     const viewLabel =
       REPORT_VIEW_TYPES.find((item) => item.key === viewType)?.label ||
       viewType;
     exportReportCsv({
-      filename: `${displayedLedger.title}_${viewType}_${range.fromDate}_${range.toDate}`,
-      title: `${shopName} — ${displayedLedger.title} (${viewLabel})`,
+      filename: `${source.title}_${viewType}_${range.fromDate}_${range.toDate}`,
+      title: `${shopName} — ${source.title}${
+        supportsViewType && viewType !== "invoice" ? ` (${viewLabel})` : ""
+      }`,
       rangeLabel,
-      columns: displayedLedger.columns,
-      rows: displayedLedger.rows,
+      columns: source.columns,
+      rows: rowsWithColumnTotals(source),
     });
   }
 
@@ -464,7 +486,7 @@ export default function ReportsHub() {
           : source.title || "Report",
       rangeLabel,
       columns: source.columns || [],
-      rows: source.rows || [],
+      rows: rowsWithColumnTotals(source),
     });
   }
 
@@ -667,53 +689,7 @@ export default function ReportsHub() {
                       "Report"}
                   </h2>
                   <p className="text-sm text-slate-400 print:text-slate-600">
-                    {[
-                      rangeLabel,
-                      ledger?.summary?.sales
-                        ? `Sales ${ledger.summary.sales}`
-                        : "",
-                      ledger?.summary?.expenses
-                        ? `Expenses ${ledger.summary.expenses}`
-                        : "",
-                      ledger?.summary?.cash
-                        ? `Cash ${ledger.summary.cash}`
-                        : "",
-                      ledger?.summary?.bank
-                        ? `Bank ${ledger.summary.bank}`
-                        : "",
-                      ledger?.summary?.credit
-                        ? `Credit ${ledger.summary.credit}`
-                        : "",
-                      ledger?.summary?.acquired
-                        ? `Acquired ${ledger.summary.acquired}`
-                        : "",
-                      ledger?.summary?.repaid
-                        ? `Repaid ${ledger.summary.repaid}`
-                        : "",
-                      ledger?.summary?.outstanding
-                        ? `Outstanding ${ledger.summary.outstanding}`
-                        : "",
-                      ledger?.summary?.grandTotal
-                        ? `Grand total ${ledger.summary.grandTotal}`
-                        : "",
-                      ledger?.summary?.totalOut
-                        ? `Total out ${ledger.summary.totalOut}`
-                        : "",
-                      displayedLedger?.summary?.opening && isLiquidityReport
-                        ? `Opening ${displayedLedger.summary.opening}`
-                        : "",
-                      displayedLedger?.summary?.totalIn && isLiquidityReport
-                        ? `In ${displayedLedger.summary.totalIn}`
-                        : "",
-                      displayedLedger?.summary?.totalOut && isLiquidityReport
-                        ? `Out ${displayedLedger.summary.totalOut}`
-                        : "",
-                      displayedLedger?.summary?.closing && isLiquidityReport
-                        ? `Closing ${displayedLedger.summary.closing}`
-                        : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
+                    {rangeLabel}
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2 print:hidden">
@@ -748,26 +724,38 @@ export default function ReportsHub() {
                     label={
                       ledgerType === "loans"
                         ? "Party / Lender"
-                        : `Select ${
-                            ledgerType === "customers" ? "Customer" : "Vendor"
-                          }`
+                        : ledgerType === "delivery_boys"
+                          ? "Delivery Boy"
+                          : `Select ${
+                              ledgerType === "customers" ? "Customer" : "Vendor"
+                            }`
                     }
                     placeholder={
                       ledgerType === "loans"
                         ? "Search party name…"
-                        : ledgerType === "customers"
-                          ? "Search customer…"
-                          : "Search vendor…"
+                        : ledgerType === "delivery_boys"
+                          ? "Search delivery boy…"
+                          : ledgerType === "customers"
+                            ? "Search customer…"
+                            : "Search vendor…"
                     }
                     emptyLabel={
                       ledgerType === "loans"
                         ? "No matching parties."
-                        : ledgerType === "customers"
-                          ? "No matching customers."
-                          : "No matching vendors."
+                        : ledgerType === "delivery_boys"
+                          ? "No matching delivery boys."
+                          : ledgerType === "customers"
+                            ? "No matching customers."
+                            : "No matching vendors."
                     }
-                    allowClear={ledgerType === "loans"}
-                    clearLabel="All parties"
+                    allowClear={
+                      ledgerType === "loans" || ledgerType === "delivery_boys"
+                    }
+                    clearLabel={
+                      ledgerType === "delivery_boys"
+                        ? "All delivery boys"
+                        : "All parties"
+                    }
                   />
                 </div>
               ) : null}
@@ -939,10 +927,6 @@ export default function ReportsHub() {
                     <DueBalanceList
                       columns={ledger?.columns || []}
                       rows={ledger?.rows || []}
-                      asOfLabel={
-                        formatIsoDate(ledger?.asOfDate || range.toDate) ||
-                        range.toDate
-                      }
                       emptyMessage={
                         ledgerType === "receivables"
                           ? "No customers with outstanding receivables."
@@ -959,7 +943,11 @@ export default function ReportsHub() {
                     <ReportTable
                       columns={displayedLedger?.columns || []}
                       rows={displayedLedger?.rows || []}
-                      emptyMessage="No ledger rows for this range and report type."
+                      emptyMessage={
+                        ledgerType === "delivery_boys"
+                          ? "No delivery boy activity for this range."
+                          : "No ledger rows for this range and report type."
+                      }
                     />
                   )}
                 </div>

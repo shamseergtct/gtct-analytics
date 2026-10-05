@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, Fragment } from "react";
 import {
   addDoc,
   collection,
@@ -10,11 +10,12 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
-import { Pencil } from "lucide-react";
+import { ChevronDown, Pencil, Printer } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
+import { useClient } from "../../context/ClientContext.jsx";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
-import DateInput from "../DateInput.jsx";
+import { formatIsoDate } from "../../utils/dateFormat.js";
 import {
   formatMoney,
   moneyInputStep,
@@ -29,10 +30,20 @@ import {
   paymentModeSelectionFromSaved,
 } from "../../utils/paymentModes.js";
 import {
+  compareBillingTerminals,
   deliveryBoyOutstandingPayable,
+  isDeliveryBoyAccountPayment,
+  normalizeExternalSaleType,
+  parseBillSequence,
   resolveDeliveryBoyCommission,
   summarizeDeliveryBoysForCollection,
 } from "../../utils/externalSales.js";
+import {
+  buildDeliveryBoyCollectionPrintHtml,
+  groupDeliveryBoyPrintBillsByTerminal,
+  listDeliveryBoyPrintBills,
+  openDeliveryBoyCollectionPrint,
+} from "../../utils/deliveryBoyPrint.js";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -41,20 +52,145 @@ import {
   LABEL_CLASS,
 } from "./externalSalesUi.js";
 
+function compareBillNumberAsc(a, b) {
+  const seqA = parseBillSequence(a?.billNumber);
+  const seqB = parseBillSequence(b?.billNumber);
+  if (seqA != null && seqB != null && seqA !== seqB) return seqA - seqB;
+  if (seqA != null && seqB == null) return -1;
+  if (seqA == null && seqB != null) return 1;
+  return String(a?.billNumber || "").localeCompare(
+    String(b?.billNumber || ""),
+    undefined,
+    { numeric: true, sensitivity: "base" }
+  );
+}
+
+function paymentAccountMeta(bill) {
+  if (isDeliveryBoyAccountPayment(bill)) {
+    return {
+      key: "DELIVERY_ACCOUNT",
+      label: "Delivery Boy Account",
+      sort: 0,
+    };
+  }
+  const mode = String(bill?.paymentMode || "")
+    .trim()
+    .toUpperCase();
+  if (mode === "CREDIT") {
+    return { key: "CREDIT", label: "Credit", sort: 90 };
+  }
+  if (mode === "BANK") {
+    const accountId = String(bill?.bankAccountId || "").trim() || "_bank";
+    const accountName =
+      String(bill?.bankAccountNameSnapshot || "").trim() || "Bank";
+    return {
+      key: `BANK:${accountId}`,
+      label: `Bank: ${accountName}`,
+      sort: 50,
+    };
+  }
+  return { key: "CASH", label: "Cash", sort: 20 };
+}
+
+function groupBillsByPaymentAccount(bills = []) {
+  const groups = new Map();
+
+  for (const bill of bills) {
+    const meta = paymentAccountMeta(bill);
+    if (!groups.has(meta.key)) {
+      groups.set(meta.key, {
+        ...meta,
+        bills: [],
+        amountTotal: 0,
+        commissionTotal: 0,
+      });
+    }
+    const group = groups.get(meta.key);
+    group.bills.push(bill);
+    group.amountTotal += numMoney(bill.billAmount);
+    group.commissionTotal += numMoney(bill.commissionAmount);
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      bills: [...group.bills].sort(compareBillNumberAsc),
+      amountTotal: roundMoney(group.amountTotal),
+      commissionTotal: roundMoney(group.commissionTotal),
+    }))
+    .sort(
+      (a, b) =>
+        a.sort - b.sort ||
+        String(a.label).localeCompare(String(b.label))
+    );
+}
+
+function groupDeliveryBillsByTerminal(bills = [], deliveryBoyId) {
+  const boyId = String(deliveryBoyId || "").trim();
+  const groups = new Map();
+
+  for (const bill of bills) {
+    if (!boyId || bill?.voided === true) continue;
+    if (normalizeExternalSaleType(bill.saleType) !== "DELIVERY") continue;
+    if (bill.deliveryBoyId !== boyId) continue;
+
+    const terminalId = bill.terminalId || "_unknown";
+    if (!groups.has(terminalId)) {
+      groups.set(terminalId, {
+        terminalId: bill.terminalId || "",
+        terminalName: bill.terminalNameSnapshot || "Unknown terminal",
+        sortOrder: bill.terminalSortOrder,
+        bills: [],
+      });
+    }
+    groups.get(terminalId).bills.push(bill);
+  }
+
+  return [...groups.values()]
+    .map((group) => {
+      const billsSorted = [...group.bills].sort(compareBillNumberAsc);
+      const paymentGroups = groupBillsByPaymentAccount(billsSorted);
+      const amountTotal = roundMoney(
+        paymentGroups.reduce((sum, row) => sum + numMoney(row.amountTotal), 0)
+      );
+      const commissionTotal = roundMoney(
+        paymentGroups.reduce(
+          (sum, row) => sum + numMoney(row.commissionTotal),
+          0
+        )
+      );
+      return {
+        ...group,
+        bills: billsSorted,
+        paymentGroups,
+        amountTotal,
+        commissionTotal,
+      };
+    })
+    .sort((a, b) =>
+      compareBillingTerminals(
+        { name: a.terminalName, sortOrder: a.sortOrder },
+        { name: b.terminalName, sortOrder: b.sortOrder }
+      )
+    );
+}
+
 export default function DeliveryBoyCollection({
   clientId,
   currency,
   currencyDecimals,
-  defaultBusinessDate,
+  businessDate,
   deliveryBoys,
+  onDateLockChange,
   onMessage,
   onError,
 }) {
   const { user } = useAuth();
+  const { activeClientData, activeClientId } = useClient();
   const { accounts: bankAccounts } = useBankAccounts(clientId);
 
-  const [businessDate, setBusinessDate] = useState("");
-  const effectiveDate = businessDate || defaultBusinessDate || "";
+  const effectiveDate = businessDate || "";
+  const shopName = activeClientData?.name || activeClientId || "Shop";
   const [deliveryBoyId, setDeliveryBoyId] = useState("");
   const [payableAmount, setPayableAmount] = useState("");
   const [paidCash, setPaidCash] = useState("");
@@ -68,6 +204,9 @@ export default function DeliveryBoyCollection({
   const [dayBills, setDayBills] = useState([]);
   const [collections, setCollections] = useState([]);
   const [loadingCollections, setLoadingCollections] = useState(false);
+  const [expandedBoyId, setExpandedBoyId] = useState("");
+  const [printPreview, setPrintPreview] = useState(null);
+  const [printMode, setPrintMode] = useState("THERMAL");
 
   const activeBoys = useMemo(
     () => deliveryBoys.filter((row) => row.isActive !== false),
@@ -109,12 +248,9 @@ export default function DeliveryBoyCollection({
   const displayCommission = editingId
     ? numMoney(editSnapshots?.commissionAmount)
     : suggested.totalCommissionAmount;
-  const accountCommission = suggested.commissionAmount;
   const showCommission =
     Boolean(deliveryBoyId) &&
-    (boyCommission.enabled ||
-      displayCommission > 0 ||
-      accountCommission > 0);
+    (boyCommission.enabled || displayCommission > 0);
   const fullyCollected =
     Boolean(deliveryBoyId) &&
     !editingId &&
@@ -130,7 +266,67 @@ export default function DeliveryBoyCollection({
     [dayBills, collections]
   );
 
+  const expandedTerminalGroups = useMemo(
+    () =>
+      expandedBoyId
+        ? groupDeliveryBillsByTerminal(dayBills, expandedBoyId)
+        : [],
+    [dayBills, expandedBoyId]
+  );
+
+  const printPreviewBills = useMemo(() => {
+    if (!printPreview?.deliveryBoyId) return [];
+    return listDeliveryBoyPrintBills(dayBills, printPreview.deliveryBoyId);
+  }, [dayBills, printPreview?.deliveryBoyId]);
+
+  const printPreviewTerminalGroups = useMemo(
+    () => groupDeliveryBoyPrintBillsByTerminal(printPreviewBills),
+    [printPreviewBills]
+  );
+
   const currencyPrefix = currency ? `${currency} ` : "";
+
+  function openPrintPreview(row) {
+    if (!row?.deliveryBoyId) return;
+    setPrintMode("THERMAL");
+    setPrintPreview({
+      deliveryBoyId: row.deliveryBoyId,
+      deliveryBoyName: row.deliveryBoyName || "Delivery Boy",
+      bills: row.bills || 0,
+      totalAmount: row.totalAmount,
+      shopPaidAmount: row.shopCollectionAmount ?? row.shopPaidAmount,
+      creditAmount: row.creditAmount,
+      commission: row.commission,
+      payableAmount: row.balance,
+    });
+  }
+
+  function handleConfirmPrint() {
+    if (!printPreview) return;
+    try {
+      const html = buildDeliveryBoyCollectionPrintHtml({
+        mode: printMode,
+        shopName,
+        boyName: printPreview.deliveryBoyName,
+        businessDate: effectiveDate,
+        bills: printPreviewBills,
+        summary: {
+          bills: printPreview.bills,
+          totalAmount: printPreview.totalAmount,
+          shopPaidAmount: printPreview.shopPaidAmount,
+          creditAmount: printPreview.creditAmount,
+          commission: printPreview.commission,
+          payableAmount: printPreview.payableAmount,
+        },
+        currency,
+        currencyDecimals,
+      });
+      openDeliveryBoyCollectionPrint(html);
+      setPrintPreview(null);
+    } catch (reason) {
+      onError?.(reason?.message || "Failed to open print preview.");
+    }
+  }
 
   const payableNum = numMoney(payableAmount);
   const cashNum = numMoney(paidCash || 0);
@@ -200,6 +396,11 @@ export default function DeliveryBoyCollection({
     );
   }, [clientId, effectiveDate]);
 
+  useEffect(() => {
+    onDateLockChange?.(Boolean(editingId));
+    return () => onDateLockChange?.(false);
+  }, [editingId, onDateLockChange]);
+
   function clearForm({ keepBoy = false } = {}) {
     setEditingId(null);
     setExistingMeta(null);
@@ -232,7 +433,6 @@ export default function DeliveryBoyCollection({
       billCountSnapshot: row.billCountSnapshot,
       commissionEnabled: row.commissionEnabled,
     });
-    setBusinessDate(row.businessDate || "");
     setDeliveryBoyId(row.deliveryBoyId || "");
     setPayableAmount(
       formatMoney(row.payableAmount, currencyDecimals)
@@ -351,8 +551,8 @@ export default function DeliveryBoyCollection({
       bankAccountId,
       bankAccountNameSnapshot,
       billCountSnapshot: editingId
-        ? editSnapshots?.billCountSnapshot ?? suggested.billCount
-        : suggested.billCount,
+        ? editSnapshots?.billCountSnapshot ?? suggested.totalBills
+        : suggested.totalBills,
       notes: String(notes || "").trim(),
       updatedAt: serverTimestamp(),
       updatedAtMs: nowMs,
@@ -392,77 +592,347 @@ export default function DeliveryBoyCollection({
   }
 
   return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-lg font-semibold text-white">
-          Collect from Delivery Boy
-        </h2>
-        <p className="text-sm text-slate-400">
-          Total = all delivery bills. Credit / shop paid = cash, bank, or credit
-          already paid to the shop. Commission matches Daily List (all delivery
-          bills). Balance = boy-account total − boy-account commission − already
-          collected.
-        </p>
-      </div>
-
-      <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+    <div className="space-y-4">
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
         <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
-          Delivery Boy Summary · {effectiveDate || "—"}
+          Delivery Boy Summary
         </div>
         <div className="overflow-x-auto">
-          <table className="min-w-[640px] w-full text-left text-sm text-slate-300">
+          <table className="min-w-[720px] w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2">Delivery Boy</th>
                 <th className="px-4 py-2 text-right">Total Amount</th>
-                <th className="px-4 py-2 text-right">Credit / Shop Paid</th>
+                <th className="px-4 py-2 text-right">Shop Paid</th>
+                <th className="px-4 py-2 text-right">Credit</th>
                 <th className="px-4 py-2 text-right">Commission</th>
                 <th className="px-4 py-2 text-right">Balance</th>
+                <th className="w-10 px-3 py-2" aria-hidden="true" />
               </tr>
             </thead>
             <tbody>
               {boySummaryRows.length ? (
-                boySummaryRows.map((row) => (
-                  <tr
-                    key={row.deliveryBoyId}
-                    className={`border-t border-slate-800/80 ${
-                      deliveryBoyId === row.deliveryBoyId
-                        ? "bg-blue-950/30"
-                        : ""
-                    }`}
-                  >
-                    <td className="px-4 py-2">
-                      <button
-                        type="button"
-                        disabled={Boolean(editingId)}
-                        onClick={() => setDeliveryBoyId(row.deliveryBoyId)}
-                        className="font-medium text-white hover:text-blue-300 disabled:cursor-default disabled:hover:text-white"
+                boySummaryRows.map((row) => {
+                  const isExpanded = expandedBoyId === row.deliveryBoyId;
+                  const isSelected = deliveryBoyId === row.deliveryBoyId;
+                  return (
+                    <Fragment key={row.deliveryBoyId}>
+                      <tr
+                        className={`border-t border-slate-800/80 ${
+                          isSelected ? "bg-blue-950/30" : ""
+                        }`}
                       >
-                        {row.deliveryBoyName}
-                      </button>
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
-                      {currencyPrefix}
-                      {formatMoney(row.totalAmount, currencyDecimals)}
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
-                      {currencyPrefix}
-                      {formatMoney(row.shopPaidAmount, currencyDecimals)}
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
-                      {currencyPrefix}
-                      {formatMoney(row.commission, currencyDecimals)}
-                    </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
-                      {currencyPrefix}
-                      {formatMoney(row.balance, currencyDecimals)}
-                    </td>
-                  </tr>
-                ))
+                        <td className="px-4 py-2.5">
+                          <button
+                            type="button"
+                            disabled={Boolean(editingId)}
+                            onClick={() => {
+                              setExpandedBoyId((prev) =>
+                                prev === row.deliveryBoyId
+                                  ? ""
+                                  : row.deliveryBoyId
+                              );
+                              if (!editingId) {
+                                setDeliveryBoyId(row.deliveryBoyId);
+                              }
+                            }}
+                            className="font-medium text-white hover:text-blue-300 disabled:cursor-default disabled:hover:text-white"
+                          >
+                            {row.deliveryBoyName}
+                          </button>
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(row.totalAmount, currencyDecimals)}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(
+                            row.shopCollectionAmount ?? row.shopPaidAmount,
+                            currencyDecimals
+                          )}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(row.creditAmount, currencyDecimals)}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(row.commission, currencyDecimals)}
+                        </td>
+                        <td className="px-4 py-2.5 text-right tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(row.balance, currencyDecimals)}
+                        </td>
+                        <td className="px-3 py-2.5 text-right">
+                          <button
+                            type="button"
+                            aria-expanded={isExpanded}
+                            aria-label={
+                              isExpanded
+                                ? `Hide bills for ${row.deliveryBoyName}`
+                                : `Show bills for ${row.deliveryBoyName}`
+                            }
+                            onClick={() => {
+                              setExpandedBoyId((prev) =>
+                                prev === row.deliveryBoyId
+                                  ? ""
+                                  : row.deliveryBoyId
+                              );
+                              if (!editingId) {
+                                setDeliveryBoyId(row.deliveryBoyId);
+                              }
+                            }}
+                            className="rounded-md p-1 text-slate-400 hover:bg-slate-800 hover:text-white"
+                          >
+                            <ChevronDown
+                              className={`h-4 w-4 transition-transform ${
+                                isExpanded ? "rotate-180" : ""
+                              }`}
+                            />
+                          </button>
+                        </td>
+                      </tr>
+                      {isExpanded ? (
+                        <tr className="border-t border-slate-800/60 bg-slate-950/40">
+                          <td colSpan={7} className="px-4 py-3">
+                            {expandedTerminalGroups.length ? (
+                              <div className="space-y-3">
+                                {expandedTerminalGroups.map((group) => (
+                                  <div
+                                    key={group.terminalId || group.terminalName}
+                                    className="overflow-hidden rounded-xl border border-slate-800"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-900/60 px-3 py-2">
+                                      <div className="text-sm font-semibold text-white">
+                                        {group.terminalName}
+                                      </div>
+                                      <div className="text-xs tabular-nums text-slate-400">
+                                        {group.bills.length} bill
+                                        {group.bills.length === 1 ? "" : "s"}
+                                        {" · "}
+                                        {currencyPrefix}
+                                        {formatMoney(
+                                          group.amountTotal,
+                                          currencyDecimals
+                                        )}
+                                      </div>
+                                    </div>
+
+                                    <div className="space-y-3 p-3">
+                                      {group.paymentGroups.map((payment) => (
+                                        <div
+                                          key={payment.key}
+                                          className="overflow-hidden rounded-lg border border-slate-800/80"
+                                        >
+                                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-950/50 px-3 py-2">
+                                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-200">
+                                              {payment.label}
+                                            </div>
+                                            <div className="text-xs tabular-nums text-slate-400">
+                                              {payment.bills.length} bill
+                                              {payment.bills.length === 1
+                                                ? ""
+                                                : "s"}
+                                              {" · "}
+                                              {currencyPrefix}
+                                              {formatMoney(
+                                                payment.amountTotal,
+                                                currencyDecimals
+                                              )}
+                                            </div>
+                                          </div>
+                                          <div className="overflow-x-auto">
+                                            <table className="min-w-[640px] w-full text-left text-sm text-slate-300">
+                                              <thead className="bg-slate-950/70 text-[11px] uppercase tracking-wide text-slate-500">
+                                                <tr>
+                                                  <th className="px-3 py-2">
+                                                    Bill No.
+                                                  </th>
+                                                  <th className="px-3 py-2 text-right">
+                                                    Amount
+                                                  </th>
+                                                  <th className="px-3 py-2 text-right">
+                                                    Commission
+                                                  </th>
+                                                  <th className="px-3 py-2">
+                                                    Location
+                                                  </th>
+                                                </tr>
+                                              </thead>
+                                              <tbody>
+                                                {payment.bills.map((bill) => (
+                                                  <tr
+                                                    key={bill.id}
+                                                    className="border-t border-slate-800/70"
+                                                  >
+                                                    <td className="px-3 py-2 font-medium tabular-nums text-white">
+                                                      {bill.billNumber}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right tabular-nums">
+                                                      {currencyPrefix}
+                                                      {formatMoney(
+                                                        bill.billAmount,
+                                                        currencyDecimals
+                                                      )}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-right tabular-nums">
+                                                      {currencyPrefix}
+                                                      {formatMoney(
+                                                        bill.commissionAmount,
+                                                        currencyDecimals
+                                                      )}
+                                                    </td>
+                                                    <td className="px-3 py-2">
+                                                      {bill.customerLocation ||
+                                                        bill.customerName ||
+                                                        "—"}
+                                                    </td>
+                                                  </tr>
+                                                ))}
+                                              </tbody>
+                                              <tfoot>
+                                                <tr className="border-t border-slate-700 bg-slate-900/70 font-semibold text-white">
+                                                  <td className="px-3 py-2">
+                                                    Total
+                                                  </td>
+                                                  <td className="px-3 py-2 text-right tabular-nums">
+                                                    {currencyPrefix}
+                                                    {formatMoney(
+                                                      payment.amountTotal,
+                                                      currencyDecimals
+                                                    )}
+                                                  </td>
+                                                  <td className="px-3 py-2 text-right tabular-nums">
+                                                    {currencyPrefix}
+                                                    {formatMoney(
+                                                      payment.commissionTotal,
+                                                      currencyDecimals
+                                                    )}
+                                                  </td>
+                                                  <td className="px-3 py-2" />
+                                                </tr>
+                                              </tfoot>
+                                            </table>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ))}
+
+                                <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-700 bg-slate-900/70 p-3 sm:grid-cols-3 lg:grid-cols-6">
+                                  <div>
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Bills
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+                                      {row.bills || 0}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Total Amount
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+                                      {currencyPrefix}
+                                      {formatMoney(
+                                        row.totalAmount,
+                                        currencyDecimals
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Shop Paid
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-sky-200">
+                                      {currencyPrefix}
+                                      {formatMoney(
+                                        row.shopCollectionAmount ??
+                                          row.shopPaidAmount,
+                                        currencyDecimals
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Credit
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-violet-200">
+                                      {currencyPrefix}
+                                      {formatMoney(
+                                        row.creditAmount,
+                                        currencyDecimals
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Commission
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-amber-200">
+                                      {currencyPrefix}
+                                      {formatMoney(
+                                        row.commission,
+                                        currencyDecimals
+                                      )}
+                                    </div>
+                                  </div>
+                                  <div>
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Payable
+                                    </div>
+                                    <div className="mt-0.5 text-sm font-semibold tabular-nums text-emerald-300">
+                                      {currencyPrefix}
+                                      {formatMoney(
+                                        row.balance,
+                                        currencyDecimals
+                                      )}
+                                    </div>
+                                  </div>
+                                  {numMoney(row.alreadyCollected) > 0 ? (
+                                    <div className="col-span-2 sm:col-span-3 lg:col-span-6">
+                                      <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                        Already Collected
+                                      </div>
+                                      <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-200">
+                                        {currencyPrefix}
+                                        {formatMoney(
+                                          row.alreadyCollected,
+                                          currencyDecimals
+                                        )}
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                </div>
+
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => openPrintPreview(row)}
+                                    className={`${BTN_SECONDARY} text-xs`}
+                                  >
+                                    <Printer className="h-3.5 w-3.5" />
+                                    Print
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="py-4 text-center text-sm text-slate-500">
+                                No delivery bills for this boy on this date.
+                              </div>
+                            )}
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })
               ) : (
                 <tr>
                   <td
-                    colSpan={5}
+                    colSpan={7}
                     className="px-4 py-6 text-center text-slate-500"
                   >
                     No delivery boy activity for this date.
@@ -472,7 +942,7 @@ export default function DeliveryBoyCollection({
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
       <form
         onSubmit={handleSave}
@@ -482,25 +952,29 @@ export default function DeliveryBoyCollection({
             : "border-slate-800 bg-slate-900/40"
         }`}
       >
-        {editingId ? (
-          <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-2.5 text-sm text-amber-100">
-            Editing collection. Update the amounts below, then click{" "}
-            <span className="font-semibold">Update Collection</span>.
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-white">
+            {editingId ? "Edit Collection" : "New Collection"}
+          </h3>
+          {editingId ? (
+            <button
+              type="button"
+              onClick={() => clearForm()}
+              className="text-xs font-medium text-slate-400 hover:text-slate-200"
+            >
+              Cancel
+            </button>
+          ) : null}
+        </div>
+
+        {fullyCollected ? (
+          <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-200">
+            Fully collected · remaining {currencyPrefix}
+            {formatMoney(0, currencyDecimals)}
           </div>
         ) : null}
 
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          <label className={LABEL_CLASS}>
-            Business Date
-            <DateInput
-              value={effectiveDate}
-              onChange={(event) => setBusinessDate(event.target.value)}
-              className={`${FIELD_CLASS} mt-1.5`}
-              required
-              disabled={Boolean(editingId)}
-            />
-          </label>
-
           <label className={LABEL_CLASS}>
             Delivery Boy
             <select
@@ -523,6 +997,16 @@ export default function DeliveryBoyCollection({
           {deliveryBoyId ? (
             <>
               <label className={LABEL_CLASS}>
+                Total Bills
+                <input
+                  readOnly
+                  value={String(suggested.totalBills || 0)}
+                  className={`${FIELD_NUMBER_CLASS} border-slate-700 text-slate-200`}
+                  tabIndex={-1}
+                />
+              </label>
+
+              <label className={LABEL_CLASS}>
                 Total Amount {currency ? `(${currency})` : ""}
                 <input
                   readOnly
@@ -530,28 +1014,29 @@ export default function DeliveryBoyCollection({
                   className={`${FIELD_NUMBER_CLASS} border-slate-700 text-slate-200`}
                   tabIndex={-1}
                 />
-                <span className="mt-1 block text-[11px] text-slate-500">
-                  All delivery bills for this boy
-                </span>
               </label>
 
               <label className={LABEL_CLASS}>
-                Credit / Shop Paid {currency ? `(${currency})` : ""}
+                Shop Paid {currency ? `(${currency})` : ""}
                 <input
                   readOnly
                   value={formatMoney(
-                    suggested.shopPaidAmount,
+                    suggested.shopCollectionAmount ?? suggested.shopPaidAmount,
                     currencyDecimals
                   )}
                   className={`${FIELD_NUMBER_CLASS} border-slate-700 text-sky-200`}
                   tabIndex={-1}
                 />
-                <span className="mt-1 block text-[11px] text-slate-500">
-                  Cash, bank, or credit paid to shop
-                  {suggested.creditAmount > 0
-                    ? ` · Credit ${currencyPrefix}${formatMoney(suggested.creditAmount, currencyDecimals)}`
-                    : ""}
-                </span>
+              </label>
+
+              <label className={LABEL_CLASS}>
+                Credit {currency ? `(${currency})` : ""}
+                <input
+                  readOnly
+                  value={formatMoney(suggested.creditAmount, currencyDecimals)}
+                  className={`${FIELD_NUMBER_CLASS} border-slate-700 text-violet-200`}
+                  tabIndex={-1}
+                />
               </label>
             </>
           ) : null}
@@ -565,12 +1050,6 @@ export default function DeliveryBoyCollection({
                 className={`${FIELD_NUMBER_CLASS} border-slate-700 text-amber-200`}
                 tabIndex={-1}
               />
-              <span className="mt-1 block text-[11px] text-slate-500">
-                {!editingId &&
-                Math.abs(displayCommission - accountCommission) > 0.0005
-                  ? `All delivery bills · ${currencyPrefix}${formatMoney(accountCommission, currencyDecimals)} deducted from balance (shop-paid excluded)`
-                  : "On delivery charge · deducted from boy-account balance"}
-              </span>
             </label>
           ) : null}
 
@@ -588,23 +1067,7 @@ export default function DeliveryBoyCollection({
               placeholder={formatMoney(0, currencyDecimals)}
               readOnly={fullyCollected}
             />
-            {deliveryBoyId && !editingId ? (
-              <span className="mt-1 block text-[11px] text-slate-500">
-                Boy account after commission
-                {suggested.alreadyCollected > 0
-                  ? ` · Already collected: ${currencyPrefix}${formatMoney(suggested.alreadyCollected, currencyDecimals)}`
-                  : ""}
-              </span>
-            ) : null}
           </label>
-
-          {fullyCollected ? (
-            <div className="rounded-xl border border-emerald-900/50 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-200 md:col-span-2 xl:col-span-3">
-              Fully collected for this delivery boy today. Remaining balance is{" "}
-              {currencyPrefix}
-              {formatMoney(0, currencyDecimals)}.
-            </div>
-          ) : null}
 
           <label className={LABEL_CLASS}>
             Pay by Cash {currency ? `(${currency})` : ""}
@@ -639,7 +1102,7 @@ export default function DeliveryBoyCollection({
           </label>
 
           <label className={LABEL_CLASS}>
-            Remaining after this payment {currency ? `(${currency})` : ""}
+            Remaining {currency ? `(${currency})` : ""}
             <input
               readOnly
               value={formatMoney(overpaid ? 0 : balanceNum, currencyDecimals)}
@@ -652,11 +1115,6 @@ export default function DeliveryBoyCollection({
               }`}
               tabIndex={-1}
             />
-            <span className="mt-1 block text-[11px] text-slate-500">
-              {overpaid
-                ? "Cash + Bank exceeds balance"
-                : "Balance − Cash − Bank"}
-            </span>
           </label>
 
           {bankNum > 0 ? (
@@ -684,7 +1142,6 @@ export default function DeliveryBoyCollection({
               value={notes}
               onChange={(event) => setNotes(event.target.value)}
               className={FIELD_CLASS}
-              placeholder="Optional"
             />
           </label>
         </div>
@@ -709,32 +1166,23 @@ export default function DeliveryBoyCollection({
                 ? "Update Collection"
                 : "Save Collection"}
           </button>
-          {editingId ? (
-            <button
-              type="button"
-              onClick={() => clearForm()}
-              className={BTN_SECONDARY}
-            >
-              Cancel edit
-            </button>
-          ) : null}
         </div>
       </form>
 
-      <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
         <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
-          Collections · {effectiveDate || "—"}
+          Collections
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2">Delivery Boy</th>
-                <th className="px-4 py-2">Commission</th>
-                <th className="px-4 py-2">Payable</th>
-                <th className="px-4 py-2">Cash</th>
-                <th className="px-4 py-2">Bank</th>
-                <th className="px-4 py-2">Balance</th>
+                <th className="px-4 py-2 text-right">Commission</th>
+                <th className="px-4 py-2 text-right">Payable</th>
+                <th className="px-4 py-2 text-right">Cash</th>
+                <th className="px-4 py-2 text-right">Bank</th>
+                <th className="px-4 py-2 text-right">Balance</th>
                 <th className="px-4 py-2">Bank Account</th>
                 <th className="px-4 py-2">Notes</th>
                 <th className="px-4 py-2 text-right">Actions</th>
@@ -765,34 +1213,36 @@ export default function DeliveryBoyCollection({
                         editingId === row.id ? "bg-amber-950/20" : ""
                       }`}
                     >
-                      <td className="px-4 py-2 text-white">
+                      <td className="px-4 py-2.5 text-white">
                         {row.deliveryBoyNameSnapshot || "—"}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
                         {formatMoney(row.commissionAmount, currencyDecimals)}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
                         {formatMoney(row.payableAmount, currencyDecimals)}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
                         {formatMoney(row.paidCash, currencyDecimals)}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
                         {formatMoney(row.paidBank, currencyDecimals)}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
                         {formatMoney(rowBalance, currencyDecimals)}
                       </td>
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-2.5">
                         {row.bankAccountNameSnapshot || "—"}
                       </td>
-                      <td className="px-4 py-2">{row.notes || "—"}</td>
-                      <td className="px-4 py-2 text-right">
+                      <td className="max-w-[12rem] truncate px-4 py-2.5">
+                        {row.notes || "—"}
+                      </td>
+                      <td className="px-4 py-2.5 text-right">
                         <button
                           type="button"
                           onClick={() => startEdit(row)}
@@ -808,14 +1258,401 @@ export default function DeliveryBoyCollection({
               ) : (
                 <tr>
                   <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
-                    No collections recorded for this date.
+                    No collections for this date.
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
+
+      {printPreview ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-950 shadow-2xl">
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
+              <div>
+                <h3 className="text-base font-semibold text-white">
+                  Print Preview
+                </h3>
+                <p className="mt-0.5 text-sm text-slate-400">
+                  {printPreview.deliveryBoyName} ·{" "}
+                  {formatIsoDate(effectiveDate) || effectiveDate || "—"}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPrintPreview(null)}
+                className="text-sm font-medium text-slate-400 hover:text-white"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 px-4 py-3">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Printer
+              </span>
+              <button
+                type="button"
+                onClick={() => setPrintMode("THERMAL")}
+                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+                  printMode === "THERMAL"
+                    ? "bg-blue-600 text-white"
+                    : "border border-slate-700 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                Thermal
+              </button>
+              <button
+                type="button"
+                onClick={() => setPrintMode("A4")}
+                className={`rounded-lg px-3 py-1.5 text-sm font-semibold ${
+                  printMode === "A4"
+                    ? "bg-blue-600 text-white"
+                    : "border border-slate-700 text-slate-300 hover:bg-slate-800"
+                }`}
+              >
+                Other / A4
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+              {printPreviewBills.length ? (
+                printMode === "THERMAL" ? (
+                  <div className="mx-auto w-full max-w-[20rem] space-y-3 rounded-xl border border-dashed border-slate-600 bg-white p-3 text-slate-900 shadow-inner">
+                    <div className="text-center text-sm font-bold">
+                      {shopName}
+                    </div>
+                    <div className="text-center text-xs text-slate-600">
+                      <div className="font-semibold text-slate-900">
+                        {printPreview.deliveryBoyName}
+                      </div>
+                      <div>
+                        {formatIsoDate(effectiveDate) || effectiveDate || "—"}
+                      </div>
+                    </div>
+                    <div className="border-t border-dashed border-slate-400" />
+
+                    {printPreviewTerminalGroups.map((terminal) => (
+                      <div key={terminal.terminalId || terminal.terminalName}>
+                        <div className="mb-1 flex items-center justify-between gap-2 border-b border-slate-800 pb-1 text-[11px] font-bold">
+                          <span>{terminal.terminalName}</span>
+                          <span className="tabular-nums">
+                            {terminal.bills.length} · {currencyPrefix}
+                            {formatMoney(
+                              terminal.amountTotal,
+                              currencyDecimals
+                            )}
+                          </span>
+                        </div>
+                        {terminal.paymentGroups.map((payment) => (
+                          <div key={payment.key} className="mb-2">
+                            <div className="mb-0.5 flex items-center justify-between gap-2 border-b border-dashed border-slate-400 pb-0.5 text-[10px] font-semibold">
+                              <span>{payment.label}</span>
+                              <span className="tabular-nums">
+                                {payment.bills.length} · {currencyPrefix}
+                                {formatMoney(
+                                  payment.amountTotal,
+                                  currencyDecimals
+                                )}
+                              </span>
+                            </div>
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="text-left">
+                                  <th className="py-0.5">Bill</th>
+                                  <th className="py-0.5">Location</th>
+                                  <th className="py-0.5 text-right">Amount</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {payment.bills.map((bill) => (
+                                  <tr key={bill.id}>
+                                    <td className="py-0.5 tabular-nums">
+                                      {bill.billNumber}
+                                    </td>
+                                    <td className="py-0.5">
+                                      {bill.customerLocation ||
+                                        bill.customerName ||
+                                        "—"}
+                                    </td>
+                                    <td className="py-0.5 text-right tabular-nums">
+                                      {currencyPrefix}
+                                      {formatMoney(
+                                        bill.billAmount,
+                                        currencyDecimals
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot>
+                                <tr className="border-t border-dashed border-slate-400 font-bold">
+                                  <td className="pt-1" colSpan={2}>
+                                    Total
+                                  </td>
+                                  <td className="pt-1 text-right tabular-nums">
+                                    {currencyPrefix}
+                                    {formatMoney(
+                                      payment.amountTotal,
+                                      currencyDecimals
+                                    )}
+                                  </td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+
+                    <div className="border-t border-dashed border-slate-400 pt-2 text-xs font-bold">
+                      <div className="flex justify-between gap-2">
+                        <span>Bills</span>
+                        <span>{printPreview.bills || 0}</span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Total Amount</span>
+                        <span className="tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.totalAmount,
+                            currencyDecimals
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Shop Paid</span>
+                        <span className="tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.shopPaidAmount,
+                            currencyDecimals
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Credit</span>
+                        <span className="tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.creditAmount,
+                            currencyDecimals
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Commission</span>
+                        <span className="tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.commission,
+                            currencyDecimals
+                          )}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-2">
+                        <span>Payable</span>
+                        <span className="tabular-nums">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.payableAmount,
+                            currencyDecimals
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
+                    {printPreviewTerminalGroups.map((terminal) => (
+                      <div
+                        key={terminal.terminalId || terminal.terminalName}
+                        className="overflow-hidden rounded-lg border border-slate-800"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 bg-slate-950/70 px-3 py-2 text-sm font-semibold text-white">
+                          <span>{terminal.terminalName}</span>
+                          <span className="text-xs tabular-nums text-slate-400">
+                            {terminal.bills.length} · {currencyPrefix}
+                            {formatMoney(
+                              terminal.amountTotal,
+                              currencyDecimals
+                            )}
+                          </span>
+                        </div>
+                        <div className="space-y-2 p-2">
+                          {terminal.paymentGroups.map((payment) => (
+                            <div
+                              key={payment.key}
+                              className="overflow-hidden rounded-md border border-slate-800/80"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 bg-slate-950/40 px-3 py-1.5 text-xs">
+                                <span className="font-semibold uppercase tracking-wide text-slate-200">
+                                  {payment.label}
+                                </span>
+                                <span className="tabular-nums text-slate-400">
+                                  {payment.bills.length} · {currencyPrefix}
+                                  {formatMoney(
+                                    payment.amountTotal,
+                                    currencyDecimals
+                                  )}
+                                </span>
+                              </div>
+                              <table className="min-w-full text-sm text-slate-300">
+                                <thead className="text-[11px] uppercase tracking-wide text-slate-500">
+                                  <tr>
+                                    <th className="px-3 py-2 text-left">
+                                      Bill No.
+                                    </th>
+                                    <th className="px-3 py-2 text-left">
+                                      Location
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Amount
+                                    </th>
+                                    <th className="px-3 py-2 text-right">
+                                      Commission
+                                    </th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {payment.bills.map((bill) => (
+                                    <tr
+                                      key={bill.id}
+                                      className="border-t border-slate-800/70"
+                                    >
+                                      <td className="px-3 py-2 tabular-nums text-white">
+                                        {bill.billNumber}
+                                      </td>
+                                      <td className="px-3 py-2">
+                                        {bill.customerLocation ||
+                                          bill.customerName ||
+                                          "—"}
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums">
+                                        {currencyPrefix}
+                                        {formatMoney(
+                                          bill.billAmount,
+                                          currencyDecimals
+                                        )}
+                                      </td>
+                                      <td className="px-3 py-2 text-right tabular-nums">
+                                        {currencyPrefix}
+                                        {formatMoney(
+                                          bill.commissionAmount,
+                                          currencyDecimals
+                                        )}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <div className="grid grid-cols-2 gap-2 rounded-lg border border-slate-700 bg-slate-950/50 p-3 sm:grid-cols-3">
+                      <div>
+                        <div className="text-[10px] uppercase text-slate-500">
+                          Bills
+                        </div>
+                        <div className="font-semibold text-white">
+                          {printPreview.bills || 0}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase text-slate-500">
+                          Total
+                        </div>
+                        <div className="font-semibold tabular-nums text-white">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.totalAmount,
+                            currencyDecimals
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase text-slate-500">
+                          Shop Paid
+                        </div>
+                        <div className="font-semibold tabular-nums text-sky-200">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.shopPaidAmount,
+                            currencyDecimals
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase text-slate-500">
+                          Credit
+                        </div>
+                        <div className="font-semibold tabular-nums text-violet-200">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.creditAmount,
+                            currencyDecimals
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase text-slate-500">
+                          Commission
+                        </div>
+                        <div className="font-semibold tabular-nums text-amber-200">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.commission,
+                            currencyDecimals
+                          )}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-[10px] uppercase text-slate-500">
+                          Payable
+                        </div>
+                        <div className="font-semibold tabular-nums text-emerald-300">
+                          {currencyPrefix}
+                          {formatMoney(
+                            printPreview.payableAmount,
+                            currencyDecimals
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-700 px-4 py-8 text-center text-sm text-slate-500">
+                  No bills to print for this delivery boy.
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-slate-800 px-4 py-3">
+              <button
+                type="button"
+                onClick={() => setPrintPreview(null)}
+                className={BTN_SECONDARY}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmPrint}
+                disabled={!printPreviewBills.length}
+                className={BTN_PRIMARY}
+              >
+                <Printer className="h-4 w-4" />
+                Print
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

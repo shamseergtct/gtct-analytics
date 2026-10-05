@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   collection,
   onSnapshot,
@@ -10,6 +10,7 @@ import { ClipboardList } from "lucide-react";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 import { useShift } from "../context/shift-context";
+import DateInput from "../components/DateInput.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
 import ExternalSalesForm from "../components/externalSales/ExternalSalesForm.jsx";
@@ -18,6 +19,10 @@ import TerminalManager from "../components/externalSales/TerminalManager.jsx";
 import DeliveryBoyManager from "../components/externalSales/DeliveryBoyManager.jsx";
 import DeliveryBoyCollection from "../components/externalSales/DeliveryBoyCollection.jsx";
 import { sortBillingTerminals } from "../utils/externalSales.js";
+import {
+  FIELD_CLASS,
+  LABEL_CLASS,
+} from "../components/externalSales/externalSalesUi.js";
 
 const TABS = [
   { id: "entry", label: "Bill Entry" },
@@ -25,6 +30,8 @@ const TABS = [
   { id: "collect", label: "Collect" },
   { id: "setup", label: "Setup" },
 ];
+
+const DATE_TABS = new Set(["entry", "list", "collect"]);
 
 function todayYYYYMMDD() {
   const date = new Date();
@@ -34,18 +41,17 @@ function todayYYYYMMDD() {
 }
 
 export default function ExternalSales() {
-  const { activeClientId, activeClientData, currency, currencyDecimals } =
-    useClient();
+  const { activeClientId, currency, currencyDecimals } = useClient();
   const { activeShift } = useShift();
 
-  const defaultDate =
-    activeShift?.businessDate || todayYYYYMMDD();
+  const defaultDate = activeShift?.businessDate || todayYYYYMMDD();
 
   const [tab, setTab] = useState("entry");
   const [filterDate, setFilterDate] = useState("");
   const effectiveFilterDate = filterDate || defaultDate;
   const [message, setMessage] = useState("");
   const [pageError, setPageError] = useState("");
+  const [dateLocked, setDateLocked] = useState(false);
 
   const [terminals, setTerminals] = useState([]);
   const [loadingTerminals, setLoadingTerminals] = useState(true);
@@ -60,6 +66,10 @@ export default function ExternalSales() {
     const timeoutId = window.setTimeout(() => setMessage(""), 3000);
     return () => window.clearTimeout(timeoutId);
   }, [message]);
+
+  useEffect(() => {
+    setDateLocked(false);
+  }, [tab]);
 
   useEffect(() => {
     if (!activeClientId) return undefined;
@@ -132,11 +142,6 @@ export default function ExternalSales() {
     );
   }, [activeClientId, effectiveFilterDate]);
 
-  const shopLabel = useMemo(
-    () => activeClientData?.name || activeClientId || "shop",
-    [activeClientData?.name, activeClientId]
-  );
-
   if (!activeClientId) {
     return (
       <div className="rounded-2xl border border-amber-900/50 bg-amber-950/20 p-6 text-amber-100">
@@ -153,10 +158,6 @@ export default function ExternalSales() {
             <ClipboardList className="h-5 w-5 shrink-0 text-blue-400 sm:h-6 sm:w-6" />
             <span className="truncate">External Sales</span>
           </h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Capture summarized sales bills from your existing billing software
-            for {shopLabel}. This is not a POS checkout.
-          </p>
         </div>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <ModuleHelpButton moduleId="external-sales" />
@@ -175,22 +176,41 @@ export default function ExternalSales() {
         </div>
       ) : null}
 
-      <div className="-mx-1 overflow-x-auto overscroll-x-contain border-b border-slate-800 pb-3">
-        <div className="flex min-w-max gap-2 px-1 sm:min-w-0 sm:flex-wrap">
-          {TABS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setTab(item.id)}
-              className={`rounded-lg px-3 py-2 text-sm font-semibold whitespace-nowrap transition-colors ${
-                tab === item.id
-                  ? "bg-blue-600 text-white"
-                  : "bg-slate-900 text-slate-300 hover:bg-slate-800"
-              }`}
+      <div className="sticky top-16 z-30 -mx-1 border-b border-slate-800/80 bg-slate-950/90 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-slate-950/75">
+        <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
+          <div className="min-w-0 overflow-x-auto overscroll-x-contain">
+            <div className="flex min-w-max gap-2 sm:min-w-0 sm:flex-wrap">
+              {TABS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setTab(item.id)}
+                  className={`rounded-lg px-3 py-2 text-sm font-semibold whitespace-nowrap shadow-sm transition-colors ${
+                    tab === item.id
+                      ? "bg-blue-600 text-white shadow-blue-900/40"
+                      : "border border-slate-800 bg-slate-900/90 text-slate-300 hover:bg-slate-800"
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {DATE_TABS.has(tab) ? (
+            <label
+              className={`${LABEL_CLASS} w-full shrink-0 rounded-xl border border-slate-800 bg-slate-900/90 px-3 py-2 sm:w-auto sm:min-w-[11rem]`}
             >
-              {item.label}
-            </button>
-          ))}
+              Business Date
+              <DateInput
+                value={effectiveFilterDate}
+                onChange={(event) => setFilterDate(event.target.value)}
+                className={`${FIELD_CLASS} mt-1.5`}
+                required
+                disabled={dateLocked}
+              />
+            </label>
+          ) : null}
         </div>
       </div>
 
@@ -199,7 +219,7 @@ export default function ExternalSales() {
           clientId={activeClientId}
           currency={currency}
           currencyDecimals={currencyDecimals}
-          defaultBusinessDate={defaultDate}
+          businessDate={effectiveFilterDate}
           terminals={terminals}
           deliveryBoys={deliveryBoys}
           onMessage={(text) => {
@@ -220,7 +240,6 @@ export default function ExternalSales() {
           loading={loadingBills}
           error={billsError}
           filterDate={effectiveFilterDate}
-          onFilterDateChange={setFilterDate}
           terminals={terminals}
           deliveryBoys={deliveryBoys}
           currency={currency}
@@ -241,8 +260,9 @@ export default function ExternalSales() {
           clientId={activeClientId}
           currency={currency}
           currencyDecimals={currencyDecimals}
-          defaultBusinessDate={defaultDate}
+          businessDate={effectiveFilterDate}
           deliveryBoys={deliveryBoys}
+          onDateLockChange={setDateLocked}
           onMessage={(text) => {
             setPageError("");
             setMessage(text);

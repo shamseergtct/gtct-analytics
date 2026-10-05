@@ -3,7 +3,6 @@ import { doc, serverTimestamp, updateDoc } from "firebase/firestore";
 import { ChevronDown } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
-import DateInput from "../DateInput.jsx";
 import { formatMoney } from "../../utils/money.js";
 import {
   EXTERNAL_SALE_TYPES,
@@ -94,7 +93,7 @@ function groupBillsByTerminal(bills, terminals = []) {
 
 function SummaryCard({ label, value }) {
   return (
-    <div className="min-w-[6.75rem] flex-1 rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2">
+    <div className="min-w-0 rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2">
       <div className="truncate text-[10px] font-medium uppercase tracking-wide text-slate-500">
         {label}
       </div>
@@ -111,7 +110,6 @@ export default function ExternalSalesList({
   loading,
   error,
   filterDate,
-  onFilterDateChange,
   terminals,
   deliveryBoys,
   currency,
@@ -220,18 +218,7 @@ export default function ExternalSalesList({
   }
 
   return (
-    <div className="space-y-5">
-      <div className="grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 sm:max-w-sm">
-        <label className={LABEL_CLASS}>
-          Business Date
-          <DateInput
-            value={filterDate}
-            onChange={(event) => onFilterDateChange?.(event.target.value)}
-            className={`${FIELD_CLASS} mt-1.5`}
-          />
-        </label>
-      </div>
-
+    <div className="space-y-4">
       <TerminalBillGapChecker
         clientId={clientId}
         businessDate={filterDate}
@@ -247,54 +234,56 @@ export default function ExternalSalesList({
         </div>
       ) : null}
 
-      <div className="flex flex-nowrap gap-2 overflow-x-auto pb-1">
-        <SummaryCard label="Total Bills" value={summary.totalBills} />
-        <SummaryCard
-          label="Net Sale"
-          value={`${currencyPrefix}${formatMoney(summary.netSales, currencyDecimals)}`}
-        />
-        <SummaryCard
-          label="Credit Sale"
-          value={`${currencyPrefix}${formatMoney(summary.creditSales, currencyDecimals)}`}
-        />
-        <SummaryCard
-          label="Gross Sale"
-          value={`${currencyPrefix}${formatMoney(summary.grossSales, currencyDecimals)}`}
-        />
-        <SummaryCard
-          label="Delivery Charges"
-          value={`${currencyPrefix}${formatMoney(summary.totalDeliveryCharges, currencyDecimals)}`}
-        />
-        <SummaryCard
-          label="Delivery Commission"
-          value={`${currencyPrefix}${formatMoney(summary.totalCommission, currencyDecimals)}`}
-        />
-        <SummaryCard label="Delivery Bills" value={summary.deliveryBills} />
-        <SummaryCard label="Dine In Bills" value={summary.dineInBills} />
-        <SummaryCard label="Pick Up Bills" value={summary.pickUpBills} />
-      </div>
+      <section className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <h3 className="mb-3 text-sm font-semibold text-white">Day Summary</h3>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
+          <SummaryCard label="Total Bills" value={summary.totalBills} />
+          <SummaryCard
+            label="Net Sale"
+            value={`${currencyPrefix}${formatMoney(summary.netSales, currencyDecimals)}`}
+          />
+          <SummaryCard
+            label="Credit Sale"
+            value={`${currencyPrefix}${formatMoney(summary.creditSales, currencyDecimals)}`}
+          />
+          <SummaryCard
+            label="Gross Sale"
+            value={`${currencyPrefix}${formatMoney(summary.grossSales, currencyDecimals)}`}
+          />
+          <SummaryCard
+            label="Delivery Charges"
+            value={`${currencyPrefix}${formatMoney(summary.totalDeliveryCharges, currencyDecimals)}`}
+          />
+          <SummaryCard
+            label="Commission"
+            value={`${currencyPrefix}${formatMoney(summary.totalCommission, currencyDecimals)}`}
+          />
+          <SummaryCard label="Delivery" value={summary.deliveryBills} />
+          <SummaryCard label="Dine In" value={summary.dineInBills} />
+          <SummaryCard label="Pick Up" value={summary.pickUpBills} />
+        </div>
+      </section>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-          <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
-            Terminal Totals
-          </div>
-          <div className="overflow-x-auto">
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
+          Terminal Totals
+        </div>
+        <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2">Terminal</th>
-                <th className="px-4 py-2">Bills</th>
-                <th className="px-4 py-2">Sales</th>
+                <th className="px-4 py-2 text-right">Bills</th>
+                <th className="px-4 py-2 text-right">Sales</th>
               </tr>
             </thead>
             <tbody>
               {terminalRows.length ? (
                 terminalRows.map((row) => (
                   <tr key={row.terminalId} className="border-t border-slate-800/80">
-                    <td className="px-4 py-2 text-white">{row.terminalName}</td>
-                    <td className="px-4 py-2">{row.bills}</td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5 text-white">{row.terminalName}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">{row.bills}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">
                       {currencyPrefix}
                       {formatMoney(row.sales, currencyDecimals)}
                     </td>
@@ -309,22 +298,22 @@ export default function ExternalSalesList({
               )}
             </tbody>
           </table>
-          </div>
         </div>
+      </section>
 
-        <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-          <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
-            Delivery Boy Summary
-          </div>
-          <div className="overflow-x-auto">
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
+          Delivery Boy Summary
+        </div>
+        <div className="overflow-x-auto">
           <table className="min-w-[520px] w-full text-left text-sm text-slate-300">
             <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-2">Delivery Boy</th>
-                <th className="px-4 py-2">Bills</th>
-                <th className="px-4 py-2">Sales</th>
-                <th className="px-4 py-2">Charges</th>
-                <th className="px-4 py-2">Commission</th>
+                <th className="px-4 py-2 text-right">Bills</th>
+                <th className="px-4 py-2 text-right">Sales</th>
+                <th className="px-4 py-2 text-right">Charges</th>
+                <th className="px-4 py-2 text-right">Commission</th>
               </tr>
             </thead>
             <tbody>
@@ -334,19 +323,19 @@ export default function ExternalSalesList({
                     key={row.deliveryBoyId}
                     className="border-t border-slate-800/80"
                   >
-                    <td className="px-4 py-2 text-white">
+                    <td className="px-4 py-2.5 text-white">
                       {row.deliveryBoyName}
                     </td>
-                    <td className="px-4 py-2">{row.bills}</td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5 text-right tabular-nums">{row.bills}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">
                       {currencyPrefix}
                       {formatMoney(row.sales, currencyDecimals)}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5 text-right tabular-nums">
                       {currencyPrefix}
                       {formatMoney(row.deliveryCharges, currencyDecimals)}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5 text-right tabular-nums">
                       {currencyPrefix}
                       {formatMoney(row.commission, currencyDecimals)}
                     </td>
@@ -361,16 +350,14 @@ export default function ExternalSalesList({
               )}
             </tbody>
           </table>
-          </div>
         </div>
-      </div>
+      </section>
 
-      <div className="min-w-0 overflow-hidden rounded-2xl border border-violet-900/40 bg-violet-950/10">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-violet-900/40 px-4 py-3">
-          <div className="text-sm font-semibold text-white">Credit Report</div>
-          <div className="text-xs text-violet-200/80">
-            {creditBills.length} bill{creditBills.length === 1 ? "" : "s"} ·{" "}
-            {currencyPrefix}
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+          <h3 className="text-sm font-semibold text-white">Credit Report</h3>
+          <div className="text-xs tabular-nums text-slate-400">
+            {creditBills.length} · {currencyPrefix}
             {formatMoney(creditTotal, currencyDecimals)}
           </div>
         </div>
@@ -390,27 +377,24 @@ export default function ExternalSalesList({
             <tbody>
               {creditBills.length ? (
                 creditBills.map((bill) => (
-                  <tr
-                    key={bill.id}
-                    className="border-t border-violet-900/30"
-                  >
-                    <td className="px-4 py-2 text-white">
+                  <tr key={bill.id} className="border-t border-slate-800/80">
+                    <td className="px-4 py-2.5 text-white">
                       {bill.terminalNameSnapshot || "—"}
                     </td>
-                    <td className="px-4 py-2 font-medium tabular-nums text-white">
+                    <td className="px-4 py-2.5 font-medium tabular-nums text-white">
                       {bill.billNumber}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">
                       {externalSaleTypeLabel(bill.saleType)}
                     </td>
-                    <td className="px-4 py-2">{bill.customerName || "—"}</td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">{bill.customerName || "—"}</td>
+                    <td className="px-4 py-2.5">
                       {bill.customerLocation || "—"}
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">
                       {bill.deliveryBoyNameSnapshot || "—"}
                     </td>
-                    <td className="px-4 py-2 text-right tabular-nums">
+                    <td className="px-4 py-2.5 text-right tabular-nums">
                       {currencyPrefix}
                       {formatMoney(bill.billAmount, currencyDecimals)}
                     </td>
@@ -429,10 +413,12 @@ export default function ExternalSalesList({
             </tbody>
           </table>
         </div>
-      </div>
+      </section>
 
-      <div className="space-y-3">
-        <div className="grid gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
+      <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
+        <h3 className="text-sm font-semibold text-white">All Bills</h3>
+
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-6">
           <label className={LABEL_CLASS}>
             Terminal
             <select
@@ -499,7 +485,7 @@ export default function ExternalSalesList({
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               className={FIELD_CLASS}
-              placeholder="Bill no / customer…"
+              placeholder="Bill no…"
             />
           </label>
           <label className="inline-flex items-end gap-2 pb-2 text-sm text-slate-400">
@@ -509,27 +495,25 @@ export default function ExternalSalesList({
               onChange={(event) => setShowVoided(event.target.checked)}
               className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-blue-600"
             />
-            Show voided bills
+            Show voided
           </label>
         </div>
 
-        <div className="space-y-3">
-          <div className="text-sm font-semibold text-white">All Bills</div>
-
+        <div className="space-y-3 pt-1">
           {loading ? (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-sm text-slate-500">
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-8 text-center text-sm text-slate-500">
               Loading bills…
             </div>
           ) : billsByTerminal.length ? (
             billsByTerminal.map((group) => {
               const groupKey = group.terminalId || group.terminalName;
-              const isOpen = openTerminalLists[groupKey] !== false;
+              const isOpen = openTerminalLists[groupKey] === true;
               const panelId = `terminal-bills-${groupKey}`;
 
               return (
                 <div
                   key={groupKey}
-                  className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40"
+                  className="min-w-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-950/40"
                 >
                   <button
                     type="button"
@@ -547,7 +531,7 @@ export default function ExternalSalesList({
                       <div className="truncate text-sm font-semibold text-white">
                         {group.terminalName}
                       </div>
-                      <div className="mt-0.5 text-xs tabular-nums text-slate-500">
+                      <div className="mt-0.5 text-xs tabular-nums text-slate-400">
                         {group.bills.length} bill
                         {group.bills.length === 1 ? "" : "s"}
                       </div>
@@ -657,12 +641,12 @@ export default function ExternalSalesList({
               );
             })
           ) : (
-            <div className="rounded-2xl border border-slate-800 bg-slate-900/40 px-4 py-8 text-center text-sm text-slate-500">
-              No external sales bills match these filters.
+            <div className="rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-8 text-center text-sm text-slate-500">
+              No bills match these filters.
             </div>
           )}
         </div>
-      </div>
+      </section>
     </div>
   );
 }

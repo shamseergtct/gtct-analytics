@@ -13,7 +13,6 @@ import {
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
-import DateInput from "../DateInput.jsx";
 import {
   formatMoney,
   moneyInputStep,
@@ -104,10 +103,6 @@ function TerminalBillForm({
     ];
   }, [deliveryMode, paymentModeOptions]);
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
-  const isDeliveryAccount =
-    deliveryMode &&
-    (paymentMode === DELIVERY_ACCOUNT_PAYMENT ||
-      resolvedPayment.paymentMode === DELIVERY_ACCOUNT_PAYMENT);
   const isCredit = resolvedPayment.paymentMode === "CREDIT";
   const selectedBoy = useMemo(
     () => boyOptions.find((row) => row.id === deliveryBoyId) || null,
@@ -508,9 +503,9 @@ function TerminalBillForm({
           <h2 className="truncate text-base font-semibold text-white sm:text-lg">
             {terminal.name}
           </h2>
-          <p className="text-xs text-slate-500">
-            {editMode ? "Editing existing bill" : "Terminal bill entry"}
-          </p>
+          {editMode ? (
+            <p className="text-xs text-amber-300">Editing existing bill</p>
+          ) : null}
         </div>
       </div>
 
@@ -628,16 +623,6 @@ function TerminalBillForm({
               </option>
             ))}
           </select>
-          {deliveryMode && isDeliveryAccount ? (
-            <span className="mt-1 block text-[11px] text-slate-500">
-              Settled later under Collect
-            </span>
-          ) : null}
-          {deliveryMode && !isDeliveryAccount ? (
-            <span className="mt-1 block text-[11px] text-slate-500">
-              Paid to shop — not added to delivery boy payable
-            </span>
-          ) : null}
         </label>
 
         {isCredit ? (
@@ -766,7 +751,7 @@ export default function ExternalSalesForm({
   clientId,
   currency,
   currencyDecimals,
-  defaultBusinessDate,
+  businessDate,
   terminals,
   deliveryBoys,
   onMessage,
@@ -774,8 +759,7 @@ export default function ExternalSalesForm({
 }) {
   const { accounts: bankAccounts } = useBankAccounts(clientId);
   const [customers, setCustomers] = useState([]);
-  const [businessDate, setBusinessDate] = useState("");
-  const effectiveBusinessDate = businessDate || defaultBusinessDate || "";
+  const effectiveBusinessDate = businessDate || "";
 
   const activeTerminals = useMemo(
     () => terminals.filter((row) => row.isActive !== false),
@@ -820,22 +804,6 @@ export default function ExternalSalesForm({
 
   return (
     <div className="min-w-0 space-y-4">
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4 sm:p-4">
-        <label className={`${LABEL_CLASS} w-full sm:max-w-xs`}>
-          Business Date
-          <DateInput
-            value={effectiveBusinessDate}
-            onChange={(event) => setBusinessDate(event.target.value)}
-            className={`${FIELD_CLASS} mt-1.5`}
-            required
-          />
-        </label>
-        <p className="text-sm text-slate-500 sm:pb-2">
-          Shared for all terminal forms below. Tab out of Bill Number to check
-          for duplicates.
-        </p>
-      </div>
-
       <div className="grid min-w-0 grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 2xl:grid-cols-3">
         {activeTerminals.map((terminal) => (
           <TerminalBillForm

@@ -14,6 +14,8 @@ import {
 import { db } from "../firebase";
 import { formatMoney } from "./money.js";
 import {
+  deliveryBoyPayableFromBills,
+  normalizeExternalSaleType,
   summarizeDeliveryBoyCollections,
   summarizeExternalBillTenders,
 } from "./externalSales.js";
@@ -2304,6 +2306,198 @@ export async function fetchDetailedLedger({
     };
   }
 
+  if (reportType === "delivery_boys") {
+    const [externalBills, collections] = await Promise.all([
+      fetchExternalBillsInRange(clientId, fromDate, toDate),
+      fetchCollectionsInRange(clientId, fromDate, toDate),
+    ]);
+
+    const boyIdFilter = String(partyId || "").trim();
+    const boyNameFilter = String(partyName || "").trim();
+
+    const deliveryBills = externalBills.filter((bill) => {
+      if (bill?.voided === true) return false;
+      if (normalizeExternalSaleType(bill.saleType) !== "DELIVERY") return false;
+      if (!bill.deliveryBoyId) return false;
+      if (boyIdFilter && bill.deliveryBoyId !== boyIdFilter) return false;
+      return true;
+    });
+
+    const deliveryCollections = collections.filter((row) => {
+      if (!row?.deliveryBoyId) return false;
+      if (boyIdFilter && row.deliveryBoyId !== boyIdFilter) return false;
+      return true;
+    });
+
+    const boyNames = new Map();
+    const registerBoy = (id, name) => {
+      const boyId = String(id || "").trim();
+      if (!boyId) return;
+      const label = String(name || "").trim();
+      if (label && !boyNames.has(boyId)) boyNames.set(boyId, label);
+      else if (!boyNames.has(boyId)) boyNames.set(boyId, boyId);
+    };
+
+    deliveryBills.forEach((bill) =>
+      registerBoy(bill.deliveryBoyId, bill.deliveryBoyNameSnapshot)
+    );
+    deliveryCollections.forEach((row) =>
+      registerBoy(row.deliveryBoyId, row.deliveryBoyNameSnapshot)
+    );
+
+    const columns = [
+      { key: "date", label: "Date" },
+      { key: "deliveryBoy", label: "Delivery Boy" },
+      { key: "bills", label: "Bills", align: "right" },
+      { key: "totalAmount", label: "Total Amount", align: "right" },
+      { key: "shopPaid", label: "Shop Paid", align: "right" },
+      { key: "credit", label: "Credit", align: "right" },
+      { key: "commission", label: "Commission", align: "right" },
+      { key: "payable", label: "Payable", align: "right" },
+      { key: "cash", label: "Cash Collected", align: "right" },
+      { key: "bank", label: "Bank Collected", align: "right" },
+      { key: "remaining", label: "Remaining", align: "right" },
+    ];
+
+    let totalBills = 0;
+    let totalAmount = 0;
+    let totalShopPaid = 0;
+    let totalCredit = 0;
+    let totalCommission = 0;
+    let totalPayable = 0;
+    let totalCash = 0;
+    let totalBank = 0;
+    let totalRemaining = 0;
+
+    const tableRows = [];
+
+    if (boyIdFilter) {
+      // Daily breakdown for the selected delivery boy.
+      const dates = new Set();
+      deliveryBills.forEach((bill) => {
+        const date = String(bill.businessDate || "").slice(0, 10);
+        if (date) dates.add(date);
+      });
+      deliveryCollections.forEach((row) => {
+        const date = String(row.businessDate || "").slice(0, 10);
+        if (date) dates.add(date);
+      });
+
+      [...dates]
+        .sort((a, b) => a.localeCompare(b))
+        .forEach((date) => {
+          const dayBills = deliveryBills.filter(
+            (bill) => String(bill.businessDate || "").slice(0, 10) === date
+          );
+          const dayCollections = deliveryCollections.filter(
+            (row) => String(row.businessDate || "").slice(0, 10) === date
+          );
+          const payable = deliveryBoyPayableFromBills(dayBills, boyIdFilter);
+          const collected = summarizeDeliveryBoyCollections(dayCollections);
+          const remaining = Math.max(
+            0,
+            num(payable.payableAmount) - num(collected.settledTotal)
+          );
+
+          totalBills += num(payable.totalBills);
+          totalAmount += num(payable.totalAmount);
+          totalShopPaid += num(payable.shopPaidAmount);
+          totalCredit += num(payable.creditAmount);
+          totalCommission += num(payable.commissionAmount);
+          totalPayable += num(payable.payableAmount);
+          totalCash += num(collected.cashTotal);
+          totalBank += num(collected.bankTotal);
+          totalRemaining += remaining;
+
+          tableRows.push({
+            id: `${date}|${boyIdFilter}`,
+            date: formatIsoDate(date) || date,
+            deliveryBoy:
+              boyNames.get(boyIdFilter) || boyNameFilter || boyIdFilter,
+            bills: String(payable.totalBills || 0),
+            totalAmount: money(payable.totalAmount),
+            shopPaid: money(payable.shopPaidAmount),
+            credit: money(payable.creditAmount),
+            commission: money(payable.commissionAmount),
+            payable: money(payable.payableAmount),
+            cash: money(collected.cashTotal),
+            bank: money(collected.bankTotal),
+            remaining: money(remaining),
+          });
+        });
+    } else {
+      // Period summary per delivery boy.
+      const boyIds = [...boyNames.keys()].sort((a, b) =>
+        String(boyNames.get(a) || a).localeCompare(String(boyNames.get(b) || b))
+      );
+
+      boyIds.forEach((boyId) => {
+        const boyBills = deliveryBills.filter(
+          (bill) => bill.deliveryBoyId === boyId
+        );
+        const boyCollections = deliveryCollections.filter(
+          (row) => row.deliveryBoyId === boyId
+        );
+        const payable = deliveryBoyPayableFromBills(boyBills, boyId);
+        const collected = summarizeDeliveryBoyCollections(boyCollections);
+        const remaining = Math.max(
+          0,
+          num(payable.payableAmount) - num(collected.settledTotal)
+        );
+
+        totalBills += num(payable.totalBills);
+        totalAmount += num(payable.totalAmount);
+        totalShopPaid += num(payable.shopPaidAmount);
+        totalCredit += num(payable.creditAmount);
+        totalCommission += num(payable.commissionAmount);
+        totalPayable += num(payable.payableAmount);
+        totalCash += num(collected.cashTotal);
+        totalBank += num(collected.bankTotal);
+        totalRemaining += remaining;
+
+        tableRows.push({
+          id: boyId,
+          date: `${formatIsoDate(fromDate) || fromDate} – ${
+            formatIsoDate(toDate) || toDate
+          }`,
+          deliveryBoy: boyNames.get(boyId) || boyId,
+          bills: String(payable.totalBills || 0),
+          totalAmount: money(payable.totalAmount),
+          shopPaid: money(payable.shopPaidAmount),
+          credit: money(payable.creditAmount),
+          commission: money(payable.commissionAmount),
+          payable: money(payable.payableAmount),
+          cash: money(collected.cashTotal),
+          bank: money(collected.bankTotal),
+          remaining: money(remaining),
+        });
+      });
+    }
+
+    const filteredTitle = boyNameFilter
+      ? `Delivery Boys Report — ${boyNameFilter}`
+      : "Delivery Boys Report";
+
+    return {
+      title: filteredTitle,
+      layout: "ledger",
+      columns,
+      rows: tableRows,
+      summary: {
+        count: String(totalBills),
+        sales: money(totalAmount),
+        shopPaid: money(totalShopPaid),
+        credit: money(totalCredit),
+        commission: money(totalCommission),
+        payable: money(totalPayable),
+        cash: money(totalCash),
+        bank: money(totalBank),
+        remaining: money(totalRemaining),
+        partyName: boyNameFilter || "",
+      },
+    };
+  }
+
   if (reportType === "loans") {
     const priorTo = dayBeforeIso(fromDate);
     // Full Period already starts at epoch — nothing exists before it.
@@ -2440,6 +2634,27 @@ export async function fetchDetailedLedger({
 
 export async function fetchPartiesForLedger({ clientId, kind }) {
   if (!clientId) return [];
+  const want = String(kind || "").toLowerCase();
+
+  if (want === "delivery_boys") {
+    const boysQuery = query(
+      collection(db, "delivery_boys"),
+      where("clientId", "==", clientId)
+    );
+    const snap = await getDocs(boysQuery);
+    return snap.docs
+      .map((docSnap) => {
+        const data = docSnap.data() || {};
+        return {
+          id: docSnap.id,
+          name: String(data.name || "").trim() || docSnap.id,
+          isActive: data.isActive !== false,
+          type: "delivery_boy",
+        };
+      })
+      .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  }
+
   const partiesQuery = query(
     collection(db, "parties"),
     where("clientId", "==", clientId),
@@ -2450,7 +2665,6 @@ export async function fetchPartiesForLedger({ clientId, kind }) {
     id: docSnap.id,
     ...docSnap.data(),
   }));
-  const want = String(kind || "").toLowerCase();
 
   if (want === "loans") {
     const today = toIso(new Date()) || "2099-12-31";

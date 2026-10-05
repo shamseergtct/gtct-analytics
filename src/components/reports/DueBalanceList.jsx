@@ -1,4 +1,5 @@
-import { formatMoney, formatMoneyLocale } from "../../utils/money.js";
+import { formatMoneyLocale } from "../../utils/money.js";
+
 function moneyDisplay(value) {
   if (value == null || value === "") return "";
   const parsed = Number(String(value).replace(/,/g, ""));
@@ -10,7 +11,6 @@ export default function DueBalanceList({
   columns = [],
   rows = [],
   emptyMessage,
-  asOfLabel,
 }) {
   const dataRows = rows.filter((row) => row.id !== "__grand_total__");
   const totalRow = rows.find((row) => row.id === "__grand_total__");
@@ -24,84 +24,77 @@ export default function DueBalanceList({
   }
 
   return (
-    <div className="space-y-3">
-      {asOfLabel ? (
-        <p className="text-xs text-slate-500 print:text-slate-600">
-          As of {asOfLabel}
-        </p>
-      ) : null}
-      <div className="overflow-x-auto rounded-xl border border-slate-800 print:border-slate-300">
-        <table className="min-w-full border-collapse text-sm">
-          <thead>
-            <tr className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500 print:bg-slate-100 print:text-slate-700">
+    <div className="overflow-x-auto rounded-xl border border-slate-800 print:border-slate-300">
+      <table className="min-w-full border-collapse text-sm">
+        <thead>
+          <tr className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500 print:bg-slate-100 print:text-slate-700">
+            {columns.map((col) => (
+              <th
+                key={col.key}
+                className={`px-3 py-3 font-semibold ${
+                  col.align === "right" ? "text-right" : "text-left"
+                }`}
+                style={{
+                  textAlign: col.align === "right" ? "right" : "left",
+                }}
+              >
+                {col.label}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {dataRows.map((row) => (
+            <tr
+              key={row.id}
+              className="border-t border-slate-800 text-slate-200 print:border-slate-200 print:text-slate-900"
+            >
               {columns.map((col) => (
-                <th
+                <td
                   key={col.key}
-                  className={`px-3 py-3 font-semibold ${
-                    col.align === "right" ? "text-right" : "text-left"
+                  className={`px-3 py-2.5 align-top ${
+                    col.align === "right"
+                      ? "text-right tabular-nums whitespace-nowrap"
+                      : "text-left"
                   }`}
                   style={{
                     textAlign: col.align === "right" ? "right" : "left",
                   }}
                 >
-                  {col.label}
-                </th>
+                  {col.key === "balance"
+                    ? moneyDisplay(row[col.key])
+                    : row[col.key] ?? ""}
+                </td>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {dataRows.map((row) => (
-              <tr
-                key={row.id}
-                className="border-t border-slate-800 text-slate-200 print:border-slate-200 print:text-slate-900"
-              >
-                {columns.map((col) => (
-                  <td
-                    key={col.key}
-                    className={`px-3 py-2.5 align-top ${
-                      col.align === "right"
-                        ? "text-right tabular-nums whitespace-nowrap"
-                        : "text-left"
-                    }`}
-                    style={{
-                      textAlign: col.align === "right" ? "right" : "left",
-                    }}
-                  >
-                    {col.key === "balance"
-                      ? moneyDisplay(row[col.key])
-                      : row[col.key] ?? ""}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-          {totalRow ? (
-            <tfoot>
-              <tr className="border-t-2 border-slate-600 bg-slate-900/70 print:border-slate-400 print:bg-slate-50">
-                {columns.map((col) => (
-                  <td
-                    key={col.key}
-                    className={`px-3 py-3 font-bold text-white print:text-slate-900 ${
-                      col.align === "right"
-                        ? "text-right tabular-nums whitespace-nowrap"
-                        : "text-left"
-                    }`}
-                    style={{
-                      textAlign: col.align === "right" ? "right" : "left",
-                    }}
-                  >
-                    {col.key === "balance"
-                      ? moneyDisplay(totalRow.balance)
-                      : col.key === "partyName"
-                        ? "Grand Total"
-                        : ""}
-                  </td>
-                ))}
-              </tr>
-            </tfoot>
-          ) : null}
-        </table>
-      </div>
+          ))}
+        </tbody>
+        {totalRow ? (
+          <tfoot>
+            <tr className="border-t-2 border-slate-600 bg-slate-900/80 font-semibold text-white print:border-slate-400 print:bg-slate-100 print:text-slate-900">
+              {columns.map((col) => (
+                <td
+                  key={col.key}
+                  className={`px-3 py-3 align-top ${
+                    col.align === "right"
+                      ? "text-right tabular-nums whitespace-nowrap"
+                      : "text-left"
+                  }`}
+                  style={{
+                    textAlign: col.align === "right" ? "right" : "left",
+                  }}
+                >
+                  {col.key === "balance"
+                    ? moneyDisplay(totalRow.balance)
+                    : col.key === "partyName"
+                      ? "Total"
+                      : ""}
+                </td>
+              ))}
+            </tr>
+          </tfoot>
+        ) : null}
+      </table>
     </div>
   );
 }

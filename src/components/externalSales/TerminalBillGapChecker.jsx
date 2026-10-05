@@ -8,7 +8,7 @@ import {
   setDoc,
   where,
 } from "firebase/firestore";
-import { AlertTriangle, Check, ChevronDown, Circle } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { formatIsoDate } from "../../utils/dateFormat.js";
@@ -47,7 +47,7 @@ function StatusBadge({ status }) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-800/60 bg-emerald-950/40 px-2.5 py-1 text-[11px] font-medium text-emerald-300">
         <Check className="h-3 w-3" aria-hidden="true" />
-        Sequence complete
+        Complete
       </span>
     );
   }
@@ -55,24 +55,11 @@ function StatusBadge({ status }) {
     return (
       <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-800/60 bg-amber-950/40 px-2.5 py-1 text-[11px] font-medium text-amber-200">
         <AlertTriangle className="h-3 w-3" aria-hidden="true" />
-        Missing bills
+        Missing
       </span>
     );
   }
-  if (status === "range-required") {
-    return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-400">
-        <Circle className="h-2.5 w-2.5 fill-slate-500 text-slate-500" aria-hidden="true" />
-        Range required
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-[11px] font-medium text-slate-400">
-      <Circle className="h-2.5 w-2.5 text-slate-500" aria-hidden="true" />
-      Not checked
-    </span>
-  );
+  return null;
 }
 
 function Metric({ label, value, tone = "default" }) {
@@ -96,7 +83,6 @@ function Metric({ label, value, tone = "default" }) {
 
 function TerminalBillControlCard({
   terminal,
-  index,
   draft,
   report,
   recordedCount,
@@ -139,92 +125,55 @@ function TerminalBillControlCard({
 
   return (
     <article
-      className="rounded-2xl border border-slate-800 bg-slate-950/50 p-4"
+      className="rounded-xl border border-slate-800 bg-slate-950/40 p-4"
       aria-label={`${terminal.name} bill control`}
     >
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className={`mt-0.5 h-2 w-2 shrink-0 rounded-full ${statusDotClass}`}
-              aria-hidden="true"
-            />
-            <h4 className="truncate text-sm font-semibold tracking-wide text-white">
-              {terminal.name}
-            </h4>
-          </div>
-          <p className="mt-1 pl-4 text-xs text-slate-500">
-            Terminal {String(index + 1).padStart(2, "0")}
-            <span className="mx-1.5 text-slate-700">·</span>
-            <span className="tabular-nums text-slate-300">
-              {recordedCount} bill{recordedCount === 1 ? "" : "s"} recorded
-            </span>
-          </p>
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${statusDotClass}`}
+            aria-hidden="true"
+          />
+          <h4 className="truncate text-sm font-semibold text-white">
+            {terminal.name}
+          </h4>
+          <span className="tabular-nums text-xs text-slate-400">
+            {recordedCount} bill{recordedCount === 1 ? "" : "s"}
+          </span>
         </div>
-        <StatusBadge status={status} />
+        {report ? <StatusBadge status={status} /> : null}
       </header>
 
-      <div className="mt-4 rounded-xl border border-slate-800/80 bg-slate-900/40 p-3">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
-          Bill range
-        </div>
-
-        <div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <label className="block min-w-0 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-            Start
-            <input
-              type="text"
-              inputMode="numeric"
-              value={draft.startBillNumber}
-              onChange={(event) =>
-                onDraftChange({ startBillNumber: event.target.value })
-              }
-              className={RANGE_INPUT}
-              placeholder="e.g. 101"
-              aria-label={`${terminal.name} starting bill number`}
-            />
-          </label>
-          <label className="block min-w-0 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-            Last
-            <input
-              type="text"
-              inputMode="numeric"
-              value={draft.endBillNumber}
-              onChange={(event) =>
-                onDraftChange({ endBillNumber: event.target.value })
-              }
-              className={RANGE_INPUT}
-              placeholder="e.g. 145"
-              aria-label={`${terminal.name} last bill number`}
-            />
-          </label>
-          <div className="flex min-w-0 flex-col justify-end rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
-            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
-              Expected
-            </div>
-            <div className="mt-0.5 text-sm font-semibold tabular-nums text-slate-100">
-              {expectedDisplay === "—"
-                ? "—"
-                : `${expectedDisplay} bill${expectedDisplay === 1 ? "" : "s"}`}
-            </div>
-          </div>
-        </div>
-
-        <div
-          className="mt-3 flex items-center gap-3 text-xs tabular-nums text-slate-500"
-          aria-hidden="true"
-        >
-          <span className="shrink-0 text-slate-300">
-            {preview.start != null ? preview.start : "—"}
-          </span>
-          <span className="h-px flex-1 bg-slate-700" />
-          <span className="shrink-0 text-slate-300">
-            {preview.end != null ? preview.end : "—"}
-          </span>
-        </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <label className="block min-w-0 text-xs font-medium text-slate-400">
+          Start
+          <input
+            type="text"
+            inputMode="numeric"
+            value={draft.startBillNumber}
+            onChange={(event) =>
+              onDraftChange({ startBillNumber: event.target.value })
+            }
+            className={RANGE_INPUT}
+            aria-label={`${terminal.name} starting bill number`}
+          />
+        </label>
+        <label className="block min-w-0 text-xs font-medium text-slate-400">
+          Last
+          <input
+            type="text"
+            inputMode="numeric"
+            value={draft.endBillNumber}
+            onChange={(event) =>
+              onDraftChange({ endBillNumber: event.target.value })
+            }
+            className={RANGE_INPUT}
+            aria-label={`${terminal.name} last bill number`}
+          />
+        </label>
       </div>
 
-      <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl border border-slate-800/70 bg-slate-950/30 px-3 py-2.5">
+      <div className="mt-3 grid grid-cols-3 gap-2 rounded-lg border border-slate-800/70 bg-slate-950/30 px-3 py-2.5">
         <Metric label="Expected" value={expectedDisplay} />
         <Metric label="Recorded" value={recordedInRange} />
         <Metric
@@ -254,7 +203,7 @@ function TerminalBillControlCard({
           className={`${BTN_PRIMARY} w-full sm:w-auto`}
           onClick={onFindMissing}
         >
-          Find missing bills
+          Find missing
         </button>
       </div>
 
@@ -329,7 +278,7 @@ export default function TerminalBillGapChecker({
   const [expandedMissingByTerminal, setExpandedMissingByTerminal] = useState(
     {}
   );
-  const [moduleOpen, setModuleOpen] = useState(true);
+  const [moduleOpen, setModuleOpen] = useState(false);
 
   const activeTerminals = useMemo(
     () =>
@@ -532,22 +481,16 @@ export default function TerminalBillGapChecker({
             <span className="rounded-md border border-slate-800 bg-slate-950/70 px-2 py-0.5 text-[11px] tabular-nums text-slate-300">
               {displayDate}
             </span>
+            {missingTerminalCount > 0 ? (
+              <span className="rounded-md border border-amber-800/50 bg-amber-950/30 px-2 py-0.5 text-[11px] text-amber-200">
+                {missingTerminalCount} with gaps
+              </span>
+            ) : checkedCount > 0 ? (
+              <span className="rounded-md border border-emerald-800/50 bg-emerald-950/30 px-2 py-0.5 text-[11px] text-emerald-300">
+                Checked
+              </span>
+            ) : null}
           </div>
-          <p className="mt-1 text-xs text-slate-500">
-            {activeTerminals.length
-              ? `${activeTerminals.length} terminal${
-                  activeTerminals.length === 1 ? "" : "s"
-                }${
-                  checkedCount
-                    ? ` · ${checkedCount} checked`
-                    : " · not checked yet"
-                }${
-                  missingTerminalCount
-                    ? ` · ${missingTerminalCount} with gaps`
-                    : ""
-                }`
-              : "No active terminals"}
-          </p>
         </div>
         <ChevronDown
           className={`h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${
@@ -573,7 +516,7 @@ export default function TerminalBillGapChecker({
               Add an active terminal in Setup before checking bill number gaps.
             </div>
           ) : (
-            activeTerminals.map((terminal, index) => {
+            activeTerminals.map((terminal) => {
               const draft = getDraft(terminal.id);
               const report = results[terminal.id];
               const recordedCount = billsForTerminal(terminal.id).filter(
@@ -584,7 +527,6 @@ export default function TerminalBillGapChecker({
                 <TerminalBillControlCard
                   key={terminal.id}
                   terminal={terminal}
-                  index={index}
                   draft={draft}
                   report={report}
                   recordedCount={recordedCount}
