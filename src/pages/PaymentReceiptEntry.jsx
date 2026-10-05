@@ -28,6 +28,7 @@ import {
   buildTransactionPayload,
   toBusinessDate,
 } from "../utils/transactionContract";
+import { openHtmlPrintWindow } from "../utils/openPrintWindow.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import DateInput from "../components/DateInput.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
@@ -480,12 +481,7 @@ export default function PaymentReceiptEntry() {
       String(activeClientData?.currency || "").toUpperCase()
     );
     const noteText = note.trim();
-    const w = window.open("", "_blank", "noopener,noreferrer,width=480,height=720");
-    if (!w) {
-      setError("Pop-up blocked. Allow pop-ups to print the receipt.");
-      return;
-    }
-    w.document.write(`<!doctype html>
+    const html = `<!doctype html>
 <html>
   <head>
     <title>${title}</title>
@@ -514,10 +510,19 @@ export default function PaymentReceiptEntry() {
     ${noteText ? `<div class="line"></div><div class="muted">Note: ${escapeHtml(noteText)}</div>` : ""}
     <div class="line"></div>
     <div class="muted">Thank you</div>
-    <script>window.onload = () => { window.print(); };</script>
+    <script>
+      window.onload = function () {
+        window.focus();
+        window.print();
+      };
+    </script>
   </body>
-</html>`);
-    w.document.close();
+</html>`;
+    try {
+      openHtmlPrintWindow(html, { width: 480, height: 720, autoPrint: true });
+    } catch {
+      setError("Pop-up blocked. Allow pop-ups to print the receipt.");
+    }
   }
 
   async function saveEntry({ doPrint = false } = {}) {

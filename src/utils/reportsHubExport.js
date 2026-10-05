@@ -2,6 +2,7 @@ import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { formatDateTimeValue } from "./dateFormat.js";
 import { formatMoney } from "./money.js";
+import { openHtmlPrintWindow } from "./openPrintWindow.js";
 
 function safeText(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
@@ -337,15 +338,13 @@ function printShell({ shopName, title, rangeLabel, bodyHtml, landscape = true })
   </body>
 </html>`;
 
-  const win = window.open("", "_blank", "width=1100,height=800");
-  if (!win) {
+  try {
+    openHtmlPrintWindow(html, { width: 1100, height: 800, autoPrint: true });
+    return true;
+  } catch {
     alert("Popup blocked. Allow popups for this site to print or save as PDF.");
     return false;
   }
-  win.document.open();
-  win.document.write(html);
-  win.document.close();
-  return true;
 }
 
 /**

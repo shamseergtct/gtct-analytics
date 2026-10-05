@@ -1,5 +1,6 @@
 import { formatIsoDate } from "./dateFormat.js";
 import { formatMoney, numMoney, roundMoney } from "./money.js";
+import { openHtmlPrintWindow } from "./openPrintWindow.js";
 import {
   compareBillingTerminals,
   isDeliveryBoyAccountPayment,
@@ -292,6 +293,12 @@ function buildThermalHtml({
       compact: true,
     })}
   </div>
+  <script>
+    window.onload = function () {
+      window.focus();
+      window.print();
+    };
+  </script>
 </body>
 </html>`;
 }
@@ -412,6 +419,12 @@ function buildFullHtml({
     currencyDecimals,
     compact: false,
   })}
+  <script>
+    window.onload = function () {
+      window.focus();
+      window.print();
+    };
+  </script>
 </body>
 </html>`;
 }
@@ -444,24 +457,5 @@ export function buildDeliveryBoyCollectionPrintHtml({
 }
 
 export function openDeliveryBoyCollectionPrint(html) {
-  const popup = window.open(
-    "",
-    "_blank",
-    "noopener,noreferrer,width=720,height=900"
-  );
-  if (!popup) {
-    throw new Error("Pop-up blocked. Allow pop-ups to print.");
-  }
-  popup.document.open();
-  popup.document.write(html);
-  popup.document.close();
-  popup.focus();
-  window.setTimeout(() => {
-    try {
-      popup.print();
-    } catch {
-      // User can still print manually from the preview window.
-    }
-  }, 250);
-  return popup;
+  return openHtmlPrintWindow(html, { width: 720, height: 900, autoPrint: true });
 }

@@ -38,6 +38,7 @@ import {
   paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
 import { getSalesLayout } from "../components/sales/index.js";
+import { openHtmlPrintWindow } from "../utils/openPrintWindow.js";
 import {
   formatPaymentLabel,
   itemMatchesSearchQuery,
@@ -302,22 +303,24 @@ function printInvoice({ shopName, invoice, items, mode, decimals }) {
 
         <script>
           window.onload = function () {
+            window.focus();
             window.print();
-            setTimeout(() => window.close(), 300);
+            // Keep the preview open until after the print dialog closes.
+            // Closing too early leaves a blank print screen.
+            window.onafterprint = function () {
+              window.close();
+            };
           };
         </script>
       </body>
     </html>
   `;
 
-  const w = window.open("", "_blank", "width=900,height=700");
-  if (!w) {
+  try {
+    openHtmlPrintWindow(html, { width: 900, height: 700, autoPrint: true });
+  } catch {
     alert("Popup blocked. Allow popups to print.");
-    return;
   }
-  w.document.open();
-  w.document.write(html);
-  w.document.close();
 }
 
 /**
