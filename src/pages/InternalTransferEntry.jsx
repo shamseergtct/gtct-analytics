@@ -187,7 +187,11 @@ export default function InternalTransferEntry() {
   const { activeClientId, activeClientData } = useClient();
   const { activeShift, loadingShift, shiftError } = useShift();
   const draftKey = `internal-transfers:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey);
+  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+    label: "Internal Transfers",
+    path: "/internal-transfers",
+    moduleId: "internal-transfers",
+  });
   const draft = initialDraft || {};
 
   const [transferDate, setTransferDate] = useState(
@@ -296,17 +300,21 @@ export default function InternalTransferEntry() {
   const showFundsBlock = Boolean(fundsError);
 
   useEffect(() => {
-    syncDraft({
-      transferDate,
-      isDateUnlocked,
-      transferType,
-      bankAccountId,
-      destinationBankAccountId,
-      amount,
-      note,
-    });
+    syncDraft(
+      {
+        transferDate,
+        isDateUnlocked,
+        transferType,
+        bankAccountId,
+        destinationBankAccountId,
+        amount,
+        note,
+      },
+      { dirty: hasUnsavedWork }
+    );
   }, [
     syncDraft,
+    hasUnsavedWork,
     transferDate,
     isDateUnlocked,
     transferType,

@@ -989,6 +989,7 @@ export function ShiftProvider({ children }) {
         activeShift: currentActiveShift,
         loadingShift,
         shiftError,
+        unsavedWork,
         unsavedWorkLabels,
         setUnsavedWork,
         openShift,

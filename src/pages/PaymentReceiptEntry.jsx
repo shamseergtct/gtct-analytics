@@ -73,7 +73,11 @@ export default function PaymentReceiptEntry() {
   const { activeShift, loadingShift, shiftError } = useShift();
   const partySelectorRef = useRef(null);
   const draftKey = `payments:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey);
+  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+    label: "Payments & Receipts",
+    path: "/payments-receipts",
+    moduleId: "payments",
+  });
   const draft = initialDraft || {};
   const { accounts: bankAccounts } = useBankAccounts(activeClientId);
 
@@ -144,14 +148,50 @@ export default function PaymentReceiptEntry() {
     const search = partySearch.trim().toLowerCase();
     return parties
       .filter((party) => {
+        const partyType = String(party.type || "").trim().toLowerCase();
+        const isVendor = ["supplier", "vendor"].includes(partyType);
+        const isEmployee = partyType === "employee";
+        const isCustomer = partyType === "customer";
+        const isBoth = partyType === "both";
+        const isLender = partyType === "lender";
+        const isOwner = partyType === "owner" || partyType === "partner";
+        // Receipt → customers + lender/owner. Payment → vendors + employees + lender/owner.
+        const isAvailableForMode =
+          entryMode === "receipt"
+            ? isCustomer || isBoth || isLender || isOwner
+            : isVendor || isEmployee || isBoth || isLender || isOwner;
+        if (!isAvailableForMode) return false;
         if (!search) return true;
         return `${party.name || ""} ${party.type || ""} ${party.contact || ""}`
           .toLowerCase()
           .includes(search);
       })
-      .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")))
+      .sort((a, b) => {
+        const preferredTypes =
+          entryMode === "receipt"
+            ? new Set(["customer", "both", "lender", "owner", "partner"])
+            : new Set([
+                "employee",
+                "supplier",
+                "vendor",
+                "both",
+                "lender",
+                "owner",
+                "partner",
+              ]);
+        const aRank = preferredTypes.has(String(a.type || "").toLowerCase())
+          ? 0
+          : 1;
+        const bRank = preferredTypes.has(String(b.type || "").toLowerCase())
+          ? 0
+          : 1;
+        return (
+          aRank - bRank ||
+          String(a.name || "").localeCompare(String(b.name || ""))
+        );
+      })
       .slice(0, 25);
-  }, [parties, partySearch]);
+  }, [entryMode, parties, partySearch]);
 
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
   const paymentModeOptions = useMemo(
@@ -191,19 +231,23 @@ export default function PaymentReceiptEntry() {
   const showFundsBlock = Boolean(fundsError);
 
   useEffect(() => {
-    syncDraft({
-      entryMode,
-      entryDate,
-      isDateUnlocked,
-      amount,
-      category,
-      paymentMode,
-      note,
-      selectedPartyId,
-      partySearch,
-    });
+    syncDraft(
+      {
+        entryMode,
+        entryDate,
+        isDateUnlocked,
+        amount,
+        category,
+        paymentMode,
+        note,
+        selectedPartyId,
+        partySearch,
+      },
+      { dirty: hasUnsavedPaymentWork }
+    );
   }, [
     syncDraft,
+    hasUnsavedPaymentWork,
     entryMode,
     entryDate,
     isDateUnlocked,

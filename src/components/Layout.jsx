@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
 
 import ShiftStatusBar from "./ShiftStatusBar";
+import UnsavedDraftGuard from "./UnsavedDraftGuard";
 import NotificationPanel from "./NotificationPanel";
 import {
   Menu,
@@ -82,6 +83,7 @@ export default function Layout() {
   }, [mobileOpen]);
 
   const handleLogout = async () => {
+    if (!window.confirm("Are you sure you want to log out?")) return;
     try {
       await logout();
       nav("/login", { replace: true });
@@ -445,6 +447,7 @@ export default function Layout() {
         }`}
       >
         <ShiftStatusBar />
+        <UnsavedDraftGuard />
         <div className="mx-auto w-full min-w-0 max-w-[1600px] p-3 sm:p-4 md:p-6">
           <Outlet />
         </div>

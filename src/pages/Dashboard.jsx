@@ -11,6 +11,8 @@ import {
   Package,
   BarChart3,
   CalendarCheck2,
+  ShoppingCart,
+  ClipboardList,
 } from "lucide-react";
 
 export default function Dashboard() {
@@ -19,6 +21,13 @@ export default function Dashboard() {
 
   const cards = [
     { title: "Client", icon: Users, to: "/clients", requiresShop: false },
+    { title: "Sales", icon: ShoppingCart, to: "/sales", requiresShop: true },
+    {
+      title: "External Bill Entry",
+      icon: ClipboardList,
+      to: "/external-sales",
+      requiresShop: true,
+    },
     { title: "Z Report", icon: Clock3, to: "/shift-close", requiresShop: true },
     {
       title: "Purchase & Expenses",

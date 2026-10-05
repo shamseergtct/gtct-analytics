@@ -48,6 +48,7 @@ import {
 import { getPartyCode, nextPartyCode } from "../utils/partyCode.js";
 import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
 import { useMoney } from "../hooks/useMoney.js";
+import { useFormDraft } from "../hooks/useFormDraft.js";
 import { formatMoney, numMoney } from "../utils/money.js";
 
 /**
@@ -331,9 +332,16 @@ export default function Sales() {
   const { activeShift, loadingShift } = useShift();
   const { accounts: bankAccounts } = useBankAccounts(activeClientId);
   const { money, round, decimals, toMinor } = useMoney();
+  const draftKey = `sales:${activeClientId || "none"}`;
+  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+    label: "Sales / Billing",
+    path: "/sales",
+    moduleId: "sales",
+  });
+  const draft = initialDraft || {};
 
   // Tabs
-  const [tab, setTab] = useState("new"); // new | history
+  const [tab, setTab] = useState(() => draft.tab ?? "new"); // new | history
 
   // Inventory for item search
   const [items, setItems] = useState([]);
@@ -347,19 +355,29 @@ export default function Sales() {
   const [invoices, setInvoices] = useState([]);
   const [loadingInv, setLoadingInv] = useState(false);
   const [invSearch, setInvSearch] = useState("");
-  const [editingInvoice, setEditingInvoice] = useState(null);
+  const [editingInvoice, setEditingInvoice] = useState(
+    () => draft.editingInvoice ?? null
+  );
 
   // Printer selection
-  const [printMode, setPrintMode] = useState("A4"); // A4 | THERMAL
+  const [printMode, setPrintMode] = useState(() => draft.printMode ?? "A4"); // A4 | THERMAL
 
   // Invoice fields
-  const [saleDate, setSaleDate] = useState(todayYYYYMMDD());
-  const [invoiceNo, setInvoiceNo] = useState(makeInvoiceNo());
-  const [paymentMode, setPaymentMode] = useState("CASH");
-  const [settlementMode, setSettlementMode] = useState("full"); // full | split
-  const [payCash, setPayCash] = useState("");
-  const [payBank, setPayBank] = useState("");
-  const [payCredit, setPayCredit] = useState("");
+  const [saleDate, setSaleDate] = useState(
+    () => draft.saleDate || todayYYYYMMDD()
+  );
+  const [invoiceNo, setInvoiceNo] = useState(
+    () => draft.invoiceNo || makeInvoiceNo()
+  );
+  const [paymentMode, setPaymentMode] = useState(
+    () => draft.paymentMode ?? "CASH"
+  );
+  const [settlementMode, setSettlementMode] = useState(
+    () => draft.settlementMode ?? "full"
+  ); // full | split
+  const [payCash, setPayCash] = useState(() => draft.payCash ?? "");
+  const [payBank, setPayBank] = useState(() => draft.payBank ?? "");
+  const [payCredit, setPayCredit] = useState(() => draft.payCredit ?? "");
   const paymentModeOptions = useMemo(
     () =>
       buildPaymentModeOptions({
@@ -370,15 +388,21 @@ export default function Sales() {
     [bankAccounts, paymentMode]
   );
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
-  const [orderType, setOrderType] = useState("COUNTER"); // COUNTER | TAKEAWAY | CARHOP | DELIVERY
+  const [orderType, setOrderType] = useState(
+    () => draft.orderType ?? "COUNTER"
+  ); // COUNTER | TAKEAWAY | CARHOP | DELIVERY
 
   // Customer fields (select OR add)
-  const [customerId, setCustomerId] = useState(""); // optional
-  const [customerName, setCustomerName] = useState("");
-  const [customerPhone, setCustomerPhone] = useState("");
-  const [address1, setAddress1] = useState("");
-  const [address2, setAddress2] = useState("");
-  const [address3, setAddress3] = useState("");
+  const [customerId, setCustomerId] = useState(() => draft.customerId ?? ""); // optional
+  const [customerName, setCustomerName] = useState(
+    () => draft.customerName ?? ""
+  );
+  const [customerPhone, setCustomerPhone] = useState(
+    () => draft.customerPhone ?? ""
+  );
+  const [address1, setAddress1] = useState(() => draft.address1 ?? "");
+  const [address2, setAddress2] = useState(() => draft.address2 ?? "");
+  const [address3, setAddress3] = useState(() => draft.address3 ?? "");
 
   // Item add
   const [search, setSearch] = useState("");
@@ -395,7 +419,9 @@ export default function Sales() {
   const addBtnRef = useRef(null);
 
   // Cart rows
-  const [cart, setCart] = useState([]);
+  const [cart, setCart] = useState(() =>
+    Array.isArray(draft.cart) ? draft.cart : []
+  );
 
   // UI states
   const [saving, setSaving] = useState(false);
@@ -403,11 +429,55 @@ export default function Sales() {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
 
-  useUnsavedWork(
-    "sales",
-    "Sales / Billing",
-    Boolean(cart.length || editingInvoice)
-  );
+  const hasUnsavedSalesWork = Boolean(cart.length || editingInvoice);
+  useUnsavedWork("sales", "Sales / Billing", hasUnsavedSalesWork);
+
+  useEffect(() => {
+    syncDraft(
+      {
+        tab,
+        cart,
+        editingInvoice,
+        printMode,
+        saleDate,
+        invoiceNo,
+        paymentMode,
+        settlementMode,
+        payCash,
+        payBank,
+        payCredit,
+        orderType,
+        customerId,
+        customerName,
+        customerPhone,
+        address1,
+        address2,
+        address3,
+      },
+      { dirty: hasUnsavedSalesWork }
+    );
+  }, [
+    syncDraft,
+    hasUnsavedSalesWork,
+    tab,
+    cart,
+    editingInvoice,
+    printMode,
+    saleDate,
+    invoiceNo,
+    paymentMode,
+    settlementMode,
+    payCash,
+    payBank,
+    payCredit,
+    orderType,
+    customerId,
+    customerName,
+    customerPhone,
+    address1,
+    address2,
+    address3,
+  ]);
 
   useEffect(() => {
     if (!editingInvoice && activeShift?.businessDate) {
@@ -743,12 +813,14 @@ export default function Sales() {
     setCart([]);
     setMsg("");
     setErr("");
+    if (!editingInvoice) clearDraft();
     setTimeout(() => searchRef.current?.focus?.(), 0);
   }
 
   function onNewOrder() {
     setEditingInvoice(null);
     setCart([]);
+    clearDraft();
     setInvoiceNo(makeInvoiceNo());
     setSaleDate(
       activeShift?.businessDate
@@ -1444,6 +1516,7 @@ export default function Sales() {
       setLineSellingPrice("");
       setItemDesc("");
       setCart([]);
+      clearDraft();
       setTimeout(() => searchRef.current?.focus?.(), 0);
     } catch (e) {
       console.error(e);

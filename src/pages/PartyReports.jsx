@@ -563,6 +563,7 @@ const report = useMemo(() => {
               <option value="Employee">Employee</option>
               <option value="Owner">Owner</option>
               <option value="Partner">Partner</option>
+              <option value="Lender">Lender (Payable)</option>
             </select>
             <div className="mt-1 text-xs text-slate-500">
               Internal transfers (Petti refill) are excluded.

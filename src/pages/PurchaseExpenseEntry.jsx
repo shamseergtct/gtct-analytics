@@ -67,7 +67,11 @@ export default function PurchaseExpenseEntry() {
   const { activeShift, loadingShift, shiftError } = useShift();
   const vendorSelectorRef = useRef(null);
   const draftKey = `purchases:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey);
+  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+    label: "Purchases & Expenses",
+    path: "/purchases",
+    moduleId: "purchases",
+  });
   const draft = initialDraft || {};
   const { accounts: bankAccounts } = useBankAccounts(activeClientId);
 
@@ -165,21 +169,25 @@ export default function PurchaseExpenseEntry() {
   const showFundsBlock = Boolean(fundsError);
 
   useEffect(() => {
-    syncDraft({
-      amount,
-      selectedPartyId,
-      partySearch,
-      entryMode,
-      category,
-      paymentMode,
-      purchaseDate,
-      isDateUnlocked,
-      receiptNote,
-      queuedEntries,
-      editingEntryId,
-    });
+    syncDraft(
+      {
+        amount,
+        selectedPartyId,
+        partySearch,
+        entryMode,
+        category,
+        paymentMode,
+        purchaseDate,
+        isDateUnlocked,
+        receiptNote,
+        queuedEntries,
+        editingEntryId,
+      },
+      { dirty: hasUnsavedPurchaseWork }
+    );
   }, [
     syncDraft,
+    hasUnsavedPurchaseWork,
     amount,
     selectedPartyId,
     partySearch,
@@ -221,11 +229,9 @@ export default function PurchaseExpenseEntry() {
   }, [purchaseDate]);
 
   useEffect(() => {
-    setSelectedPartyId("");
-    setPartySearch("");
-    setQuickAddOpen(false);
-    setQueuedEntries([]);
-    setEditingEntryId("");
+    // Only (re)subscribe parties for the active shop.
+    // Do not clear queued batch / draft fields here — that wiped unsaved
+    // entries whenever this page remounted (e.g. after visiting another module).
     if (!activeClientId) {
       setParties([]);
       setLoadingParties(false);
@@ -296,10 +302,16 @@ export default function PurchaseExpenseEntry() {
       .filter((party) => {
         const partyType = String(party.type || "").trim().toLowerCase();
         const isVendor = ["supplier", "vendor"].includes(partyType);
+        const isEmployee = partyType === "employee";
+        const isBoth = partyType === "both";
+        const isLender = partyType === "lender";
+        const isOwner = partyType === "owner" || partyType === "partner";
+        // Purchase → vendors (+ lender/owner). Expense → vendors + employees (+ lender/owner).
+        // Never list plain customers on these forms.
         const isAvailableForMode =
           entryMode === "purchase"
-            ? isVendor || partyType === "both"
-            : !isVendor;
+            ? isVendor || isBoth || isLender || isOwner
+            : isVendor || isEmployee || isBoth || isLender || isOwner;
         if (!isAvailableForMode) return false;
         if (!search) return true;
         return `${party.name || ""} ${party.type || ""} ${party.contact || ""}`
@@ -309,11 +321,26 @@ export default function PurchaseExpenseEntry() {
       .sort((a, b) => {
         const preferredTypes =
           entryMode === "purchase"
-            ? new Set(["supplier", "vendor", "both"])
-            : new Set(["employee", "supplier", "vendor", "both"]);
-        const aRank = preferredTypes.has(String(a.type || "").toLowerCase()) ? 0 : 1;
-        const bRank = preferredTypes.has(String(b.type || "").toLowerCase()) ? 0 : 1;
-        return aRank - bRank || String(a.name || "").localeCompare(String(b.name || ""));
+            ? new Set(["supplier", "vendor", "both", "lender", "owner", "partner"])
+            : new Set([
+                "employee",
+                "supplier",
+                "vendor",
+                "both",
+                "lender",
+                "owner",
+                "partner",
+              ]);
+        const aRank = preferredTypes.has(String(a.type || "").toLowerCase())
+          ? 0
+          : 1;
+        const bRank = preferredTypes.has(String(b.type || "").toLowerCase())
+          ? 0
+          : 1;
+        return (
+          aRank - bRank ||
+          String(a.name || "").localeCompare(String(b.name || ""))
+        );
       })
       .slice(0, 25);
   }, [entryMode, parties, partySearch]);
@@ -478,12 +505,28 @@ export default function PurchaseExpenseEntry() {
         reservedBank: reserved.bank,
       });
       if (fundsIssue) throw new Error(fundsIssue);
-      setQueuedEntries((current) =>
-        editingEntryId
-          ? current.map((entry) =>
-              entry.id === editingEntryId ? nextEntry : entry
-            )
-          : [...current, nextEntry]
+      const nextQueue = editingEntryId
+        ? queuedEntries.map((entry) =>
+            entry.id === editingEntryId ? nextEntry : entry
+          )
+        : [...queuedEntries, nextEntry];
+      setQueuedEntries(nextQueue);
+      // Persist immediately so navigating away before the effect runs keeps the batch.
+      syncDraft(
+        {
+          amount: "",
+          selectedPartyId: "",
+          partySearch: "",
+          entryMode,
+          category,
+          paymentMode,
+          purchaseDate,
+          isDateUnlocked,
+          receiptNote: "",
+          queuedEntries: nextQueue,
+          editingEntryId: "",
+        },
+        { dirty: true }
       );
       setMessage(editingEntryId ? "Entry updated in the batch." : "Entry added to the batch.");
       resetEntryFields();
@@ -510,9 +553,27 @@ export default function PurchaseExpenseEntry() {
   }
 
   function removeQueuedEntry(entryId) {
-    setQueuedEntries((current) =>
-      current.filter((entry) => entry.id !== entryId)
-    );
+    setQueuedEntries((current) => {
+      const nextQueue = current.filter((entry) => entry.id !== entryId);
+      syncDraft(
+        {
+          amount,
+          selectedPartyId,
+          partySearch,
+          entryMode,
+          category,
+          paymentMode,
+          purchaseDate,
+          isDateUnlocked,
+          receiptNote,
+          queuedEntries: nextQueue,
+          editingEntryId:
+            editingEntryId === entryId ? "" : editingEntryId,
+        },
+        { dirty: nextQueue.length > 0 || Boolean(String(amount || "").trim()) }
+      );
+      return nextQueue;
+    });
     if (editingEntryId === entryId) resetEntryFields();
   }
 
@@ -1526,10 +1587,26 @@ export default function PurchaseExpenseEntry() {
                     {parties
                       .filter((party) => {
                         const type = String(party.type || "").toLowerCase();
-                        const vendor = ["supplier", "vendor", "both"].includes(type);
+                        const vendor = [
+                          "supplier",
+                          "vendor",
+                          "both",
+                          "lender",
+                          "owner",
+                          "partner",
+                        ].includes(type);
+                        const expenseOk = [
+                          "supplier",
+                          "vendor",
+                          "employee",
+                          "both",
+                          "lender",
+                          "owner",
+                          "partner",
+                        ].includes(type);
                         return savedEdit.entryType === "purchase"
                           ? vendor
-                          : !["supplier", "vendor"].includes(type);
+                          : expenseOk;
                       })
                       .map((party) => (
                         <option key={party.id} value={party.id}>

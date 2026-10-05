@@ -6,10 +6,13 @@ import {
 } from "../utils/formDraftStore.js";
 
 /**
- * In-memory form drafts for SPA navigation.
- * Survives route changes; cleared on full page reload or clearDraft().
+ * Form drafts for SPA navigation + session refresh recovery.
+ * Survives route changes and full page reload (sessionStorage).
+ *
+ * @param {string} key
+ * @param {{ label?: string, path?: string, moduleId?: string }} [meta]
  */
-export function useFormDraft(key) {
+export function useFormDraft(key, meta = {}) {
   const cacheRef = useRef({ key: null, data: null });
   if (cacheRef.current.key !== key) {
     cacheRef.current = {
@@ -19,11 +22,22 @@ export function useFormDraft(key) {
   }
 
   const syncDraft = useCallback(
-    (snapshot) => {
+    (snapshot, options = {}) => {
       if (!key) return;
-      setFormDraft(key, snapshot);
+      const dirty = options.dirty !== false;
+      if (!dirty) {
+        clearFormDraft(key);
+        cacheRef.current = { key, data: null };
+        return;
+      }
+      setFormDraft(key, snapshot, {
+        label: meta.label,
+        path: meta.path,
+        moduleId: meta.moduleId,
+      });
+      cacheRef.current = { key, data: snapshot };
     },
-    [key]
+    [key, meta.label, meta.path, meta.moduleId]
   );
 
   const clearDraft = useCallback(() => {

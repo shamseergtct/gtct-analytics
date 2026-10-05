@@ -8,6 +8,7 @@ export const PARTY_BULK_TYPES = [
   "Partner",
   "Owner",
   "Employee",
+  "Lender",
   "Both",
 ];
 
@@ -20,6 +21,8 @@ const TYPE_ALIASES = {
   owner: "Owner",
   employee: "Employee",
   staff: "Employee",
+  lender: "Lender",
+  loan: "Lender",
   both: "Both",
 };
 

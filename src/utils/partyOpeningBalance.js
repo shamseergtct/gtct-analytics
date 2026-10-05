@@ -11,9 +11,8 @@ import { buildTransactionPayload } from "./transactionContract.js";
 import { roundMoney } from "./money.js";
 
 export function defaultOpeningBalanceSide(partyType) {
-  return String(partyType || "").trim().toLowerCase() === "supplier"
-    ? "payable"
-    : "receivable";
+  const type = String(partyType || "").trim().toLowerCase();
+  return type === "supplier" || type === "lender" ? "payable" : "receivable";
 }
 
 /**
