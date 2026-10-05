@@ -161,21 +161,38 @@ export default function RetailOrderPanel({
                   </button>
                 </div>
 
-                <input
-                  type="text"
-                  disabled={saving}
-                  value={row.description || ""}
-                  onChange={(e) =>
-                    updateLine(row.lineId, { description: e.target.value })
-                  }
-                  onKeyDown={(e) => {
-                    // Keep typing in description from triggering POS shortcuts.
-                    e.stopPropagation();
-                  }}
-                  className="mt-1.5 h-8 w-full rounded-lg border border-slate-800 bg-slate-900/60 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 disabled:opacity-50"
-                  placeholder="Description"
-                  aria-label={`Description for ${row.itemName}`}
-                />
+                {(() => {
+                  const isFoc = num(row.sellingPrice) === 0;
+                  const descMissing =
+                    isFoc && !String(row.description || "").trim();
+                  return (
+                    <input
+                      type="text"
+                      disabled={saving}
+                      required={isFoc}
+                      value={row.description || ""}
+                      onChange={(e) =>
+                        updateLine(row.lineId, { description: e.target.value })
+                      }
+                      onKeyDown={(e) => {
+                        // Keep typing in description from triggering POS shortcuts.
+                        e.stopPropagation();
+                      }}
+                      className={`mt-1.5 h-8 w-full rounded-lg border bg-slate-900/60 px-2 text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:ring-1 disabled:opacity-50 ${
+                        descMissing
+                          ? "border-amber-500/80 focus:border-amber-400 focus:ring-amber-500/30"
+                          : "border-slate-800 focus:border-blue-500 focus:ring-blue-500/30"
+                      }`}
+                      placeholder={
+                        isFoc
+                          ? "Description required (FOC)"
+                          : "Description"
+                      }
+                      aria-label={`Description for ${row.itemName}`}
+                      aria-required={isFoc}
+                    />
+                  );
+                })()}
 
                 <div className="mt-1.5 flex items-center justify-between gap-2">
                   <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900">

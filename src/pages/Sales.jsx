@@ -668,7 +668,7 @@ export default function Sales() {
       lineSellingPrice === ""
         ? num(selectedItem.sellingPrice)
         : num(lineSellingPrice);
-    if (!price || price <= 0) return setErr("Selling Price must be > 0.");
+    if (price < 0) return setErr("Selling Price must be zero or greater.");
 
     addLine({
       item: selectedItem,
@@ -691,7 +691,7 @@ export default function Sales() {
     setErr("");
     const price = num(item?.sellingPrice);
     if (!item?.id) return;
-    if (!price || price <= 0) return setErr("Selling Price must be > 0.");
+    if (price < 0) return setErr("Selling Price must be zero or greater.");
 
     // Only merge into a line with no description. Described lines stay separate
     // so the same product can be sold with different notes / prices / qtys.
@@ -779,7 +779,7 @@ export default function Sales() {
     setErr("");
     const price = num(item?.sellingPrice);
     if (!item?.id) return;
-    if (!price || price <= 0) return setErr("Selling Price must be > 0.");
+    if (price < 0) return setErr("Selling Price must be zero or greater.");
     addLine({
       item,
       qtyVal: 1,
@@ -815,7 +815,7 @@ export default function Sales() {
           ? wholesale
           : retail
         : retail;
-    if (!piecePrice || piecePrice <= 0) return setErr("Selling Price must be > 0.");
+    if (piecePrice < 0) return setErr("Selling Price must be zero or greater.");
 
     const unitLabel =
       unit === "CARTON"
@@ -997,8 +997,20 @@ export default function Sales() {
     if (cart.some((item) => num(item.qty) <= 0)) {
       return setErr("Every item quantity must be greater than zero.");
     }
-    if (cart.some((item) => num(item.sellingPrice) <= 0)) {
-      return setErr("Every item Selling Price must be greater than zero.");
+    if (cart.some((item) => num(item.sellingPrice) < 0)) {
+      return setErr("Every item Selling Price must be zero or greater.");
+    }
+    const focWithoutDesc = cart.find(
+      (item) =>
+        num(item.sellingPrice) === 0 &&
+        !String(item.description || "").trim()
+    );
+    if (focWithoutDesc) {
+      return setErr(
+        `Description is required for FOC / zero-price items (${
+          focWithoutDesc.itemName || "item"
+        }).`
+      );
     }
 
     const saleTenders = resolveSaleTenders({
@@ -1018,7 +1030,8 @@ export default function Sales() {
     const tenderSummary = tenderTotals(saleTenders, decimals);
     const grandRounded = round(totals.grandTotal);
 
-    if (saleTenders.length === 0) {
+    // FOC / zero-total bills have no tender lines — that is OK.
+    if (grandRounded > 0 && saleTenders.length === 0) {
       return setErr("Enter at least one payment amount.");
     }
     if (toMinor(tenderSummary.allocated) !== toMinor(grandRounded)) {

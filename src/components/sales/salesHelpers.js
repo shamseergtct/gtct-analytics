@@ -49,15 +49,15 @@ export function resolveSaleTenders({
       mode === "BANK_TRANSFER" ||
       mode.startsWith("BANK:");
     const isCredit = mode === "CREDIT";
-    return [
-      {
-        key: isCredit ? "credit" : isBank ? "bank" : "cash",
-        mode: isCredit ? "CREDIT" : isBank ? "BANK" : mode,
-        bankAccountId: isBank ? String(bankAccountId || "").trim() : "",
-        bankAccountName: isBank ? String(bankAccountName || "").trim() : "",
-        amount: total,
-      },
-    ].filter((line) => line.amount > 0);
+    const line = {
+      key: isCredit ? "credit" : isBank ? "bank" : "cash",
+      mode: isCredit ? "CREDIT" : isBank ? "BANK" : mode,
+      bankAccountId: isBank ? String(bankAccountId || "").trim() : "",
+      bankAccountName: isBank ? String(bankAccountName || "").trim() : "",
+      amount: total,
+    };
+    // Keep a zero-amount line for FOC / free bills so payment mode is recorded.
+    return total === 0 ? [line] : line.amount > 0 ? [line] : [];
   }
 
   const cash = roundMoney(cashAmount, decimals);

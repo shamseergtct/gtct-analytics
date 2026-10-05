@@ -1,4 +1,5 @@
 import { useMoney } from "../../hooks/useMoney.js";
+import { num } from "./salesHelpers.js";
 
 /** Shared cart table + totals + finish/billing actions. */
 export default function CartBillingPanel({
@@ -106,14 +107,33 @@ export default function CartBillingPanel({
                     <span className="text-xs text-slate-400">Item Description</span>
                   </td>
                   <td className="p-2" colSpan={5}>
-                    <input
-                      value={row.description || ""}
-                      onChange={(e) =>
-                        updateLine(row.lineId, { description: e.target.value })
-                      }
-                      className="w-full rounded-lg border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm text-slate-100"
-                      placeholder="Enter description..."
-                    />
+                    {(() => {
+                      const isFoc = num(row.sellingPrice) === 0;
+                      const descMissing =
+                        isFoc && !String(row.description || "").trim();
+                      return (
+                        <input
+                          value={row.description || ""}
+                          onChange={(e) =>
+                            updateLine(row.lineId, {
+                              description: e.target.value,
+                            })
+                          }
+                          required={isFoc}
+                          aria-required={isFoc}
+                          className={`w-full rounded-lg border bg-slate-900 px-2 py-1.5 text-sm text-slate-100 ${
+                            descMissing
+                              ? "border-amber-500/80"
+                              : "border-slate-700"
+                          }`}
+                          placeholder={
+                            isFoc
+                              ? "Description required (FOC)..."
+                              : "Enter description..."
+                          }
+                        />
+                      );
+                    })()}
                   </td>
                 </tr>,
               ])}
