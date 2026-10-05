@@ -1,7 +1,7 @@
 // src/pages/Sales.jsx
 console.log("🔥 SALES COMPONENT LOADED FROM THIS FILE");
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -333,7 +333,13 @@ export default function Sales() {
   const { accounts: bankAccounts } = useBankAccounts(activeClientId);
   const { money, round, decimals, toMinor } = useMoney();
   const draftKey = `sales:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+  const {
+    initialDraft,
+    syncDraft,
+    clearDraft,
+    readDraft,
+    markDraftHydrated,
+  } = useFormDraft(draftKey, {
     label: "Sales / Billing",
     path: "/sales",
     moduleId: "sales",
@@ -431,6 +437,38 @@ export default function Sales() {
 
   const hasUnsavedSalesWork = Boolean(cart.length || editingInvoice);
   useUnsavedWork("sales", "Sales / Billing", hasUnsavedSalesWork);
+
+  const salesDraftKeyRef = useRef(null);
+  useLayoutEffect(() => {
+    const isFirst = salesDraftKeyRef.current === null;
+    const keyChanged = salesDraftKeyRef.current !== draftKey;
+    salesDraftKeyRef.current = draftKey;
+    if (isFirst) {
+      markDraftHydrated();
+      return;
+    }
+    if (!keyChanged) return;
+    const d = readDraft() || {};
+    setTab(d.tab ?? "new");
+    setEditingInvoice(d.editingInvoice ?? null);
+    setPrintMode(d.printMode ?? "A4");
+    setSaleDate(d.saleDate || todayYYYYMMDD());
+    setInvoiceNo(d.invoiceNo || makeInvoiceNo());
+    setPaymentMode(d.paymentMode ?? "CASH");
+    setSettlementMode(d.settlementMode ?? "full");
+    setPayCash(d.payCash ?? "");
+    setPayBank(d.payBank ?? "");
+    setPayCredit(d.payCredit ?? "");
+    setOrderType(d.orderType ?? "COUNTER");
+    setCustomerId(d.customerId ?? "");
+    setCustomerName(d.customerName ?? "");
+    setCustomerPhone(d.customerPhone ?? "");
+    setAddress1(d.address1 ?? "");
+    setAddress2(d.address2 ?? "");
+    setAddress3(d.address3 ?? "");
+    setCart(Array.isArray(d.cart) ? d.cart : []);
+    markDraftHydrated();
+  }, [draftKey, readDraft, markDraftHydrated]);
 
   useEffect(() => {
     syncDraft(

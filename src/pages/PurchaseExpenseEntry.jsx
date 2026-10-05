@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -39,6 +39,7 @@ import {
   paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
 import { formatMoney, moneyInputStep, roundMoney } from "../utils/money.js";
+import { partyAllowedForPurchaseExpense } from "../utils/partyEntryFilters.js";
 
 const PURCHASE_CATEGORIES = ["COMMODITY", "CONSUMABLES", "ASSET"];
 const EXPENSE_CATEGORIES = [
@@ -67,7 +68,13 @@ export default function PurchaseExpenseEntry() {
   const { activeShift, loadingShift, shiftError } = useShift();
   const vendorSelectorRef = useRef(null);
   const draftKey = `purchases:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+  const {
+    initialDraft,
+    syncDraft,
+    clearDraft,
+    readDraft,
+    markDraftHydrated,
+  } = useFormDraft(draftKey, {
     label: "Purchases & Expenses",
     path: "/purchases",
     moduleId: "purchases",
@@ -167,6 +174,36 @@ export default function PurchaseExpenseEntry() {
     reservedBank: reservedSpend.bank,
   });
   const showFundsBlock = Boolean(fundsError);
+
+  const purchaseDraftKeyRef = useRef(null);
+  useLayoutEffect(() => {
+    const isFirst = purchaseDraftKeyRef.current === null;
+    const keyChanged = purchaseDraftKeyRef.current !== draftKey;
+    purchaseDraftKeyRef.current = draftKey;
+    if (isFirst) {
+      markDraftHydrated();
+      return;
+    }
+    if (!keyChanged) return;
+    const d = readDraft() || {};
+    setAmount(d.amount ?? "");
+    setSelectedPartyId(d.selectedPartyId ?? "");
+    setPartySearch(d.partySearch ?? "");
+    setQuickAddOpen(false);
+    setEntryMode(d.entryMode ?? "purchase");
+    setCategory(d.category ?? "COMMODITY");
+    setPaymentMode(d.paymentMode ?? "CASH");
+    setPurchaseDate(
+      d.purchaseDate ||
+        localStorage.getItem(PURCHASE_DATE_KEY) ||
+        todayYYYYMMDD()
+    );
+    setIsDateUnlocked(Boolean(d.isDateUnlocked));
+    setReceiptNote(d.receiptNote ?? "");
+    setQueuedEntries(Array.isArray(d.queuedEntries) ? d.queuedEntries : []);
+    setEditingEntryId(d.editingEntryId ?? "");
+    markDraftHydrated();
+  }, [draftKey, readDraft, markDraftHydrated]);
 
   useEffect(() => {
     syncDraft(
@@ -300,19 +337,7 @@ export default function PurchaseExpenseEntry() {
     const search = partySearch.trim().toLowerCase();
     return parties
       .filter((party) => {
-        const partyType = String(party.type || "").trim().toLowerCase();
-        const isVendor = ["supplier", "vendor"].includes(partyType);
-        const isEmployee = partyType === "employee";
-        const isBoth = partyType === "both";
-        const isLender = partyType === "lender";
-        const isOwner = partyType === "owner" || partyType === "partner";
-        // Purchase → vendors (+ lender/owner). Expense → vendors + employees (+ lender/owner).
-        // Never list plain customers on these forms.
-        const isAvailableForMode =
-          entryMode === "purchase"
-            ? isVendor || isBoth || isLender || isOwner
-            : isVendor || isEmployee || isBoth || isLender || isOwner;
-        if (!isAvailableForMode) return false;
+        if (!partyAllowedForPurchaseExpense(party, entryMode)) return false;
         if (!search) return true;
         return `${party.name || ""} ${party.type || ""} ${party.contact || ""}`
           .toLowerCase()
@@ -1585,29 +1610,12 @@ export default function PurchaseExpenseEntry() {
                   >
                     <option value="">Select party</option>
                     {parties
-                      .filter((party) => {
-                        const type = String(party.type || "").toLowerCase();
-                        const vendor = [
-                          "supplier",
-                          "vendor",
-                          "both",
-                          "lender",
-                          "owner",
-                          "partner",
-                        ].includes(type);
-                        const expenseOk = [
-                          "supplier",
-                          "vendor",
-                          "employee",
-                          "both",
-                          "lender",
-                          "owner",
-                          "partner",
-                        ].includes(type);
-                        return savedEdit.entryType === "purchase"
-                          ? vendor
-                          : expenseOk;
-                      })
+                      .filter((party) =>
+                        partyAllowedForPurchaseExpense(
+                          party,
+                          savedEdit.entryType
+                        )
+                      )
                       .map((party) => (
                         <option key={party.id} value={party.id}>
                           {party.name || "Unnamed party"}

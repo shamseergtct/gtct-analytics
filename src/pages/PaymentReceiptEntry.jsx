@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -48,6 +48,7 @@ import {
   paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
 import { formatMoney, moneyInputStep, roundMoney } from "../utils/money.js";
+import { partyAllowedForPaymentReceipt } from "../utils/partyEntryFilters.js";
 import {
   computePartyBalances,
   resolveFormPartyBalance,
@@ -73,7 +74,13 @@ export default function PaymentReceiptEntry() {
   const { activeShift, loadingShift, shiftError } = useShift();
   const partySelectorRef = useRef(null);
   const draftKey = `payments:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+  const {
+    initialDraft,
+    syncDraft,
+    clearDraft,
+    readDraft,
+    markDraftHydrated,
+  } = useFormDraft(draftKey, {
     label: "Payments & Receipts",
     path: "/payments-receipts",
     moduleId: "payments",
@@ -148,19 +155,7 @@ export default function PaymentReceiptEntry() {
     const search = partySearch.trim().toLowerCase();
     return parties
       .filter((party) => {
-        const partyType = String(party.type || "").trim().toLowerCase();
-        const isVendor = ["supplier", "vendor"].includes(partyType);
-        const isEmployee = partyType === "employee";
-        const isCustomer = partyType === "customer";
-        const isBoth = partyType === "both";
-        const isLender = partyType === "lender";
-        const isOwner = partyType === "owner" || partyType === "partner";
-        // Receipt → customers + lender/owner. Payment → vendors + employees + lender/owner.
-        const isAvailableForMode =
-          entryMode === "receipt"
-            ? isCustomer || isBoth || isLender || isOwner
-            : isVendor || isEmployee || isBoth || isLender || isOwner;
-        if (!isAvailableForMode) return false;
+        if (!partyAllowedForPaymentReceipt(party, entryMode)) return false;
         if (!search) return true;
         return `${party.name || ""} ${party.type || ""} ${party.contact || ""}`
           .toLowerCase()
@@ -229,6 +224,32 @@ export default function PaymentReceiptEntry() {
         })
       : null;
   const showFundsBlock = Boolean(fundsError);
+
+  const paymentDraftKeyRef = useRef(null);
+  useLayoutEffect(() => {
+    const isFirst = paymentDraftKeyRef.current === null;
+    const keyChanged = paymentDraftKeyRef.current !== draftKey;
+    paymentDraftKeyRef.current = draftKey;
+    if (isFirst) {
+      markDraftHydrated();
+      return;
+    }
+    if (!keyChanged) return;
+    const d = readDraft() || {};
+    setEntryMode(d.entryMode ?? "receipt");
+    setEntryDate(
+      d.entryDate || localStorage.getItem(ENTRY_DATE_KEY) || todayYYYYMMDD()
+    );
+    setIsDateUnlocked(Boolean(d.isDateUnlocked));
+    setAmount(d.amount ?? "");
+    setCategory(d.category ?? "SETTLEMENT");
+    setPaymentMode(d.paymentMode ?? "CASH");
+    setNote(d.note ?? "");
+    setSelectedPartyId(d.selectedPartyId ?? "");
+    setPartySearch(d.partySearch ?? "");
+    setQuickAddOpen(false);
+    markDraftHydrated();
+  }, [draftKey, readDraft, markDraftHydrated]);
 
   useEffect(() => {
     syncDraft(
@@ -1530,11 +1551,18 @@ export default function PaymentReceiptEntry() {
                     required
                   >
                     <option value="">Select party</option>
-                    {parties.map((party) => (
-                      <option key={party.id} value={party.id}>
-                        {party.name || "Unnamed party"}
-                      </option>
-                    ))}
+                    {parties
+                      .filter((party) =>
+                        partyAllowedForPaymentReceipt(
+                          party,
+                          savedEdit.entryType || entryMode
+                        )
+                      )
+                      .map((party) => (
+                        <option key={party.id} value={party.id}>
+                          {party.name || "Unnamed party"}
+                        </option>
+                      ))}
                   </select>
                 </label>
 

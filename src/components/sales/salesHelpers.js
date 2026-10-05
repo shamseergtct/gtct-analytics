@@ -93,6 +93,19 @@ export function resolveSaleTenders({
     });
   }
 
+  // FOC / zero-total with Split selected still needs one tender line for save.
+  if (total === 0 && lines.length === 0) {
+    return [
+      {
+        key: "cash",
+        mode: "CASH",
+        bankAccountId: "",
+        bankAccountName: "",
+        amount: 0,
+      },
+    ];
+  }
+
   return lines;
 }
 

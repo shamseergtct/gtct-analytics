@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -187,7 +187,13 @@ export default function InternalTransferEntry() {
   const { activeClientId, activeClientData } = useClient();
   const { activeShift, loadingShift, shiftError } = useShift();
   const draftKey = `internal-transfers:${activeClientId || "none"}`;
-  const { initialDraft, syncDraft, clearDraft } = useFormDraft(draftKey, {
+  const {
+    initialDraft,
+    syncDraft,
+    clearDraft,
+    readDraft,
+    markDraftHydrated,
+  } = useFormDraft(draftKey, {
     label: "Internal Transfers",
     path: "/internal-transfers",
     moduleId: "internal-transfers",
@@ -298,6 +304,29 @@ export default function InternalTransferEntry() {
     return null;
   })();
   const showFundsBlock = Boolean(fundsError);
+
+  const transferDraftKeyRef = useRef(null);
+  useLayoutEffect(() => {
+    const isFirst = transferDraftKeyRef.current === null;
+    const keyChanged = transferDraftKeyRef.current !== draftKey;
+    transferDraftKeyRef.current = draftKey;
+    if (isFirst) {
+      markDraftHydrated();
+      return;
+    }
+    if (!keyChanged) return;
+    const d = readDraft() || {};
+    setTransferDate(
+      d.transferDate || localStorage.getItem(DATE_KEY) || todayYYYYMMDD()
+    );
+    setIsDateUnlocked(Boolean(d.isDateUnlocked));
+    setTransferType(d.transferType ?? "CASH_TO_BANK");
+    setBankAccountId(d.bankAccountId ?? "");
+    setDestinationBankAccountId(d.destinationBankAccountId ?? "");
+    setAmount(d.amount ?? "");
+    setNote(d.note ?? "");
+    markDraftHydrated();
+  }, [draftKey, readDraft, markDraftHydrated]);
 
   useEffect(() => {
     syncDraft(
