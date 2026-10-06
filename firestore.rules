@@ -910,6 +910,19 @@ service cloud.firestore {
             && request.resource.data.customerName.size() > 0
             && request.resource.data.bankAccountId == ''
           )
+          // Cash + bank on one bill
+          || (
+            request.resource.data.paymentMode == 'SPLIT'
+            && request.resource.data.paidCash is number
+            && request.resource.data.paidBank is number
+            && request.resource.data.paidCash > 0
+            && request.resource.data.paidBank > 0
+            && request.resource.data.paidCash + request.resource.data.paidBank
+              == request.resource.data.billAmount
+            && request.resource.data.bankAccountId.size() > 0
+            && request.resource.data.bankAccountNameSnapshot.size() > 0
+            && request.resource.data.customerId == ''
+          )
         );
     }
 
@@ -923,7 +936,7 @@ service cloud.firestore {
         && request.resource.data.billNumber.size() > 0
         && request.resource.data.billNumber.size() <= 40
         && request.resource.data.billAmount is number
-        && request.resource.data.billAmount >= 0
+        // Negative allowed for cash returns (bank overpay returned as cash).
         && request.resource.data.saleType in ['DELIVERY', 'DINE_IN', 'PICK_UP']
         && request.resource.data.deliveryCharge is number
         && request.resource.data.deliveryCharge >= 0

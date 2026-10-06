@@ -18,6 +18,7 @@ import {
   moneyInputStep,
   numMoney,
   roundMoney,
+  toMinorUnits,
 } from "../../utils/money.js";
 import {
   buildPaymentModeOptions,
@@ -30,6 +31,7 @@ import {
   EXTERNAL_ENTRY_SOURCE_MANUAL,
   EXTERNAL_SALE_TYPES,
   EXTERNAL_SALES_SOURCE,
+  SPLIT_PAYMENT,
   calculateDeliveryCommission,
   externalPaymentModeLabel,
   externalSaleTypeLabel,
@@ -68,6 +70,10 @@ function TerminalBillForm({
   const [billAmount, setBillAmount] = useState("");
   const [saleType, setSaleType] = useState("DELIVERY");
   const [paymentMode, setPaymentMode] = useState(DELIVERY_ACCOUNT_PAYMENT);
+  const [multiPayment, setMultiPayment] = useState(false);
+  const [splitCash, setSplitCash] = useState("");
+  const [splitBank, setSplitBank] = useState("");
+  const [splitBankAccountId, setSplitBankAccountId] = useState("");
   const [customerId, setCustomerId] = useState("");
   const [customerLocation, setCustomerLocation] = useState("");
   const [deliveryBoyId, setDeliveryBoyId] = useState("");
@@ -103,7 +109,13 @@ function TerminalBillForm({
     ];
   }, [deliveryMode, paymentModeOptions]);
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
-  const isCredit = resolvedPayment.paymentMode === "CREDIT";
+  const isCredit = !multiPayment && resolvedPayment.paymentMode === "CREDIT";
+  const splitCashNum = numMoney(splitCash);
+  const splitBankNum = numMoney(splitBank);
+  const splitRemaining = roundMoney(
+    numMoney(billAmount) - splitCashNum - splitBankNum,
+    currencyDecimals
+  );
   const selectedBoy = useMemo(
     () => boyOptions.find((row) => row.id === deliveryBoyId) || null,
     [boyOptions, deliveryBoyId]
@@ -145,11 +157,41 @@ function TerminalBillForm({
     setNotes("");
     setCustomerId("");
     setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
+    setMultiPayment(false);
+    setSplitCash("");
+    setSplitBank("");
+    setSplitBankAccountId("");
     setSaleType("DELIVERY");
     resetEditState();
     setLocalError("");
     if (!keepDeliveryBoy) setDeliveryBoyId("");
     window.setTimeout(() => billNumberRef.current?.focus(), 0);
+  }
+
+  function enableMultiPayment() {
+    setMultiPayment(true);
+    setCustomerId("");
+    const amount = numMoney(billAmount);
+    if (amount > 0 && !splitCash && !splitBank) {
+      setSplitCash(formatMoney(amount, currencyDecimals));
+      setSplitBank(formatMoney(0, currencyDecimals));
+    }
+    if (!splitBankAccountId && bankAccounts[0]?.id) {
+      setSplitBankAccountId(bankAccounts[0].id);
+    }
+    if (
+      paymentMode === DELIVERY_ACCOUNT_PAYMENT ||
+      parsePaymentModeSelection(paymentMode).paymentMode === "CREDIT"
+    ) {
+      setPaymentMode("CASH");
+    }
+  }
+
+  function disableMultiPayment() {
+    setMultiPayment(false);
+    setSplitCash("");
+    setSplitBank("");
+    setSplitBankAccountId("");
   }
 
   function applyExistingBill(bill) {
@@ -161,10 +203,31 @@ function TerminalBillForm({
     );
     const type = normalizeExternalSaleType(bill.saleType) || "DELIVERY";
     setSaleType(type);
-    const savedMode = String(bill.paymentMode || "").trim();
-    if (type === "DELIVERY" && (!savedMode || savedMode === DELIVERY_ACCOUNT_PAYMENT)) {
+    const savedMode = String(bill.paymentMode || "").trim().toUpperCase();
+    if (savedMode === SPLIT_PAYMENT || savedMode === "SPLIT") {
+      setMultiPayment(true);
+      setSplitCash(
+        formatMoney(numMoney(bill.paidCash), currencyDecimals)
+      );
+      setSplitBank(
+        formatMoney(numMoney(bill.paidBank), currencyDecimals)
+      );
+      setSplitBankAccountId(String(bill.bankAccountId || "").trim());
+      setPaymentMode("CASH");
+    } else if (
+      type === "DELIVERY" &&
+      (!savedMode || savedMode === DELIVERY_ACCOUNT_PAYMENT)
+    ) {
+      setMultiPayment(false);
+      setSplitCash("");
+      setSplitBank("");
+      setSplitBankAccountId("");
       setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
     } else {
+      setMultiPayment(false);
+      setSplitCash("");
+      setSplitBank("");
+      setSplitBankAccountId("");
       setPaymentMode(
         paymentModeSelectionFromSaved(
           savedMode || "CASH",
@@ -291,8 +354,9 @@ function TerminalBillForm({
       return;
     }
     const amountNum = numMoney(billAmount);
-    if (!Number.isFinite(Number(billAmount)) || amountNum < 0) {
-      setLocalError("Bill amount must be a non-negative number.");
+    // Negative amounts are allowed for cash returns (e.g. bank overpay returned as cash).
+    if (!Number.isFinite(Number(billAmount)) || !Number.isFinite(amountNum)) {
+      setLocalError("Bill amount must be a valid number.");
       return;
     }
 
@@ -307,8 +371,48 @@ function TerminalBillForm({
     let bankAccountNameSnapshot = "";
     let customerPartyId = "";
     let customerName = "";
+    let paidCash = 0;
+    let paidBank = 0;
 
-    if (type === "DELIVERY" && paymentMode === DELIVERY_ACCOUNT_PAYMENT) {
+    if (multiPayment) {
+      if (amountNum <= 0) {
+        setLocalError(
+          "Multiple payment is only available for positive bill amounts."
+        );
+        return;
+      }
+      paidCash = roundMoney(splitCashNum, currencyDecimals);
+      paidBank = roundMoney(splitBankNum, currencyDecimals);
+      if (paidCash <= 0 || paidBank <= 0) {
+        setLocalError(
+          "Enter both cash and bank amounts greater than zero for multiple payment."
+        );
+        return;
+      }
+      if (
+        toMinorUnits(paidCash + paidBank, currencyDecimals) !==
+        toMinorUnits(amountNum, currencyDecimals)
+      ) {
+        setLocalError(
+          `Cash + bank must equal bill amount (${formatMoney(
+            amountNum,
+            currencyDecimals
+          )}).`
+        );
+        return;
+      }
+      bankAccountId = String(splitBankAccountId || "").trim();
+      if (!bankAccountId) {
+        setLocalError("Select a bank account for the bank portion.");
+        return;
+      }
+      bankAccountNameSnapshot = findBankAccountName(bankAccounts, bankAccountId);
+      if (!bankAccountNameSnapshot) {
+        setLocalError("Selected bank account is not available.");
+        return;
+      }
+      savedPaymentMode = SPLIT_PAYMENT;
+    } else if (type === "DELIVERY" && paymentMode === DELIVERY_ACCOUNT_PAYMENT) {
       savedPaymentMode = DELIVERY_ACCOUNT_PAYMENT;
     } else {
       if (
@@ -448,6 +552,12 @@ function TerminalBillForm({
           paymentMode: savedPaymentMode,
           bankAccountId,
           bankAccountNameSnapshot,
+          ...(savedPaymentMode === SPLIT_PAYMENT
+            ? {
+                paidCash,
+                paidBank,
+              }
+            : {}),
           customerId: customerPartyId,
           customerName,
           customerLocation: String(customerLocation || "").trim(),
@@ -566,7 +676,6 @@ function TerminalBillForm({
           <input
             required
             type="number"
-            min="0"
             step={moneyInputStep(currencyDecimals)}
             value={billAmount}
             onChange={(event) => setBillAmount(event.target.value)}
@@ -600,30 +709,102 @@ function TerminalBillForm({
           </select>
         </label>
 
-        <label className={LABEL_CLASS}>
-          Payment Mode
-          <select
-            required
-            value={paymentMode}
-            onChange={(event) => {
-              const next = event.target.value;
-              setPaymentMode(next);
-              if (
-                next === DELIVERY_ACCOUNT_PAYMENT ||
-                parsePaymentModeSelection(next).paymentMode !== "CREDIT"
-              ) {
-                setCustomerId("");
-              }
-            }}
-            className={FIELD_CLASS}
-          >
-            {effectivePaymentOptions.map((item) => (
-              <option key={item.value} value={item.value}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className={LABEL_CLASS}>
+          <span className="flex items-center justify-between gap-2">
+            <span>Payment Mode</span>
+            <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] font-normal normal-case tracking-normal text-slate-400">
+              <input
+                type="checkbox"
+                checked={multiPayment}
+                onChange={(event) => {
+                  if (event.target.checked) enableMultiPayment();
+                  else disableMultiPayment();
+                }}
+                className="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 text-sky-500 focus:ring-sky-500/40"
+              />
+              Multiple payment
+            </label>
+          </span>
+
+          {multiPayment ? (
+            <div className="mt-1 space-y-2">
+              <div className="grid grid-cols-2 gap-2">
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Cash
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    step={moneyInputStep(currencyDecimals)}
+                    value={splitCash}
+                    onChange={(event) => setSplitCash(event.target.value)}
+                    className={FIELD_NUMBER_CLASS}
+                    placeholder={formatMoney(0, currencyDecimals)}
+                  />
+                </label>
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                  Bank
+                  <input
+                    required
+                    type="number"
+                    min="0"
+                    step={moneyInputStep(currencyDecimals)}
+                    value={splitBank}
+                    onChange={(event) => setSplitBank(event.target.value)}
+                    className={FIELD_NUMBER_CLASS}
+                    placeholder={formatMoney(0, currencyDecimals)}
+                  />
+                </label>
+              </div>
+              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                Bank Account
+                <select
+                  required
+                  value={splitBankAccountId}
+                  onChange={(event) => setSplitBankAccountId(event.target.value)}
+                  className={FIELD_CLASS}
+                >
+                  <option value="">Select bank account…</option>
+                  {bankAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.accountName || account.name || "Bank"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div
+                className={`text-[11px] ${
+                  splitRemaining === 0 ? "text-emerald-400" : "text-amber-300"
+                }`}
+              >
+                Remaining: {currency ? `${currency} ` : ""}
+                {formatMoney(splitRemaining, currencyDecimals)}
+              </div>
+            </div>
+          ) : (
+            <select
+              required
+              value={paymentMode}
+              onChange={(event) => {
+                const next = event.target.value;
+                setPaymentMode(next);
+                if (
+                  next === DELIVERY_ACCOUNT_PAYMENT ||
+                  parsePaymentModeSelection(next).paymentMode !== "CREDIT"
+                ) {
+                  setCustomerId("");
+                }
+              }}
+              className={FIELD_CLASS}
+            >
+              {effectivePaymentOptions.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
 
         {isCredit ? (
           <label className={`${LABEL_CLASS} sm:col-span-2`}>

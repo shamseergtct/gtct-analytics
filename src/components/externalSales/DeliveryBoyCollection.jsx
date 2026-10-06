@@ -79,6 +79,9 @@ function paymentAccountMeta(bill) {
   if (mode === "CREDIT") {
     return { key: "CREDIT", label: "Credit", sort: 90 };
   }
+  if (mode === "SPLIT") {
+    return { key: "SPLIT", label: "Cash + Bank", sort: 30 };
+  }
   if (mode === "BANK") {
     const accountId = String(bill?.bankAccountId || "").trim() || "_bank";
     const accountName =

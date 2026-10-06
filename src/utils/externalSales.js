@@ -198,8 +198,15 @@ export function resolveDeliveryCommissionSettings(settingsOrBoy) {
 export const EXTERNAL_SALES_SOURCE = "EXTERNAL_BILL_ENTRY";
 export const EXTERNAL_ENTRY_SOURCE_MANUAL = "MANUAL";
 
-export const EXTERNAL_PAYMENT_MODES = ["CASH", "BANK", "CREDIT", "DELIVERY_ACCOUNT"];
+export const EXTERNAL_PAYMENT_MODES = [
+  "CASH",
+  "BANK",
+  "CREDIT",
+  "DELIVERY_ACCOUNT",
+  "SPLIT",
+];
 export const DELIVERY_ACCOUNT_PAYMENT = "DELIVERY_ACCOUNT";
+export const SPLIT_PAYMENT = "SPLIT";
 
 /** Delivery bills owed by the boy (vs paid directly to the shop). */
 export function isDeliveryBoyAccountPayment(billOrMode) {
@@ -222,6 +229,13 @@ export function isDeliveryBoyAccountPayment(billOrMode) {
 export function externalPaymentModeLabel(bill) {
   const mode = String(bill?.paymentMode || "").toUpperCase();
   if (mode === "DELIVERY_ACCOUNT") return "Delivery Boy Account";
+  if (mode === SPLIT_PAYMENT || mode === "SPLIT") {
+    const cash = numMoney(bill?.paidCash);
+    const bank = numMoney(bill?.paidBank);
+    const bankName = String(bill?.bankAccountNameSnapshot || "").trim();
+    const bankPart = bankName ? `Bank (${bankName}) ${bank}` : `Bank ${bank}`;
+    return `Split · Cash ${cash} + ${bankPart}`;
+  }
   if (mode === "BANK") {
     return bill?.bankAccountNameSnapshot
       ? `Bank: ${bill.bankAccountNameSnapshot}`
@@ -271,7 +285,7 @@ export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
       accountBillCount += 1;
       continue;
     }
-    // Paid directly to shop (cash/bank/credit) does not add to boy payable.
+    // Paid directly to shop (cash/bank/credit/split) does not add to boy payable.
     const mode = String(bill.paymentMode || "")
       .trim()
       .toUpperCase();
@@ -470,7 +484,25 @@ export function summarizeExternalBillTenders(bills = []) {
       .trim()
       .toUpperCase();
 
-    if (mode === "BANK") {
+    if (mode === "SPLIT") {
+      const cashPart = numMoney(bill.paidCash);
+      const bankPart = numMoney(bill.paidBank);
+      summary.cashTotal += cashPart;
+      summary.bankTotal += bankPart;
+      summary.shopGrossTotal += cashPart + bankPart;
+      if (bankPart !== 0) {
+        const accountId =
+          String(bill.bankAccountId || "").trim() || "_unassigned";
+        if (!summary.bankByAccount[accountId]) {
+          summary.bankByAccount[accountId] = {
+            bankAccountId: accountId === "_unassigned" ? "" : accountId,
+            bankAccountName: bill.bankAccountNameSnapshot || "Bank",
+            amount: 0,
+          };
+        }
+        summary.bankByAccount[accountId].amount += bankPart;
+      }
+    } else if (mode === "BANK") {
       summary.bankTotal += amount;
       summary.shopGrossTotal += amount;
       const accountId = String(bill.bankAccountId || "").trim() || "_unassigned";

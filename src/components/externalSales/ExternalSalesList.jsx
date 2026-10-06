@@ -37,6 +37,11 @@ function billMatchesPaymentMode(bill, paymentModeFilter) {
   const mode = String(bill?.paymentMode || "")
     .trim()
     .toUpperCase();
+  if (mode === "SPLIT") {
+    if (paymentModeFilter === "CASH") return Number(bill?.paidCash) > 0;
+    if (paymentModeFilter === "BANK") return Number(bill?.paidBank) > 0;
+    return paymentModeFilter === "SPLIT";
+  }
   if (paymentModeFilter === "CASH") {
     return mode === "CASH" || !mode;
   }
