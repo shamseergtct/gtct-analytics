@@ -10,7 +10,11 @@ import {
 import { ChevronDown, ChevronUp, Pencil, Plus, X } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
-import { sortBillingTerminals } from "../../utils/externalSales.js";
+import {
+  getTerminalTheme,
+  pickNextTerminalColorId,
+  sortBillingTerminals,
+} from "../../utils/externalSales.js";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -123,6 +127,7 @@ export default function TerminalManager({
         }, -1);
         await addDoc(collection(db, "billing_terminals"), {
           ...payload,
+          color: pickNextTerminalColorId(orderedTerminals),
           sortOrder: maxOrder + 1,
           createdAt: serverTimestamp(),
           createdAtMs: Date.now(),
@@ -291,7 +296,20 @@ export default function TerminalManager({
                       </div>
                     </td>
                     <td className="px-4 py-3 font-medium text-white">
-                      {row.name}
+                      <span className="inline-flex items-center gap-2">
+                        <span
+                          className="inline-block h-2.5 w-2.5 shrink-0 rounded-full ring-2 ring-slate-900"
+                          style={{
+                            backgroundColor: getTerminalTheme(
+                              row,
+                              fullIndex
+                            ).accent,
+                          }}
+                          title={getTerminalTheme(row, fullIndex).label}
+                          aria-hidden="true"
+                        />
+                        {row.name}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       <span

@@ -16,6 +16,7 @@ export default function BankAccountSearchSelect({
   required = false,
   disabled = false,
   className = "",
+  balanceText = "",
 }) {
   const rootRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -41,7 +42,7 @@ export default function BankAccountSearchSelect({
 
   useEffect(() => {
     if (!open) {
-      setQuery(selected ? `Bank: ${selected.accountName}` : "");
+      setQuery(selected ? selected.accountName || "" : "");
     }
   }, [open, selected]);
 
@@ -57,19 +58,26 @@ export default function BankAccountSearchSelect({
 
   function selectAccount(account) {
     onChange?.(account?.id || "");
-    setQuery(account ? `Bank: ${account.accountName}` : "");
+    setQuery(account ? account.accountName || "" : "");
     setOpen(false);
   }
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>
       <label className="block text-sm font-medium text-gray-300">
-        {label}
+        <span className="flex flex-wrap items-baseline justify-between gap-2">
+          <span>{label}</span>
+          {balanceText ? (
+            <span className="text-xs font-semibold tabular-nums text-sky-300">
+              {balanceText}
+            </span>
+          ) : null}
+        </span>
         <input
           type="text"
           required={required && !value}
           disabled={disabled}
-          value={open ? query : selected ? `Bank: ${selected.accountName}` : query}
+          value={open ? query : selected ? selected.accountName || "" : query}
           onFocus={() => {
             setOpen(true);
             setQuery("");
@@ -102,7 +110,7 @@ export default function BankAccountSearchSelect({
                 }`}
               >
                 <span className="text-sm font-medium text-white">
-                  Bank: {account.accountName}
+                  {account.accountName}
                 </span>
                 <span className="text-xs text-slate-400">
                   {[account.bankName, account.accountNumber]

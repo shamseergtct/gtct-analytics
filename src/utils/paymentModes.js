@@ -4,7 +4,12 @@
  * Dropdown values for specific accounts use `BANK:<accountId>`.
  * Persisted paymentMode on source docs is `BANK` + `bankAccountId`.
  * Transaction `mode` normalizes to `bank_transfer` so EOD keeps one Bank Balance.
+ *
+ * Bank account options default to Operational accounts only.
+ * Reserve accounts are excluded unless includeReserveAccounts is true.
  */
+
+import { isOperationalBankAccount } from "./bankAccountTypes.js";
 
 export const BANK_ACCOUNT_PREFIX = "BANK:";
 
@@ -81,6 +86,7 @@ export function buildPaymentModeOptions({
   includeLegacyBankTransfer = false,
   includeLegacyCard = false,
   includeLegacyQr = false,
+  includeReserveAccounts = false,
 } = {}) {
   const options = [{ value: "CASH", label: "Cash" }];
 
@@ -109,9 +115,10 @@ export function buildPaymentModeOptions({
   for (const account of bankAccounts) {
     if (!account?.id) continue;
     if (account.isActive === false) continue;
+    if (!includeReserveAccounts && !isOperationalBankAccount(account)) continue;
     options.push({
       value: bankAccountOptionValue(account.id),
-      label: `Bank: ${account.accountName || "Account"}`,
+      label: account.accountName || "Account",
     });
   }
 

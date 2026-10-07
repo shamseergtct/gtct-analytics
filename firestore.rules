@@ -150,14 +150,22 @@ service cloud.firestore {
         && request.resource.data.bankName is string
         && request.resource.data.bankName.size() > 0
         && request.resource.data.accountNumber is string
-        && request.resource.data.isActive is bool;
+        && request.resource.data.isActive is bool
+        && (
+          !('accountType' in request.resource.data)
+          || request.resource.data.accountType in ['OPERATIONAL', 'RESERVE']
+        );
       allow update: if canUpdateTenantResource()
         && request.resource.data.accountName is string
         && request.resource.data.accountName.size() > 0
         && request.resource.data.bankName is string
         && request.resource.data.bankName.size() > 0
         && request.resource.data.accountNumber is string
-        && request.resource.data.isActive is bool;
+        && request.resource.data.isActive is bool
+        && (
+          !('accountType' in request.resource.data)
+          || request.resource.data.accountType in ['OPERATIONAL', 'RESERVE']
+        );
       allow delete: if canReadTenantResource();
     }
 

@@ -1,7 +1,11 @@
 import { fetchTxnRange, fetchPartyDueFromTransactions } from "./txnReportsApi.js";
 import { fetchPartyLedger } from "./partyLedger.js";
 import { formatIsoDate } from "./dateFormat.js";
-import { isLoanTransaction } from "./eodCalculations.js";
+import {
+  isLoanTransaction,
+  readPreviousBankBalancesByAccount,
+} from "./eodCalculations.js";
+import { loadPriorBankBalancesByAccount } from "./priorBankBalances.js";
 import { FULL_PERIOD_START } from "./reportDateRange.js";
 import {
   collection,
@@ -2076,6 +2080,20 @@ export async function fetchDetailedLedger({
           ? openingBank
           : openingLocker;
 
+    let openingsByAccount = {};
+    if (reportType === "bank") {
+      const stored = readPreviousBankBalancesByAccount(openingReport);
+      let byAccount = stored;
+      if (byAccount.size === 0) {
+        byAccount = await loadPriorBankBalancesByAccount({
+          clientId,
+          beforeDate: fromDate,
+          previousReport: openingReport,
+        });
+      }
+      openingsByAccount = Object.fromEntries(byAccount.entries());
+    }
+
     const movementRows = buildRollingBalanceRows(entries, opening);
     const totalIn = entries.reduce((sum, row) => sum + num(row._in), 0);
     const totalOut = entries.reduce((sum, row) => sum + num(row._out), 0);
@@ -2160,6 +2178,7 @@ export async function fetchDetailedLedger({
         totalIn,
         totalOut,
         closing,
+        openingsByAccount,
       },
     };
   }

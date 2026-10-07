@@ -13,6 +13,12 @@ import { Landmark, Pencil, Plus, X } from "lucide-react";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
+import {
+  BANK_ACCOUNT_TYPE_OPERATIONAL,
+  BANK_ACCOUNT_TYPES,
+  bankAccountTypeLabel,
+  normalizeBankAccountType,
+} from "../utils/bankAccountTypes.js";
 
 const LABEL_CLASS = "block text-sm font-medium text-gray-300";
 const FIELD_CLASS =
@@ -22,6 +28,7 @@ const EMPTY_FORM = {
   accountName: "",
   bankName: "",
   accountNumber: "",
+  accountType: BANK_ACCOUNT_TYPE_OPERATIONAL,
   isActive: true,
 };
 
@@ -32,6 +39,7 @@ export default function BankAccounts() {
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
   const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
 
   const [isOpen, setIsOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -82,13 +90,15 @@ export default function BankAccounts() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return accounts;
-    return accounts.filter((account) =>
-      `${account.accountName || ""} ${account.bankName || ""} ${account.accountNumber || ""}`
+    return accounts.filter((account) => {
+      const type = normalizeBankAccountType(account.accountType);
+      if (typeFilter !== "all" && type !== typeFilter) return false;
+      if (!q) return true;
+      return `${account.accountName || ""} ${account.bankName || ""} ${account.accountNumber || ""} ${bankAccountTypeLabel(type)}`
         .toLowerCase()
-        .includes(q)
-    );
-  }, [accounts, search]);
+        .includes(q);
+    });
+  }, [accounts, search, typeFilter]);
 
   function openAdd() {
     setEditingId(null);
@@ -103,6 +113,7 @@ export default function BankAccounts() {
       accountName: account.accountName || "",
       bankName: account.bankName || "",
       accountNumber: account.accountNumber || "",
+      accountType: normalizeBankAccountType(account.accountType),
       isActive: account.isActive !== false,
     });
     setModalError("");
@@ -127,6 +138,7 @@ export default function BankAccounts() {
     const accountName = String(form.accountName || "").trim();
     const bankName = String(form.bankName || "").trim();
     const accountNumber = String(form.accountNumber || "").trim();
+    const accountType = normalizeBankAccountType(form.accountType);
 
     if (!accountName) {
       setModalError("Account name is required.");
@@ -144,6 +156,7 @@ export default function BankAccounts() {
         accountName,
         bankName,
         accountNumber,
+        accountType,
         isActive: Boolean(form.isActive),
       };
 
@@ -205,8 +218,9 @@ export default function BankAccounts() {
             Bank Accounts
           </h1>
           <p className="mt-1 text-sm text-slate-400">
-            Masters for {activeClientData?.name || activeClientId}. Active
-            accounts appear as Bank options in payment modes.
+            Masters for {activeClientData?.name || activeClientId}. Operational
+            accounts appear in payment modes; Reserve accounts are for Internal
+            Transfer only.
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -234,12 +248,27 @@ export default function BankAccounts() {
       ) : null}
 
       <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-4">
-        <input
-          value={search}
-          onChange={(event) => setSearch(event.target.value)}
-          placeholder="Search account, bank, or number…"
-          className={FIELD_CLASS}
-        />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search account, bank, or number…"
+            className={`${FIELD_CLASS} mt-0 sm:flex-1`}
+          />
+          <select
+            value={typeFilter}
+            onChange={(event) => setTypeFilter(event.target.value)}
+            className={`${FIELD_CLASS} mt-0 sm:w-48`}
+            aria-label="Filter by account type"
+          >
+            <option value="all">All types</option>
+            {BANK_ACCOUNT_TYPES.map((row) => (
+              <option key={row.value} value={row.value}>
+                {row.shortLabel}
+              </option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
@@ -250,6 +279,7 @@ export default function BankAccounts() {
                 <th className="px-4 py-3">Account Name</th>
                 <th className="px-4 py-3">Bank</th>
                 <th className="px-4 py-3">Account No.</th>
+                <th className="px-4 py-3">Account Type</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Actions</th>
               </tr>
@@ -257,12 +287,14 @@ export default function BankAccounts() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                     Loading…
                   </td>
                 </tr>
               ) : filtered.length ? (
-                filtered.map((account) => (
+                filtered.map((account) => {
+                  const type = normalizeBankAccountType(account.accountType);
+                  return (
                   <tr
                     key={account.id}
                     className="border-t border-slate-800/80 hover:bg-slate-950/40"
@@ -273,6 +305,17 @@ export default function BankAccounts() {
                     <td className="px-4 py-3">{account.bankName || "—"}</td>
                     <td className="px-4 py-3">
                       {account.accountNumber || "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          type === "RESERVE"
+                            ? "bg-violet-950/50 text-violet-300"
+                            : "bg-sky-950/50 text-sky-300"
+                        }`}
+                      >
+                        {bankAccountTypeLabel(type)}
+                      </span>
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -305,10 +348,11 @@ export default function BankAccounts() {
                       </div>
                     </td>
                   </tr>
-                ))
+                  );
+                })
               ) : (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
                     No bank accounts yet. Add Salary, Main, or Maintenance accounts
                     to use them in payment modes.
                   </td>
@@ -387,6 +431,56 @@ export default function BankAccounts() {
                   placeholder="XXXX1234"
                 />
               </label>
+
+              <fieldset className="space-y-2">
+                <legend className={LABEL_CLASS}>Account Type</legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {BANK_ACCOUNT_TYPES.map((row) => {
+                    const selected = form.accountType === row.value;
+                    return (
+                      <button
+                        key={row.value}
+                        type="button"
+                        onClick={() =>
+                          setForm((current) => ({
+                            ...current,
+                            accountType: row.value,
+                          }))
+                        }
+                        className={`rounded-xl border px-3 py-3 text-left transition-colors ${
+                          selected
+                            ? "border-blue-500 bg-blue-950/30"
+                            : "border-slate-700 bg-slate-950/60 hover:border-slate-600"
+                        }`}
+                      >
+                        <div className="flex items-start gap-2">
+                          <span
+                            className={`mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
+                              selected
+                                ? "border-blue-400"
+                                : "border-slate-600"
+                            }`}
+                            aria-hidden="true"
+                          >
+                            {selected ? (
+                              <span className="h-2 w-2 rounded-full bg-blue-400" />
+                            ) : null}
+                          </span>
+                          <span>
+                            <span className="block text-sm font-semibold text-white">
+                              {row.label}
+                            </span>
+                            <span className="mt-0.5 block text-xs text-slate-400">
+                              {row.description}
+                            </span>
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
               <label className="flex items-center gap-2 text-sm text-slate-300">
                 <input
                   type="checkbox"
@@ -399,7 +493,10 @@ export default function BankAccounts() {
                   }
                   className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-blue-600"
                 />
-                Active (show in payment mode dropdowns)
+                Active
+                {form.accountType === "RESERVE"
+                  ? " (available in Internal Transfer)"
+                  : " (show in payment mode dropdowns)"}
               </label>
 
               <div className="flex justify-end gap-2 pt-2">

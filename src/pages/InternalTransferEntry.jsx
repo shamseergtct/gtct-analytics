@@ -206,12 +206,81 @@ export default function InternalTransferEntry() {
       localStorage.getItem(DATE_KEY) ||
       todayYYYYMMDD()
   );
-  const { cashBalance, bankBalance, floatingCash, lockerBalance } =
-    useEstimatedLiquidity(
-      activeClientId,
-      transferDate || activeShift?.businessDate || todayYYYYMMDD()
+  const liquidityDate =
+    transferDate || activeShift?.businessDate || todayYYYYMMDD();
+  const {
+    cashBalance,
+    bankBalance,
+    floatingCash,
+    lockerBalance,
+    bankBalancesByAccount,
+    loading: loadingLiquidity,
+  } = useEstimatedLiquidity(activeClientId, liquidityDate);
+  const { accounts: bankAccounts } = useBankAccounts(activeClientId, {
+    purpose: "transfer",
+  });
+
+  const bankBalanceById = useMemo(() => {
+    const map = new Map();
+    for (const row of bankBalancesByAccount || []) {
+      if (!row?.bankAccountId) continue;
+      map.set(String(row.bankAccountId), Number(row.amount) || 0);
+    }
+    return map;
+  }, [bankBalancesByAccount]);
+
+  function formatAccountBalance(accountId) {
+    const id = String(accountId || "").trim();
+    if (!id) return "";
+    if (loadingLiquidity) return "Balance …";
+    if (!bankBalanceById.has(id)) return "Balance —";
+    return `Balance ${formatMoney(bankBalanceById.get(id))}`;
+  }
+
+  function formatMoneyBalance(amount) {
+    if (loadingLiquidity || amount == null) return "Balance …";
+    return `Balance ${formatMoney(amount)}`;
+  }
+
+  function cashSideInfo(type = transferType) {
+    if (
+      type === "CASH_TO_BANK" ||
+      type === "CASH_TO_PETTI" ||
+      type === "BANK_TO_CASH" ||
+      type === "PETTI_TO_CASH"
+    ) {
+      return {
+        label: "Cash (Hand)",
+        balanceText: formatMoneyBalance(cashBalance),
+      };
+    }
+    if (type === "CASH_TO_LOCKER") {
+      return {
+        label: "Cash (Previous)",
+        balanceText: formatMoneyBalance(floatingCash),
+      };
+    }
+    if (type === "LOCKER_TO_CASH") {
+      return {
+        label: "Locker",
+        balanceText: formatMoneyBalance(lockerBalance),
+      };
+    }
+    return null;
+  }
+
+  function RailBalanceCard({ label, balanceText }) {
+    return (
+      <div className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <span className="text-sm font-medium text-gray-300">{label}</span>
+          <span className="text-xs font-semibold tabular-nums text-emerald-300">
+            {balanceText}
+          </span>
+        </div>
+      </div>
     );
-  const { accounts: bankAccounts } = useBankAccounts(activeClientId);
+  }
   const [isDateUnlocked, setIsDateUnlocked] = useState(
     () => Boolean(draft.isDateUnlocked)
   );
@@ -234,6 +303,7 @@ export default function InternalTransferEntry() {
       : transferType === "BANK_TO_CASH" || transferType === "BANK_TO_PETTI"
         ? "From Bank Account"
         : "Bank Account";
+  const activeCashSide = cashSideInfo(transferType);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
@@ -953,6 +1023,7 @@ export default function InternalTransferEntry() {
                   label="From Bank Account"
                   placeholder="Search source bank…"
                   required
+                  balanceText={formatAccountBalance(bankAccountId)}
                 />
               </div>
               <div className="sm:col-span-1">
@@ -964,23 +1035,81 @@ export default function InternalTransferEntry() {
                   label="To Bank Account"
                   placeholder="Search destination bank…"
                   required
+                  balanceText={formatAccountBalance(destinationBankAccountId)}
                 />
               </div>
             </>
           ) : needsBankPicker ? (
-            <div className="sm:col-span-2">
-              <BankAccountSearchSelect
-                accounts={bankAccounts}
-                value={bankAccountId}
-                onChange={setBankAccountId}
-                label={bankPickerLabel}
-                placeholder="Search bank account…"
-                required
+            <>
+              {activeCashSide ? (
+                <div className="sm:col-span-1">
+                  <div className="mb-1.5 text-sm font-medium text-gray-300">
+                    {transferType === "CASH_TO_BANK" ||
+                    transferType === "CASH_TO_PETTI"
+                      ? "From"
+                      : transferType === "BANK_TO_CASH" ||
+                          transferType === "BANK_TO_PETTI"
+                        ? "To"
+                        : "Cash"}
+                  </div>
+                  <RailBalanceCard
+                    label={activeCashSide.label}
+                    balanceText={activeCashSide.balanceText}
+                  />
+                </div>
+              ) : null}
+              <div
+                className={activeCashSide ? "sm:col-span-1" : "sm:col-span-2"}
+              >
+                <BankAccountSearchSelect
+                  accounts={bankAccounts}
+                  value={bankAccountId}
+                  onChange={setBankAccountId}
+                  label={bankPickerLabel}
+                  placeholder="Search bank account…"
+                  required
+                  balanceText={formatAccountBalance(bankAccountId)}
+                />
+              </div>
+            </>
+          ) : isLockerTransfer(transferType) ? (
+            <div className="sm:col-span-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <RailBalanceCard
+                label={
+                  transferType === "CASH_TO_LOCKER"
+                    ? "From · Cash (Previous)"
+                    : "From · Locker"
+                }
+                balanceText={
+                  transferType === "CASH_TO_LOCKER"
+                    ? formatMoneyBalance(floatingCash)
+                    : formatMoneyBalance(lockerBalance)
+                }
+              />
+              <RailBalanceCard
+                label={
+                  transferType === "CASH_TO_LOCKER"
+                    ? "To · Locker"
+                    : "To · Cash (Hand)"
+                }
+                balanceText={
+                  transferType === "CASH_TO_LOCKER"
+                    ? formatMoneyBalance(lockerBalance)
+                    : formatMoneyBalance(cashBalance)
+                }
               />
             </div>
-          ) : isLockerTransfer(transferType) ? null : (
-            <div className="sm:col-span-2 rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
-              Petti cash transfer — no bank account required.
+          ) : (
+            <div className="sm:col-span-2 grid grid-cols-1 gap-4 sm:grid-cols-2">
+              {activeCashSide ? (
+                <RailBalanceCard
+                  label={activeCashSide.label}
+                  balanceText={activeCashSide.balanceText}
+                />
+              ) : null}
+              <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">
+                Petti cash transfer — no bank account required.
+              </div>
             </div>
           )}
 
@@ -1212,6 +1341,7 @@ export default function InternalTransferEntry() {
                     label="From Bank Account"
                     placeholder="Search source bank…"
                     required
+                    balanceText={formatAccountBalance(editForm.bankAccountId)}
                   />
                   <BankAccountSearchSelect
                     accounts={bankAccounts}
@@ -1226,6 +1356,9 @@ export default function InternalTransferEntry() {
                     label="To Bank Account"
                     placeholder="Search destination bank…"
                     required
+                    balanceText={formatAccountBalance(
+                      editForm.destinationBankAccountId
+                    )}
                   />
                 </div>
               ) : transferNeedsBankAccount(editForm.transferType) ? (
@@ -1246,6 +1379,7 @@ export default function InternalTransferEntry() {
                   }
                   placeholder="Search bank account…"
                   required
+                  balanceText={formatAccountBalance(editForm.bankAccountId)}
                 />
               ) : isLockerTransfer(editForm.transferType) ? null : (
                 <div className="rounded-xl border border-slate-800 bg-slate-950/50 px-3 py-3 text-sm text-slate-400">

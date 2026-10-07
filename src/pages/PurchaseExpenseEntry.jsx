@@ -31,6 +31,7 @@ import {
 } from "../hooks/useEstimatedBankBalance.js";
 import { useFormDraft } from "../hooks/useFormDraft.js";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
+import { assertOperationalBankAccount } from "../utils/bankAccountTypes.js";
 import {
   buildPaymentModeOptions,
   findBankAccountName,
@@ -48,6 +49,7 @@ const EXPENSE_CATEGORIES = [
   "SALARY",
   "RENT",
   "MAINTENANCE",
+  "DELIVERY COMMISSION",
   "OTHER",
 ];
 const PURCHASE_DATE_KEY = "gtct_purchase_entry_date";
@@ -467,6 +469,16 @@ export default function PurchaseExpenseEntry() {
     ) {
       throw new Error("Select a bank account for bank payments.");
     }
+    if (
+      resolvedPayment.paymentMode === "BANK" &&
+      resolvedPayment.bankAccountId
+    ) {
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        resolvedPayment.bankAccountId
+      );
+      if (!bankCheck.ok) throw new Error(bankCheck.message);
+    }
     if (!purchaseDate) throw new Error("Entry date is required.");
     if (cashShiftUnavailable) {
       throw new Error("Open a shift before recording a register cash payment.");
@@ -812,6 +824,16 @@ export default function PurchaseExpenseEntry() {
     if (editPayment.paymentMode === "BANK" && !editPayment.bankAccountId) {
       setError("Select a bank account for bank payments.");
       return;
+    }
+    if (editPayment.paymentMode === "BANK" && editPayment.bankAccountId) {
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        editPayment.bankAccountId
+      );
+      if (!bankCheck.ok) {
+        setError(bankCheck.message);
+        return;
+      }
     }
     if (!savedEdit.businessDate) {
       setError("Entry date is required.");

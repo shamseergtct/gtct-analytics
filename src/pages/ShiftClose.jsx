@@ -21,6 +21,7 @@ import ModuleExitButton from "../components/ModuleExitButton.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import BankAccountSearchSelect from "../components/BankAccountSearchSelect.jsx";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
+import { assertOperationalBankAccount } from "../utils/bankAccountTypes.js";
 import { useShiftExpectedCash } from "../hooks/useShiftExpectedCash.js";
 import { usePosSalesTotals } from "../hooks/usePosSalesTotals.js";
 import { useExternalSalesTotals } from "../hooks/useExternalSalesTotals.js";
@@ -1009,6 +1010,13 @@ export default function ShiftClose() {
     for (const entry of populated) {
       if (!entry.bankAccountId || !String(entry.bankAccountName || "").trim()) {
         throw new Error("Select a bank account for every bank entry.");
+      }
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        entry.bankAccountId
+      );
+      if (!bankCheck.ok) {
+        throw new Error(bankCheck.message);
       }
       if (!Number.isFinite(Number(entry.amount)) || Number(entry.amount) <= 0) {
         throw new Error("Every bank entry amount must be greater than zero.");

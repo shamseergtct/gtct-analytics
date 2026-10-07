@@ -35,6 +35,7 @@ import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import DateInput from "../components/DateInput.jsx";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import { calculateEodSnapshot } from "../utils/eodCalculations.js";
+import { loadPriorBankBalancesByAccount } from "../utils/priorBankBalances.js";
 import { toBusinessDate } from "../utils/transactionContract.js";
 import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
@@ -151,6 +152,7 @@ export default function EndOfDay() {
         previousReportSnapshot,
         externalBillSnapshot,
         deliveryCollectionSnapshot,
+        bankAccountSnapshot,
       ] = await Promise.all([
         getDocs(
           query(
@@ -195,6 +197,12 @@ export default function EndOfDay() {
             collection(db, "delivery_boy_collections"),
             where("clientId", "==", activeClientId),
             where("businessDate", "==", selectedDate)
+          )
+        ),
+        getDocs(
+          query(
+            collection(db, "bank_accounts"),
+            where("clientId", "==", activeClientId)
           )
         ),
       ]);
@@ -268,6 +276,14 @@ export default function EndOfDay() {
         .map((snapshot) => ({ id: snapshot.id, ...snapshot.data() }));
       console.debug(`${timingLabel} linked shift reads`, linkedShiftIds.length);
       const previousReportDoc = previousReportSnapshot.docs[0];
+      const previousReport = previousReportDoc
+        ? { id: previousReportDoc.id, ...previousReportDoc.data() }
+        : null;
+      const priorBankBalancesByAccount = await loadPriorBankBalancesByAccount({
+        clientId: activeClientId,
+        beforeDate: selectedDate,
+        previousReport,
+      });
       const snapshot = calculateEodSnapshot({
         selectedDate,
         transactions: transactionSnapshot.docs.map((item) => ({
@@ -276,9 +292,7 @@ export default function EndOfDay() {
         })),
         shifts: [...shiftsForSelectedDate, ...embeddedShifts, ...linkedShifts],
         zReports,
-        previousReport: previousReportDoc
-          ? { id: previousReportDoc.id, ...previousReportDoc.data() }
-          : null,
+        previousReport,
         externalBills: externalBillSnapshot.docs.map((item) => ({
           id: item.id,
           ...item.data(),
@@ -287,6 +301,11 @@ export default function EndOfDay() {
           id: item.id,
           ...item.data(),
         })),
+        bankAccounts: bankAccountSnapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        })),
+        priorBankBalancesByAccount,
       });
       setPreview(snapshot);
       return snapshot;
@@ -436,13 +455,25 @@ export default function EndOfDay() {
             totalBank: snapshot.totalBank,
             previousCashInHand: snapshot.previousCashInHand,
             previousBankBalance: snapshot.previousBankBalance,
+            previousOperationalBankBalance:
+              snapshot.previousOperationalBankBalance,
+            previousReserveBankBalance: snapshot.previousReserveBankBalance,
             previousLockerBalance: snapshot.previousLockerBalance,
             todayNetCashDelta: snapshot.todayNetCashDelta,
             todayNetBankDelta: snapshot.todayNetBankDelta,
+            todayNetOperationalBankDelta: snapshot.todayNetOperationalBankDelta,
+            todayNetReserveBankDelta: snapshot.todayNetReserveBankDelta,
             todayCashToLocker: snapshot.todayCashToLocker,
             todayLockerToCash: snapshot.todayLockerToCash,
             closingCashInHand: snapshot.closingCashInHand,
             closingBankBalance: snapshot.closingBankBalance,
+            closingOperationalBankBalance:
+              snapshot.closingOperationalBankBalance,
+            closingReserveBankBalance: snapshot.closingReserveBankBalance,
+            closingBankBalancesByAccount:
+              snapshot.closingBankBalancesByAccount || [],
+            unassignedOperationalBankBalance:
+              snapshot.unassignedOperationalBankBalance ?? 0,
             closingLockerBalance: snapshot.closingLockerBalance,
             floatingCash: snapshot.floatingCash,
             totalReceivable: snapshot.totalReceivable,
@@ -872,42 +903,78 @@ export default function EndOfDay() {
                   </p>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3">
+                  {(() => {
+                    const cashHand = Number(
+                      displayed?.closingCashInHand ??
+                        displayed?.actualCash ??
+                        0
+                    );
+                    const cashLocker = Number(
+                      displayed?.closingLockerBalance || 0
+                    );
+                    const cashTotal = cashHand + cashLocker;
+                    const bankTotal = Number(
+                      displayed?.closingBankBalance ??
+                        displayed?.totalBank ??
+                        0
+                    );
+                    const receivable = Number(displayed?.totalReceivable || 0);
+                    const payable = Number(displayed?.totalPayable || 0);
+                    // Display-only: Cash + Bank + Receivable − Payable
+                    const netBalance =
+                      cashTotal + bankTotal + receivable - payable;
+                    return (
+                      <>
                   <StatCell
-                    label="Cash in Hand"
+                    label="Cash (Hand)"
                     value={money(
                       displayed?.closingCashInHand ?? displayed?.actualCash
                     )}
                   />
                   <StatCell
-                    label="Locker Balance"
+                    label="Cash (Locker)"
                     value={money(displayed?.closingLockerBalance)}
                   />
                   <StatCell
-                    label="Total Cash"
+                    label="Cash (Total)"
+                    value={money(cashTotal)}
+                  />
+                  <StatCell
+                    label="Bank (Operational)"
                     value={money(
-                      Number(
-                        displayed?.closingCashInHand ??
-                          displayed?.actualCash ??
-                          0
-                      ) + Number(displayed?.closingLockerBalance || 0)
+                      displayed?.closingOperationalBankBalance ??
+                        displayed?.closingBankBalance ??
+                        displayed?.totalBank
                     )}
                   />
                   <StatCell
-                    label="Bank Balance"
-                    value={money(
-                      displayed?.closingBankBalance ?? displayed?.totalBank
-                    )}
+                    label="Bank (Reserve)"
+                    value={money(displayed?.closingReserveBankBalance ?? 0)}
                   />
                   <StatCell
-                    label="Receivable · To Get"
+                    label="Bank (Total)"
+                    value={money(bankTotal)}
+                  />
+                  <StatCell
+                    label="Receivable (To Get)"
                     value={money(displayed?.totalReceivable)}
                     tone="text-cyan-700"
                   />
                   <StatCell
-                    label="Payable · To Pay"
+                    label="Payable (To Pay)"
                     value={money(displayed?.totalPayable)}
                     tone="text-amber-700"
                   />
+                  <StatCell
+                    label="Net Balance"
+                    value={money(netBalance)}
+                    tone={
+                      netBalance >= 0 ? "text-emerald-700" : "text-rose-700"
+                    }
+                  />
+                      </>
+                    );
+                  })()}
                 </div>
               </section>
             </article>

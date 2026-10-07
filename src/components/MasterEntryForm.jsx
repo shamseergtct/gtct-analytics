@@ -22,6 +22,7 @@ import {
   normalizeTransactionMode,
 } from "../utils/transactionContract";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
+import { assertOperationalBankAccount } from "../utils/bankAccountTypes.js";
 import {
   buildPaymentModeOptions,
   findBankAccountName,
@@ -385,6 +386,18 @@ export default function MasterEntryForm({
         return alert("Discount cannot exceed Total Amount.");
       if (!discountType) return alert("Select Discount Type.");
       if (!discountSide) return alert("Select Discount Side.");
+    }
+
+    const resolvedModeEarly = parsePaymentModeSelection(mode);
+    if (
+      resolvedModeEarly.paymentMode === "BANK" &&
+      resolvedModeEarly.bankAccountId
+    ) {
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        resolvedModeEarly.bankAccountId
+      );
+      if (!bankCheck.ok) return alert(bankCheck.message);
     }
 
     const partyName =

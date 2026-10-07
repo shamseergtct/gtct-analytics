@@ -6,6 +6,11 @@ import {
   summarizeDeliveryBoyCollections,
   summarizeExternalBillTenders,
 } from "./externalSales.js";
+import {
+  isOperationalBankAccount,
+  isReserveBankAccount,
+  normalizeBankAccountType,
+} from "./bankAccountTypes.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -63,6 +68,197 @@ function partyKind(transaction) {
   return String(transaction?.partyType || "").trim().toLowerCase();
 }
 
+function buildBankAccountMap(bankAccounts = []) {
+  const map = new Map();
+  for (const account of bankAccounts) {
+    if (!account?.id) continue;
+    map.set(String(account.id), account);
+  }
+  return map;
+}
+
+function isReserveAccountId(accountId, accountsById) {
+  const id = String(accountId || "").trim();
+  if (!id) return false;
+  return isReserveBankAccount(accountsById.get(id));
+}
+
+export const UNASSIGNED_BANK_KEY = "_unassigned";
+
+function addBankDelta(map, accountId, amount) {
+  const delta = num(amount);
+  if (delta === 0) return;
+  const key = String(accountId || "").trim() || UNASSIGNED_BANK_KEY;
+  map.set(key, (map.get(key) || 0) + delta);
+}
+
+function toBankBalanceMap(value) {
+  const map = new Map();
+  if (!value) return map;
+  if (value instanceof Map) {
+    for (const [id, amount] of value.entries()) {
+      const key = String(id || "").trim();
+      if (!key) continue;
+      map.set(key, num(amount));
+    }
+    return map;
+  }
+  if (Array.isArray(value)) {
+    for (const row of value) {
+      const id = String(row?.bankAccountId || "").trim();
+      if (!id) continue;
+      map.set(id, num(row.amount));
+    }
+    return map;
+  }
+  if (typeof value === "object") {
+    for (const [id, amount] of Object.entries(value)) {
+      const key = String(id || "").trim();
+      if (!key) continue;
+      map.set(key, num(amount));
+    }
+  }
+  return map;
+}
+
+/**
+ * Per-account bank delta for a period (display / standing split only).
+ * Aggregate closingBankBalance formula stays unchanged.
+ */
+export function buildBankDeltasByAccount({
+  transactions = [],
+  externalTenders = null,
+  collectionTenders = null,
+  uncoveredZReportBank = 0,
+  externalBills = null,
+  deliveryBoyCollections = null,
+}) {
+  const deltas = new Map();
+  const tenders =
+    externalTenders ||
+    summarizeExternalBillTenders(externalBills || []);
+  const collections =
+    collectionTenders ||
+    summarizeDeliveryBoyCollections(deliveryBoyCollections || []);
+
+  for (const transaction of transactions) {
+    if (!isIncluded(transaction)) continue;
+    if (isInternal(transaction)) {
+      const kind = transferTypeKey(transaction);
+      const amount =
+        num(transaction.totalAmount) ||
+        Math.max(num(transaction.amountIn), num(transaction.amountOut));
+      const sourceId = transaction?.bankAccountId;
+      const destId =
+        transaction?.destinationBankAccountId || transaction?.bankAccountId;
+
+      if (kind === "CASH_TO_BANK" || kind === "PETTI_TO_BANK") {
+        addBankDelta(deltas, destId, amount);
+      } else if (kind === "BANK_TO_CASH" || kind === "BANK_TO_PETTI") {
+        addBankDelta(deltas, sourceId, -amount);
+      } else if (kind === "BANK_TO_BANK") {
+        addBankDelta(deltas, sourceId, -amount);
+        addBankDelta(deltas, destId, amount);
+      }
+      continue;
+    }
+
+    const rawMode = String(
+      transaction?.mode || transaction?.paymentMode || ""
+    );
+    const mode = normalizeTransactionMode(rawMode);
+    const isBankFamily =
+      mode === "card" ||
+      mode === "qr" ||
+      mode === "bank_transfer" ||
+      /^bank/i.test(rawMode.trim());
+    if (!isBankFamily) continue;
+    addBankDelta(
+      deltas,
+      transaction?.bankAccountId,
+      num(transaction.amountIn) - num(transaction.amountOut)
+    );
+  }
+
+  for (const row of tenders.bankByAccount || []) {
+    addBankDelta(deltas, row.bankAccountId, row.amount);
+  }
+  for (const row of collections.bankByAccount || []) {
+    addBankDelta(deltas, row.bankAccountId, row.amount);
+  }
+  addBankDelta(deltas, UNASSIGNED_BANK_KEY, uncoveredZReportBank);
+
+  return deltas;
+}
+
+export function readPreviousBankBalancesByAccount(previousReport) {
+  return toBankBalanceMap(previousReport?.closingBankBalancesByAccount);
+}
+
+/**
+ * Opening balances per bank account as of last closed day.
+ * Prefer stored closings; otherwise use reconstructed history; else single-account fallback.
+ */
+export function resolvePriorBankBalancesByAccount({
+  previousReport = null,
+  bankAccounts = [],
+  priorBankBalancesByAccount = null,
+  previousOperationalBankBalance = 0,
+} = {}) {
+  const accountsById = buildBankAccountMap(bankAccounts);
+  const sumOperationalAssigned = (map) => {
+    let total = 0;
+    for (const [accountId, amount] of map.entries()) {
+      if (accountId === UNASSIGNED_BANK_KEY) continue;
+      if (isReserveAccountId(accountId, accountsById)) continue;
+      total += num(amount);
+    }
+    return total;
+  };
+
+  const stored = readPreviousBankBalancesByAccount(previousReport);
+  if (stored.size > 0) {
+    const storedUnassigned = previousReport?.unassignedOperationalBankBalance;
+    const openingUnassigned =
+      storedUnassigned != null && storedUnassigned !== ""
+        ? num(storedUnassigned)
+        : num(previousOperationalBankBalance) - sumOperationalAssigned(stored);
+    return { balances: stored, hasStoredSplit: true, openingUnassigned };
+  }
+
+  const operationalAccounts = (bankAccounts || []).filter((account) =>
+    isOperationalBankAccount(account)
+  );
+  const balances = toBankBalanceMap(priorBankBalancesByAccount);
+
+  if (balances.size === 0 && operationalAccounts.length === 1) {
+    balances.set(
+      operationalAccounts[0].id,
+      num(previousOperationalBankBalance)
+    );
+    return { balances, hasStoredSplit: false, openingUnassigned: 0 };
+  }
+
+  if (balances.size === 0) {
+    return {
+      balances,
+      hasStoredSplit: false,
+      openingUnassigned: num(previousOperationalBankBalance),
+    };
+  }
+
+  // Reconcile reconstructed openings to official previous operational total.
+  balances.delete(UNASSIGNED_BANK_KEY);
+  const openingUnassigned =
+    num(previousOperationalBankBalance) - sumOperationalAssigned(balances);
+
+  return {
+    balances,
+    hasStoredSplit: false,
+    openingUnassigned,
+  };
+}
+
 export function calculateEodSnapshot({
   transactions = [],
   shifts: _shifts = [],
@@ -71,6 +267,8 @@ export function calculateEodSnapshot({
   selectedDate,
   externalBills = [],
   deliveryBoyCollections = [],
+  bankAccounts = [],
+  priorBankBalancesByAccount = null,
 }) {
   const validTransactions = transactions.filter(isIncluded);
   const dayTransactions = validTransactions.filter(
@@ -355,6 +553,84 @@ export function calculateEodSnapshot({
   );
   const closingBankBalance = previousBankBalance + todayNetBankDelta;
 
+  // Split display only — aggregate closingBankBalance formula above is unchanged.
+  const accountsById = buildBankAccountMap(bankAccounts);
+  const todayDeltasByAccount = buildBankDeltasByAccount({
+    transactions: dayTransactions,
+    externalTenders,
+    collectionTenders,
+    uncoveredZReportBank,
+  });
+
+  let todayNetReserveBankDelta = 0;
+  for (const [accountId, delta] of todayDeltasByAccount.entries()) {
+    if (accountId === UNASSIGNED_BANK_KEY) continue;
+    if (isReserveAccountId(accountId, accountsById)) {
+      todayNetReserveBankDelta += delta;
+    }
+  }
+  const todayNetOperationalBankDelta =
+    todayNetBankDelta - todayNetReserveBankDelta;
+
+  const previousHasReserveSplit =
+    previousReport?.closingReserveBankBalance != null &&
+    previousReport?.closingReserveBankBalance !== "";
+  const previousReserveBankBalance = previousHasReserveSplit
+    ? num(previousReport.closingReserveBankBalance)
+    : 0;
+  // Legacy single bank balance is treated as fully Operational.
+  const previousOperationalBankBalance =
+    previousBankBalance - previousReserveBankBalance;
+
+  const closingReserveBankBalance =
+    previousReserveBankBalance + todayNetReserveBankDelta;
+  const closingOperationalBankBalance =
+    closingBankBalance - closingReserveBankBalance;
+
+  const priorResolved = resolvePriorBankBalancesByAccount({
+    previousReport,
+    bankAccounts,
+    priorBankBalancesByAccount,
+    previousOperationalBankBalance,
+  });
+  const previousBalancesByAccount = priorResolved.balances;
+  const operationalAccounts = (bankAccounts || []).filter((account) =>
+    isOperationalBankAccount(account)
+  );
+
+  const accountIds = new Set([
+    ...previousBalancesByAccount.keys(),
+    ...todayDeltasByAccount.keys(),
+    ...operationalAccounts.map((account) => account.id),
+    ...(bankAccounts || [])
+      .filter((account) => isReserveBankAccount(account))
+      .map((account) => account.id),
+  ]);
+
+  const closingBankBalancesByAccount = [];
+  for (const accountId of accountIds) {
+    if (accountId === UNASSIGNED_BANK_KEY) continue;
+    const account = accountsById.get(accountId);
+    const previousAmount = num(previousBalancesByAccount.get(accountId));
+    const todayDelta = num(todayDeltasByAccount.get(accountId));
+    const amount = previousAmount + todayDelta;
+    const accountType = normalizeBankAccountType(account?.accountType);
+    closingBankBalancesByAccount.push({
+      bankAccountId: accountId,
+      bankAccountName: account?.accountName || accountId,
+      accountType,
+      amount,
+      isActive: account ? account.isActive !== false : true,
+    });
+  }
+  closingBankBalancesByAccount.sort((a, b) =>
+    String(a.bankAccountName || "").localeCompare(String(b.bankAccountName || ""))
+  );
+
+  const unassignedToday = num(todayDeltasByAccount.get(UNASSIGNED_BANK_KEY));
+  const unassignedOperationalBankBalance =
+    num(priorResolved.openingUnassigned) + unassignedToday;
+
   let todayNetReceivableDelta = 0;
   let todayNetPayableDelta = 0;
   dayTransactions.forEach((transaction) => {
@@ -429,13 +705,21 @@ export function calculateEodSnapshot({
     totalBank: closingBankBalance,
     previousCashInHand,
     previousBankBalance,
+    previousOperationalBankBalance,
+    previousReserveBankBalance,
     previousLockerBalance,
     todayNetCashDelta,
     todayNetBankDelta,
+    todayNetOperationalBankDelta,
+    todayNetReserveBankDelta,
     todayCashToLocker,
     todayLockerToCash,
     closingCashInHand,
     closingBankBalance,
+    closingOperationalBankBalance,
+    closingReserveBankBalance,
+    closingBankBalancesByAccount,
+    unassignedOperationalBankBalance,
     closingLockerBalance,
     floatingCash,
     totalReceivable,

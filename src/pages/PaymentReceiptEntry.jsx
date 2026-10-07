@@ -41,6 +41,7 @@ import {
 } from "../hooks/useEstimatedBankBalance.js";
 import { useFormDraft } from "../hooks/useFormDraft.js";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
+import { assertOperationalBankAccount } from "../utils/bankAccountTypes.js";
 import {
   buildPaymentModeOptions,
   findBankAccountName,
@@ -561,6 +562,16 @@ export default function PaymentReceiptEntry() {
       setError("Select a bank account for bank payments.");
       return;
     }
+    if (resolvedPayment.paymentMode === "BANK" && resolvedPayment.bankAccountId) {
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        resolvedPayment.bankAccountId
+      );
+      if (!bankCheck.ok) {
+        setError(bankCheck.message);
+        return;
+      }
+    }
     if (!entryDate && !activeShift?.businessDate) {
       setError("Entry date is required.");
       return;
@@ -781,6 +792,16 @@ export default function PaymentReceiptEntry() {
     if (editPayment.paymentMode === "BANK" && !editPayment.bankAccountId) {
       setError("Select a bank account for bank payments.");
       return;
+    }
+    if (editPayment.paymentMode === "BANK" && editPayment.bankAccountId) {
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        editPayment.bankAccountId
+      );
+      if (!bankCheck.ok) {
+        setError(bankCheck.message);
+        return;
+      }
     }
     if (!savedEdit.businessDate) {
       setError("Entry date is required.");

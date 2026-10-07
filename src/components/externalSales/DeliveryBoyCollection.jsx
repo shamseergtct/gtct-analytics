@@ -1,20 +1,25 @@
 import { useEffect, useMemo, useState, Fragment } from "react";
 import {
-  addDoc,
   collection,
   doc,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
-  updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { ChevronDown, Pencil, Printer } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useClient } from "../../context/ClientContext.jsx";
+import { useShift } from "../../context/shift-context.js";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
+import {
+  getInsufficientFundsError,
+  isCashTenderMode,
+  useEstimatedLiquidity,
+} from "../../hooks/useEstimatedBankBalance.js";
 import { formatIsoDate } from "../../utils/dateFormat.js";
 import {
   formatMoney,
@@ -23,12 +28,19 @@ import {
   roundMoney,
   toMinorUnits,
 } from "../../utils/money.js";
+import { assertOperationalBankAccount } from "../../utils/bankAccountTypes.js";
 import {
   buildPaymentModeOptions,
   findBankAccountName,
   parsePaymentModeSelection,
   paymentModeSelectionFromSaved,
 } from "../../utils/paymentModes.js";
+import {
+  buildTransactionPayload,
+  toBusinessDate,
+} from "../../utils/transactionContract.js";
+
+const COMMISSION_EXPENSE_CATEGORY = "DELIVERY COMMISSION";
 import {
   compareBillingTerminals,
   deliveryBoyOutstandingPayable,
@@ -190,15 +202,26 @@ export default function DeliveryBoyCollection({
 }) {
   const { user } = useAuth();
   const { activeClientData, activeClientId } = useClient();
+  const { activeShift } = useShift();
   const { accounts: bankAccounts } = useBankAccounts(clientId);
 
   const effectiveDate = businessDate || "";
   const shopName = activeClientData?.name || activeClientId || "Shop";
+  const { cashBalance, bankBalance } = useEstimatedLiquidity(
+    clientId,
+    effectiveDate
+  );
   const [deliveryBoyId, setDeliveryBoyId] = useState("");
   const [payableAmount, setPayableAmount] = useState("");
   const [paidCash, setPaidCash] = useState("");
   const [paidBank, setPaidBank] = useState("");
   const [bankSelection, setBankSelection] = useState("");
+  const [payCommission, setPayCommission] = useState(false);
+  const [commissionPaidAmount, setCommissionPaidAmount] = useState("");
+  const [commissionPayMode, setCommissionPayMode] = useState("CASH");
+  const [commissionBankSelection, setCommissionBankSelection] = useState("");
+  const [existingCommissionExpense, setExistingCommissionExpense] =
+    useState(null);
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -342,6 +365,10 @@ export default function DeliveryBoyCollection({
   const overpaid =
     toMinorUnits(settledNum, currencyDecimals) >
     toMinorUnits(payableNum, currencyDecimals);
+  const commissionPayAmountNum = numMoney(commissionPaidAmount || 0);
+  const canPayCommission =
+    Boolean(deliveryBoyId) &&
+    (displayCommission > 0 || commissionPayAmountNum > 0 || payCommission);
 
   useEffect(() => {
     if (!deliveryBoyId || editingId) return;
@@ -351,9 +378,17 @@ export default function DeliveryBoyCollection({
     setPaidCash("");
     setPaidBank("");
     setBankSelection("");
+    setPayCommission(false);
+    setCommissionPaidAmount(
+      formatMoney(suggested.totalCommissionAmount, currencyDecimals)
+    );
+    setCommissionPayMode("CASH");
+    setCommissionBankSelection("");
+    setExistingCommissionExpense(null);
   }, [
     deliveryBoyId,
     suggested.remainingPayable,
+    suggested.totalCommissionAmount,
     currencyDecimals,
     editingId,
   ]);
@@ -411,6 +446,11 @@ export default function DeliveryBoyCollection({
     setPaidCash("");
     setPaidBank("");
     setBankSelection("");
+    setPayCommission(false);
+    setCommissionPaidAmount("");
+    setCommissionPayMode("CASH");
+    setCommissionBankSelection("");
+    setExistingCommissionExpense(null);
     setNotes("");
     if (!keepBoy) {
       setDeliveryBoyId("");
@@ -418,6 +458,9 @@ export default function DeliveryBoyCollection({
     } else {
       setPayableAmount(
         formatMoney(suggested.remainingPayable, currencyDecimals)
+      );
+      setCommissionPaidAmount(
+        formatMoney(suggested.totalCommissionAmount, currencyDecimals)
       );
     }
   }
@@ -454,6 +497,41 @@ export default function DeliveryBoyCollection({
       row.bankAccountId
         ? paymentModeSelectionFromSaved("BANK", row.bankAccountId)
         : ""
+    );
+    const paid = row.commissionPaid === true;
+    setPayCommission(paid);
+    setCommissionPaidAmount(
+      paid || row.commissionPaidAmount != null
+        ? formatMoney(
+            numMoney(row.commissionPaidAmount ?? row.commissionAmount),
+            currencyDecimals
+          )
+        : formatMoney(numMoney(row.commissionAmount), currencyDecimals)
+    );
+    const paidMode = String(row.commissionPaidMode || "CASH")
+      .trim()
+      .toUpperCase();
+    if (paidMode === "BANK" || paidMode.startsWith("BANK")) {
+      setCommissionPayMode("BANK");
+      setCommissionBankSelection(
+        row.commissionPaidBankAccountId
+          ? paymentModeSelectionFromSaved(
+              "BANK",
+              row.commissionPaidBankAccountId
+            )
+          : ""
+      );
+    } else {
+      setCommissionPayMode("CASH");
+      setCommissionBankSelection("");
+    }
+    setExistingCommissionExpense(
+      row.commissionExpenseTransactionId || row.commissionExpensePurchaseId
+        ? {
+            transactionId: row.commissionExpenseTransactionId || "",
+            purchaseId: row.commissionExpensePurchaseId || "",
+          }
+        : null
     );
     setNotes(row.notes || "");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -494,11 +572,17 @@ export default function DeliveryBoyCollection({
       onError?.("Pay by bank must be a non-negative number.");
       return;
     }
-    if (settledNum <= 0) {
+    if (!editingId && settledNum <= 0) {
       onError?.("Enter an amount in Pay by Cash and/or Pay by Bank.");
       return;
     }
-    if (overpaid) {
+    if (editingId && settledNum <= 0 && !payCommission) {
+      onError?.(
+        "Enter a collect amount, or enable Pay commission to update commission expense."
+      );
+      return;
+    }
+    if (settledNum > 0 && overpaid) {
       onError?.(
         `Cash + Bank cannot exceed payable (${currencyPrefix}${formatMoney(payableNum, currencyDecimals)}).`
       );
@@ -514,6 +598,16 @@ export default function DeliveryBoyCollection({
         onError?.("Select a bank account for bank payment.");
         return;
       }
+      {
+        const bankCheck = assertOperationalBankAccount(
+          bankAccounts,
+          bankAccountId
+        );
+        if (!bankCheck.ok) {
+          onError?.(bankCheck.message);
+          return;
+        }
+      }
       bankAccountNameSnapshot = findBankAccountName(bankAccounts, bankAccountId);
       if (!bankAccountNameSnapshot) {
         onError?.("Selected bank account is not available.");
@@ -521,7 +615,95 @@ export default function DeliveryBoyCollection({
       }
     }
 
+    let commissionExpenseMode = "CASH";
+    let commissionExpenseBankAccountId = "";
+    let commissionExpenseBankAccountName = "";
+    const willPayCommission =
+      payCommission && roundMoney(commissionPayAmountNum, currencyDecimals) > 0;
+
+    if (payCommission) {
+      if (
+        commissionPaidAmount === "" ||
+        !Number.isFinite(Number(commissionPaidAmount)) ||
+        commissionPayAmountNum <= 0
+      ) {
+        onError?.("Enter a commission amount greater than zero.");
+        return;
+      }
+      if (commissionPayMode === "BANK") {
+        const parsed = parsePaymentModeSelection(commissionBankSelection);
+        commissionExpenseBankAccountId = String(
+          parsed.bankAccountId || ""
+        ).trim();
+        if (!commissionExpenseBankAccountId) {
+          onError?.("Select a bank account for commission payment.");
+          return;
+        }
+        const bankCheck = assertOperationalBankAccount(
+          bankAccounts,
+          commissionExpenseBankAccountId
+        );
+        if (!bankCheck.ok) {
+          onError?.(bankCheck.message);
+          return;
+        }
+        commissionExpenseBankAccountName = findBankAccountName(
+          bankAccounts,
+          commissionExpenseBankAccountId
+        );
+        if (!commissionExpenseBankAccountName) {
+          onError?.("Selected commission bank account is not available.");
+          return;
+        }
+        commissionExpenseMode = "BANK";
+      } else {
+        commissionExpenseMode = "CASH";
+        if (!activeShift?.id) {
+          onError?.(
+            "Open a shift before paying delivery commission from cash."
+          );
+          return;
+        }
+        if (
+          activeShift?.businessDate &&
+          effectiveDate !== activeShift.businessDate
+        ) {
+          onError?.(
+            "Cash commission payment must use the active shift date."
+          );
+          return;
+        }
+      }
+
+      const fundsIssue = getInsufficientFundsError({
+        mode: commissionExpenseMode,
+        amount: commissionPayAmountNum,
+        cashBalance,
+        bankBalance,
+      });
+      if (fundsIssue) {
+        onError?.(fundsIssue);
+        return;
+      }
+    }
+
     const nowMs = Date.now();
+    const collectionRef = editingId
+      ? doc(db, "delivery_boy_collections", editingId)
+      : doc(collection(db, "delivery_boy_collections"));
+
+    const commissionAmountRounded = roundMoney(
+      editingId
+        ? editSnapshots?.commissionAmount != null
+          ? editSnapshots.commissionAmount
+          : suggested.commissionAmount
+        : suggested.commissionAmount,
+      currencyDecimals
+    );
+    const commissionPaidRounded = willPayCommission
+      ? roundMoney(commissionPayAmountNum, currencyDecimals)
+      : 0;
+
     const payload = {
       clientId,
       businessDate: effectiveDate,
@@ -536,14 +718,7 @@ export default function DeliveryBoyCollection({
           : suggested.grossAmount,
         currencyDecimals
       ),
-      commissionAmount: roundMoney(
-        editingId
-          ? editSnapshots?.commissionAmount != null
-            ? editSnapshots.commissionAmount
-            : suggested.commissionAmount
-          : suggested.commissionAmount,
-        currencyDecimals
-      ),
+      commissionAmount: commissionAmountRounded,
       commissionEnabled: editingId
         ? Boolean(editSnapshots?.commissionEnabled ?? boyCommission.enabled)
         : boyCommission.enabled,
@@ -557,6 +732,15 @@ export default function DeliveryBoyCollection({
         ? editSnapshots?.billCountSnapshot ?? suggested.totalBills
         : suggested.totalBills,
       notes: String(notes || "").trim(),
+      commissionPaid: willPayCommission,
+      commissionPaidAmount: commissionPaidRounded,
+      commissionPaidMode: willPayCommission ? commissionExpenseMode : "",
+      commissionPaidBankAccountId: willPayCommission
+        ? commissionExpenseBankAccountId
+        : "",
+      commissionPaidBankAccountName: willPayCommission
+        ? commissionExpenseBankAccountName
+        : "",
       updatedAt: serverTimestamp(),
       updatedAtMs: nowMs,
       updatedBy: user.uid,
@@ -564,23 +748,143 @@ export default function DeliveryBoyCollection({
 
     setSaving(true);
     try {
-      if (editingId) {
-        await updateDoc(doc(db, "delivery_boy_collections", editingId), {
-          ...payload,
-          createdAt: existingMeta?.createdAt || serverTimestamp(),
-          createdAtMs: existingMeta?.createdAtMs || nowMs,
-          createdBy: existingMeta?.createdBy || user.uid,
-        });
-        onMessage?.(`Collection updated for ${boy.name}.`);
-      } else {
-        await addDoc(collection(db, "delivery_boy_collections"), {
-          ...payload,
-          createdAt: serverTimestamp(),
-          createdAtMs: nowMs,
-          createdBy: user.uid,
-        });
-        onMessage?.(`Collection saved for ${boy.name}.`);
+      const batch = writeBatch(db);
+      let nextExpenseTransactionId = "";
+      let nextExpensePurchaseId = "";
+
+      const previousTxnId = String(
+        existingCommissionExpense?.transactionId || ""
+      ).trim();
+      const previousPurchaseId = String(
+        existingCommissionExpense?.purchaseId || ""
+      ).trim();
+
+      if (willPayCommission) {
+        const purchaseRef = previousPurchaseId
+          ? doc(db, "purchases", previousPurchaseId)
+          : doc(collection(db, "purchases"));
+        const transactionRef = previousTxnId
+          ? doc(db, "transactions", previousTxnId)
+          : doc(collection(db, "transactions"));
+        nextExpensePurchaseId = purchaseRef.id;
+        nextExpenseTransactionId = transactionRef.id;
+
+        const paymentMode =
+          commissionExpenseMode === "BANK" ? "BANK" : "CASH";
+        const shiftId =
+          isCashTenderMode(paymentMode) && activeShift?.id
+            ? activeShift.id
+            : "";
+        const description = `Delivery commission — ${boy.name || "Delivery boy"}`;
+        const isNewExpense = !previousPurchaseId && !previousTxnId;
+
+        batch.set(
+          purchaseRef,
+          {
+            schemaVersion: 1,
+            clientId,
+            entryType: "expense",
+            amount: commissionPaidRounded,
+            partyId: boy.id,
+            vendorName: boy.name || "",
+            category: COMMISSION_EXPENSE_CATEGORY,
+            paymentMode,
+            bankAccountId: commissionExpenseBankAccountId,
+            bankAccountName: commissionExpenseBankAccountName,
+            liabilityType: "",
+            receiptNote: description,
+            shiftId,
+            businessDate: effectiveDate,
+            businessDateAt: toBusinessDate(effectiveDate),
+            transactionId: transactionRef.id,
+            status: "POSTED",
+            source: "delivery_boy_commission",
+            refType: "delivery_boy_collection",
+            refId: collectionRef.id,
+            updatedAt: serverTimestamp(),
+            updatedAtMs: nowMs,
+            updatedBy: user.uid,
+            ...(isNewExpense
+              ? {
+                  createdBy: user.uid,
+                  createdAt: serverTimestamp(),
+                  createdAtMs: nowMs,
+                }
+              : {}),
+          },
+          { merge: true }
+        );
+
+        batch.set(
+          transactionRef,
+          {
+            ...buildTransactionPayload({
+              clientId,
+              date: effectiveDate,
+              type: "expense",
+              category: COMMISSION_EXPENSE_CATEGORY,
+              mode: paymentMode,
+              bankAccountId: commissionExpenseBankAccountId,
+              bankAccountName: commissionExpenseBankAccountName,
+              partyType: "delivery_boy",
+              partyId: boy.id,
+              partyName: boy.name || "",
+              description,
+              amountBeforeTax: commissionPaidRounded,
+              totalAmount: commissionPaidRounded,
+              amountIn: 0,
+              amountOut: commissionPaidRounded,
+              status: "POSTED",
+              source: "delivery_boy_commission",
+              refType: "delivery_boy_collection",
+              refId: collectionRef.id,
+              shiftId,
+            }),
+            updatedAt: serverTimestamp(),
+            updatedBy: user.uid,
+            ...(isNewExpense
+              ? {
+                  createdBy: user.uid,
+                  createdAt: serverTimestamp(),
+                }
+              : {}),
+          },
+          { merge: true }
+        );
+      } else if (previousTxnId || previousPurchaseId) {
+        if (previousTxnId) {
+          batch.delete(doc(db, "transactions", previousTxnId));
+        }
+        if (previousPurchaseId) {
+          batch.delete(doc(db, "purchases", previousPurchaseId));
+        }
       }
+
+      batch.set(
+        collectionRef,
+        {
+          ...payload,
+          commissionExpenseTransactionId: nextExpenseTransactionId,
+          commissionExpensePurchaseId: nextExpensePurchaseId,
+          createdAt: editingId
+            ? existingMeta?.createdAt || serverTimestamp()
+            : serverTimestamp(),
+          createdAtMs: editingId ? existingMeta?.createdAtMs || nowMs : nowMs,
+          createdBy: editingId ? existingMeta?.createdBy || user.uid : user.uid,
+        },
+        { merge: true }
+      );
+
+      await batch.commit();
+      onMessage?.(
+        willPayCommission
+          ? editingId
+            ? `Collection updated for ${boy.name} (commission expense recorded).`
+            : `Collection saved for ${boy.name} (commission expense recorded).`
+          : editingId
+            ? `Collection updated for ${boy.name}.`
+            : `Collection saved for ${boy.name}.`
+      );
       clearForm();
     } catch (reason) {
       onError?.(
@@ -1056,6 +1360,85 @@ export default function DeliveryBoyCollection({
             </label>
           ) : null}
 
+          {canPayCommission ? (
+            <div className={`${LABEL_CLASS} md:col-span-2 xl:col-span-3`}>
+              <label className="inline-flex items-center gap-2 text-sm font-medium text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={payCommission}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setPayCommission(checked);
+                    if (checked && !commissionPaidAmount) {
+                      setCommissionPaidAmount(
+                        formatMoney(displayCommission, currencyDecimals)
+                      );
+                    }
+                  }}
+                  className="rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
+                />
+                Pay commission (records expense &amp; deducts cash/bank)
+              </label>
+            </div>
+          ) : null}
+
+          {payCommission ? (
+            <>
+              <label className={LABEL_CLASS}>
+                Commission Paid {currency ? `(${currency})` : ""}
+                <input
+                  type="number"
+                  min="0"
+                  step={moneyInputStep(currencyDecimals)}
+                  value={commissionPaidAmount}
+                  onChange={(event) =>
+                    setCommissionPaidAmount(event.target.value)
+                  }
+                  className={FIELD_NUMBER_CLASS}
+                  placeholder={formatMoney(0, currencyDecimals)}
+                />
+              </label>
+              <label className={LABEL_CLASS}>
+                Commission Pay From
+                <select
+                  value={commissionPayMode}
+                  onChange={(event) => {
+                    const mode = event.target.value;
+                    setCommissionPayMode(mode);
+                    if (mode !== "BANK") setCommissionBankSelection("");
+                    else if (!commissionBankSelection && bankOptions[0]) {
+                      setCommissionBankSelection(bankOptions[0].value);
+                    }
+                  }}
+                  className={FIELD_CLASS}
+                >
+                  <option value="CASH">Cash</option>
+                  <option value="BANK">Bank</option>
+                </select>
+              </label>
+              {commissionPayMode === "BANK" ? (
+                <label className={LABEL_CLASS}>
+                  Commission Bank Account
+                  <select
+                    required
+                    value={commissionBankSelection}
+                    onChange={(event) =>
+                      setCommissionBankSelection(event.target.value)
+                    }
+                    className={FIELD_CLASS}
+                  >
+                    <option value="">Select bank account…</option>
+                    {bankOptions.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </>
+          ) : null}
+
           <label className={LABEL_CLASS}>
             {editingId ? "Payable Amount" : "Balance"}{" "}
             {currency ? `(${currency})` : ""}
@@ -1068,7 +1451,7 @@ export default function DeliveryBoyCollection({
               onChange={(event) => setPayableAmount(event.target.value)}
               className={FIELD_NUMBER_CLASS}
               placeholder={formatMoney(0, currencyDecimals)}
-              readOnly={fullyCollected}
+              readOnly={fullyCollected && !payCommission}
             />
           </label>
 
@@ -1156,7 +1539,7 @@ export default function DeliveryBoyCollection({
               saving ||
               !boyOptions.length ||
               overpaid ||
-              fullyCollected ||
+              (fullyCollected && !editingId) ||
               (!editingId && suggested.remainingPayable <= 0)
             }
             className={BTN_PRIMARY}
@@ -1182,6 +1565,7 @@ export default function DeliveryBoyCollection({
               <tr>
                 <th className="px-4 py-2">Delivery Boy</th>
                 <th className="px-4 py-2 text-right">Commission</th>
+                <th className="px-4 py-2 text-right">Comm. Paid</th>
                 <th className="px-4 py-2 text-right">Payable</th>
                 <th className="px-4 py-2 text-right">Cash</th>
                 <th className="px-4 py-2 text-right">Bank</th>
@@ -1194,7 +1578,10 @@ export default function DeliveryBoyCollection({
             <tbody>
               {loadingCollections ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
+                  <td
+                    colSpan={10}
+                    className="px-4 py-8 text-center text-slate-500"
+                  >
                     Loading…
                   </td>
                 </tr>
@@ -1209,6 +1596,17 @@ export default function DeliveryBoyCollection({
                             numMoney(row.paidCash) -
                             numMoney(row.paidBank)
                         );
+                  const commissionPaidLabel =
+                    row.commissionPaid === true
+                      ? `${currencyPrefix}${formatMoney(
+                          numMoney(row.commissionPaidAmount),
+                          currencyDecimals
+                        )}${
+                          row.commissionPaidMode
+                            ? ` (${String(row.commissionPaidMode).toUpperCase() === "BANK" ? "Bank" : "Cash"})`
+                            : ""
+                        }`
+                      : "—";
                   return (
                     <tr
                       key={row.id}
@@ -1222,6 +1620,9 @@ export default function DeliveryBoyCollection({
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
                         {formatMoney(row.commissionAmount, currencyDecimals)}
+                      </td>
+                      <td className="px-4 py-2.5 text-right tabular-nums text-amber-200">
+                        {commissionPaidLabel}
                       </td>
                       <td className="px-4 py-2.5 text-right tabular-nums">
                         {currencyPrefix}
@@ -1260,7 +1661,10 @@ export default function DeliveryBoyCollection({
                 })
               ) : (
                 <tr>
-                  <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
+                  <td
+                    colSpan={10}
+                    className="px-4 py-8 text-center text-slate-500"
+                  >
                     No collections for this date.
                   </td>
                 </tr>

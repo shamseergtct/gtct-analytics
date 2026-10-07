@@ -110,7 +110,9 @@ function KpiCard({ label, value, tone = "text-white" }) {
 
 export default function ReportsHub() {
   const { activeClientId, activeClientData } = useClient();
-  const { accounts: bankAccounts } = useBankAccounts(activeClientId);
+  const { accounts: bankAccounts } = useBankAccounts(activeClientId, {
+    purpose: "all",
+  });
   const [mainTab, setMainTab] = useState("quick");
   const [ledgerType, setLedgerType] = useState("pnl");
   const [preset, setPreset] = useState("month");
@@ -219,10 +221,17 @@ export default function ReportsHub() {
       const movementRows = sourceRows.filter(
         (row) => !(row?.id === "__opening__" || row?._isOpening)
       );
-      let balance = Number(
-        openingRow?._balance ?? ledger?.liquidity?.opening ?? 0
-      );
-      if (!Number.isFinite(balance)) balance = 0;
+
+      const accountFilterActive =
+        ledgerType === "bank" && bankAccountFilter !== "all";
+      const openingsByAccount = ledger?.liquidity?.openingsByAccount || {};
+      let opening = Number(ledger?.liquidity?.opening || 0);
+      if (accountFilterActive) {
+        opening = Number(openingsByAccount[bankAccountFilter] || 0);
+      }
+      if (!Number.isFinite(opening)) opening = 0;
+
+      let balance = opening;
       const recomputed = movementRows.map((row) => {
         const amountIn = Number(row._in || 0);
         const amountOut = Number(row._out || 0);
@@ -233,8 +242,21 @@ export default function ReportsHub() {
           _balance: balance,
         };
       });
-      const filteredRows = openingRow
-        ? [openingRow, ...recomputed]
+
+      const accountLabel =
+        bankAccounts.find((account) => account.id === bankAccountFilter)
+          ?.accountName || bankAccountFilter;
+      const filteredOpeningRow = openingRow
+        ? {
+            ...openingRow,
+            account: accountFilterActive ? accountLabel : openingRow.account,
+            balance: formatMoney(opening),
+            _balance: opening,
+            _accountId: accountFilterActive ? bankAccountFilter : "",
+          }
+        : null;
+      const filteredRows = filteredOpeningRow
+        ? [filteredOpeningRow, ...recomputed]
         : recomputed;
       const totalIn = recomputed.reduce(
         (sum, row) => sum + Number(row._in || 0),
@@ -244,7 +266,6 @@ export default function ReportsHub() {
         (sum, row) => sum + Number(row._out || 0),
         0
       );
-      const opening = Number(ledger?.liquidity?.opening || 0);
       return {
         ...ledger,
         rows: filteredRows,
@@ -298,6 +319,7 @@ export default function ReportsHub() {
     liquidityMovementFilter,
     bankAccountFilter,
     lockerDirectionFilter,
+    bankAccounts,
   ]);
 
   useEffect(() => {

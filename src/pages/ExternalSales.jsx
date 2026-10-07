@@ -18,6 +18,7 @@ import ExternalSalesList from "../components/externalSales/ExternalSalesList.jsx
 import TerminalManager from "../components/externalSales/TerminalManager.jsx";
 import DeliveryBoyManager from "../components/externalSales/DeliveryBoyManager.jsx";
 import DeliveryBoyCollection from "../components/externalSales/DeliveryBoyCollection.jsx";
+import DaySummaryPrivacySettings from "../components/externalSales/DaySummaryPrivacySettings.jsx";
 import { sortBillingTerminals } from "../utils/externalSales.js";
 import {
   FIELD_CLASS,
@@ -60,6 +61,7 @@ export default function ExternalSales() {
   const [bills, setBills] = useState([]);
   const [loadingBills, setLoadingBills] = useState(false);
   const [billsError, setBillsError] = useState("");
+  const [terminalToolbarEl, setTerminalToolbarEl] = useState(null);
 
   useEffect(() => {
     if (!message) return undefined;
@@ -176,7 +178,10 @@ export default function ExternalSales() {
         </div>
       ) : null}
 
-      <div className="sticky top-16 z-30 -mx-1 border-b border-slate-800/80 bg-slate-950/90 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-slate-950/75">
+      <div
+        data-external-sales-sticky
+        className="sticky top-16 z-30 -mx-1 border-b border-slate-800/80 bg-slate-950/90 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-slate-950/75"
+      >
         <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
           <div className="min-w-0 overflow-x-auto overscroll-x-contain">
             <div className="flex min-w-max gap-2 sm:min-w-0 sm:flex-wrap">
@@ -212,6 +217,13 @@ export default function ExternalSales() {
             </label>
           ) : null}
         </div>
+
+        {tab === "entry" ? (
+          <div
+            ref={setTerminalToolbarEl}
+            className="mt-3 min-w-0 border-t border-slate-800/70 px-1 pt-3"
+          />
+        ) : null}
       </div>
 
       {tab === "entry" ? (
@@ -222,6 +234,9 @@ export default function ExternalSales() {
           businessDate={effectiveFilterDate}
           terminals={terminals}
           deliveryBoys={deliveryBoys}
+          bills={bills}
+          loadingBills={loadingBills}
+          toolbarPortalEl={terminalToolbarEl}
           onMessage={(text) => {
             setPageError("");
             setMessage(text);
@@ -302,6 +317,19 @@ export default function ExternalSales() {
               setPageError(text);
             }}
           />
+          <div className="xl:col-span-2">
+            <DaySummaryPrivacySettings
+              clientId={activeClientId}
+              onMessage={(text) => {
+                setPageError("");
+                setMessage(text);
+              }}
+              onError={(text) => {
+                setMessage("");
+                setPageError(text);
+              }}
+            />
+          </div>
         </div>
       ) : null}
     </div>

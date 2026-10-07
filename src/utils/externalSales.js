@@ -57,6 +57,135 @@ export function sortBillingTerminals(terminals = []) {
 }
 
 /**
+ * Persistent terminal color identity for Bill Entry theming.
+ * Stored on billing_terminals.color as a palette id (e.g. "green").
+ * Presentation tokens only — no business/calculation impact.
+ */
+export const TERMINAL_COLOR_PALETTE = [
+  {
+    id: "blue",
+    label: "Blue",
+    accent: "#3b82f6",
+    accentSoft: "rgba(59, 130, 246, 0.22)",
+    tint: "rgba(37, 99, 235, 0.12)",
+    border: "rgba(59, 130, 246, 0.45)",
+    ring: "rgba(59, 130, 246, 0.35)",
+    chip: "rgba(59, 130, 246, 0.18)",
+  },
+  {
+    id: "green",
+    label: "Green",
+    accent: "#22c55e",
+    accentSoft: "rgba(34, 197, 94, 0.22)",
+    tint: "rgba(22, 163, 74, 0.12)",
+    border: "rgba(34, 197, 94, 0.45)",
+    ring: "rgba(34, 197, 94, 0.35)",
+    chip: "rgba(34, 197, 94, 0.18)",
+  },
+  {
+    id: "purple",
+    label: "Purple",
+    accent: "#a855f7",
+    accentSoft: "rgba(168, 85, 247, 0.22)",
+    tint: "rgba(147, 51, 234, 0.12)",
+    border: "rgba(168, 85, 247, 0.45)",
+    ring: "rgba(168, 85, 247, 0.35)",
+    chip: "rgba(168, 85, 247, 0.18)",
+  },
+  {
+    id: "orange",
+    label: "Orange",
+    accent: "#f97316",
+    accentSoft: "rgba(249, 115, 22, 0.22)",
+    tint: "rgba(234, 88, 12, 0.12)",
+    border: "rgba(249, 115, 22, 0.45)",
+    ring: "rgba(249, 115, 22, 0.35)",
+    chip: "rgba(249, 115, 22, 0.18)",
+  },
+  {
+    id: "teal",
+    label: "Teal",
+    accent: "#14b8a6",
+    accentSoft: "rgba(20, 184, 166, 0.22)",
+    tint: "rgba(13, 148, 136, 0.12)",
+    border: "rgba(20, 184, 166, 0.45)",
+    ring: "rgba(20, 184, 166, 0.35)",
+    chip: "rgba(20, 184, 166, 0.18)",
+  },
+  {
+    id: "rose",
+    label: "Rose",
+    accent: "#f43f5e",
+    accentSoft: "rgba(244, 63, 94, 0.22)",
+    tint: "rgba(225, 29, 72, 0.12)",
+    border: "rgba(244, 63, 94, 0.45)",
+    ring: "rgba(244, 63, 94, 0.35)",
+    chip: "rgba(244, 63, 94, 0.18)",
+  },
+  {
+    id: "amber",
+    label: "Amber",
+    accent: "#f59e0b",
+    accentSoft: "rgba(245, 158, 11, 0.22)",
+    tint: "rgba(217, 119, 6, 0.12)",
+    border: "rgba(245, 158, 11, 0.45)",
+    ring: "rgba(245, 158, 11, 0.35)",
+    chip: "rgba(245, 158, 11, 0.18)",
+  },
+  {
+    id: "cyan",
+    label: "Cyan",
+    accent: "#06b6d4",
+    accentSoft: "rgba(6, 182, 212, 0.22)",
+    tint: "rgba(8, 145, 178, 0.12)",
+    border: "rgba(6, 182, 212, 0.45)",
+    ring: "rgba(6, 182, 212, 0.35)",
+    chip: "rgba(6, 182, 212, 0.18)",
+  },
+];
+
+const TERMINAL_COLOR_BY_ID = new Map(
+  TERMINAL_COLOR_PALETTE.map((entry) => [entry.id, entry])
+);
+
+export function isValidTerminalColorId(value) {
+  return TERMINAL_COLOR_BY_ID.has(String(value || "").trim().toLowerCase());
+}
+
+export function normalizeTerminalColorId(value) {
+  const key = String(value || "").trim().toLowerCase();
+  return TERMINAL_COLOR_BY_ID.has(key) ? key : "";
+}
+
+/** First unused palette id; cycles predictably when all are taken. */
+export function pickNextTerminalColorId(existingTerminals = []) {
+  const used = new Set(
+    existingTerminals
+      .map((row) => normalizeTerminalColorId(row?.color))
+      .filter(Boolean)
+  );
+  const unused = TERMINAL_COLOR_PALETTE.find((entry) => !used.has(entry.id));
+  if (unused) return unused.id;
+  const index = existingTerminals.length % TERMINAL_COLOR_PALETTE.length;
+  return TERMINAL_COLOR_PALETTE[index].id;
+}
+
+/**
+ * Resolve theme tokens for a terminal.
+ * Uses stored color when valid; otherwise a stable fallback from sort index
+ * (does not mutate — persistence is handled separately).
+ */
+export function getTerminalTheme(terminal, fallbackIndex = 0) {
+  const stored = normalizeTerminalColorId(terminal?.color);
+  const id =
+    stored ||
+    TERMINAL_COLOR_PALETTE[
+      Math.abs(Number(fallbackIndex) || 0) % TERMINAL_COLOR_PALETTE.length
+    ].id;
+  return TERMINAL_COLOR_BY_ID.get(id) || TERMINAL_COLOR_PALETTE[0];
+}
+
+/**
  * Parse a bill number as a whole-number sequence (digits only).
  * Used for start/end range checks and missing-bill detection.
  */
@@ -237,9 +366,7 @@ export function externalPaymentModeLabel(bill) {
     return `Split · Cash ${cash} + ${bankPart}`;
   }
   if (mode === "BANK") {
-    return bill?.bankAccountNameSnapshot
-      ? `Bank: ${bill.bankAccountNameSnapshot}`
-      : "Bank";
+    return bill?.bankAccountNameSnapshot || "Bank";
   }
   if (mode === "CREDIT") return "Credit";
   if (mode === "CASH" || !mode) {

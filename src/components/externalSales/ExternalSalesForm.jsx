@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   collection,
   doc,
@@ -8,6 +9,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  updateDoc,
   where,
 } from "firebase/firestore";
 import { db } from "../../firebase";
@@ -20,6 +22,7 @@ import {
   roundMoney,
   toMinorUnits,
 } from "../../utils/money.js";
+import { assertOperationalBankAccount } from "../../utils/bankAccountTypes.js";
 import {
   buildPaymentModeOptions,
   findBankAccountName,
@@ -36,9 +39,13 @@ import {
   externalPaymentModeLabel,
   externalSaleTypeLabel,
   externalSalesBillDocId,
+  getTerminalTheme,
+  isDeliveryBoyAccountPayment,
   isDeliverySaleType,
+  isValidTerminalColorId,
   normalizeBillNumber,
   normalizeExternalSaleType,
+  pickNextTerminalColorId,
   resolveDeliveryBoyCommission,
 } from "../../utils/externalSales.js";
 import {
@@ -48,6 +55,38 @@ import {
   FIELD_NUMBER_CLASS,
   LABEL_CLASS,
 } from "./externalSalesUi.js";
+import PaymentModeSearchSelect from "./PaymentModeSearchSelect.jsx";
+
+const THEMED_FIELD_CLASS =
+  "mt-1.5 h-11 w-full min-w-0 scroll-mt-52 rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-600 focus:border-[var(--term-accent)] focus:ring-2 focus:ring-[var(--term-ring)] disabled:cursor-not-allowed disabled:opacity-50";
+const THEMED_FIELD_NUMBER_CLASS = `${THEMED_FIELD_CLASS} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
+
+function externalSalesStickyBottomOffset() {
+  const sticky = document.querySelector("[data-external-sales-sticky]");
+  if (sticky) {
+    const rect = sticky.getBoundingClientRect();
+    return rect.bottom + 12;
+  }
+  return 64 + 140;
+}
+
+function scrollBillFieldIntoView(element) {
+  if (!element || typeof window === "undefined") return;
+  const topInset = externalSalesStickyBottomOffset();
+  const bottomInset = 16;
+  const rect = element.getBoundingClientRect();
+  if (rect.top < topInset) {
+    window.scrollBy({
+      top: rect.top - topInset,
+      behavior: "smooth",
+    });
+  } else if (rect.bottom > window.innerHeight - bottomInset) {
+    window.scrollBy({
+      top: rect.bottom - window.innerHeight + bottomInset,
+      behavior: "smooth",
+    });
+  }
+}
 
 function TerminalBillForm({
   clientId,
@@ -55,16 +94,23 @@ function TerminalBillForm({
   currencyDecimals,
   businessDate,
   terminal,
+  terminalIndex = 0,
+  theme,
   deliveryBoys,
   customers,
   paymentModeOptions,
   bankAccounts,
   onMessage,
   onError,
+  onDirtyChange,
+  onEditingBillIdChange,
+  billToApply = null,
+  onBillApplied,
 }) {
   const { user } = useAuth();
   const billNumberRef = useRef(null);
   const lookupTokenRef = useRef(0);
+  const formRef = useRef(null);
 
   const [billNumber, setBillNumber] = useState("");
   const [billAmount, setBillAmount] = useState("");
@@ -85,6 +131,7 @@ function TerminalBillForm({
   const [existingMeta, setExistingMeta] = useState(null);
   const [localError, setLocalError] = useState("");
   const [localMessage, setLocalMessage] = useState("");
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
 
   const activeBoys = useMemo(
     () => deliveryBoys.filter((row) => row.isActive !== false),
@@ -121,12 +168,76 @@ function TerminalBillForm({
     [boyOptions, deliveryBoyId]
   );
   const commission = resolveDeliveryBoyCommission(selectedBoy);
+  const resolvedTheme = theme || getTerminalTheme(terminal, terminalIndex);
+  const fieldClass = theme ? THEMED_FIELD_CLASS : FIELD_CLASS;
+  const fieldNumberClass = theme ? THEMED_FIELD_NUMBER_CLASS : FIELD_NUMBER_CLASS;
 
   useEffect(() => {
     if (!localMessage) return undefined;
     const timeoutId = window.setTimeout(() => setLocalMessage(""), 3000);
     return () => window.clearTimeout(timeoutId);
   }, [localMessage]);
+
+  // Focus Bill Number whenever this terminal form mounts (terminal select / switch).
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      billNumberRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [terminal?.id]);
+
+  // Keep focused fields visible below the sticky External Sales toolbar (mobile keyboards).
+  useEffect(() => {
+    const root = formRef.current;
+    if (!root) return undefined;
+
+    function onFocusIn(event) {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (!target.matches("input, select, textarea")) return;
+      window.requestAnimationFrame(() => {
+        scrollBillFieldIntoView(target);
+        window.setTimeout(() => scrollBillFieldIntoView(target), 280);
+      });
+    }
+
+    root.addEventListener("focusin", onFocusIn);
+    return () => root.removeEventListener("focusin", onFocusIn);
+  }, [terminal?.id]);
+
+  useEffect(() => {
+    if (!onDirtyChange) return undefined;
+    // Delivery boy is intentionally kept after a successful save for faster
+    // next-bill entry — that alone must not count as unsaved work.
+    const dirty = Boolean(
+      String(billNumber || "").trim() ||
+        String(billAmount || "").trim() ||
+        String(customerLocation || "").trim() ||
+        String(deliveryCharge || "").trim() ||
+        String(notes || "").trim() ||
+        String(customerId || "").trim() ||
+        multiPayment ||
+        editMode ||
+        saleType !== "DELIVERY" ||
+        (isDeliverySaleType(saleType)
+          ? paymentMode !== DELIVERY_ACCOUNT_PAYMENT
+          : paymentMode !== "CASH")
+    );
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [
+    billNumber,
+    billAmount,
+    customerLocation,
+    deliveryCharge,
+    notes,
+    customerId,
+    multiPayment,
+    editMode,
+    saleType,
+    paymentMode,
+    onDirtyChange,
+  ]);
 
   const liveCommission = useMemo(() => {
     return calculateDeliveryCommission({
@@ -164,8 +275,40 @@ function TerminalBillForm({
     setSaleType("DELIVERY");
     resetEditState();
     setLocalError("");
+    onEditingBillIdChange?.(null);
     if (!keepDeliveryBoy) setDeliveryBoyId("");
     window.setTimeout(() => billNumberRef.current?.focus(), 0);
+  }
+
+  function formHasClearableEntry() {
+    return Boolean(
+      String(billNumber || "").trim() ||
+        String(billAmount || "").trim() ||
+        String(customerLocation || "").trim() ||
+        String(deliveryCharge || "").trim() ||
+        String(notes || "").trim() ||
+        String(customerId || "").trim() ||
+        String(deliveryBoyId || "").trim() ||
+        multiPayment ||
+        editMode ||
+        saleType !== "DELIVERY" ||
+        (isDeliverySaleType(saleType)
+          ? paymentMode !== DELIVERY_ACCOUNT_PAYMENT
+          : paymentMode !== "CASH")
+    );
+  }
+
+  function requestClearForm() {
+    if (!formHasClearableEntry()) {
+      clearBillFields({ keepDeliveryBoy: deliveryMode });
+      return;
+    }
+    setClearConfirmOpen(true);
+  }
+
+  function confirmClearForm() {
+    clearBillFields({ keepDeliveryBoy: deliveryMode });
+    setClearConfirmOpen(false);
   }
 
   function enableMultiPayment() {
@@ -250,7 +393,16 @@ function TerminalBillForm({
       createdBy: bill.createdBy || null,
     });
     setEditMode(true);
+    onEditingBillIdChange?.(bill.id || null);
   }
+
+  useEffect(() => {
+    if (!billToApply || billToApply.terminalId !== terminal?.id) return;
+    applyExistingBill(billToApply);
+    onBillApplied?.();
+    window.setTimeout(() => billNumberRef.current?.focus(), 0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apply when parent sends bill once
+  }, [billToApply, terminal?.id]);
 
   async function lookupExistingBill() {
     setLocalError("");
@@ -406,6 +558,16 @@ function TerminalBillForm({
         setLocalError("Select a bank account for the bank portion.");
         return;
       }
+      {
+        const bankCheck = assertOperationalBankAccount(
+          bankAccounts,
+          bankAccountId
+        );
+        if (!bankCheck.ok) {
+          setLocalError(bankCheck.message);
+          return;
+        }
+      }
       bankAccountNameSnapshot = findBankAccountName(bankAccounts, bankAccountId);
       if (!bankAccountNameSnapshot) {
         setLocalError("Selected bank account is not available.");
@@ -426,6 +588,16 @@ function TerminalBillForm({
         if (!bankAccountId) {
           setLocalError("Select a saved bank account.");
           return;
+        }
+        {
+          const bankCheck = assertOperationalBankAccount(
+            bankAccounts,
+            bankAccountId
+          );
+          if (!bankCheck.ok) {
+            setLocalError(bankCheck.message);
+            return;
+          }
         }
         bankAccountNameSnapshot = findBankAccountName(
           bankAccounts,
@@ -601,22 +773,45 @@ function TerminalBillForm({
 
   return (
     <form
+      ref={formRef}
       onSubmit={handleSave}
-      className={`flex h-full min-w-0 flex-col space-y-3 rounded-2xl border p-3 sm:space-y-4 sm:p-4 ${
+      style={{
+        "--term-accent": resolvedTheme.accent,
+        "--term-tint": resolvedTheme.tint,
+        "--term-border": resolvedTheme.border,
+        "--term-ring": resolvedTheme.ring,
+        "--term-chip": resolvedTheme.chip,
+        "--term-accent-soft": resolvedTheme.accentSoft,
+      }}
+      className={`flex h-full min-w-0 flex-col space-y-3 rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-200 sm:space-y-4 sm:p-4 ${
         editMode
-          ? "border-amber-700/70 bg-amber-950/10"
-          : "border-slate-800 bg-slate-900/40"
+          ? "border-amber-700/70 bg-[color:var(--term-tint)] shadow-[inset_0_0_0_1px_rgba(245,158,11,0.25)]"
+          : "border-[color:var(--term-border)] bg-[color:var(--term-tint)] shadow-[0_0_0_1px_var(--term-chip)]"
       }`}
     >
-      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-slate-800 pb-3">
+      <div className="flex min-w-0 items-center justify-between gap-2 border-b border-[color:var(--term-border)] pb-3">
         <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-white sm:text-lg">
-            {terminal.name}
+          <h2 className="flex min-w-0 items-center gap-2 truncate text-base font-semibold text-white sm:text-lg">
+            <span
+              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+              style={{ backgroundColor: resolvedTheme.accent }}
+              aria-hidden="true"
+            />
+            <span className="truncate">{terminal.name}</span>
           </h2>
-          {editMode ? (
-            <p className="text-xs text-amber-300">Editing existing bill</p>
-          ) : null}
+          <p className="mt-0.5 text-xs text-slate-400">
+            Terminal {String(terminalIndex + 1).padStart(2, "0")}
+            {editMode ? (
+              <span className="text-amber-300"> · Editing existing bill</span>
+            ) : null}
+          </p>
         </div>
+        <span
+          className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white"
+          style={{ backgroundColor: resolvedTheme.accentSoft, color: resolvedTheme.accent }}
+        >
+          Bill Entry
+        </span>
       </div>
 
       {editMode ? (
@@ -660,7 +855,7 @@ function TerminalBillForm({
             onBlur={() => {
               void lookupExistingBill();
             }}
-            className={FIELD_CLASS}
+            className={fieldClass}
             placeholder="e.g. 1"
             autoComplete="off"
           />
@@ -679,7 +874,7 @@ function TerminalBillForm({
             step={moneyInputStep(currencyDecimals)}
             value={billAmount}
             onChange={(event) => setBillAmount(event.target.value)}
-            className={FIELD_NUMBER_CLASS}
+            className={fieldNumberClass}
             placeholder={formatMoney(0, currencyDecimals)}
           />
         </label>
@@ -699,7 +894,7 @@ function TerminalBillForm({
                 setCustomerId("");
               }
             }}
-            className={FIELD_CLASS}
+            className={fieldClass}
           >
             {EXTERNAL_SALE_TYPES.map((item) => (
               <option key={item.value} value={item.value}>
@@ -738,7 +933,7 @@ function TerminalBillForm({
                     step={moneyInputStep(currencyDecimals)}
                     value={splitCash}
                     onChange={(event) => setSplitCash(event.target.value)}
-                    className={FIELD_NUMBER_CLASS}
+                    className={fieldNumberClass}
                     placeholder={formatMoney(0, currencyDecimals)}
                   />
                 </label>
@@ -751,7 +946,7 @@ function TerminalBillForm({
                     step={moneyInputStep(currencyDecimals)}
                     value={splitBank}
                     onChange={(event) => setSplitBank(event.target.value)}
-                    className={FIELD_NUMBER_CLASS}
+                    className={fieldNumberClass}
                     placeholder={formatMoney(0, currencyDecimals)}
                   />
                 </label>
@@ -762,7 +957,7 @@ function TerminalBillForm({
                   required
                   value={splitBankAccountId}
                   onChange={(event) => setSplitBankAccountId(event.target.value)}
-                  className={FIELD_CLASS}
+                  className={fieldClass}
                 >
                   <option value="">Select bank account…</option>
                   {bankAccounts.map((account) => (
@@ -782,11 +977,11 @@ function TerminalBillForm({
               </div>
             </div>
           ) : (
-            <select
+            <PaymentModeSearchSelect
               required
+              options={effectivePaymentOptions}
               value={paymentMode}
-              onChange={(event) => {
-                const next = event.target.value;
+              onChange={(next) => {
                 setPaymentMode(next);
                 if (
                   next === DELIVERY_ACCOUNT_PAYMENT ||
@@ -795,14 +990,9 @@ function TerminalBillForm({
                   setCustomerId("");
                 }
               }}
-              className={FIELD_CLASS}
-            >
-              {effectivePaymentOptions.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
+              inputClassName={fieldClass}
+              placeholder="Search cash, credit, bank…"
+            />
           )}
         </div>
 
@@ -813,7 +1003,7 @@ function TerminalBillForm({
               required
               value={customerId}
               onChange={(event) => setCustomerId(event.target.value)}
-              className={FIELD_CLASS}
+              className={fieldClass}
             >
               <option value="">Select customer…</option>
               {customers.map((row) => (
@@ -833,7 +1023,7 @@ function TerminalBillForm({
               <input
                 value={customerLocation}
                 onChange={(event) => setCustomerLocation(event.target.value)}
-                className={FIELD_CLASS}
+                className={fieldClass}
                 placeholder="Optional delivery location"
               />
             </label>
@@ -843,7 +1033,7 @@ function TerminalBillForm({
                 required
                 value={deliveryBoyId}
                 onChange={(event) => setDeliveryBoyId(event.target.value)}
-                className={FIELD_CLASS}
+                className={fieldClass}
               >
                 <option value="">Select delivery boy…</option>
                 {boyOptions.map((row) => (
@@ -862,7 +1052,7 @@ function TerminalBillForm({
                 step={moneyInputStep(currencyDecimals)}
                 value={deliveryCharge}
                 onChange={(event) => setDeliveryCharge(event.target.value)}
-                className={FIELD_NUMBER_CLASS}
+                className={fieldNumberClass}
                 placeholder={formatMoney(0, currencyDecimals)}
               />
             </label>
@@ -874,7 +1064,7 @@ function TerminalBillForm({
           <input
             value={notes}
             onChange={(event) => setNotes(event.target.value)}
-            className={FIELD_CLASS}
+            className={fieldClass}
             placeholder="Optional"
           />
         </label>
@@ -906,7 +1096,8 @@ function TerminalBillForm({
         <button
           type="submit"
           disabled={saving || lookingUp || (isCredit && !customers.length)}
-          className={`${BTN_PRIMARY} w-full sm:w-auto`}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:brightness-110 disabled:opacity-50 sm:w-auto"
+          style={{ backgroundColor: resolvedTheme.accent }}
         >
           {saving
             ? editMode
@@ -918,14 +1109,97 @@ function TerminalBillForm({
         </button>
         <button
           type="button"
-          onClick={() => clearBillFields({ keepDeliveryBoy: deliveryMode })}
+          onClick={requestClearForm}
           className="w-full py-2 text-center text-sm font-medium text-slate-400 hover:text-slate-200 sm:w-auto sm:py-0 sm:text-left"
         >
           Clear
         </button>
       </div>
+
+      {clearConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="clear-bill-title"
+            aria-describedby="clear-bill-desc"
+            className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+          >
+            <h3
+              id="clear-bill-title"
+              className="text-lg font-semibold text-white"
+            >
+              Clear bill entry?
+            </h3>
+            <p id="clear-bill-desc" className="mt-2 text-sm text-slate-300">
+              This will remove the entered details for{" "}
+              <span className="font-semibold text-white">
+                {terminal.name}
+              </span>
+              . This cannot be undone.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setClearConfirmOpen(false)}
+                className={BTN_SECONDARY}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmClearForm}
+                className={BTN_PRIMARY}
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </form>
   );
+}
+
+function billSortMs(bill) {
+  const updated = Number(bill?.updatedAtMs);
+  const created = Number(bill?.createdAtMs);
+  if (Number.isFinite(updated) && updated > 0) return updated;
+  if (Number.isFinite(created) && created > 0) return created;
+  return 0;
+}
+
+function terminalDisplayForBill(bill, terminals) {
+  const index = terminals.findIndex((row) => row.id === bill.terminalId);
+  const row = index >= 0 ? terminals[index] : null;
+  return {
+    name: bill.terminalNameSnapshot || row?.name || "Terminal",
+    theme: getTerminalTheme(row || {}, index >= 0 ? index : 0),
+  };
+}
+
+/** Compact payment/party label for the recent-bills list (UI only). */
+function recentBillPartyLabel(bill) {
+  if (isDeliveryBoyAccountPayment(bill)) {
+    return (
+      String(bill?.deliveryBoyNameSnapshot || "").trim() || "Delivery Boy Account"
+    );
+  }
+  const mode = String(bill?.paymentMode || "")
+    .trim()
+    .toUpperCase();
+  if (mode === SPLIT_PAYMENT || mode === "SPLIT") {
+    const bankName = String(bill?.bankAccountNameSnapshot || "").trim();
+    return bankName ? `Cash + ${bankName}` : "Cash + Bank";
+  }
+  if (mode === "BANK") {
+    return String(bill?.bankAccountNameSnapshot || "").trim() || "Bank";
+  }
+  if (mode === "CREDIT") {
+    return String(bill?.customerName || "").trim() || "Credit";
+  }
+  if (mode === "CASH" || !mode) return "Cash";
+  return mode;
 }
 
 export default function ExternalSalesForm({
@@ -935,11 +1209,22 @@ export default function ExternalSalesForm({
   businessDate,
   terminals,
   deliveryBoys,
+  bills = [],
+  loadingBills = false,
+  toolbarPortalEl = null,
   onMessage,
   onError,
 }) {
+  const { user } = useAuth();
   const { accounts: bankAccounts } = useBankAccounts(clientId);
   const [customers, setCustomers] = useState([]);
+  const [selectedTerminalId, setSelectedTerminalId] = useState("");
+  const [formDirty, setFormDirty] = useState(false);
+  const [pendingTerminalId, setPendingTerminalId] = useState("");
+  const [pendingListBill, setPendingListBill] = useState(null);
+  const [billToApply, setBillToApply] = useState(null);
+  const [editingBillId, setEditingBillId] = useState(null);
+  const colorBackfillRef = useRef(new Set());
   const effectiveBusinessDate = businessDate || "";
 
   const activeTerminals = useMemo(
@@ -955,6 +1240,36 @@ export default function ExternalSalesForm({
       }),
     [bankAccounts]
   );
+
+  const selectedTerminal = useMemo(
+    () =>
+      activeTerminals.find((row) => row.id === selectedTerminalId) ||
+      activeTerminals[0] ||
+      null,
+    [activeTerminals, selectedTerminalId]
+  );
+
+  const selectedTerminalIndex = useMemo(() => {
+    if (!selectedTerminal) return 0;
+    const index = activeTerminals.findIndex(
+      (row) => row.id === selectedTerminal.id
+    );
+    return index >= 0 ? index : 0;
+  }, [activeTerminals, selectedTerminal]);
+
+  const selectedTheme = useMemo(
+    () => getTerminalTheme(selectedTerminal, selectedTerminalIndex),
+    [selectedTerminal, selectedTerminalIndex]
+  );
+
+  const recentBills = useMemo(() => {
+    return bills
+      .filter((bill) => bill?.voided !== true)
+      .slice()
+      .sort((a, b) => billSortMs(b) - billSortMs(a));
+  }, [bills]);
+
+  const currencyPrefix = currency ? `${currency} ` : "";
 
   useEffect(() => {
     if (!clientId) return undefined;
@@ -975,6 +1290,124 @@ export default function ExternalSalesForm({
     );
   }, [clientId]);
 
+  // Keep selection valid when terminals load / change.
+  useEffect(() => {
+    if (!activeTerminals.length) {
+      setSelectedTerminalId("");
+      return;
+    }
+    if (
+      selectedTerminalId &&
+      activeTerminals.some((row) => row.id === selectedTerminalId)
+    ) {
+      return;
+    }
+    setSelectedTerminalId(activeTerminals[0].id);
+  }, [activeTerminals, selectedTerminalId]);
+
+  // Persist missing terminal colors once (backward compatible).
+  useEffect(() => {
+    if (!clientId || !user?.uid || !terminals.length) return undefined;
+
+    const missing = terminals.filter(
+      (row) =>
+        row?.id &&
+        !isValidTerminalColorId(row.color) &&
+        !colorBackfillRef.current.has(row.id)
+    );
+    if (!missing.length) return undefined;
+
+    let cancelled = false;
+    const usedSeed = terminals.filter((row) => isValidTerminalColorId(row.color));
+
+    (async () => {
+      const assigned = [...usedSeed];
+      for (const row of missing) {
+        if (cancelled) return;
+        colorBackfillRef.current.add(row.id);
+        const color = pickNextTerminalColorId(assigned);
+        assigned.push({ color });
+        try {
+          await updateDoc(doc(db, "billing_terminals", row.id), {
+            clientId: row.clientId || clientId,
+            name: row.name || "",
+            isActive: row.isActive !== false,
+            color,
+            updatedAt: serverTimestamp(),
+            updatedAtMs: Date.now(),
+            updatedBy: user.uid,
+          });
+        } catch {
+          colorBackfillRef.current.delete(row.id);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, terminals, user?.uid]);
+
+  function requestSelectTerminal(nextId) {
+    if (!nextId || nextId === selectedTerminal?.id) return;
+    if (!formDirty) {
+      setSelectedTerminalId(nextId);
+      setPendingTerminalId("");
+      return;
+    }
+    setPendingTerminalId(nextId);
+  }
+
+  function confirmSwitchTerminal() {
+    if (!pendingTerminalId) return;
+    setSelectedTerminalId(pendingTerminalId);
+    setPendingTerminalId("");
+    setFormDirty(false);
+  }
+
+  function cancelSwitchTerminal() {
+    setPendingTerminalId("");
+  }
+
+  function performLoadBillFromList(bill) {
+    if (!bill?.id) return;
+    setFormDirty(false);
+    setPendingListBill(null);
+    if (bill.terminalId && bill.terminalId !== selectedTerminal?.id) {
+      setSelectedTerminalId(bill.terminalId);
+    }
+    setBillToApply(bill);
+  }
+
+  function requestLoadBillFromList(bill) {
+    if (!bill?.id) return;
+    if (formDirty) {
+      setPendingListBill(bill);
+      return;
+    }
+    performLoadBillFromList(bill);
+  }
+
+  // Alt+1 … Alt+9 selects terminals in Setup order (skips while typing in fields).
+  useEffect(() => {
+    function onKeyDown(event) {
+      if (pendingTerminalId || pendingListBill) return;
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      const match = String(event.code || "").match(/^Digit([1-9])$/);
+      if (!match) return;
+      const index = Number(match[1]) - 1;
+      const terminal = activeTerminals[index];
+      if (!terminal) return;
+      event.preventDefault();
+      requestSelectTerminal(terminal.id);
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeTerminals, pendingTerminalId, selectedTerminal?.id, formDirty]);
+
   if (!activeTerminals.length) {
     return (
       <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-4 text-sm text-amber-100">
@@ -983,26 +1416,270 @@ export default function ExternalSalesForm({
     );
   }
 
-  return (
-    <div className="min-w-0 space-y-4">
-      <div className="grid min-w-0 grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 2xl:grid-cols-3">
-        {activeTerminals.map((terminal) => (
-          <TerminalBillForm
-            key={terminal.id}
-            clientId={clientId}
-            currency={currency}
-            currencyDecimals={currencyDecimals}
-            businessDate={effectiveBusinessDate}
-            terminal={terminal}
-            deliveryBoys={deliveryBoys}
-            customers={customers}
-            paymentModeOptions={paymentModeOptions}
-            bankAccounts={bankAccounts}
-            onMessage={onMessage}
-            onError={onError}
-          />
-        ))}
+  const pendingTerminal =
+    activeTerminals.find((row) => row.id === pendingTerminalId) || null;
+
+  const terminalSelector = (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="text-xs font-medium uppercase tracking-wide text-slate-400">
+          Terminal
+        </div>
+        <div className="text-[11px] text-slate-500">
+          Shortcut: Alt+1…{Math.min(activeTerminals.length, 9)}
+        </div>
       </div>
+      <div
+        className="flex min-w-0 gap-2 overflow-x-auto overscroll-x-contain pb-0.5"
+        role="tablist"
+        aria-label="Billing terminal"
+      >
+        {activeTerminals.map((terminal, index) => {
+          const theme = getTerminalTheme(terminal, index);
+          const selected = terminal.id === selectedTerminal?.id;
+          const shortcut = index < 9 ? String(index + 1) : "";
+          return (
+            <button
+              key={terminal.id}
+              type="button"
+              role="tab"
+              aria-selected={selected}
+              aria-keyshortcuts={shortcut ? `Alt+${shortcut}` : undefined}
+              title={
+                shortcut
+                  ? `${terminal.name} (Alt+${shortcut})`
+                  : terminal.name
+              }
+              onClick={() => requestSelectTerminal(terminal.id)}
+              className={`inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold whitespace-nowrap transition-[border-color,background-color,color,box-shadow] duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--term-ring)] ${
+                selected
+                  ? "text-white shadow-sm"
+                  : "border-slate-800 bg-slate-900/80 text-slate-300 hover:bg-slate-800"
+              }`}
+              style={
+                selected
+                  ? {
+                      "--term-ring": theme.ring,
+                      backgroundColor: theme.accentSoft,
+                      borderColor: theme.border,
+                      boxShadow: `inset 0 0 0 1px ${theme.chip}`,
+                    }
+                  : {
+                      "--term-ring": theme.ring,
+                    }
+              }
+            >
+              <span
+                className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                style={{ backgroundColor: theme.accent }}
+                aria-hidden="true"
+              />
+              <span className="truncate">{terminal.name}</span>
+              {shortcut ? (
+                <kbd className="rounded-md border border-slate-700/80 bg-slate-950/70 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+                  {shortcut}
+                </kbd>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="mx-auto min-w-0 w-full max-w-3xl space-y-4">
+      {toolbarPortalEl
+        ? createPortal(terminalSelector, toolbarPortalEl)
+        : null}
+
+      {selectedTerminal ? (
+        <TerminalBillForm
+          key={selectedTerminal.id}
+          clientId={clientId}
+          currency={currency}
+          currencyDecimals={currencyDecimals}
+          businessDate={effectiveBusinessDate}
+          terminal={selectedTerminal}
+          terminalIndex={selectedTerminalIndex}
+          theme={selectedTheme}
+          deliveryBoys={deliveryBoys}
+          customers={customers}
+          paymentModeOptions={paymentModeOptions}
+          bankAccounts={bankAccounts}
+          onMessage={onMessage}
+          onError={onError}
+          onDirtyChange={setFormDirty}
+          onEditingBillIdChange={setEditingBillId}
+          billToApply={
+            billToApply?.terminalId === selectedTerminal?.id ? billToApply : null
+          }
+          onBillApplied={() => setBillToApply(null)}
+        />
+      ) : null}
+
+      <section
+        className="rounded-2xl border border-slate-800 bg-slate-900/40 p-3 sm:p-4"
+        aria-label="Bills entered today"
+      >
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h3 className="text-sm font-semibold text-white">
+            Bills entered today
+          </h3>
+          <span className="text-xs text-slate-500">Newest first · tap to edit</span>
+        </div>
+        {loadingBills ? (
+          <p className="py-4 text-center text-sm text-slate-500">Loading bills…</p>
+        ) : recentBills.length ? (
+          <ul className="max-h-64 space-y-1.5 overflow-y-auto overscroll-y-contain">
+            {recentBills.map((bill) => {
+              const { name: terminalName, theme } = terminalDisplayForBill(
+                bill,
+                terminals
+              );
+              const selected = bill.id === editingBillId;
+              const deliveryChargeValue = numMoney(bill.deliveryCharge);
+              return (
+                <li key={bill.id}>
+                  <button
+                    type="button"
+                    onClick={() => requestLoadBillFromList(bill)}
+                    className={`flex w-full min-w-0 items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40 ${
+                      selected
+                        ? "border-[color:var(--row-border)] bg-[color:var(--row-tint)]"
+                        : "border-slate-800/80 bg-slate-950/50 hover:border-slate-700 hover:bg-slate-900/80"
+                    }`}
+                    style={
+                      selected
+                        ? {
+                            "--row-border": theme.border,
+                            "--row-tint": theme.tint,
+                          }
+                        : undefined
+                    }
+                  >
+                    <span
+                      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
+                      style={{ backgroundColor: theme.accent }}
+                      aria-hidden="true"
+                    />
+                    <span className="min-w-0 flex-1 truncate font-medium text-white">
+                      {terminalName}
+                    </span>
+                    <span className="shrink-0 tabular-nums text-slate-300">
+                      #{bill.billNumber}
+                    </span>
+                    <span className="shrink-0 tabular-nums font-semibold text-slate-200">
+                      {currencyPrefix}
+                      {formatMoney(bill.billAmount, currencyDecimals)}
+                    </span>
+                    <span className="shrink-0 tabular-nums text-xs text-slate-400">
+                      DC {currencyPrefix}
+                      {formatMoney(deliveryChargeValue, currencyDecimals)}
+                    </span>
+                    <span className="min-w-0 max-w-[9rem] shrink-0 truncate text-xs text-slate-400 sm:max-w-[12rem]">
+                      {recentBillPartyLabel(bill)}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="py-4 text-center text-sm text-slate-500">
+            No bills saved for this business date yet.
+          </p>
+        )}
+      </section>
+
+      {pendingTerminal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="unsaved-terminal-title"
+            aria-describedby="unsaved-terminal-desc"
+            className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+          >
+            <h3
+              id="unsaved-terminal-title"
+              className="text-lg font-semibold text-white"
+            >
+              Unsaved bill information
+            </h3>
+            <p id="unsaved-terminal-desc" className="mt-2 text-sm text-slate-300">
+              You have unsaved information for{" "}
+              <span className="font-semibold text-white">
+                {selectedTerminal?.name || "this terminal"}
+              </span>
+              . Switch to{" "}
+              <span className="font-semibold text-white">
+                {pendingTerminal.name}
+              </span>{" "}
+              without saving?
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={cancelSwitchTerminal}
+                className={BTN_SECONDARY}
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                onClick={confirmSwitchTerminal}
+                className={BTN_PRIMARY}
+              >
+                Switch
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingListBill ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="load-bill-title"
+            aria-describedby="load-bill-desc"
+            className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl"
+          >
+            <h3 id="load-bill-title" className="text-lg font-semibold text-white">
+              Unsaved bill information
+            </h3>
+            <p id="load-bill-desc" className="mt-2 text-sm text-slate-300">
+              You have unsaved information on{" "}
+              <span className="font-semibold text-white">
+                {selectedTerminal?.name || "this terminal"}
+              </span>
+              . Load bill{" "}
+              <span className="font-semibold text-white">
+                #{pendingListBill.billNumber}
+              </span>{" "}
+              for editing without saving?
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPendingListBill(null)}
+                className={BTN_SECONDARY}
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                onClick={() => performLoadBillFromList(pendingListBill)}
+                className={BTN_PRIMARY}
+              >
+                Load bill
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

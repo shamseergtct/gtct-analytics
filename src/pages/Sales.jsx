@@ -30,6 +30,7 @@ import {
   buildTransactionPayload,
 } from "../utils/transactionContract.js";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
+import { assertOperationalBankAccount } from "../utils/bankAccountTypes.js";
 import {
   buildPaymentModeOptions,
   findBankAccountName,
@@ -1156,6 +1157,13 @@ export default function Sales() {
     }
     if (tenderSummary.bank > 0 && !resolvedPayment.bankAccountId) {
       return setErr("Select a bank account for bank payments.");
+    }
+    if (tenderSummary.bank > 0 && resolvedPayment.bankAccountId) {
+      const bankCheck = assertOperationalBankAccount(
+        bankAccounts,
+        resolvedPayment.bankAccountId
+      );
+      if (!bankCheck.ok) return setErr(bankCheck.message);
     }
     if (tenderSummary.credit > 0 && !customerId && !customerName.trim()) {
       return setErr("Credit sale requires a customer. Select or enter a customer.");

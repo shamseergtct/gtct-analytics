@@ -8,7 +8,11 @@ import {
   where,
 } from "firebase/firestore";
 import { db } from "../firebase";
-import { calculateEodSnapshot } from "../utils/eodCalculations.js";
+import {
+  calculateEodSnapshot,
+  readPreviousBankBalancesByAccount,
+} from "../utils/eodCalculations.js";
+import { loadPriorBankBalancesByAccount } from "../utils/priorBankBalances.js";
 import { formatMoney } from "../utils/money.js";
 
 function num(value) {
@@ -109,9 +113,50 @@ export function sumReservedSpend(entries = [], excludeId = "") {
  *
  * Opening float (`floatingCash`) stays previous-day cash only (locker-adjusted).
  */
+function buildBankBalancesByAccount(snapshot) {
+  const rows = Array.isArray(snapshot?.closingBankBalancesByAccount)
+    ? snapshot.closingBankBalancesByAccount
+    : [];
+  return rows
+    .filter((row) => row?.isActive !== false)
+    .map((row) => ({
+      bankAccountId: row.bankAccountId,
+      bankAccountName: row.bankAccountName || row.bankAccountId,
+      accountType: String(row?.accountType || "OPERATIONAL").toUpperCase(),
+      amount: Number(row.amount) || 0,
+    }));
+}
+
+function buildOperationalBankBalances(snapshot) {
+  const all = buildBankBalancesByAccount(snapshot);
+  const operational = all.filter((row) => row.accountType !== "RESERVE");
+
+  // Fallback when no per-account split exists yet.
+  if (
+    operational.length === 0 &&
+    snapshot?.closingOperationalBankBalance != null
+  ) {
+    const amount = Number(snapshot.closingOperationalBankBalance) || 0;
+    if (amount !== 0 || all.length === 0) {
+      operational.push({
+        bankAccountId: "_operational_total",
+        bankAccountName: "Bank (Operational)",
+        accountType: "OPERATIONAL",
+        amount,
+      });
+    }
+  }
+
+  return operational;
+}
+
 export function useEstimatedLiquidity(clientId, businessDate) {
   const [cashBalance, setCashBalance] = useState(null);
   const [bankBalance, setBankBalance] = useState(null);
+  const [operationalBankBalance, setOperationalBankBalance] = useState(null);
+  const [operationalBankBalances, setOperationalBankBalances] = useState([]);
+  const [bankBalancesByAccount, setBankBalancesByAccount] = useState([]);
+  const [reserveBankBalance, setReserveBankBalance] = useState(null);
   const [floatingCash, setFloatingCash] = useState(null);
   const [lockerBalance, setLockerBalance] = useState(null);
   const [previousCashInHand, setPreviousCashInHand] = useState(null);
@@ -122,6 +167,10 @@ export function useEstimatedLiquidity(clientId, businessDate) {
     if (!clientId || !businessDate) {
       setCashBalance(null);
       setBankBalance(null);
+      setOperationalBankBalance(null);
+      setOperationalBankBalances([]);
+      setBankBalancesByAccount([]);
+      setReserveBankBalance(null);
       setFloatingCash(null);
       setLockerBalance(null);
       setPreviousCashInHand(null);
@@ -134,6 +183,11 @@ export function useEstimatedLiquidity(clientId, businessDate) {
     let previousReport = null;
     let dayTransactions = [];
     let dayZReports = [];
+    let dayExternalBills = [];
+    let dayCollections = [];
+    let bankAccounts = [];
+    let priorBankBalancesByAccount = null;
+    let priorLoadToken = 0;
 
     queueMicrotask(() => {
       if (!cancelled) setLoading(true);
@@ -147,14 +201,46 @@ export function useEstimatedLiquidity(clientId, businessDate) {
         shifts: [],
         zReports: dayZReports,
         previousReport,
+        externalBills: dayExternalBills,
+        deliveryBoyCollections: dayCollections,
+        bankAccounts,
+        priorBankBalancesByAccount,
       });
       setCashBalance(num(snapshot.closingCashInHand));
       setBankBalance(num(snapshot.closingBankBalance));
+      setOperationalBankBalance(num(snapshot.closingOperationalBankBalance));
+      setOperationalBankBalances(buildOperationalBankBalances(snapshot));
+      setBankBalancesByAccount(buildBankBalancesByAccount(snapshot));
+      setReserveBankBalance(num(snapshot.closingReserveBankBalance));
       setFloatingCash(num(snapshot.floatingCash));
       setLockerBalance(num(snapshot.closingLockerBalance));
       setPreviousCashInHand(num(snapshot.previousCashInHand));
       setHasPreviousClosing(Boolean(previousReport));
       setLoading(false);
+    }
+
+    async function ensurePriorBankBalances(report) {
+      const stored = readPreviousBankBalancesByAccount(report);
+      if (stored.size > 0) {
+        priorBankBalancesByAccount = null;
+        republish();
+        return;
+      }
+      const token = ++priorLoadToken;
+      try {
+        const rebuilt = await loadPriorBankBalancesByAccount({
+          clientId,
+          beforeDate: businessDate,
+          previousReport: report,
+        });
+        if (cancelled || token !== priorLoadToken) return;
+        priorBankBalancesByAccount = rebuilt;
+        republish();
+      } catch {
+        if (cancelled || token !== priorLoadToken) return;
+        priorBankBalancesByAccount = null;
+        republish();
+      }
     }
 
     const { startMs, endMs } = businessDateRange(businessDate);
@@ -180,6 +266,23 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       where("businessDate", "==", businessDate)
     );
 
+    const externalBillsQuery = query(
+      collection(db, "external_sales_bills"),
+      where("clientId", "==", clientId),
+      where("businessDate", "==", businessDate)
+    );
+
+    const collectionsQuery = query(
+      collection(db, "delivery_boy_collections"),
+      where("clientId", "==", clientId),
+      where("businessDate", "==", businessDate)
+    );
+
+    const bankAccountsQuery = query(
+      collection(db, "bank_accounts"),
+      where("clientId", "==", clientId)
+    );
+
     const unsubPrevious = onSnapshot(
       previousQuery,
       (snapshot) => {
@@ -187,10 +290,11 @@ export function useEstimatedLiquidity(clientId, businessDate) {
         previousReport = docSnap
           ? { id: docSnap.id, ...docSnap.data() }
           : null;
-        republish();
+        ensurePriorBankBalances(previousReport);
       },
       () => {
         previousReport = null;
+        priorBankBalancesByAccount = null;
         republish();
       }
     );
@@ -225,11 +329,59 @@ export function useEstimatedLiquidity(clientId, businessDate) {
       }
     );
 
+    const unsubExternal = onSnapshot(
+      externalBillsQuery,
+      (snapshot) => {
+        dayExternalBills = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        republish();
+      },
+      () => {
+        dayExternalBills = [];
+        republish();
+      }
+    );
+
+    const unsubCollections = onSnapshot(
+      collectionsQuery,
+      (snapshot) => {
+        dayCollections = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        republish();
+      },
+      () => {
+        dayCollections = [];
+        republish();
+      }
+    );
+
+    const unsubBanks = onSnapshot(
+      bankAccountsQuery,
+      (snapshot) => {
+        bankAccounts = snapshot.docs.map((item) => ({
+          id: item.id,
+          ...item.data(),
+        }));
+        republish();
+      },
+      () => {
+        bankAccounts = [];
+        republish();
+      }
+    );
+
     return () => {
       cancelled = true;
       unsubPrevious();
       unsubTxns();
       unsubZReports();
+      unsubExternal();
+      unsubCollections();
+      unsubBanks();
     };
   }, [clientId, businessDate]);
 
@@ -237,6 +389,10 @@ export function useEstimatedLiquidity(clientId, businessDate) {
     return {
       cashBalance: null,
       bankBalance: null,
+      operationalBankBalance: null,
+      operationalBankBalances: [],
+      bankBalancesByAccount: [],
+      reserveBankBalance: null,
       floatingCash: null,
       lockerBalance: null,
       previousCashInHand: null,
@@ -248,6 +404,10 @@ export function useEstimatedLiquidity(clientId, businessDate) {
   return {
     cashBalance,
     bankBalance,
+    operationalBankBalance,
+    operationalBankBalances,
+    bankBalancesByAccount,
+    reserveBankBalance,
     floatingCash,
     lockerBalance,
     previousCashInHand,
