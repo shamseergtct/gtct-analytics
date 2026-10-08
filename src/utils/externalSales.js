@@ -490,14 +490,16 @@ export function isDeliveryBoyPaymentModeAllowed(
 /** Delivery bills owed by the boy (vs paid directly to the shop). */
 export function isDeliveryBoyAccountPayment(billOrMode) {
   if (billOrMode && typeof billOrMode === "object") {
-    if (normalizeExternalSaleType(billOrMode.saleType) !== "DELIVERY") {
-      return false;
-    }
     const mode = String(billOrMode.paymentMode || "")
       .trim()
       .toUpperCase();
+    // Explicit delivery-boy account payment — do not require saleType
+    // (dashboard list rows may omit it).
+    if (mode === DELIVERY_ACCOUNT_PAYMENT) return true;
+    // Cash / bank / credit / split are shop-collected.
+    if (mode) return false;
     // Legacy delivery bills with no mode were on the boy's account.
-    return !mode || mode === DELIVERY_ACCOUNT_PAYMENT;
+    return normalizeExternalSaleType(billOrMode.saleType) === "DELIVERY";
   }
   const mode = String(billOrMode || "")
     .trim()
