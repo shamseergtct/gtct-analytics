@@ -119,8 +119,12 @@ async function syncOneBill(record, ctx) {
         };
       }
 
-      // Boy edited after save — push field changes via sync (not realtime UI).
-      if (record.resubmitEdit) {
+      // Same bill already on server — update it (edit / retry), never treat as duplicate.
+      if (
+        existing.status === SUBMISSION_STATUS.PENDING ||
+        existing.status === SUBMISSION_STATUS.EDITED_PENDING ||
+        existing.status === SUBMISSION_STATUS.APPROVED
+      ) {
         await updateLocalBill(record.entryLocalId, {
           syncStatus: SYNC_STATUS.SYNCING,
           syncError: "",
@@ -136,32 +140,27 @@ async function syncOneBill(record, ctx) {
         await deleteLocalBill(record.entryLocalId);
         return { ok: true, status: "updated" };
       }
-
-      if (
-        existing.status === SUBMISSION_STATUS.PENDING ||
-        existing.status === SUBMISSION_STATUS.EDITED_PENDING ||
-        existing.status === SUBMISSION_STATUS.APPROVED
-      ) {
-        await deleteLocalBill(record.entryLocalId);
-        return { ok: true, status: "idempotent" };
-      }
     }
   } catch (error) {
-    // If edit sync failed, fall through to mark failure below when we rethrow path.
-    if (record.resubmitEdit) {
+    // Existing-bill update failed — keep on phone for retry (not a "duplicate" case).
+    if (error && String(error?.message || error).trim()) {
       const message = error?.message || String(error);
-      if (isPermanentFailure(error)) {
+      const looksLikeMissing =
+        /not found|missing/i.test(message) && !/permission/i.test(message);
+      if (!looksLikeMissing) {
+        if (isPermanentFailure(error)) {
+          await updateLocalBill(record.entryLocalId, {
+            syncStatus: SYNC_STATUS.FAILED,
+            syncError: message,
+          });
+          return { ok: false, permanent: true, message };
+        }
         await updateLocalBill(record.entryLocalId, {
-          syncStatus: SYNC_STATUS.FAILED,
+          syncStatus: SYNC_STATUS.PENDING,
           syncError: message,
         });
-        return { ok: false, permanent: true, message };
+        return { ok: false, permanent: false, message };
       }
-      await updateLocalBill(record.entryLocalId, {
-        syncStatus: SYNC_STATUS.PENDING,
-        syncError: message,
-      });
-      return { ok: false, permanent: false, message };
     }
     // continue to create attempt
   }

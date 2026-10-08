@@ -1073,6 +1073,20 @@ export default function DeliveryApp() {
       return;
     }
 
+    // New bills only: block if this bill number is already on today's list.
+    const alreadyInList = dayRows.some(
+      (row) =>
+        row.status !== SUBMISSION_STATUS.REJECTED &&
+        cleanId(row.terminalId) === cleanId(selectedTerminal.id) &&
+        normalizeBillNumber(row.billNumber) === billNo
+    );
+    if (alreadyInList) {
+      setFormError(
+        `Bill ${billNo} is already in today’s list for ${selectedTerminal.name}. Open it from the list to edit.`
+      );
+      return;
+    }
+
     const duplicate = await findLocalDuplicateBill({
       clientId,
       businessDate: date,
@@ -1081,7 +1095,7 @@ export default function DeliveryApp() {
     });
     if (duplicate) {
       setFormError(
-        `Bill ${billNo} is already saved locally for ${selectedTerminal.name}.`
+        `Bill ${billNo} is already saved locally for ${selectedTerminal.name}. Open it from the list to edit.`
       );
       return;
     }
@@ -1328,7 +1342,7 @@ export default function DeliveryApp() {
                 </div>
                 <div className="text-xs text-amber-200/80">
                   {failedBills.length
-                    ? "A bill needs attention — Retry will not fix a duplicate bill number."
+                    ? "A bill needs attention. Retry sync, or discard it from this phone."
                     : "Keep the app open while connection returns."}
                 </div>
                 {syncState.lastError ? (
@@ -1355,17 +1369,20 @@ export default function DeliveryApp() {
                   Bill {bill.billNumber} · {bill.terminalNameSnapshot || "Terminal"}
                 </div>
                 <div className="mt-1 text-xs text-rose-200/90">
-                  {bill.syncError ||
-                    "Could not sync. This bill number may already exist."}
+                  {bill.syncError || "Could not sync this bill."}
                 </div>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => fixFailedBillNumber(bill)}
-                    className="rounded-lg border border-sky-700/60 bg-sky-950/40 px-2.5 py-1.5 text-xs font-semibold text-sky-100"
-                  >
-                    Change bill no.
-                  </button>
+                  {/already|duplicate|exists/i.test(
+                    String(bill.syncError || "")
+                  ) ? (
+                    <button
+                      type="button"
+                      onClick={() => fixFailedBillNumber(bill)}
+                      className="rounded-lg border border-sky-700/60 bg-sky-950/40 px-2.5 py-1.5 text-xs font-semibold text-sky-100"
+                    >
+                      Change bill no.
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     onClick={() => discardFailedBill(bill.entryLocalId)}
@@ -1385,137 +1402,6 @@ export default function DeliveryApp() {
       ) : null}
 
       <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
-        <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-          <div>
-            <h2 className="text-sm font-semibold text-white">
-              Today’s bills
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              {dayTotals.count} bill{dayTotals.count === 1 ? "" : "s"} · updates
-              live · tap to edit
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                My account
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                {formatMoney(dayTotals.boyAccount, currencyDecimals)}
-              </div>
-              {currency ? (
-                <div className="text-[11px] text-slate-500">{currency}</div>
-              ) : null}
-            </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Shop account
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                {formatMoney(dayTotals.shopAccount, currencyDecimals)}
-              </div>
-              {currency ? (
-                <div className="text-[11px] text-slate-500">{currency}</div>
-              ) : null}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
-            Combined total{" "}
-            <span className="font-semibold text-white tabular-nums">
-              {formatMoney(dayTotals.all, currencyDecimals)}
-            </span>
-            {currency ? (
-              <span className="ml-1 text-xs text-slate-500">{currency}</span>
-            ) : null}
-          </div>
-
-          {dayListError ? (
-            <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
-              {dayListError}
-            </p>
-          ) : null}
-
-          {!dayRows.length ? (
-            <p className="py-2 text-center text-sm text-slate-500">
-              No bills entered for this date yet.
-            </p>
-          ) : (
-            <ul className="max-h-72 space-y-2 overflow-y-auto overscroll-y-contain">
-              {dayRows.map((row) => {
-                const rejected = row.status === SUBMISSION_STATUS.REJECTED;
-                const boyAcct = isDeliveryBoyAccountPayment(row);
-                const statusMeta = dayBillStatusMeta(row);
-                const selected =
-                  editingSubmission?.id === row.submissionId ||
-                  editingSubmission?.id === row.id ||
-                  editingSubmission?.id === row.entryLocalId;
-                return (
-                  <li key={row.key}>
-                    <button
-                      type="button"
-                      disabled={rejected}
-                      onClick={() => loadSubmissionForEdit(row)}
-                      className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
-                        selected
-                          ? "border-sky-600/70 bg-sky-950/40"
-                          : rejected
-                            ? "cursor-not-allowed border-slate-800/60 bg-slate-950/30 opacity-60"
-                            : "border-slate-800 bg-slate-950/60 hover:border-slate-600"
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-white">
-                            Bill {row.billNumber}
-                          </span>
-                          <span className="truncate text-xs text-slate-400">
-                            {row.terminalNameSnapshot || "Terminal"}
-                          </span>
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          {externalPaymentModeLabel(row)}
-                          {row.customerName ? ` · ${row.customerName}` : ""}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <span className="font-semibold tabular-nums text-white">
-                            {formatMoney(row.billAmount, currencyDecimals)}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                              boyAcct
-                                ? "bg-violet-950/70 text-violet-200"
-                                : "bg-emerald-950/70 text-emerald-200"
-                            }`}
-                          >
-                            {boyAcct ? "My account" : "Shop"}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
-                          >
-                            {statusMeta.label}
-                          </span>
-                        </div>
-                        {row.syncError ? (
-                          <div className="text-[11px] text-rose-300">
-                            {row.syncError}
-                          </div>
-                        ) : null}
-                      </div>
-                      {!rejected ? (
-                        <Pencil
-                          size={15}
-                          className="mt-1 shrink-0 text-slate-500"
-                        />
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
-
         <section>
           <FieldLabel>Terminal</FieldLabel>
           {!allowedTerminals.length ? (
@@ -1706,6 +1592,137 @@ export default function DeliveryApp() {
                 : "Save Bill"}
           </button>
         </form>
+
+        <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              Today’s bills
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {dayTotals.count} bill{dayTotals.count === 1 ? "" : "s"} · updates
+              live · tap to edit
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                My account
+              </div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                {formatMoney(dayTotals.boyAccount, currencyDecimals)}
+              </div>
+              {currency ? (
+                <div className="text-[11px] text-slate-500">{currency}</div>
+              ) : null}
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Shop account
+              </div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                {formatMoney(dayTotals.shopAccount, currencyDecimals)}
+              </div>
+              {currency ? (
+                <div className="text-[11px] text-slate-500">{currency}</div>
+              ) : null}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
+            Combined total{" "}
+            <span className="font-semibold text-white tabular-nums">
+              {formatMoney(dayTotals.all, currencyDecimals)}
+            </span>
+            {currency ? (
+              <span className="ml-1 text-xs text-slate-500">{currency}</span>
+            ) : null}
+          </div>
+
+          {dayListError ? (
+            <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+              {dayListError}
+            </p>
+          ) : null}
+
+          {!dayRows.length ? (
+            <p className="py-2 text-center text-sm text-slate-500">
+              No bills entered for this date yet.
+            </p>
+          ) : (
+            <ul className="max-h-72 space-y-2 overflow-y-auto overscroll-y-contain">
+              {dayRows.map((row) => {
+                const rejected = row.status === SUBMISSION_STATUS.REJECTED;
+                const boyAcct = isDeliveryBoyAccountPayment(row);
+                const statusMeta = dayBillStatusMeta(row);
+                const selected =
+                  editingSubmission?.id === row.submissionId ||
+                  editingSubmission?.id === row.id ||
+                  editingSubmission?.id === row.entryLocalId;
+                return (
+                  <li key={row.key}>
+                    <button
+                      type="button"
+                      disabled={rejected}
+                      onClick={() => loadSubmissionForEdit(row)}
+                      className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
+                        selected
+                          ? "border-sky-600/70 bg-sky-950/40"
+                          : rejected
+                            ? "cursor-not-allowed border-slate-800/60 bg-slate-950/30 opacity-60"
+                            : "border-slate-800 bg-slate-950/60 hover:border-slate-600"
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-white">
+                            Bill {row.billNumber}
+                          </span>
+                          <span className="truncate text-xs text-slate-400">
+                            {row.terminalNameSnapshot || "Terminal"}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {externalPaymentModeLabel(row)}
+                          {row.customerName ? ` · ${row.customerName}` : ""}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-semibold tabular-nums text-white">
+                            {formatMoney(row.billAmount, currencyDecimals)}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              boyAcct
+                                ? "bg-violet-950/70 text-violet-200"
+                                : "bg-emerald-950/70 text-emerald-200"
+                            }`}
+                          >
+                            {boyAcct ? "My account" : "Shop"}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
+                          >
+                            {statusMeta.label}
+                          </span>
+                        </div>
+                        {row.syncError ? (
+                          <div className="text-[11px] text-rose-300">
+                            {row.syncError}
+                          </div>
+                        ) : null}
+                      </div>
+                      {!rejected ? (
+                        <Pencil
+                          size={15}
+                          className="mt-1 shrink-0 text-slate-500"
+                        />
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
       </main>
 
       {logoutConfirmOpen ? (

@@ -102,10 +102,10 @@ service cloud.firestore {
         && request.resource.data.clientId == resource.data.clientId
         && request.resource.data.deliveryBoyId == resource.data.deliveryBoyId
         && request.resource.data.entryLocalId == resource.data.entryLocalId
-        && request.resource.data.createdBy == resource.data.createdBy
         && request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.saleType == 'DELIVERY'
         && validDeliveryBillSubmissionFields()
+        && resource.data.status in ['PENDING', 'APPROVED', 'EDITED_PENDING']
         && (
           (
             resource.data.status == 'PENDING'
@@ -118,8 +118,7 @@ service cloud.firestore {
             && request.resource.data.terminalId == resource.data.terminalId
             && request.resource.data.billNumber == resource.data.billNumber
           )
-        )
-        && deliveryBoyMayUseTerminal(request.resource.data.terminalId);
+        );
     }
 
     /** Bank payments must reference an OPERATIONAL account for the same shop. */
