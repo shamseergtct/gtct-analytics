@@ -597,7 +597,7 @@ function buildExternalSalesEntries(bills = []) {
       tender: "Credit",
       amount: num(tenders.deliveryAccountTotal),
       idSuffix: "delivery",
-      party: "Delivery Boy Account",
+      party: "Delivery",
     });
   }
   return entries;

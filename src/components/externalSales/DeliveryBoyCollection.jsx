@@ -81,7 +81,8 @@ function paymentAccountMeta(bill) {
   if (isDeliveryBoyAccountPayment(bill)) {
     return {
       key: "DELIVERY_ACCOUNT",
-      label: "Delivery Boy Account",
+      label:
+        String(bill?.deliveryBoyNameSnapshot || "").trim() || "Delivery",
       sort: 0,
     };
   }

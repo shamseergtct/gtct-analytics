@@ -357,7 +357,10 @@ export function isDeliveryBoyAccountPayment(billOrMode) {
 
 export function externalPaymentModeLabel(bill) {
   const mode = String(bill?.paymentMode || "").toUpperCase();
-  if (mode === "DELIVERY_ACCOUNT") return "Delivery Boy Account";
+  const deliveryBoyName = String(bill?.deliveryBoyNameSnapshot || "").trim();
+  if (mode === "DELIVERY_ACCOUNT" || isDeliveryBoyAccountPayment(bill)) {
+    return deliveryBoyName || "Delivery";
+  }
   if (mode === SPLIT_PAYMENT || mode === "SPLIT") {
     const cash = numMoney(bill?.paidCash);
     const bank = numMoney(bill?.paidBank);
@@ -370,7 +373,6 @@ export function externalPaymentModeLabel(bill) {
   }
   if (mode === "CREDIT") return "Credit";
   if (mode === "CASH" || !mode) {
-    if (isDeliveryBoyAccountPayment(bill)) return "Delivery Boy Account";
     return "Cash";
   }
   return mode;

@@ -145,16 +145,22 @@ function TerminalBillForm({
   }, [activeBoys, deliveryBoys, deliveryBoyId]);
 
   const deliveryMode = isDeliverySaleType(saleType);
+  const selectedBoy = useMemo(
+    () => boyOptions.find((row) => row.id === deliveryBoyId) || null,
+    [boyOptions, deliveryBoyId]
+  );
   const effectivePaymentOptions = useMemo(() => {
     if (!deliveryMode) return paymentModeOptions;
+    const deliveryLabel =
+      String(selectedBoy?.name || "").trim() || "Delivery";
     return [
       {
         value: DELIVERY_ACCOUNT_PAYMENT,
-        label: "Delivery Boy Account",
+        label: deliveryLabel,
       },
       ...paymentModeOptions,
     ];
-  }, [deliveryMode, paymentModeOptions]);
+  }, [deliveryMode, paymentModeOptions, selectedBoy?.name]);
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
   const isCredit = !multiPayment && resolvedPayment.paymentMode === "CREDIT";
   const splitCashNum = numMoney(splitCash);
@@ -162,10 +168,6 @@ function TerminalBillForm({
   const splitRemaining = roundMoney(
     numMoney(billAmount) - splitCashNum - splitBankNum,
     currencyDecimals
-  );
-  const selectedBoy = useMemo(
-    () => boyOptions.find((row) => row.id === deliveryBoyId) || null,
-    [boyOptions, deliveryBoyId]
   );
   const commission = resolveDeliveryBoyCommission(selectedBoy);
   const resolvedTheme = theme || getTerminalTheme(terminal, terminalIndex);
@@ -625,7 +627,7 @@ function TerminalBillForm({
         savedPaymentMode = "CASH";
       } else {
         setLocalError(
-          "Payment mode must be Delivery Boy Account, Cash, a bank account, or Credit."
+          "Payment mode must be the delivery boy, Cash, a bank account, or Credit."
         );
         return;
       }
@@ -1182,7 +1184,7 @@ function terminalDisplayForBill(bill, terminals) {
 function recentBillPartyLabel(bill) {
   if (isDeliveryBoyAccountPayment(bill)) {
     return (
-      String(bill?.deliveryBoyNameSnapshot || "").trim() || "Delivery Boy Account"
+      String(bill?.deliveryBoyNameSnapshot || "").trim() || "Delivery"
     );
   }
   const mode = String(bill?.paymentMode || "")

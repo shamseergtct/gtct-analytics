@@ -33,6 +33,12 @@ import {
   normalizeCurrencyCode,
   resolveCurrencyDecimals,
 } from "../utils/money.js";
+import {
+  resetShopMaster,
+  resetShopTransactions,
+  shopResetConfirmPhrase,
+} from "../utils/shopDataReset.js";
+import DateInput from "../components/DateInput.jsx";
 
 // ✅ Secondary auth (does not affect current session)
 function getSecondaryAuth() {
@@ -113,6 +119,12 @@ export default function SuperAdmin() {
   const [shopEditOpen, setShopEditOpen] = useState(false);
   const [savingShopEdit, setSavingShopEdit] = useState(false);
   const [editingShop, setEditingShop] = useState(null); // {id,...}
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetProgress, setResetProgress] = useState("");
+  const [txnResetMode, setTxnResetMode] = useState("all"); // all | range
+  const [txnResetFrom, setTxnResetFrom] = useState("");
+  const [txnResetTo, setTxnResetTo] = useState("");
+  const [resetConfirmText, setResetConfirmText] = useState("");
   const [shopEditForm, setShopEditForm] = useState({
     name: "",
     currency: "INR",
@@ -332,7 +344,111 @@ export default function SuperAdmin() {
       shop_type: normalizeShopType(s?.shop_type),
       isActive: s?.isActive === false ? false : true,
     });
+    setTxnResetMode("all");
+    setTxnResetFrom("");
+    setTxnResetTo("");
+    setResetConfirmText("");
+    setResetProgress("");
     setShopEditOpen(true);
+  }
+
+  async function runShopTransactionReset() {
+    if (!editingShop?.id || !isSuperAdmin) return;
+    const shopId = editingShop.id;
+    const phrase = shopResetConfirmPhrase(shopId);
+    if (String(resetConfirmText || "").trim() !== phrase) {
+      setErr(`Type ${phrase} to confirm transaction reset.`);
+      return;
+    }
+
+    const mode = txnResetMode === "range" ? "range" : "all";
+    if (mode === "range") {
+      const from = String(txnResetFrom || "").slice(0, 10);
+      const to = String(txnResetTo || txnResetFrom || "").slice(0, 10);
+      if (!from || !to) {
+        setErr("Select from and to dates for range reset.");
+        return;
+      }
+    }
+
+    const ok = window.confirm(
+      mode === "range"
+        ? `Delete transactional data for shop "${shopId}" from ${txnResetFrom} to ${txnResetTo || txnResetFrom}? This cannot be undone.`
+        : `Delete ALL transactional data for shop "${shopId}"? Masters (parties, banks, inventory, terminals, delivery boys) are kept. This cannot be undone.`
+    );
+    if (!ok) return;
+
+    setErr("");
+    setMsg("");
+    setResetBusy(true);
+    setResetProgress("Starting transaction reset…");
+    try {
+      const result = await resetShopTransactions({
+        clientId: shopId,
+        mode,
+        fromDate: txnResetFrom,
+        toDate: txnResetTo || txnResetFrom,
+        onProgress: setResetProgress,
+      });
+      const leftoverNote =
+        result.remainingTotal == null
+          ? ""
+          : result.remainingTotal > 0
+            ? ` Warning: ${result.remainingTotal} transactional docs still remain.`
+            : " Verified: 0 transactional docs remain.";
+      setMsg(
+        `Transaction reset done for ${shopId}: ${result.total} documents removed.${leftoverNote}`
+      );
+      setResetConfirmText("");
+      setResetProgress("");
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Transaction reset failed.");
+      setResetProgress("");
+    } finally {
+      setResetBusy(false);
+    }
+  }
+
+  async function runShopMasterReset() {
+    if (!editingShop?.id || !isSuperAdmin) return;
+    const shopId = editingShop.id;
+    const phrase = shopResetConfirmPhrase(shopId);
+    if (String(resetConfirmText || "").trim() !== phrase) {
+      setErr(`Type ${phrase} to confirm master reset.`);
+      return;
+    }
+
+    const ok = window.confirm(
+      `MASTER RESET shop "${shopId}"?\n\nDeletes ALL transactions and ALL masters (parties, banks, inventory, terminals, delivery boys).\nThe shop profile itself is kept.\n\nThis cannot be undone.`
+    );
+    if (!ok) return;
+
+    setErr("");
+    setMsg("");
+    setResetBusy(true);
+    setResetProgress("Starting master reset…");
+    try {
+      const result = await resetShopMaster({
+        clientId: shopId,
+        onProgress: setResetProgress,
+      });
+      const leftoverNote =
+        result.remainingTotal > 0
+          ? ` Warning: ${result.remainingTotal} docs still remain.`
+          : " Verified: shop operational data cleared.";
+      setMsg(
+        `Master reset done for ${shopId}: ${result.total} documents removed.${leftoverNote}`
+      );
+      setResetConfirmText("");
+      setResetProgress("");
+    } catch (e) {
+      console.error(e);
+      setErr(e?.message || "Master reset failed.");
+      setResetProgress("");
+    } finally {
+      setResetBusy(false);
+    }
   }
 
   async function saveShopEdits() {
@@ -1031,7 +1147,7 @@ export default function SuperAdmin() {
             onClick={() => setShopEditOpen(false)}
           />
 
-          <div className="relative w-full max-w-xl rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
+          <div className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-800 bg-slate-950 shadow-2xl">
             <div className="p-4 border-b border-slate-800 flex items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-lg font-semibold truncate">Edit Shop</div>
@@ -1143,12 +1259,13 @@ export default function SuperAdmin() {
                 <button
                   onClick={() => setShopEditOpen(false)}
                   className="rounded-xl border border-slate-800 bg-slate-900 px-4 py-2 text-sm text-slate-200 hover:bg-slate-800"
+                  disabled={resetBusy}
                 >
                   Cancel
                 </button>
 
                 <button
-                  disabled={savingShopEdit}
+                  disabled={savingShopEdit || resetBusy}
                   onClick={saveShopEdits}
                   className="rounded-xl bg-white text-slate-950 hover:opacity-90 px-4 py-2 text-sm font-semibold disabled:opacity-60"
                 >
@@ -1159,6 +1276,126 @@ export default function SuperAdmin() {
               <div className="text-[11px] text-slate-400">
                 Note: Shop ID cannot be changed. Name/Currency/Status only.
               </div>
+
+              {isSuperAdmin ? (
+                <div className="mt-2 space-y-3 rounded-2xl border border-red-900/60 bg-red-950/20 p-4">
+                  <div>
+                    <div className="text-sm font-semibold text-red-200">
+                      Danger zone — shop data reset
+                    </div>
+                    <p className="mt-1 text-xs text-slate-400">
+                      Super admin only. Affects this shop ({editingShop?.id}) only.
+                      Type <b>{shopResetConfirmPhrase(editingShop?.id)}</b> to enable
+                      reset actions.
+                    </p>
+                  </div>
+
+                  <div>
+                    <div className="text-xs opacity-80 mb-1">Confirmation</div>
+                    <input
+                      className="w-full rounded bg-slate-900 border border-slate-800 p-2 text-sm"
+                      value={resetConfirmText}
+                      onChange={(e) => setResetConfirmText(e.target.value)}
+                      placeholder={shopResetConfirmPhrase(editingShop?.id)}
+                      disabled={resetBusy}
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 space-y-3">
+                    <div className="text-sm font-medium text-slate-200">
+                      Transaction reset
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Deletes sales, purchases, payments, transfers, shifts, Z-reports,
+                      daily reports, external bills/collections, etc. Keeps masters.
+                    </p>
+                    <div className="flex flex-wrap gap-4 text-sm">
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="txnResetMode"
+                          checked={txnResetMode === "all"}
+                          onChange={() => setTxnResetMode("all")}
+                          disabled={resetBusy}
+                        />
+                        All transactions
+                      </label>
+                      <label className="inline-flex items-center gap-2">
+                        <input
+                          type="radio"
+                          name="txnResetMode"
+                          checked={txnResetMode === "range"}
+                          onChange={() => setTxnResetMode("range")}
+                          disabled={resetBusy}
+                        />
+                        Selected date / range
+                      </label>
+                    </div>
+                    {txnResetMode === "range" ? (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        <label className="block text-xs text-slate-400">
+                          From
+                          <div className="mt-1 rounded bg-slate-900 border border-slate-800">
+                            <DateInput
+                              value={txnResetFrom}
+                              onChange={(event) =>
+                                setTxnResetFrom(event.target.value)
+                              }
+                              disabled={resetBusy}
+                              className="w-full"
+                            />
+                          </div>
+                        </label>
+                        <label className="block text-xs text-slate-400">
+                          To
+                          <div className="mt-1 rounded bg-slate-900 border border-slate-800">
+                            <DateInput
+                              value={txnResetTo}
+                              onChange={(event) =>
+                                setTxnResetTo(event.target.value)
+                              }
+                              disabled={resetBusy}
+                              className="w-full"
+                            />
+                          </div>
+                        </label>
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={resetBusy}
+                      onClick={runShopTransactionReset}
+                      className="rounded-xl border border-amber-700/70 bg-amber-950/40 px-4 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-950/70 disabled:opacity-60"
+                    >
+                      {resetBusy ? "Working…" : "Run transaction reset"}
+                    </button>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 space-y-3">
+                    <div className="text-sm font-medium text-slate-200">
+                      Master reset
+                    </div>
+                    <p className="text-xs text-slate-500">
+                      Full wipe for this shop: all transactions plus parties, bank
+                      accounts, inventory, terminals, and delivery boys. Shop profile
+                      remains.
+                    </p>
+                    <button
+                      type="button"
+                      disabled={resetBusy}
+                      onClick={runShopMasterReset}
+                      className="rounded-xl border border-red-700/70 bg-red-950/50 px-4 py-2 text-sm font-semibold text-red-100 hover:bg-red-950/80 disabled:opacity-60"
+                    >
+                      {resetBusy ? "Working…" : "Run master reset"}
+                    </button>
+                  </div>
+
+                  {resetProgress ? (
+                    <div className="text-xs text-slate-400">{resetProgress}</div>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

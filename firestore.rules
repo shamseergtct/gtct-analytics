@@ -444,7 +444,7 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /internal_transfers/{transferId} {
@@ -541,7 +541,7 @@ service cloud.firestore {
           /databases/$(database)/documents/transactions/$(request.resource.data.transactionId)
         ).data.totalAmount == request.resource.data.amount;
 
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /purchases/{purchaseId} {
@@ -708,7 +708,7 @@ service cloud.firestore {
           )
         );
 
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /sales_invoices/{invoiceId} {
@@ -993,7 +993,7 @@ service cloud.firestore {
       allow update: if canManageClient(resource.data.clientId)
         && request.resource.data.clientId == resource.data.clientId
         && validExternalMasterWrite();
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /delivery_boys/{boyId} {
@@ -1013,7 +1013,7 @@ service cloud.firestore {
             && request.resource.data.clientId == resource.data.clientId
           )
         );
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     function validDeliveryBoyCollectionFields() {
@@ -1058,7 +1058,7 @@ service cloud.firestore {
         && request.resource.data.businessDate == resource.data.businessDate
         && request.resource.data.deliveryBoyId == resource.data.deliveryBoyId
         && validDeliveryBoyCollectionFields();
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /external_sales_bills/{billId} {
@@ -1097,7 +1097,7 @@ service cloud.firestore {
             && validExternalBillFields()
           )
         );
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     function validExternalTerminalBillRangeFields() {
@@ -1131,7 +1131,7 @@ service cloud.firestore {
         && request.resource.data.businessDate == resource.data.businessDate
         && request.resource.data.terminalId == resource.data.terminalId
         && validExternalTerminalBillRangeFields();
-      allow delete: if false;
+      allow delete: if isSuperAdmin();
     }
 
     match /{document=**} {

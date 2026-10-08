@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -11,6 +11,7 @@ import {
 import { ChevronDown, Eye, Landmark, Lock, UserRound, Wallet, X } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
+import { useBankAccounts } from "../../hooks/useBankAccounts.js";
 import { useEstimatedLiquidity } from "../../hooks/useEstimatedBankBalance.js";
 import { formatMoney } from "../../utils/money.js";
 import {
@@ -37,31 +38,67 @@ import {
 } from "./externalSalesUi.js";
 import TerminalBillGapChecker from "./TerminalBillGapChecker.jsx";
 
-const PAYMENT_MODE_FILTERS = [
-  { value: "CASH", label: "Cash" },
-  { value: "BANK", label: "Bank" },
-  { value: "CREDIT", label: "Credit" },
-  { value: "DELIVERY_ACCOUNT", label: "Delivery Boy Account" },
-];
-
-function billMatchesPaymentMode(bill, paymentModeFilter) {
+function billMatchesOnePaymentMode(bill, paymentModeFilter) {
   if (!paymentModeFilter) return true;
-  if (paymentModeFilter === "DELIVERY_ACCOUNT") {
-    return isDeliveryBoyAccountPayment(bill);
+
+  const isDeliveryBoyFilter = paymentModeFilter.startsWith("DELIVERY:");
+  const filterDeliveryBoyId = isDeliveryBoyFilter
+    ? paymentModeFilter.slice("DELIVERY:".length)
+    : "";
+
+  if (paymentModeFilter === "DELIVERY_ACCOUNT" || isDeliveryBoyFilter) {
+    if (!isDeliveryBoyAccountPayment(bill)) return false;
+    if (isDeliveryBoyFilter) {
+      return String(bill?.deliveryBoyId || "").trim() === filterDeliveryBoyId;
+    }
+    return true;
   }
   if (isDeliveryBoyAccountPayment(bill)) return false;
+
   const mode = String(bill?.paymentMode || "")
     .trim()
     .toUpperCase();
+  const bankAccountId = String(bill?.bankAccountId || "").trim();
+  const isBankAccountFilter = paymentModeFilter.startsWith("BANK:");
+  const filterBankAccountId = isBankAccountFilter
+    ? paymentModeFilter.slice("BANK:".length)
+    : "";
+
   if (mode === "SPLIT") {
     if (paymentModeFilter === "CASH") return Number(bill?.paidCash) > 0;
+    if (isBankAccountFilter) {
+      return (
+        Number(bill?.paidBank) > 0 &&
+        bankAccountId === filterBankAccountId
+      );
+    }
     if (paymentModeFilter === "BANK") return Number(bill?.paidBank) > 0;
     return paymentModeFilter === "SPLIT";
   }
+
   if (paymentModeFilter === "CASH") {
     return mode === "CASH" || !mode;
   }
+
+  if (isBankAccountFilter) {
+    return mode === "BANK" && bankAccountId === filterBankAccountId;
+  }
+
+  if (paymentModeFilter === "BANK") {
+    return mode === "BANK";
+  }
+
   return mode === paymentModeFilter;
+}
+
+function billMatchesPaymentMode(bill, paymentModeFilters) {
+  const selected = Array.isArray(paymentModeFilters)
+    ? paymentModeFilters.filter(Boolean)
+    : paymentModeFilters
+      ? [paymentModeFilters]
+      : [];
+  if (!selected.length) return true;
+  return selected.some((value) => billMatchesOnePaymentMode(bill, value));
 }
 
 /** Smallest → largest bill number (numeric when possible). */
@@ -173,14 +210,22 @@ export default function ExternalSalesList({
   onError,
 }) {
   const { user } = useAuth();
+  const { accounts: operationalBankAccounts } = useBankAccounts(clientId, {
+    purpose: "transaction",
+  });
   const {
     cashBalance,
     operationalBankBalances,
     loading: loadingLiquidity,
   } = useEstimatedLiquidity(clientId, filterDate);
+
   const [terminalFilter, setTerminalFilter] = useState("");
   const [saleTypeFilter, setSaleTypeFilter] = useState("");
-  const [paymentModeFilter, setPaymentModeFilter] = useState("");
+  const [paymentModeFiltersSelected, setPaymentModeFiltersSelected] = useState(
+    []
+  );
+  const [paymentModeMenuOpen, setPaymentModeMenuOpen] = useState(false);
+  const paymentModeMenuRef = useRef(null);
   const [boyFilter, setBoyFilter] = useState("");
   const [search, setSearch] = useState("");
   const [showVoided, setShowVoided] = useState(false);
@@ -192,6 +237,67 @@ export default function ExternalSalesList({
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState("");
   const [unlockError, setUnlockError] = useState("");
+
+  const paymentModeFilters = useMemo(() => {
+    const bankFilters = (operationalBankAccounts || [])
+      .filter((account) => account?.isActive !== false)
+      .map((account) => ({
+        value: `BANK:${account.id}`,
+        label: account.accountName || account.id,
+      }));
+    const deliveryFilters = (deliveryBoys || [])
+      .filter((boy) => boy?.isActive !== false)
+      .map((boy) => ({
+        value: `DELIVERY:${boy.id}`,
+        label: boy.name || boy.id,
+      }));
+    return [
+      { value: "CASH", label: "Cash" },
+      ...bankFilters,
+      { value: "CREDIT", label: "Credit" },
+      ...deliveryFilters,
+    ];
+  }, [operationalBankAccounts, deliveryBoys]);
+
+  const paymentModeFilterLabel = useMemo(() => {
+    if (!paymentModeFiltersSelected.length) return "All payment modes";
+    if (paymentModeFiltersSelected.length === 1) {
+      return (
+        paymentModeFilters.find(
+          (item) => item.value === paymentModeFiltersSelected[0]
+        )?.label || "1 selected"
+      );
+    }
+    return `${paymentModeFiltersSelected.length} selected`;
+  }, [paymentModeFilters, paymentModeFiltersSelected]);
+
+  useEffect(() => {
+    if (!paymentModeFiltersSelected.length) return;
+    const valid = new Set(paymentModeFilters.map((item) => item.value));
+    const next = paymentModeFiltersSelected.filter((value) => valid.has(value));
+    if (next.length !== paymentModeFiltersSelected.length) {
+      setPaymentModeFiltersSelected(next);
+    }
+  }, [paymentModeFilters, paymentModeFiltersSelected]);
+
+  useEffect(() => {
+    if (!paymentModeMenuOpen) return undefined;
+    function onPointerDown(event) {
+      if (!paymentModeMenuRef.current?.contains(event.target)) {
+        setPaymentModeMenuOpen(false);
+      }
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [paymentModeMenuOpen]);
+
+  function togglePaymentModeFilter(value) {
+    setPaymentModeFiltersSelected((current) =>
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value]
+    );
+  }
 
   const currencyPrefix = currency ? `${currency} ` : "";
   const summaryProtected = Boolean(String(summaryPasswordHash || "").trim());
@@ -378,7 +484,7 @@ export default function ExternalSalesList({
       if (!showVoided && bill.voided === true) return false;
       if (terminalFilter && bill.terminalId !== terminalFilter) return false;
       if (saleTypeFilter && bill.saleType !== saleTypeFilter) return false;
-      if (!billMatchesPaymentMode(bill, paymentModeFilter)) return false;
+      if (!billMatchesPaymentMode(bill, paymentModeFiltersSelected)) return false;
       if (boyFilter && bill.deliveryBoyId !== boyFilter) return false;
       if (!q) return true;
       const hay = [
@@ -399,7 +505,7 @@ export default function ExternalSalesList({
     showVoided,
     terminalFilter,
     saleTypeFilter,
-    paymentModeFilter,
+    paymentModeFiltersSelected,
     boyFilter,
     search,
   ]);
@@ -828,21 +934,70 @@ export default function ExternalSalesList({
               ))}
             </select>
           </label>
-          <label className={LABEL_CLASS}>
+          <div className={LABEL_CLASS} ref={paymentModeMenuRef}>
             Payment Mode
-            <select
-              value={paymentModeFilter}
-              onChange={(event) => setPaymentModeFilter(event.target.value)}
-              className={FIELD_CLASS}
-            >
-              <option value="">All payment modes</option>
-              {PAYMENT_MODE_FILTERS.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          </label>
+            <div className="relative mt-1.5">
+              <button
+                type="button"
+                onClick={() => setPaymentModeMenuOpen((open) => !open)}
+                className={`${FIELD_CLASS} flex items-center justify-between gap-2 text-left`}
+                aria-expanded={paymentModeMenuOpen}
+                aria-haspopup="listbox"
+              >
+                <span className="truncate">{paymentModeFilterLabel}</span>
+                <ChevronDown
+                  size={16}
+                  className={`shrink-0 text-slate-400 transition-transform ${
+                    paymentModeMenuOpen ? "rotate-180" : ""
+                  }`}
+                />
+              </button>
+              {paymentModeMenuOpen ? (
+                <div className="absolute z-30 mt-1 flex w-full flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-950 shadow-2xl">
+                  <div className="max-h-56 overflow-y-auto p-2">
+                    <label className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-200 hover:bg-slate-900">
+                      <input
+                        type="checkbox"
+                        checked={paymentModeFiltersSelected.length === 0}
+                        onChange={() => setPaymentModeFiltersSelected([])}
+                        className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-blue-600"
+                      />
+                      All payment modes
+                    </label>
+                    <div className="my-1 border-t border-slate-800" />
+                    {paymentModeFilters.map((item) => {
+                      const checked = paymentModeFiltersSelected.includes(
+                        item.value
+                      );
+                      return (
+                        <label
+                          key={item.value}
+                          className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-200 hover:bg-slate-900"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() => togglePaymentModeFilter(item.value)}
+                            className="h-4 w-4 rounded border-slate-600 bg-slate-950 text-blue-600"
+                          />
+                          <span className="truncate">{item.label}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="border-t border-slate-800 p-2">
+                    <button
+                      type="button"
+                      onClick={() => setPaymentModeMenuOpen(false)}
+                      className={BTN_PRIMARY + " w-full py-2"}
+                    >
+                      OK
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
           <label className={LABEL_CLASS}>
             Delivery Boy
             <select
@@ -888,6 +1043,13 @@ export default function ExternalSalesList({
               const groupKey = group.terminalId || group.terminalName;
               const isOpen = openTerminalLists[groupKey] === true;
               const panelId = `terminal-bills-${groupKey}`;
+              const activeBills = group.bills.filter(
+                (bill) => bill.voided !== true
+              );
+              const groupTotal = activeBills.reduce(
+                (sum, bill) => sum + (Number(bill.billAmount) || 0),
+                0
+              );
 
               return (
                 <div
@@ -911,8 +1073,20 @@ export default function ExternalSalesList({
                         {group.terminalName}
                       </div>
                       <div className="mt-0.5 text-xs tabular-nums text-slate-400">
-                        {group.bills.length} bill
-                        {group.bills.length === 1 ? "" : "s"}
+                        {activeBills.length} bill
+                        {activeBills.length === 1 ? "" : "s"}
+                        {group.bills.length !== activeBills.length
+                          ? ` · ${group.bills.length - activeBills.length} voided`
+                          : ""}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                        Total
+                      </div>
+                      <div className="text-sm font-semibold tabular-nums text-white">
+                        {currencyPrefix}
+                        {formatMoney(groupTotal, currencyDecimals)}
                       </div>
                     </div>
                     <ChevronDown
