@@ -42,7 +42,6 @@ import { useDeliveryChargeSettings } from "../hooks/useDeliveryChargeSettings.js
 import {
   DELIVERY_BILL_SUBMISSIONS,
   SUBMISSION_STATUS,
-  isEditedSubmission,
   updateDeliveryBillSubmissionByBoy,
 } from "../utils/deliveryBillSubmissions.js";
 import {
@@ -52,6 +51,7 @@ import {
   findLocalDuplicateBill,
   getDeliveryMeta,
   getUnsyncedSummary,
+  listLocalBills,
   putLocalBill,
   setDeliveryMeta,
   updateLocalBill,
@@ -65,13 +65,70 @@ import {
   subscribeDeliverySync,
 } from "../utils/deliveryBillSync.js";
 
-function submissionStatusLabel(status) {
-  const value = String(status || "").trim();
-  if (value === SUBMISSION_STATUS.APPROVED) return "Approved";
-  if (value === SUBMISSION_STATUS.EDITED_PENDING) return "Edited · waiting";
-  if (value === SUBMISSION_STATUS.REJECTED) return "Rejected";
-  if (value === SUBMISSION_STATUS.PENDING) return "Waiting approval";
-  return value || "—";
+function cleanId(value) {
+  return String(value || "").trim();
+}
+
+/** Status chip for today’s bills list (local + server). */
+function dayBillStatusMeta(row) {
+  if (row?.source === "local") {
+    const sync = String(row.syncStatus || "").trim();
+    if (sync === SYNC_STATUS.FAILED) {
+      return {
+        label: "Sync failed",
+        className: "bg-rose-950/70 text-rose-200",
+      };
+    }
+    if (sync === SYNC_STATUS.SYNCING) {
+      return {
+        label: "Syncing…",
+        className: "bg-sky-950/70 text-sky-200",
+      };
+    }
+    return {
+      label: "Not synced",
+      className: "bg-amber-950/70 text-amber-200",
+    };
+  }
+
+  const status = String(row?.status || "").trim();
+  const editedBy = String(row?.lastEditSource || "").trim();
+
+  if (status === SUBMISSION_STATUS.REJECTED) {
+    return { label: "Rejected", className: "bg-rose-950/70 text-rose-200" };
+  }
+  if (status === SUBMISSION_STATUS.EDITED_PENDING) {
+    return {
+      label:
+        editedBy === "shop" ? "Edited · shop · pending" : "Edited · delivery · pending",
+      className: "bg-sky-950/70 text-sky-200",
+    };
+  }
+  if (status === SUBMISSION_STATUS.PENDING) {
+    return {
+      label: "Synced · pending",
+      className: "bg-amber-950/70 text-amber-200",
+    };
+  }
+  if (status === SUBMISSION_STATUS.APPROVED) {
+    if (editedBy === "shop") {
+      return {
+        label: "Approved · shop edit",
+        className: "bg-emerald-950/70 text-emerald-200",
+      };
+    }
+    if (editedBy === "delivery_boy") {
+      return {
+        label: "Approved · after edit",
+        className: "bg-emerald-950/70 text-emerald-200",
+      };
+    }
+    return { label: "Approved", className: "bg-emerald-950/70 text-emerald-200" };
+  }
+  return {
+    label: status || "—",
+    className: "bg-slate-800 text-slate-300",
+  };
 }
 
 function todayYYYYMMDD() {
@@ -159,6 +216,9 @@ export default function DeliveryApp() {
   const [failedBills, setFailedBills] = useState([]);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [daySubmissions, setDaySubmissions] = useState([]);
+  const [dayLiveBills, setDayLiveBills] = useState([]);
+  const [dayLocalBills, setDayLocalBills] = useState([]);
+  const [dayListError, setDayListError] = useState("");
   const [editingSubmission, setEditingSubmission] = useState(null);
 
   const billNumberRef = useRef(null);
@@ -271,39 +331,251 @@ export default function DeliveryApp() {
     editingSubmission,
   ]);
 
+  const refreshLocalDayBills = useCallback(async () => {
+    if (!clientId || !businessDate) {
+      setDayLocalBills([]);
+      return;
+    }
+    const date = String(businessDate).slice(0, 10);
+    try {
+      const rows = await listLocalBills();
+      setDayLocalBills(
+        rows.filter(
+          (row) =>
+            cleanId(row.clientId) === cleanId(clientId) &&
+            String(row.businessDate || "").slice(0, 10) === date &&
+            row.syncStatus !== SYNC_STATUS.SYNCED
+        )
+      );
+    } catch {
+      setDayLocalBills([]);
+    }
+  }, [clientId, businessDate]);
+
+  useEffect(() => {
+    void refreshLocalDayBills();
+  }, [refreshLocalDayBills, syncState.pending, syncState.failed, syncState.syncing]);
+
   useEffect(() => {
     if (!clientId || !deliveryBoyId || !businessDate) {
       setDaySubmissions([]);
+      setDayLiveBills([]);
+      setDayListError("");
       return undefined;
     }
     const date = String(businessDate).slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       setDaySubmissions([]);
+      setDayLiveBills([]);
       return undefined;
     }
-    const q = query(
-      collection(db, DELIVERY_BILL_SUBMISSIONS),
-      where("clientId", "==", clientId),
-      where("deliveryBoyId", "==", deliveryBoyId),
-      where("businessDate", "==", date),
-      orderBy("createdAtMs", "asc")
+
+    setDayListError("");
+    const unsubscribers = [];
+
+    // Approved bills live on external_sales_bills (same source as shop "Bills entered today").
+    unsubscribers.push(
+      onSnapshot(
+        query(
+          collection(db, "external_sales_bills"),
+          where("clientId", "==", clientId),
+          where("businessDate", "==", date),
+          orderBy("createdAtMs", "desc")
+        ),
+        (snap) => {
+          const rows = snap.docs
+            .map((item) => ({ id: item.id, ...item.data() }))
+            .filter(
+              (bill) =>
+                bill.voided !== true &&
+                String(bill.deliveryBoyId || "").trim() === deliveryBoyId
+            );
+          setDayLiveBills(rows);
+        },
+        (reason) => {
+          console.error("delivery day live bills failed:", reason);
+          setDayLiveBills([]);
+          setDayListError(
+            reason?.message || "Could not load today’s approved bills."
+          );
+        }
+      )
     );
-    return onSnapshot(
-      q,
-      (snap) => {
-        setDaySubmissions(
-          snap.docs.map((item) => ({ id: item.id, ...item.data() }))
-        );
-      },
-      () => setDaySubmissions([])
+
+    // Pending / edited / rejected submissions from Delivery Entry.
+    unsubscribers.push(
+      onSnapshot(
+        query(
+          collection(db, DELIVERY_BILL_SUBMISSIONS),
+          where("clientId", "==", clientId),
+          where("deliveryBoyId", "==", deliveryBoyId),
+          where("businessDate", "==", date)
+        ),
+        (snap) => {
+          setDaySubmissions(
+            snap.docs.map((item) => ({ id: item.id, ...item.data() }))
+          );
+          void refreshLocalDayBills();
+        },
+        (reason) => {
+          console.error("delivery day submissions failed:", reason);
+          setDaySubmissions([]);
+          setDayListError((prev) =>
+            prev ||
+            reason?.message ||
+            "Could not load pending delivery submissions."
+          );
+        }
+      )
     );
-  }, [clientId, deliveryBoyId, businessDate]);
+
+    return () => {
+      unsubscribers.forEach((stop) => stop());
+    };
+  }, [clientId, deliveryBoyId, businessDate, refreshLocalDayBills]);
+
+  /** Unified today list: local queue + submissions + live approved bills. */
+  const dayRows = useMemo(() => {
+    const rows = [];
+    const coveredKeys = new Set();
+    const coveredLocalIds = new Set();
+
+    for (const bill of dayLiveBills) {
+      const key = `${bill.terminalId}__${bill.billNumber}`;
+      coveredKeys.add(key);
+      if (bill.entryLocalId) coveredLocalIds.add(cleanId(bill.entryLocalId));
+      const linked = daySubmissions.find(
+        (sub) =>
+          cleanId(sub.approvedBillId) === cleanId(bill.id) ||
+          (cleanId(sub.entryLocalId) &&
+            cleanId(sub.entryLocalId) === cleanId(bill.entryLocalId)) ||
+          (cleanId(sub.terminalId) === cleanId(bill.terminalId) &&
+            String(sub.billNumber) === String(bill.billNumber))
+      );
+      if (linked?.entryLocalId) {
+        coveredLocalIds.add(cleanId(linked.entryLocalId));
+      }
+      rows.push({
+        key: `bill:${bill.id}`,
+        source: "bill",
+        id: linked?.id || bill.id,
+        billId: bill.id,
+        submissionId: linked?.id || "",
+        billNumber: bill.billNumber,
+        terminalId: bill.terminalId,
+        terminalNameSnapshot: bill.terminalNameSnapshot || "",
+        billAmount: bill.billAmount,
+        paymentMode: bill.paymentMode,
+        bankAccountId: bill.bankAccountId || "",
+        bankAccountNameSnapshot: bill.bankAccountNameSnapshot || "",
+        customerName: bill.customerName || "",
+        deliveryCharge: bill.deliveryCharge,
+        deliveryBoyId: bill.deliveryBoyId,
+        deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
+        notes: bill.notes || "",
+        entryLocalId: bill.entryLocalId || linked?.entryLocalId || "",
+        businessDate: bill.businessDate,
+        status: linked?.status || SUBMISSION_STATUS.APPROVED,
+        lastEditSource: linked?.lastEditSource || "",
+        approvedBillId: bill.id,
+        createdAtMs: bill.createdAtMs || 0,
+        editable: Boolean(linked?.id),
+      });
+    }
+
+    for (const sub of daySubmissions) {
+      const key = `${sub.terminalId}__${sub.billNumber}`;
+      if (sub.entryLocalId) coveredLocalIds.add(cleanId(sub.entryLocalId));
+      if (
+        sub.status === SUBMISSION_STATUS.APPROVED &&
+        coveredKeys.has(key)
+      ) {
+        continue;
+      }
+      if (
+        sub.status === SUBMISSION_STATUS.APPROVED &&
+        cleanId(sub.approvedBillId) &&
+        dayLiveBills.some((bill) => cleanId(bill.id) === cleanId(sub.approvedBillId))
+      ) {
+        continue;
+      }
+      coveredKeys.add(key);
+      rows.push({
+        key: `sub:${sub.id}`,
+        source: "submission",
+        id: sub.id,
+        billId: sub.approvedBillId || "",
+        submissionId: sub.id,
+        billNumber: sub.billNumber,
+        terminalId: sub.terminalId,
+        terminalNameSnapshot: sub.terminalNameSnapshot || "",
+        billAmount: sub.billAmount,
+        paymentMode: sub.paymentMode,
+        bankAccountId: sub.bankAccountId || "",
+        bankAccountNameSnapshot: sub.bankAccountNameSnapshot || "",
+        customerName: sub.customerName || "",
+        deliveryCharge: sub.deliveryCharge,
+        deliveryBoyId: sub.deliveryBoyId,
+        deliveryBoyNameSnapshot: sub.deliveryBoyNameSnapshot || "",
+        notes: sub.notes || "",
+        entryLocalId: sub.entryLocalId || "",
+        businessDate: sub.businessDate,
+        status: sub.status,
+        lastEditSource: sub.lastEditSource || "",
+        approvedBillId: sub.approvedBillId || "",
+        createdAtMs: sub.createdAtMs || sub.updatedAtMs || 0,
+        editable: sub.status !== SUBMISSION_STATUS.REJECTED,
+      });
+    }
+
+    // Show phone-queue bills immediately (before / while syncing).
+    for (const local of dayLocalBills) {
+      const localId = cleanId(local.entryLocalId);
+      if (localId && coveredLocalIds.has(localId)) continue;
+      const key = `${local.terminalId}__${local.billNumber}`;
+      if (coveredKeys.has(key)) continue;
+      coveredKeys.add(key);
+      rows.push({
+        key: `local:${localId}`,
+        source: "local",
+        id: localId,
+        billId: "",
+        submissionId: "",
+        billNumber: local.billNumber,
+        terminalId: local.terminalId,
+        terminalNameSnapshot: local.terminalNameSnapshot || "",
+        billAmount: local.billAmount,
+        paymentMode: local.paymentMode,
+        bankAccountId: local.bankAccountId || "",
+        bankAccountNameSnapshot: local.bankAccountNameSnapshot || "",
+        customerName: local.customerName || "",
+        deliveryCharge: local.deliveryCharge,
+        deliveryBoyId: local.deliveryBoyId || deliveryBoyId,
+        deliveryBoyNameSnapshot: local.deliveryBoyNameSnapshot || "",
+        notes: local.notes || "",
+        entryLocalId: localId,
+        businessDate: local.businessDate,
+        status: "LOCAL",
+        syncStatus: local.syncStatus,
+        syncError: local.syncError || "",
+        lastEditSource: "",
+        approvedBillId: "",
+        createdAtMs: local.createdAtMs || 0,
+        editable: true,
+      });
+    }
+
+    rows.sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0));
+    return rows;
+  }, [dayLiveBills, daySubmissions, dayLocalBills, deliveryBoyId]);
 
   const dayTotals = useMemo(() => {
     let boyAccount = 0;
     let shopAccount = 0;
-    for (const row of daySubmissions) {
+    let count = 0;
+    for (const row of dayRows) {
       if (row?.status === SUBMISSION_STATUS.REJECTED) continue;
+      count += 1;
       const amount = numMoney(row.billAmount);
       if (isDeliveryBoyAccountPayment(row)) boyAccount += amount;
       else shopAccount += amount;
@@ -312,14 +584,13 @@ export default function DeliveryApp() {
       boyAccount,
       shopAccount,
       all: boyAccount + shopAccount,
-      count: daySubmissions.filter(
-        (row) => row?.status !== SUBMISSION_STATUS.REJECTED
-      ).length,
+      count,
     };
-  }, [daySubmissions]);
+  }, [dayRows]);
 
   const editingLockedIdentity = Boolean(
     editingSubmission &&
+      editingSubmission.source !== "local" &&
       (editingSubmission.status === SUBMISSION_STATUS.APPROVED ||
         editingSubmission.status === SUBMISSION_STATUS.EDITED_PENDING)
   );
@@ -589,14 +860,37 @@ export default function DeliveryApp() {
   }
 
   function loadSubmissionForEdit(row) {
-    if (!row?.id) return;
+    if (!row) return;
     if (row.status === SUBMISSION_STATUS.REJECTED) {
       setFormError("Rejected bills cannot be edited.");
       return;
     }
+    if (!row.editable) {
+      setFormError("This bill cannot be edited.");
+      return;
+    }
+
+    const isLocal = row.source === "local";
+    const submissionId = cleanId(
+      row.submissionId || (row.source === "submission" ? row.id : "")
+    );
+    if (!isLocal && !submissionId) {
+      setFormError(
+        "This bill was entered by the shop. Ask admin to edit it, or enter new bills from Delivery Entry."
+      );
+      return;
+    }
+
     setFormError("");
     setFormMessage("");
-    setEditingSubmission(row);
+    setEditingSubmission({
+      id: isLocal ? row.entryLocalId : submissionId,
+      ...row,
+      source: row.source,
+      status: row.status,
+      syncStatus: row.syncStatus,
+      approvedBillId: row.approvedBillId || row.billId || "",
+    });
     if (row.terminalId) setSelectedTerminalId(row.terminalId);
     setBillNumber(String(row.billNumber || ""));
     setBillAmount(
@@ -724,11 +1018,8 @@ export default function DeliveryApp() {
       }
       setSaving(true);
       try {
-        const result = await updateDeliveryBillSubmissionByBoy({
-          userUid: user.uid,
-          submissionId: editingSubmission.id,
-          record: {
-            businessDate: date,
+        if (editingSubmission.source === "local") {
+          await updateLocalBill(editingSubmission.entryLocalId || editingSubmission.id, {
             terminalId: selectedTerminal.id,
             terminalNameSnapshot: selectedTerminal.name || "",
             billNumber: billNo,
@@ -738,23 +1029,48 @@ export default function DeliveryApp() {
             bankAccountNameSnapshot,
             customerName: String(customerName || "").trim(),
             deliveryCharge: chargeNum,
-            notes: "",
-            deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
-            deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
-          },
-          deliveryBoy,
-          bankAccounts: allowedBankAccounts,
-          currency,
-          currencyDecimals,
-        });
-        const editedAgain =
-          result.status === SUBMISSION_STATUS.EDITED_PENDING;
-        setFormMessage(
-          editedAgain
-            ? `Bill ${billNo} updated. Sent to shop for re-check.`
-            : `Bill ${billNo} updated. Waiting for shop approval.`
-        );
-        clearBillFields();
+            syncStatus: SYNC_STATUS.PENDING,
+            syncError: "",
+            updatedAtMs: Date.now(),
+          });
+          await refreshDeliverySyncCounts();
+          await refreshLocalDayBills();
+          setFormMessage(`Bill ${billNo} updated on this phone.`);
+          clearBillFields();
+          triggerSync();
+        } else {
+          const result = await updateDeliveryBillSubmissionByBoy({
+            userUid: user.uid,
+            submissionId: editingSubmission.id,
+            record: {
+              businessDate: date,
+              terminalId: selectedTerminal.id,
+              terminalNameSnapshot: selectedTerminal.name || "",
+              billNumber: billNo,
+              billAmount: amountNum,
+              paymentMode: savedPaymentMode,
+              bankAccountId,
+              bankAccountNameSnapshot,
+              customerName: String(customerName || "").trim(),
+              deliveryCharge: chargeNum,
+              notes: "",
+              deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
+              deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
+            },
+            deliveryBoy,
+            bankAccounts: allowedBankAccounts,
+            currency,
+            currencyDecimals,
+          });
+          const editedAgain =
+            result.status === SUBMISSION_STATUS.EDITED_PENDING;
+          setFormMessage(
+            editedAgain
+              ? `Bill ${billNo} updated. Sent to shop for re-check.`
+              : `Bill ${billNo} updated. Waiting for shop approval.`
+          );
+          clearBillFields();
+        }
       } catch (error) {
         setFormError(error?.message || "Failed to update bill.");
       } finally {
@@ -808,15 +1124,16 @@ export default function DeliveryApp() {
 
     setSaving(true);
     try {
-      // LOCAL SAVE FIRST — never wait on the network for confirmation.
+      // LOCAL SAVE FIRST — list updates immediately; sync runs in background.
       await putLocalBill(localRecord);
       await refreshDeliverySyncCounts();
+      await refreshLocalDayBills();
 
       const online = typeof navigator === "undefined" ? true : navigator.onLine;
       setFormMessage(
         online
-          ? "Bill saved. Sent for shop approval."
-          : "Bill saved. Waiting for connection."
+          ? "Bill saved. Appears below — syncing for shop approval."
+          : "Bill saved on this phone. Waiting for connection."
       );
       clearBillFields();
 
@@ -1074,6 +1391,137 @@ export default function DeliveryApp() {
       ) : null}
 
       <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
+        <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              Today’s bills
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {dayTotals.count} bill{dayTotals.count === 1 ? "" : "s"} · updates
+              live · tap to edit
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                My account
+              </div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                {formatMoney(dayTotals.boyAccount, currencyDecimals)}
+              </div>
+              {currency ? (
+                <div className="text-[11px] text-slate-500">{currency}</div>
+              ) : null}
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Shop account
+              </div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                {formatMoney(dayTotals.shopAccount, currencyDecimals)}
+              </div>
+              {currency ? (
+                <div className="text-[11px] text-slate-500">{currency}</div>
+              ) : null}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
+            Combined total{" "}
+            <span className="font-semibold text-white tabular-nums">
+              {formatMoney(dayTotals.all, currencyDecimals)}
+            </span>
+            {currency ? (
+              <span className="ml-1 text-xs text-slate-500">{currency}</span>
+            ) : null}
+          </div>
+
+          {dayListError ? (
+            <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+              {dayListError}
+            </p>
+          ) : null}
+
+          {!dayRows.length ? (
+            <p className="py-2 text-center text-sm text-slate-500">
+              No bills entered for this date yet.
+            </p>
+          ) : (
+            <ul className="max-h-72 space-y-2 overflow-y-auto overscroll-y-contain">
+              {dayRows.map((row) => {
+                const rejected = row.status === SUBMISSION_STATUS.REJECTED;
+                const boyAcct = isDeliveryBoyAccountPayment(row);
+                const statusMeta = dayBillStatusMeta(row);
+                const selected =
+                  editingSubmission?.id === row.submissionId ||
+                  editingSubmission?.id === row.id ||
+                  editingSubmission?.id === row.entryLocalId;
+                return (
+                  <li key={row.key}>
+                    <button
+                      type="button"
+                      disabled={rejected}
+                      onClick={() => loadSubmissionForEdit(row)}
+                      className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
+                        selected
+                          ? "border-sky-600/70 bg-sky-950/40"
+                          : rejected
+                            ? "cursor-not-allowed border-slate-800/60 bg-slate-950/30 opacity-60"
+                            : "border-slate-800 bg-slate-950/60 hover:border-slate-600"
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-white">
+                            Bill {row.billNumber}
+                          </span>
+                          <span className="truncate text-xs text-slate-400">
+                            {row.terminalNameSnapshot || "Terminal"}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400">
+                          {externalPaymentModeLabel(row)}
+                          {row.customerName ? ` · ${row.customerName}` : ""}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span className="font-semibold tabular-nums text-white">
+                            {formatMoney(row.billAmount, currencyDecimals)}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              boyAcct
+                                ? "bg-violet-950/70 text-violet-200"
+                                : "bg-emerald-950/70 text-emerald-200"
+                            }`}
+                          >
+                            {boyAcct ? "My account" : "Shop"}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
+                          >
+                            {statusMeta.label}
+                          </span>
+                        </div>
+                        {row.syncError ? (
+                          <div className="text-[11px] text-rose-300">
+                            {row.syncError}
+                          </div>
+                        ) : null}
+                      </div>
+                      {!rejected ? (
+                        <Pencil
+                          size={15}
+                          className="mt-1 shrink-0 text-slate-500"
+                        />
+                      ) : null}
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+
         <section>
           <FieldLabel>Terminal</FieldLabel>
           {!allowedTerminals.length ? (
@@ -1268,134 +1716,6 @@ export default function DeliveryApp() {
                 : "Save Bill"}
           </button>
         </form>
-
-        <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-          <div>
-            <h2 className="text-sm font-semibold text-white">
-              Today’s bills
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              {dayTotals.count} bill{dayTotals.count === 1 ? "" : "s"} · tap to
-              edit
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                My account
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                {formatMoney(dayTotals.boyAccount, currencyDecimals)}
-              </div>
-              {currency ? (
-                <div className="text-[11px] text-slate-500">{currency}</div>
-              ) : null}
-            </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Shop account
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                {formatMoney(dayTotals.shopAccount, currencyDecimals)}
-              </div>
-              {currency ? (
-                <div className="text-[11px] text-slate-500">{currency}</div>
-              ) : null}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
-            Combined total{" "}
-            <span className="font-semibold text-white tabular-nums">
-              {formatMoney(dayTotals.all, currencyDecimals)}
-            </span>
-            {currency ? (
-              <span className="ml-1 text-xs text-slate-500">{currency}</span>
-            ) : null}
-          </div>
-
-          {!daySubmissions.length ? (
-            <p className="py-2 text-center text-sm text-slate-500">
-              No bills entered for this date yet.
-            </p>
-          ) : (
-            <ul className="max-h-80 space-y-2 overflow-y-auto overscroll-y-contain">
-              {daySubmissions
-                .slice()
-                .reverse()
-                .map((row) => {
-                  const rejected = row.status === SUBMISSION_STATUS.REJECTED;
-                  const edited = isEditedSubmission(row.status);
-                  const boyAcct = isDeliveryBoyAccountPayment(row);
-                  const selected = editingSubmission?.id === row.id;
-                  return (
-                    <li key={row.id}>
-                      <button
-                        type="button"
-                        disabled={rejected}
-                        onClick={() => loadSubmissionForEdit(row)}
-                        className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
-                          selected
-                            ? "border-sky-600/70 bg-sky-950/40"
-                            : rejected
-                              ? "cursor-not-allowed border-slate-800/60 bg-slate-950/30 opacity-60"
-                              : "border-slate-800 bg-slate-950/60 hover:border-slate-600"
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-semibold text-white">
-                              Bill {row.billNumber}
-                            </span>
-                            <span className="truncate text-xs text-slate-400">
-                              {row.terminalNameSnapshot || "Terminal"}
-                            </span>
-                          </div>
-                          <div className="text-xs text-slate-400">
-                            {externalPaymentModeLabel(row)}
-                            {row.customerName ? ` · ${row.customerName}` : ""}
-                          </div>
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="font-semibold tabular-nums text-white">
-                              {formatMoney(row.billAmount, currencyDecimals)}
-                            </span>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                                boyAcct
-                                  ? "bg-violet-950/70 text-violet-200"
-                                  : "bg-emerald-950/70 text-emerald-200"
-                              }`}
-                            >
-                              {boyAcct ? "My account" : "Shop"}
-                            </span>
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                                edited
-                                  ? "bg-sky-950/70 text-sky-200"
-                                  : row.status === SUBMISSION_STATUS.APPROVED
-                                    ? "bg-emerald-950/70 text-emerald-200"
-                                    : row.status === SUBMISSION_STATUS.REJECTED
-                                      ? "bg-rose-950/70 text-rose-200"
-                                      : "bg-amber-950/70 text-amber-200"
-                              }`}
-                            >
-                              {submissionStatusLabel(row.status)}
-                            </span>
-                          </div>
-                        </div>
-                        {!rejected ? (
-                          <Pencil
-                            size={15}
-                            className="mt-1 shrink-0 text-slate-500"
-                          />
-                        ) : null}
-                      </button>
-                    </li>
-                  );
-                })}
-            </ul>
-          )}
-        </section>
       </main>
 
       {logoutConfirmOpen ? (

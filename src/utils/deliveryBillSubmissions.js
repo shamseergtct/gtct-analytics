@@ -363,9 +363,10 @@ export async function updateDeliveryBillSubmissionByBoy({
     tx.update(ref, {
       ...patch,
       status: nextStatus,
-      editedAt: lockedAfterApproval ? serverTimestamp() : data.editedAt || null,
-      editedAtMs: lockedAfterApproval ? nowMs : data.editedAtMs || null,
-      editedBy: lockedAfterApproval ? userUid : data.editedBy || null,
+      lastEditSource: "delivery_boy",
+      editedAt: serverTimestamp(),
+      editedAtMs: nowMs,
+      editedBy: userUid,
       updatedAt: serverTimestamp(),
       updatedAtMs: nowMs,
       updatedBy: userUid,
@@ -449,6 +450,7 @@ export async function approveDeliveryBillSubmission({
     const fresh = await tx.get(ref);
     if (!fresh.exists()) return;
     if (!isSubmissionAwaitingReview(fresh.data()?.status)) return;
+    const prior = fresh.data() || {};
     const nowMs = Date.now();
     tx.update(ref, {
       status: SUBMISSION_STATUS.APPROVED,
@@ -456,6 +458,10 @@ export async function approveDeliveryBillSubmission({
       approvedAtMs: nowMs,
       approvedBy: userUid,
       approvedBillId: billResult.docId,
+      lastEditSource:
+        prior.status === SUBMISSION_STATUS.EDITED_PENDING
+          ? "shop"
+          : prior.lastEditSource || "",
       updatedAt: serverTimestamp(),
       updatedAtMs: nowMs,
       updatedBy: userUid,
@@ -485,13 +491,18 @@ export async function markDeliveryBillSubmissionApproved({
     if (!isSubmissionAwaitingReview(fresh.data()?.status)) {
       throw new Error("This submission is no longer pending.");
     }
+    const prior = fresh.data() || {};
     const nowMs = Date.now();
     tx.update(ref, {
       status: SUBMISSION_STATUS.APPROVED,
       approvedAt: serverTimestamp(),
       approvedAtMs: nowMs,
       approvedBy: userUid,
-      approvedBillId: clean(approvedBillId) || clean(fresh.data()?.approvedBillId),
+      approvedBillId: clean(approvedBillId) || clean(prior.approvedBillId),
+      lastEditSource:
+        prior.status === SUBMISSION_STATUS.EDITED_PENDING
+          ? "shop"
+          : prior.lastEditSource || "",
       updatedAt: serverTimestamp(),
       updatedAtMs: nowMs,
       updatedBy: userUid,
