@@ -42,7 +42,6 @@ import { useDeliveryChargeSettings } from "../hooks/useDeliveryChargeSettings.js
 import {
   DELIVERY_BILL_SUBMISSIONS,
   SUBMISSION_STATUS,
-  updateDeliveryBillSubmissionByBoy,
 } from "../utils/deliveryBillSubmissions.js";
 import {
   SYNC_STATUS,
@@ -434,109 +433,19 @@ export default function DeliveryApp() {
     };
   }, [clientId, deliveryBoyId, businessDate, refreshLocalDayBills]);
 
-  /** Unified today list: local queue + submissions + live approved bills. */
+  /** Unified today list: phone queue first (immediate), then server rows. */
   const dayRows = useMemo(() => {
     const rows = [];
     const coveredKeys = new Set();
     const coveredLocalIds = new Set();
 
-    for (const bill of dayLiveBills) {
-      const key = `${bill.terminalId}__${bill.billNumber}`;
-      coveredKeys.add(key);
-      if (bill.entryLocalId) coveredLocalIds.add(cleanId(bill.entryLocalId));
-      const linked = daySubmissions.find(
-        (sub) =>
-          cleanId(sub.approvedBillId) === cleanId(bill.id) ||
-          (cleanId(sub.entryLocalId) &&
-            cleanId(sub.entryLocalId) === cleanId(bill.entryLocalId)) ||
-          (cleanId(sub.terminalId) === cleanId(bill.terminalId) &&
-            String(sub.billNumber) === String(bill.billNumber))
-      );
-      if (linked?.entryLocalId) {
-        coveredLocalIds.add(cleanId(linked.entryLocalId));
-      }
-      rows.push({
-        key: `bill:${bill.id}`,
-        source: "bill",
-        id: linked?.id || bill.id,
-        billId: bill.id,
-        submissionId: linked?.id || "",
-        billNumber: bill.billNumber,
-        terminalId: bill.terminalId,
-        terminalNameSnapshot: bill.terminalNameSnapshot || "",
-        billAmount: bill.billAmount,
-        saleType: bill.saleType || "DELIVERY",
-        paymentMode: bill.paymentMode,
-        bankAccountId: bill.bankAccountId || "",
-        bankAccountNameSnapshot: bill.bankAccountNameSnapshot || "",
-        customerName: bill.customerName || "",
-        deliveryCharge: bill.deliveryCharge,
-        deliveryBoyId: bill.deliveryBoyId,
-        deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
-        notes: bill.notes || "",
-        entryLocalId: bill.entryLocalId || linked?.entryLocalId || "",
-        businessDate: bill.businessDate,
-        status: linked?.status || SUBMISSION_STATUS.APPROVED,
-        lastEditSource: linked?.lastEditSource || "",
-        approvedBillId: bill.id,
-        createdAtMs: bill.createdAtMs || 0,
-        editable: Boolean(linked?.id),
-      });
-    }
-
-    for (const sub of daySubmissions) {
-      const key = `${sub.terminalId}__${sub.billNumber}`;
-      if (sub.entryLocalId) coveredLocalIds.add(cleanId(sub.entryLocalId));
-      if (
-        sub.status === SUBMISSION_STATUS.APPROVED &&
-        coveredKeys.has(key)
-      ) {
-        continue;
-      }
-      if (
-        sub.status === SUBMISSION_STATUS.APPROVED &&
-        cleanId(sub.approvedBillId) &&
-        dayLiveBills.some((bill) => cleanId(bill.id) === cleanId(sub.approvedBillId))
-      ) {
-        continue;
-      }
-      coveredKeys.add(key);
-      rows.push({
-        key: `sub:${sub.id}`,
-        source: "submission",
-        id: sub.id,
-        billId: sub.approvedBillId || "",
-        submissionId: sub.id,
-        billNumber: sub.billNumber,
-        terminalId: sub.terminalId,
-        terminalNameSnapshot: sub.terminalNameSnapshot || "",
-        billAmount: sub.billAmount,
-        saleType: sub.saleType || "DELIVERY",
-        paymentMode: sub.paymentMode,
-        bankAccountId: sub.bankAccountId || "",
-        bankAccountNameSnapshot: sub.bankAccountNameSnapshot || "",
-        customerName: sub.customerName || "",
-        deliveryCharge: sub.deliveryCharge,
-        deliveryBoyId: sub.deliveryBoyId,
-        deliveryBoyNameSnapshot: sub.deliveryBoyNameSnapshot || "",
-        notes: sub.notes || "",
-        entryLocalId: sub.entryLocalId || "",
-        businessDate: sub.businessDate,
-        status: sub.status,
-        lastEditSource: sub.lastEditSource || "",
-        approvedBillId: sub.approvedBillId || "",
-        createdAtMs: sub.createdAtMs || sub.updatedAtMs || 0,
-        editable: sub.status !== SUBMISSION_STATUS.REJECTED,
-      });
-    }
-
-    // Show phone-queue bills immediately (before / while syncing).
+    // Local queue first so edits appear immediately as not-synced.
     for (const local of dayLocalBills) {
       const localId = cleanId(local.entryLocalId);
-      if (localId && coveredLocalIds.has(localId)) continue;
+      if (!localId) continue;
       const key = `${local.terminalId}__${local.billNumber}`;
-      if (coveredKeys.has(key)) continue;
       coveredKeys.add(key);
+      coveredLocalIds.add(localId);
       rows.push({
         key: `local:${localId}`,
         source: "local",
@@ -563,8 +472,97 @@ export default function DeliveryApp() {
         syncError: local.syncError || "",
         lastEditSource: "",
         approvedBillId: "",
-        createdAtMs: local.createdAtMs || 0,
+        createdAtMs: local.updatedAtMs || local.createdAtMs || 0,
         editable: true,
+      });
+    }
+
+    for (const bill of dayLiveBills) {
+      const key = `${bill.terminalId}__${bill.billNumber}`;
+      const linked = daySubmissions.find(
+        (sub) =>
+          cleanId(sub.approvedBillId) === cleanId(bill.id) ||
+          (cleanId(sub.entryLocalId) &&
+            cleanId(sub.entryLocalId) === cleanId(bill.entryLocalId)) ||
+          (cleanId(sub.terminalId) === cleanId(bill.terminalId) &&
+            String(sub.billNumber) === String(bill.billNumber))
+      );
+      const localId = cleanId(
+        bill.entryLocalId || linked?.entryLocalId || ""
+      );
+      if (localId && coveredLocalIds.has(localId)) continue;
+      if (coveredKeys.has(key)) continue;
+      coveredKeys.add(key);
+      if (localId) coveredLocalIds.add(localId);
+      rows.push({
+        key: `bill:${bill.id}`,
+        source: "bill",
+        id: linked?.id || bill.id,
+        billId: bill.id,
+        submissionId: linked?.id || "",
+        billNumber: bill.billNumber,
+        terminalId: bill.terminalId,
+        terminalNameSnapshot: bill.terminalNameSnapshot || "",
+        billAmount: bill.billAmount,
+        saleType: bill.saleType || "DELIVERY",
+        paymentMode: bill.paymentMode,
+        bankAccountId: bill.bankAccountId || "",
+        bankAccountNameSnapshot: bill.bankAccountNameSnapshot || "",
+        customerName: bill.customerName || "",
+        deliveryCharge: bill.deliveryCharge,
+        deliveryBoyId: bill.deliveryBoyId,
+        deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
+        notes: bill.notes || "",
+        entryLocalId: localId,
+        businessDate: bill.businessDate,
+        status: linked?.status || SUBMISSION_STATUS.APPROVED,
+        lastEditSource: linked?.lastEditSource || "",
+        approvedBillId: bill.id,
+        createdAtMs: bill.createdAtMs || 0,
+        editable: Boolean(linked?.id),
+      });
+    }
+
+    for (const sub of daySubmissions) {
+      const key = `${sub.terminalId}__${sub.billNumber}`;
+      const localId = cleanId(sub.entryLocalId);
+      if (localId && coveredLocalIds.has(localId)) continue;
+      if (coveredKeys.has(key)) continue;
+      if (
+        sub.status === SUBMISSION_STATUS.APPROVED &&
+        cleanId(sub.approvedBillId) &&
+        dayLiveBills.some((bill) => cleanId(bill.id) === cleanId(sub.approvedBillId))
+      ) {
+        continue;
+      }
+      coveredKeys.add(key);
+      if (localId) coveredLocalIds.add(localId);
+      rows.push({
+        key: `sub:${sub.id}`,
+        source: "submission",
+        id: sub.id,
+        billId: sub.approvedBillId || "",
+        submissionId: sub.id,
+        billNumber: sub.billNumber,
+        terminalId: sub.terminalId,
+        terminalNameSnapshot: sub.terminalNameSnapshot || "",
+        billAmount: sub.billAmount,
+        saleType: sub.saleType || "DELIVERY",
+        paymentMode: sub.paymentMode,
+        bankAccountId: sub.bankAccountId || "",
+        bankAccountNameSnapshot: sub.bankAccountNameSnapshot || "",
+        customerName: sub.customerName || "",
+        deliveryCharge: sub.deliveryCharge,
+        deliveryBoyId: sub.deliveryBoyId,
+        deliveryBoyNameSnapshot: sub.deliveryBoyNameSnapshot || "",
+        notes: sub.notes || "",
+        entryLocalId: localId,
+        businessDate: sub.businessDate,
+        status: sub.status,
+        lastEditSource: sub.lastEditSource || "",
+        approvedBillId: sub.approvedBillId || "",
+        createdAtMs: sub.createdAtMs || sub.updatedAtMs || 0,
+        editable: sub.status !== SUBMISSION_STATUS.REJECTED,
       });
     }
 
@@ -1019,63 +1017,56 @@ export default function DeliveryApp() {
           return;
         }
       }
+
+      // Treat edits like a new local bill: save on phone, sync later for approval.
+      const entryLocalId = cleanId(
+        editingSubmission.entryLocalId || editingSubmission.id
+      );
+      const serverEdit =
+        editingSubmission.source === "submission" ||
+        editingSubmission.source === "bill";
+      const nowMs = Date.now();
+      const localRecord = {
+        entryLocalId,
+        clientId,
+        businessDate: date,
+        terminalId: selectedTerminal.id,
+        terminalNameSnapshot: selectedTerminal.name || "",
+        billNumber: billNo,
+        billAmount: amountNum,
+        paymentMode: savedPaymentMode,
+        bankAccountId,
+        bankAccountNameSnapshot,
+        customerName: String(customerName || "").trim(),
+        deliveryCharge: chargeNum,
+        deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
+        deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
+        commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
+        commissionRate: Number(deliveryBoy?.commissionRate) || 0,
+        currency,
+        currencyDecimals,
+        notes: "",
+        entrySource: EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
+        resubmitEdit: serverEdit,
+        syncStatus: SYNC_STATUS.PENDING,
+        syncError: "",
+        createdAtMs: Number(editingSubmission.createdAtMs) || nowMs,
+        updatedAtMs: nowMs,
+        createdBy: user.uid,
+      };
+
       setSaving(true);
       try {
-        if (editingSubmission.source === "local") {
-          await updateLocalBill(editingSubmission.entryLocalId || editingSubmission.id, {
-            terminalId: selectedTerminal.id,
-            terminalNameSnapshot: selectedTerminal.name || "",
-            billNumber: billNo,
-            billAmount: amountNum,
-            paymentMode: savedPaymentMode,
-            bankAccountId,
-            bankAccountNameSnapshot,
-            customerName: String(customerName || "").trim(),
-            deliveryCharge: chargeNum,
-            syncStatus: SYNC_STATUS.PENDING,
-            syncError: "",
-            updatedAtMs: Date.now(),
-          });
-          await refreshDeliverySyncCounts();
-          await refreshLocalDayBills();
-          setFormMessage(`Bill ${billNo} updated on this phone.`);
-          clearBillFields();
-          triggerSync();
-        } else {
-          const result = await updateDeliveryBillSubmissionByBoy({
-            userUid: user.uid,
-            submissionId: editingSubmission.id,
-            record: {
-              businessDate: date,
-              terminalId: selectedTerminal.id,
-              terminalNameSnapshot: selectedTerminal.name || "",
-              billNumber: billNo,
-              billAmount: amountNum,
-              paymentMode: savedPaymentMode,
-              bankAccountId,
-              bankAccountNameSnapshot,
-              customerName: String(customerName || "").trim(),
-              deliveryCharge: chargeNum,
-              notes: "",
-              deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
-              deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
-            },
-            deliveryBoy,
-            bankAccounts: allowedBankAccounts,
-            currency,
-            currencyDecimals,
-          });
-          const editedAgain =
-            result.status === SUBMISSION_STATUS.EDITED_PENDING;
-          setFormMessage(
-            editedAgain
-              ? `Bill ${billNo} updated. Sent to shop for re-check.`
-              : `Bill ${billNo} updated. Waiting for shop approval.`
-          );
-          clearBillFields();
-        }
+        await putLocalBill(localRecord);
+        await refreshDeliverySyncCounts();
+        await refreshLocalDayBills();
+        setFormMessage(
+          `Bill ${billNo} saved on this phone. Will sync for shop approval.`
+        );
+        clearBillFields();
+        triggerSync();
       } catch (error) {
-        setFormError(error?.message || "Failed to update bill.");
+        setFormError(error?.message || "Failed to save bill.");
       } finally {
         setSaving(false);
       }
@@ -1604,8 +1595,8 @@ export default function DeliveryApp() {
           {editingSubmission ? (
             <div className="rounded-xl border border-sky-800/60 bg-sky-950/30 px-3 py-2 text-xs text-sky-100">
               {editingLockedIdentity
-                ? "Approved bill — after you save, the shop gets an edited-bill notification to re-check. Bill number and terminal stay locked."
-                : "Update this bill. It stays waiting for shop approval."}
+                ? "Editing an approved bill. Save stores it on this phone like a new entry, then syncs later for shop re-approval. Bill number and terminal stay locked."
+                : "Editing this bill. Save stores it on this phone, then syncs later for shop approval."}
               <button
                 type="button"
                 onClick={() => clearBillFields()}
@@ -1709,13 +1700,9 @@ export default function DeliveryApp() {
             style={{ backgroundColor: theme.accent }}
           >
             {saving
-              ? editingSubmission
-                ? "Updating…"
-                : "Saving…"
+              ? "Saving…"
               : editingSubmission
-                ? editingLockedIdentity
-                  ? "Save & send for re-check"
-                  : "Update Bill"
+                ? "Save (sync later)"
                 : "Save Bill"}
           </button>
         </form>

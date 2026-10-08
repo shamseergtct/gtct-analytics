@@ -12,6 +12,7 @@ import {
 } from "./deliveryBillQueue.js";
 import {
   findDeliveryBillSubmissionByLocalId,
+  updateDeliveryBillSubmissionByBoy,
   upsertDeliveryBillSubmission,
   SUBMISSION_STATUS,
 } from "./deliveryBillSubmissions.js";
@@ -86,20 +87,24 @@ async function syncOneBill(record, ctx) {
     currencyDecimals,
   } = ctx;
 
-  // Lost-response recovery: submission already accepted for this local id.
+  const boy =
+    deliveryBoy || {
+      id: record.deliveryBoyId,
+      name: record.deliveryBoyNameSnapshot,
+      commissionEnabled: record.commissionEnabled,
+      commissionRate: record.commissionRate,
+    };
+  const moneyCtx = {
+    currency: currency || record.currency || "",
+    currencyDecimals: currencyDecimals ?? record.currencyDecimals ?? 3,
+  };
+
+  // Lost-response recovery / edit re-queue for existing submissions.
   try {
     const existing = await findDeliveryBillSubmissionByLocalId(
       record.entryLocalId
     );
     if (existing) {
-      if (
-        existing.status === SUBMISSION_STATUS.PENDING ||
-        existing.status === SUBMISSION_STATUS.EDITED_PENDING ||
-        existing.status === SUBMISSION_STATUS.APPROVED
-      ) {
-        await deleteLocalBill(record.entryLocalId);
-        return { ok: true, status: "idempotent" };
-      }
       if (existing.status === SUBMISSION_STATUS.REJECTED) {
         await updateLocalBill(record.entryLocalId, {
           syncStatus: SYNC_STATUS.FAILED,
@@ -113,9 +118,52 @@ async function syncOneBill(record, ctx) {
           message: existing.rejectReason || "Rejected by admin.",
         };
       }
+
+      // Boy edited after save — push field changes via sync (not realtime UI).
+      if (record.resubmitEdit) {
+        await updateLocalBill(record.entryLocalId, {
+          syncStatus: SYNC_STATUS.SYNCING,
+          syncError: "",
+        });
+        await updateDeliveryBillSubmissionByBoy({
+          userUid,
+          submissionId: existing.id,
+          record,
+          deliveryBoy: boy,
+          bankAccounts,
+          ...moneyCtx,
+        });
+        await deleteLocalBill(record.entryLocalId);
+        return { ok: true, status: "updated" };
+      }
+
+      if (
+        existing.status === SUBMISSION_STATUS.PENDING ||
+        existing.status === SUBMISSION_STATUS.EDITED_PENDING ||
+        existing.status === SUBMISSION_STATUS.APPROVED
+      ) {
+        await deleteLocalBill(record.entryLocalId);
+        return { ok: true, status: "idempotent" };
+      }
     }
-  } catch {
-    // continue to write attempt
+  } catch (error) {
+    // If edit sync failed, fall through to mark failure below when we rethrow path.
+    if (record.resubmitEdit) {
+      const message = error?.message || String(error);
+      if (isPermanentFailure(error)) {
+        await updateLocalBill(record.entryLocalId, {
+          syncStatus: SYNC_STATUS.FAILED,
+          syncError: message,
+        });
+        return { ok: false, permanent: true, message };
+      }
+      await updateLocalBill(record.entryLocalId, {
+        syncStatus: SYNC_STATUS.PENDING,
+        syncError: message,
+      });
+      return { ok: false, permanent: false, message };
+    }
+    // continue to create attempt
   }
 
   await updateLocalBill(record.entryLocalId, {
@@ -127,16 +175,9 @@ async function syncOneBill(record, ctx) {
     await upsertDeliveryBillSubmission({
       userUid,
       record,
-      deliveryBoy: deliveryBoy || {
-        id: record.deliveryBoyId,
-        name: record.deliveryBoyNameSnapshot,
-        commissionEnabled: record.commissionEnabled,
-        commissionRate: record.commissionRate,
-      },
+      deliveryBoy: boy,
       bankAccounts,
-      currency: currency || record.currency || "",
-      currencyDecimals:
-        currencyDecimals ?? record.currencyDecimals ?? 3,
+      ...moneyCtx,
     });
 
     await deleteLocalBill(record.entryLocalId);
