@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import {
   collection,
   doc,
@@ -9,7 +10,6 @@ import {
 import { db } from "../firebase";
 import { useAuth } from "../context/AuthContext";
 import {
-  buildPaymentModeOptions,
   findBankAccountName,
   parsePaymentModeSelection,
 } from "../utils/paymentModes.js";
@@ -17,19 +17,23 @@ import { filterBankAccountsForPurpose } from "../utils/bankAccountTypes.js";
 import {
   DELIVERY_ACCOUNT_PAYMENT,
   EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
+  buildDeliveryBoyPaymentModeChoices,
   getTerminalTheme,
   normalizeBillNumber,
+  resolveDeliveryBoyAssignedPaymentModes,
   sortBillingTerminals,
 } from "../utils/externalSales.js";
 import { moneyInputStep, numMoney, resolveCurrencyDecimals } from "../utils/money.js";
 import {
   SYNC_STATUS,
   createEntryLocalId,
+  deleteLocalBill,
   findLocalDuplicateBill,
   getDeliveryMeta,
   getUnsyncedSummary,
   putLocalBill,
   setDeliveryMeta,
+  updateLocalBill,
 } from "../utils/deliveryBillQueue.js";
 import {
   getDeliverySyncState,
@@ -58,6 +62,21 @@ function FieldLabel({ children }) {
 const inputClass =
   "w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3.5 text-lg text-white outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30";
 
+function loginErrorMessage(error) {
+  const code = String(error?.code || "");
+  const raw = String(error?.message || "");
+  if (code === "auth/invalid-credential" || raw.includes("invalid-credential")) {
+    return (
+      "Wrong email or password, or this login was never created. " +
+      "Ask your shop admin to create a Delivery Entry login in External Sales → Setup → Delivery Boys (email + password)."
+    );
+  }
+  if (code === "auth/user-disabled" || raw.includes("user-disabled")) {
+    return "This account is disabled. Ask your admin to activate it.";
+  }
+  return raw || "Login failed.";
+}
+
 export default function DeliveryApp() {
   const {
     user,
@@ -72,6 +91,7 @@ export default function DeliveryApp() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [loggingIn, setLoggingIn] = useState(false);
 
@@ -105,6 +125,7 @@ export default function DeliveryApp() {
   const [formMessage, setFormMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [syncState, setSyncState] = useState(getDeliverySyncState());
+  const [failedBills, setFailedBills] = useState([]);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
   const billNumberRef = useRef(null);
@@ -133,25 +154,45 @@ export default function DeliveryApp() {
     )
   );
 
+  const allowedPaymentModes = useMemo(
+    () =>
+      resolveDeliveryBoyAssignedPaymentModes(deliveryBoy, bankAccounts),
+    [deliveryBoy, bankAccounts]
+  );
+
+  const allowedBankAccounts = useMemo(() => {
+    const allowed = new Set(
+      allowedPaymentModes
+        .filter((value) => String(value).startsWith("BANK:"))
+        .map((value) => value.slice("BANK:".length))
+    );
+    return bankAccounts.filter((row) => allowed.has(row.id));
+  }, [bankAccounts, allowedPaymentModes]);
+
   const paymentOptions = useMemo(() => {
     const boyLabel =
       String(deliveryBoy?.name || displayName || "").trim() || "Delivery";
-    const banks = buildPaymentModeOptions({
-      bankAccounts,
-      includeCredit: false,
+    const choices = buildDeliveryBoyPaymentModeChoices({
+      deliveryBoyName: boyLabel,
+      bankAccounts: allowedBankAccounts,
     });
-    return [
-      { value: DELIVERY_ACCOUNT_PAYMENT, label: boyLabel },
-      ...banks,
-    ];
-  }, [bankAccounts, deliveryBoy?.name, displayName]);
+    const allowed = new Set(allowedPaymentModes);
+    return choices
+      .filter((row) => allowed.has(row.value))
+      .map((row) => ({ value: row.value, label: row.label }));
+  }, [
+    allowedBankAccounts,
+    allowedPaymentModes,
+    deliveryBoy?.name,
+    displayName,
+  ]);
 
   const isDeliveryBoyUser = role === "delivery_boy";
 
   // Sync context for network listeners
   syncCtxRef.current = {
     userUid: user?.uid,
-    bankAccounts,
+    bankAccounts: allowedBankAccounts,
     deliveryBoy,
     currency,
     currencyDecimals,
@@ -317,6 +358,16 @@ export default function DeliveryApp() {
     }
   }, [selectedTerminalId, clientId, deliveryBoyId]);
 
+  const refreshFailedBills = useCallback(async () => {
+    const summary = await getUnsyncedSummary();
+    setFailedBills(
+      (summary.rows || []).filter(
+        (row) => row.syncStatus === SYNC_STATUS.FAILED
+      )
+    );
+    return summary;
+  }, []);
+
   const triggerSync = useCallback(async (retryFailed = false) => {
     if (!user?.uid) return;
     await runDeliveryBillSync({
@@ -324,12 +375,59 @@ export default function DeliveryApp() {
       userUid: user.uid,
       retryFailed,
     });
-  }, [user?.uid]);
+    await refreshFailedBills();
+  }, [user?.uid, refreshFailedBills]);
 
   useEffect(() => {
     if (!user?.uid || !isDeliveryBoyUser) return;
-    refreshDeliverySyncCounts().then(() => triggerSync());
-  }, [user?.uid, isDeliveryBoyUser, triggerSync, bankAccounts.length, deliveryBoy?.id]);
+    refreshDeliverySyncCounts()
+      .then(() => refreshFailedBills())
+      .then(() => triggerSync());
+  }, [
+    user?.uid,
+    isDeliveryBoyUser,
+    triggerSync,
+    refreshFailedBills,
+    bankAccounts.length,
+    deliveryBoy?.id,
+  ]);
+
+  async function discardFailedBill(entryLocalId) {
+    if (!entryLocalId) return;
+    const ok = window.confirm(
+      "Remove this bill from this phone only?\n\nIt will not delete anything already saved in Analytics. Use this when the bill already exists on the server or was entered by mistake."
+    );
+    if (!ok) return;
+    await deleteLocalBill(entryLocalId);
+    await refreshDeliverySyncCounts();
+    await refreshFailedBills();
+  }
+
+  async function fixFailedBillNumber(bill) {
+    if (!bill?.entryLocalId) return;
+    const next = window.prompt(
+      `Bill ${bill.billNumber} already exists for ${bill.terminalNameSnapshot || "this terminal"}.\n\nEnter a new bill number to sync instead:`,
+      String(bill.billNumber || "")
+    );
+    if (next == null) return;
+    const billNo = String(next).trim();
+    if (!billNo) return;
+    await updateLocalBill(bill.entryLocalId, {
+      billNumber: billNo,
+      syncStatus: SYNC_STATUS.PENDING,
+      syncError: "",
+    });
+    await refreshDeliverySyncCounts();
+    await refreshFailedBills();
+    await triggerSync(true);
+  }
+
+  // Drop payment selection if admin disabled that option for this boy.
+  useEffect(() => {
+    if (!paymentOptions.length) return;
+    if (paymentOptions.some((row) => row.value === paymentMode)) return;
+    setPaymentMode(paymentOptions[0].value);
+  }, [paymentMode, paymentOptions]);
 
   async function handleLogin(event) {
     event.preventDefault();
@@ -338,7 +436,7 @@ export default function DeliveryApp() {
     try {
       await login(email, password);
     } catch (error) {
-      setLoginError(error?.message || "Login failed.");
+      setLoginError(loginErrorMessage(error));
     } finally {
       setLoggingIn(false);
     }
@@ -359,7 +457,9 @@ export default function DeliveryApp() {
     setBillAmount("");
     setCustomerName("");
     setDeliveryCharge("");
-    setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
+    setPaymentMode(
+      paymentOptions[0]?.value || DELIVERY_ACCOUNT_PAYMENT
+    );
     setFormError("");
     requestAnimationFrame(() => billNumberRef.current?.focus());
   }
@@ -415,6 +515,13 @@ export default function DeliveryApp() {
     let bankAccountId = "";
     let bankAccountNameSnapshot = "";
 
+    if (!paymentOptions.some((row) => row.value === paymentMode)) {
+      setFormError(
+        "That payment option is not enabled for you. Ask an admin to update your payment options."
+      );
+      return;
+    }
+
     if (paymentMode === DELIVERY_ACCOUNT_PAYMENT) {
       savedPaymentMode = DELIVERY_ACCOUNT_PAYMENT;
     } else if (resolved.paymentMode === "BANK") {
@@ -423,11 +530,16 @@ export default function DeliveryApp() {
         setFormError("Select a bank account.");
         return;
       }
-      if (!bankAccounts.some((row) => row.id === bankAccountId)) {
-        setFormError("Only active operational bank accounts are allowed.");
+      if (!allowedBankAccounts.some((row) => row.id === bankAccountId)) {
+        setFormError(
+          "That bank account is not assigned to you. Ask an admin to update your payment options."
+        );
         return;
       }
-      bankAccountNameSnapshot = findBankAccountName(bankAccounts, bankAccountId);
+      bankAccountNameSnapshot = findBankAccountName(
+        allowedBankAccounts,
+        bankAccountId
+      );
       savedPaymentMode = "BANK";
     } else if (resolved.paymentMode === "CASH") {
       savedPaymentMode = "CASH";
@@ -494,7 +606,7 @@ export default function DeliveryApp() {
       const online = typeof navigator === "undefined" ? true : navigator.onLine;
       setFormMessage(
         online
-          ? "Bill saved."
+          ? "Bill saved. Sent for shop approval."
           : "Bill saved. Waiting for connection."
       );
       clearBillFields();
@@ -546,14 +658,28 @@ export default function DeliveryApp() {
             </div>
             <div>
               <FieldLabel>Password</FieldLabel>
-              <input
-                type="password"
-                autoComplete="current-password"
-                className={inputClass}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
+              <div className="relative">
+                <input
+                  type={showLoginPassword ? "text" : "password"}
+                  autoComplete="current-password"
+                  className={`${inputClass} pr-14`}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowLoginPassword((v) => !v)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-xl p-2.5 text-slate-400 hover:bg-slate-800 hover:text-slate-200"
+                  aria-label={showLoginPassword ? "Hide password" : "Show password"}
+                >
+                  {showLoginPassword ? (
+                    <EyeOff size={22} aria-hidden />
+                  ) : (
+                    <Eye size={22} aria-hidden />
+                  )}
+                </button>
+              </div>
             </div>
             {loginError ? (
               <div className="rounded-xl border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-100">
@@ -673,26 +799,63 @@ export default function DeliveryApp() {
 
       {pendingTotal > 0 ? (
         <div className="border-b border-amber-900/50 bg-amber-950/40 px-4 py-2.5">
-          <div className="mx-auto flex max-w-lg items-start justify-between gap-3">
-            <div>
-              <div className="text-sm font-medium text-amber-100">
-                🟠 {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting to
-                sync
+          <div className="mx-auto max-w-lg space-y-2">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-medium text-amber-100">
+                  🟠 {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting
+                  to sync
+                </div>
+                <div className="text-xs text-amber-200/80">
+                  {failedBills.length
+                    ? "A bill needs attention — Retry will not fix a duplicate bill number."
+                    : "Keep the app open while connection returns."}
+                </div>
+                {syncState.lastError ? (
+                  <div className="mt-1 text-xs text-rose-200">
+                    {syncState.lastError}
+                  </div>
+                ) : null}
               </div>
-              <div className="text-xs text-amber-200/80">
-                Keep the app open while connection returns.
-              </div>
-              {syncState.lastError ? (
-                <div className="mt-1 text-xs text-rose-200">{syncState.lastError}</div>
-              ) : null}
+              <button
+                type="button"
+                onClick={() => triggerSync(true)}
+                className="shrink-0 rounded-lg border border-amber-700/60 px-2 py-1 text-xs text-amber-100"
+              >
+                Retry
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => triggerSync(true)}
-              className="shrink-0 rounded-lg border border-amber-700/60 px-2 py-1 text-xs text-amber-100"
-            >
-              Retry
-            </button>
+
+            {failedBills.map((bill) => (
+              <div
+                key={bill.entryLocalId}
+                className="rounded-xl border border-rose-900/50 bg-rose-950/30 p-3"
+              >
+                <div className="text-sm font-medium text-rose-100">
+                  Bill {bill.billNumber} · {bill.terminalNameSnapshot || "Terminal"}
+                </div>
+                <div className="mt-1 text-xs text-rose-200/90">
+                  {bill.syncError ||
+                    "Could not sync. This bill number may already exist."}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => fixFailedBillNumber(bill)}
+                    className="rounded-lg border border-sky-700/60 bg-sky-950/40 px-2.5 py-1.5 text-xs font-semibold text-sky-100"
+                  >
+                    Change bill no.
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => discardFailedBill(bill.entryLocalId)}
+                    className="rounded-lg border border-slate-600 px-2.5 py-1.5 text-xs text-slate-200"
+                  >
+                    Discard from phone
+                  </button>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       ) : syncState.message === "All bills synced" ? (

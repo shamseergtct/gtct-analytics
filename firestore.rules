@@ -56,15 +56,31 @@ service cloud.firestore {
         && profile().deliveryBoyId.size() > 0;
     }
 
-    function deliveryBoyOwnsBill() {
+    /** Delivery Entry may only create pending submissions — not live bills. */
+    function deliveryBoyOwnsSubmission() {
       return isDeliveryBoyForClient(request.resource.data.clientId)
         && request.resource.data.deliveryBoyId == profile().deliveryBoyId
         && request.resource.data.saleType == 'DELIVERY'
-        && request.resource.data.entrySource == 'DELIVERY_APP'
+        && request.resource.data.status == 'PENDING'
         && request.resource.data.entryLocalId is string
         && request.resource.data.entryLocalId.size() > 0
         && profile().assignedTerminalIds is list
         && profile().assignedTerminalIds.hasAny([request.resource.data.terminalId]);
+    }
+
+    function validDeliveryBillSubmissionFields() {
+      return request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.terminalId is string
+        && request.resource.data.terminalId.size() > 0
+        && request.resource.data.billNumber is string
+        && request.resource.data.billNumber.size() > 0
+        && request.resource.data.billNumber.size() <= 40
+        && request.resource.data.billAmount is number
+        && request.resource.data.deliveryCharge is number
+        && request.resource.data.deliveryCharge >= 0
+        && request.resource.data.paymentMode in ['CASH', 'BANK', 'DELIVERY_ACCOUNT']
+        && request.resource.data.status in ['PENDING', 'APPROVED', 'REJECTED'];
     }
 
     /** Bank payments must reference an OPERATIONAL account for the same shop. */
@@ -1050,12 +1066,8 @@ service cloud.firestore {
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.updatedBy == request.auth.uid
         && validExternalBillFields()
-        && (
-          // Shop admins (Analytics Bill Entry)
-          canManageClient(request.resource.data.clientId)
-          // Delivery Entry app — ownership + assigned terminal enforced
-          || deliveryBoyOwnsBill()
-        );
+        // Only shop admins create live bills (incl. approving Delivery Entry).
+        && canManageClient(request.resource.data.clientId);
     }
 
     function validExternalBillEdit() {
@@ -1143,6 +1155,38 @@ service cloud.firestore {
         && request.resource.data.businessDate == resource.data.businessDate
         && request.resource.data.deliveryBoyId == resource.data.deliveryBoyId
         && validDeliveryBoyCollectionFields();
+      allow delete: if isSuperAdmin();
+    }
+
+    match /delivery_bill_submissions/{submissionId} {
+      allow read: if canReadTenantResource()
+        || (
+          isDeliveryBoyForClient(resource.data.clientId)
+          && resource.data.deliveryBoyId == profile().deliveryBoyId
+        );
+
+      allow create: if request.resource.data.clientId is string
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.status == 'PENDING'
+        && validDeliveryBillSubmissionFields()
+        && (
+          canManageClient(request.resource.data.clientId)
+          || deliveryBoyOwnsSubmission()
+        );
+
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.entryLocalId == resource.data.entryLocalId
+        && request.resource.data.businessDate == resource.data.businessDate
+        && request.resource.data.terminalId == resource.data.terminalId
+        && request.resource.data.billNumber == resource.data.billNumber
+        && resource.data.status == 'PENDING'
+        && request.resource.data.status in ['APPROVED', 'REJECTED']
+        && validDeliveryBillSubmissionFields();
+
       allow delete: if isSuperAdmin();
     }
 

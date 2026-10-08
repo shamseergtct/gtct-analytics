@@ -18,8 +18,10 @@ import ExternalSalesList from "../components/externalSales/ExternalSalesList.jsx
 import TerminalManager from "../components/externalSales/TerminalManager.jsx";
 import DeliveryBoyManager from "../components/externalSales/DeliveryBoyManager.jsx";
 import DeliveryBoyCollection from "../components/externalSales/DeliveryBoyCollection.jsx";
+import DeliveryBillApprovals from "../components/externalSales/DeliveryBillApprovals.jsx";
 import DaySummaryPrivacySettings from "../components/externalSales/DaySummaryPrivacySettings.jsx";
 import { sortBillingTerminals } from "../utils/externalSales.js";
+import { useBankAccounts } from "../hooks/useBankAccounts.js";
 import {
   FIELD_CLASS,
   LABEL_CLASS,
@@ -44,6 +46,10 @@ function todayYYYYMMDD() {
 export default function ExternalSales() {
   const { activeClientId, currency, currencyDecimals } = useClient();
   const { activeShift } = useShift();
+  const { accounts: shopBankAccounts } = useBankAccounts(activeClientId, {
+    activeOnly: false,
+    purpose: "all",
+  });
 
   const defaultDate = activeShift?.businessDate || todayYYYYMMDD();
 
@@ -227,25 +233,42 @@ export default function ExternalSales() {
       </div>
 
       {tab === "entry" ? (
-        <ExternalSalesForm
-          clientId={activeClientId}
-          currency={currency}
-          currencyDecimals={currencyDecimals}
-          businessDate={effectiveFilterDate}
-          terminals={terminals}
-          deliveryBoys={deliveryBoys}
-          bills={bills}
-          loadingBills={loadingBills}
-          toolbarPortalEl={terminalToolbarEl}
-          onMessage={(text) => {
-            setPageError("");
-            setMessage(text);
-          }}
-          onError={(text) => {
-            setMessage("");
-            setPageError(text);
-          }}
-        />
+        <div className="space-y-4">
+          <DeliveryBillApprovals
+            clientId={activeClientId}
+            businessDate={effectiveFilterDate}
+            deliveryBoys={deliveryBoys}
+            currency={currency}
+            currencyDecimals={currencyDecimals}
+            onMessage={(text) => {
+              setPageError("");
+              setMessage(text);
+            }}
+            onError={(text) => {
+              setMessage("");
+              setPageError(text);
+            }}
+          />
+          <ExternalSalesForm
+            clientId={activeClientId}
+            currency={currency}
+            currencyDecimals={currencyDecimals}
+            businessDate={effectiveFilterDate}
+            terminals={terminals}
+            deliveryBoys={deliveryBoys}
+            bills={bills}
+            loadingBills={loadingBills}
+            toolbarPortalEl={terminalToolbarEl}
+            onMessage={(text) => {
+              setPageError("");
+              setMessage(text);
+            }}
+            onError={(text) => {
+              setMessage("");
+              setPageError(text);
+            }}
+          />
+        </div>
       ) : null}
 
       {tab === "list" ? (
@@ -308,6 +331,7 @@ export default function ExternalSales() {
             clientId={activeClientId}
             deliveryBoys={deliveryBoys}
             terminals={terminals}
+            bankAccounts={shopBankAccounts}
             loading={loadingBoys}
             onMessage={(text) => {
               setPageError("");

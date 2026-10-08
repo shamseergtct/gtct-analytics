@@ -339,6 +339,139 @@ export const EXTERNAL_PAYMENT_MODES = [
 export const DELIVERY_ACCOUNT_PAYMENT = "DELIVERY_ACCOUNT";
 export const SPLIT_PAYMENT = "SPLIT";
 
+/**
+ * Payment options a delivery boy may use in Delivery Entry.
+ * Values: DELIVERY_ACCOUNT | CASH | BANK:<accountId>
+ *
+ * @param {{ includeInactiveBanks?: boolean, includeReserveBanks?: boolean }} [options]
+ * Edit UI should pass includeInactiveBanks / includeReserveBanks true to list all accounts.
+ * Delivery Entry runtime should leave both false (active operational only).
+ */
+export function buildDeliveryBoyPaymentModeChoices({
+  deliveryBoyName = "",
+  bankAccounts = [],
+  includeInactiveBanks = false,
+  includeReserveBanks = false,
+} = {}) {
+  const boyLabel = String(deliveryBoyName || "").trim() || "Delivery account";
+  const banks = (Array.isArray(bankAccounts) ? bankAccounts : [])
+    .filter((row) => row?.id)
+    .filter((row) => (includeInactiveBanks ? true : row.isActive !== false))
+    .filter((row) => {
+      if (includeReserveBanks) return true;
+      const type = String(row.accountType || "")
+        .trim()
+        .toUpperCase();
+      return type !== "RESERVE";
+    })
+    .sort((a, b) =>
+      String(a.accountName || a.bankName || "").localeCompare(
+        String(b.accountName || b.bankName || "")
+      )
+    )
+    .map((row) => {
+      const type = String(row.accountType || "")
+        .trim()
+        .toUpperCase();
+      const isReserve = type === "RESERVE";
+      const inactive = row.isActive === false;
+      return {
+        value: `BANK:${row.id}`,
+        label: String(row.accountName || row.bankName || row.id).trim(),
+        kind: "bank",
+        bankAccountId: String(row.id),
+        isReserve,
+        inactive,
+        // Only active operational banks can be used for Delivery Entry payments.
+        canAssign: !isReserve && !inactive,
+      };
+    });
+
+  return [
+    {
+      value: DELIVERY_ACCOUNT_PAYMENT,
+      label: boyLabel,
+      kind: "delivery",
+      canAssign: true,
+    },
+    {
+      value: "CASH",
+      label: "Cash",
+      kind: "cash",
+      canAssign: true,
+    },
+    ...banks,
+  ];
+}
+
+/**
+ * Resolve enabled payment mode values for a delivery boy.
+ * Missing / empty assignedPaymentModes → all choices enabled (legacy).
+ * Legacy assignedPaymentAccountIds → delivery + cash + those banks.
+ */
+export function resolveDeliveryBoyAssignedPaymentModes(
+  deliveryBoy,
+  bankAccounts = []
+) {
+  const choices = buildDeliveryBoyPaymentModeChoices({
+    deliveryBoyName: deliveryBoy?.name,
+    bankAccounts,
+  });
+  const allValues = choices.map((row) => row.value);
+
+  if (deliveryBoy?.assignedPaymentModesConfigured === true) {
+    return (Array.isArray(deliveryBoy.assignedPaymentModes)
+      ? deliveryBoy.assignedPaymentModes
+      : []
+    )
+      .map((value) => String(value || "").trim())
+      .filter((value) => allValues.includes(value));
+  }
+
+  if (
+    Array.isArray(deliveryBoy?.assignedPaymentModes) &&
+    deliveryBoy.assignedPaymentModes.length
+  ) {
+    return deliveryBoy.assignedPaymentModes
+      .map((value) => String(value || "").trim())
+      .filter((value) => allValues.includes(value));
+  }
+
+  const legacyBanks = Array.isArray(deliveryBoy?.assignedPaymentAccountIds)
+    ? deliveryBoy.assignedPaymentAccountIds.map(String).filter(Boolean)
+    : [];
+  if (legacyBanks.length) {
+    return [
+      DELIVERY_ACCOUNT_PAYMENT,
+      "CASH",
+      ...legacyBanks
+        .filter((id) => bankAccounts.some((row) => row.id === id))
+        .map((id) => `BANK:${id}`),
+    ];
+  }
+
+  return allValues;
+}
+
+export function isDeliveryBoyPaymentModeAllowed(
+  deliveryBoy,
+  paymentSelection,
+  bankAccounts = []
+) {
+  const allowed = new Set(
+    resolveDeliveryBoyAssignedPaymentModes(deliveryBoy, bankAccounts)
+  );
+  const key = String(paymentSelection || "").trim();
+  if (!key) return false;
+  if (key === DELIVERY_ACCOUNT_PAYMENT || key === "CASH") {
+    return allowed.has(key);
+  }
+  if (key.toUpperCase().startsWith("BANK:")) {
+    return allowed.has(key) || allowed.has(`BANK:${key.slice(5)}`);
+  }
+  return allowed.has(key);
+}
+
 /** Delivery bills owed by the boy (vs paid directly to the shop). */
 export function isDeliveryBoyAccountPayment(billOrMode) {
   if (billOrMode && typeof billOrMode === "object") {

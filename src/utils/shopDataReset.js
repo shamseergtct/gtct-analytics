@@ -29,6 +29,7 @@ export const SHOP_TRANSACTION_COLLECTIONS = [
   "inventory_movements",
   "external_sales_bills",
   "delivery_boy_collections",
+  "delivery_bill_submissions",
   "external_terminal_bill_ranges",
 ];
 

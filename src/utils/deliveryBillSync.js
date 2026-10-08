@@ -1,6 +1,7 @@
 /**
- * Sync engine: push IndexedDB pending bills to Firestore using the shared
- * writeExternalSalesBill path (same accounting rules as Analytics).
+ * Sync engine: push IndexedDB pending bills to Firestore as
+ * delivery_bill_submissions (pending admin approval).
+ * Approved bills become normal external_sales_bills in Analytics.
  */
 import {
   SYNC_STATUS,
@@ -10,11 +11,10 @@ import {
   deleteLocalBill,
 } from "./deliveryBillQueue.js";
 import {
-  findExternalSalesBillByDocId,
-  writeExternalSalesBill,
-} from "./externalSalesBillWrite.js";
-import { externalSalesBillDocId } from "./externalSales.js";
-import { EXTERNAL_ENTRY_SOURCE_DELIVERY_APP } from "./externalSales.js";
+  findDeliveryBillSubmissionByLocalId,
+  upsertDeliveryBillSubmission,
+  SUBMISSION_STATUS,
+} from "./deliveryBillSubmissions.js";
 
 let syncRunning = false;
 let syncListeners = new Set();
@@ -66,12 +66,14 @@ function isPermanentFailure(error) {
   const message = String(error?.message || error || "").toLowerCase();
   if (code === "permission-denied") return true;
   if (message.includes("already exists")) return true;
+  if (message.includes("already waiting")) return true;
   if (message.includes("permission")) return true;
   if (message.includes("not available")) return true;
   if (message.includes("invalid")) return true;
   if (message.includes("required")) return true;
   if (message.includes("reserve")) return true;
   if (message.includes("not assigned")) return true;
+  if (message.includes("conflicting")) return true;
   return false;
 }
 
@@ -84,23 +86,32 @@ async function syncOneBill(record, ctx) {
     currencyDecimals,
   } = ctx;
 
-  const docId = externalSalesBillDocId({
-    clientId: record.clientId,
-    businessDate: record.businessDate,
-    terminalId: record.terminalId,
-    billNumber: record.billNumber,
-  });
-
-  // Lost-response recovery: already on server with same entryLocalId.
+  // Lost-response recovery: submission already accepted for this local id.
   try {
-    const existing = await findExternalSalesBillByDocId(docId);
-    if (
-      existing &&
-      existing.voided !== true &&
-      String(existing.entryLocalId || "") === String(record.entryLocalId)
-    ) {
-      await deleteLocalBill(record.entryLocalId);
-      return { ok: true, status: "idempotent" };
+    const existing = await findDeliveryBillSubmissionByLocalId(
+      record.entryLocalId
+    );
+    if (existing) {
+      if (
+        existing.status === SUBMISSION_STATUS.PENDING ||
+        existing.status === SUBMISSION_STATUS.APPROVED
+      ) {
+        await deleteLocalBill(record.entryLocalId);
+        return { ok: true, status: "idempotent" };
+      }
+      if (existing.status === SUBMISSION_STATUS.REJECTED) {
+        await updateLocalBill(record.entryLocalId, {
+          syncStatus: SYNC_STATUS.FAILED,
+          syncError:
+            existing.rejectReason ||
+            "This bill was rejected by the shop admin.",
+        });
+        return {
+          ok: false,
+          permanent: true,
+          message: existing.rejectReason || "Rejected by admin.",
+        };
+      }
     }
   } catch {
     // continue to write attempt
@@ -112,44 +123,23 @@ async function syncOneBill(record, ctx) {
   });
 
   try {
-    await writeExternalSalesBill({
+    await upsertDeliveryBillSubmission({
       userUid,
-      clientId: record.clientId,
-      currency: currency || record.currency || "",
-      currencyDecimals:
-        currencyDecimals ?? record.currencyDecimals ?? 3,
-      businessDate: record.businessDate,
-      terminal: {
-        id: record.terminalId,
-        name: record.terminalNameSnapshot || "",
-      },
-      billNumber: record.billNumber,
-      billAmount: record.billAmount,
-      saleType: "DELIVERY",
-      paymentMode: record.paymentMode,
-      bankAccounts,
-      bankAccountId: record.bankAccountId || "",
-      bankAccountNameSnapshot: record.bankAccountNameSnapshot || "",
-      customerId: "",
-      customerName: record.customerName || "",
-      customerLocation: "",
+      record,
       deliveryBoy: deliveryBoy || {
         id: record.deliveryBoyId,
         name: record.deliveryBoyNameSnapshot,
         commissionEnabled: record.commissionEnabled,
         commissionRate: record.commissionRate,
       },
-      deliveryCharge: record.deliveryCharge,
-      notes: record.notes || "",
-      entrySource: EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
-      entryLocalId: record.entryLocalId,
-      createdAtMs: record.createdAtMs,
-      createdBy: userUid,
-      editMode: false,
+      bankAccounts,
+      currency: currency || record.currency || "",
+      currencyDecimals:
+        currencyDecimals ?? record.currencyDecimals ?? 3,
     });
 
     await deleteLocalBill(record.entryLocalId);
-    return { ok: true, status: "created" };
+    return { ok: true, status: "submitted" };
   } catch (error) {
     const message = error?.message || String(error);
     if (isPermanentFailure(error)) {
@@ -198,7 +188,6 @@ export async function runDeliveryBillSync(ctx = {}) {
       (row) =>
         row.syncStatus === SYNC_STATUS.PENDING ||
         row.syncStatus === SYNC_STATUS.SYNCING ||
-        // Retry FAILED only when explicitly requested
         (ctx.retryFailed && row.syncStatus === SYNC_STATUS.FAILED)
     );
 

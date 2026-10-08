@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   addDoc,
   collection,
@@ -16,8 +16,13 @@ import { getApps, initializeApp } from "firebase/app";
 import { Pencil, Plus, X } from "lucide-react";
 import { db, firebaseConfig } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
+import { useBankAccounts } from "../../hooks/useBankAccounts.js";
 import { numMoney } from "../../utils/money.js";
-import { resolveDeliveryBoyCommission } from "../../utils/externalSales.js";
+import {
+  buildDeliveryBoyPaymentModeChoices,
+  resolveDeliveryBoyAssignedPaymentModes,
+  resolveDeliveryBoyCommission,
+} from "../../utils/externalSales.js";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -32,6 +37,7 @@ const EMPTY = {
   commissionEnabled: false,
   commissionRate: "",
   assignedTerminalIds: [],
+  assignedPaymentModes: [],
   loginEmail: "",
   loginPassword: "",
 };
@@ -47,11 +53,17 @@ export default function DeliveryBoyManager({
   clientId,
   deliveryBoys,
   terminals = [],
+  bankAccounts: bankAccountsProp = [],
   loading,
   onMessage,
   onError,
 }) {
   const { user } = useAuth();
+  // Load ALL shop bank accounts for edit UI (active + inactive, operational + reserve).
+  const { accounts: hookedBanks, loading: loadingBanks } = useBankAccounts(
+    clientId,
+    { activeOnly: false, purpose: "all" }
+  );
   const [search, setSearch] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
@@ -63,6 +75,88 @@ export default function DeliveryBoyManager({
     () => (terminals || []).filter((row) => row.isActive !== false),
     [terminals]
   );
+
+  const allBankAccounts = useMemo(() => {
+    const fromProp = Array.isArray(bankAccountsProp) ? bankAccountsProp : [];
+    const merged = new Map();
+    [...fromProp, ...(hookedBanks || [])].forEach((row) => {
+      if (row?.id) merged.set(row.id, row);
+    });
+    return [...merged.values()].sort((a, b) =>
+      String(a.accountName || a.bankName || "").localeCompare(
+        String(b.accountName || b.bankName || "")
+      )
+    );
+  }, [bankAccountsProp, hookedBanks]);
+
+  // Assignable banks for Delivery Entry (active operational only).
+  const operationalBanks = useMemo(
+    () =>
+      allBankAccounts.filter((row) => {
+        if (!row?.id || row.isActive === false) return false;
+        const type = String(row.accountType || "")
+          .trim()
+          .toUpperCase();
+        return type !== "RESERVE";
+      }),
+    [allBankAccounts]
+  );
+
+  const paymentModeChoices = useMemo(
+    () =>
+      buildDeliveryBoyPaymentModeChoices({
+        deliveryBoyName: form.name || "Delivery account",
+        bankAccounts: allBankAccounts,
+        includeInactiveBanks: true,
+        includeReserveBanks: true,
+      }),
+    [form.name, allBankAccounts]
+  );
+
+  const assignablePaymentModeChoices = useMemo(
+    () => paymentModeChoices.filter((row) => row.canAssign !== false),
+    [paymentModeChoices]
+  );
+
+  // When banks finish loading after the modal opens, include them in the
+  // enable/disable list (keep existing toggles; auto-enable new banks only
+  // for new boys / unconfigured boys).
+  useEffect(() => {
+    if (!isOpen) return;
+    const choiceValues = paymentModeChoices.map((row) => row.value);
+    if (!choiceValues.length) return;
+
+    setForm((current) => {
+      const existing = new Set(current.assignedPaymentModes || []);
+      const editingRow = editingId
+        ? deliveryBoys.find((row) => row.id === editingId)
+        : null;
+      const assignableValues = paymentModeChoices
+        .filter((row) => row.canAssign !== false)
+        .map((row) => row.value);
+      const configured = editingRow?.assignedPaymentModesConfigured === true;
+      if (configured) {
+        // Keep only still-valid assignable selections; do not auto-enable new banks.
+        const next = [...existing].filter((value) =>
+          assignableValues.includes(value)
+        );
+        if (
+          next.length === existing.size &&
+          next.every((value) => existing.has(value))
+        ) {
+          return current;
+        }
+        return { ...current, assignedPaymentModes: next };
+      }
+      // New / legacy: default to all assignable options once banks are known.
+      const allEnabled = assignableValues;
+      const same =
+        allEnabled.length === existing.size &&
+        allEnabled.every((value) => existing.has(value));
+      if (same) return current;
+      return { ...current, assignedPaymentModes: allEnabled };
+    });
+  }, [isOpen, paymentModeChoices, editingId, deliveryBoys]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -76,7 +170,15 @@ export default function DeliveryBoyManager({
 
   function openAdd() {
     setEditingId(null);
-    setForm(EMPTY);
+    const allModes = buildDeliveryBoyPaymentModeChoices({
+      deliveryBoyName: "Delivery account",
+      bankAccounts: allBankAccounts,
+      includeInactiveBanks: true,
+      includeReserveBanks: true,
+    })
+      .filter((row) => row.canAssign !== false)
+      .map((row) => row.value);
+    setForm({ ...EMPTY, assignedPaymentModes: allModes });
     setModalError("");
     setIsOpen(true);
   }
@@ -92,6 +194,10 @@ export default function DeliveryBoyManager({
       assignedTerminalIds: Array.isArray(row.assignedTerminalIds)
         ? row.assignedTerminalIds.map(String)
         : [],
+      assignedPaymentModes: resolveDeliveryBoyAssignedPaymentModes(
+        row,
+        operationalBanks.length ? operationalBanks : allBankAccounts
+      ),
       loginEmail: "",
       loginPassword: "",
     });
@@ -112,6 +218,24 @@ export default function DeliveryBoyManager({
       else set.add(terminalId);
       return { ...current, assignedTerminalIds: [...set] };
     });
+  }
+
+  function togglePaymentMode(modeValue) {
+    setForm((current) => {
+      const set = new Set(current.assignedPaymentModes || []);
+      if (set.has(modeValue)) set.delete(modeValue);
+      else set.add(modeValue);
+      return { ...current, assignedPaymentModes: [...set] };
+    });
+  }
+
+  function setAllPaymentModes(enabled) {
+    setForm((current) => ({
+      ...current,
+      assignedPaymentModes: enabled
+        ? assignablePaymentModeChoices.map((row) => row.value)
+        : [],
+    }));
   }
 
   async function handleSave(event) {
@@ -158,6 +282,22 @@ export default function DeliveryBoyManager({
     const assignedTerminalIds = (form.assignedTerminalIds || [])
       .map(String)
       .filter(Boolean);
+    const allowedChoiceValues = new Set(
+      assignablePaymentModeChoices.map((row) => row.value)
+    );
+    const assignedPaymentModes = (form.assignedPaymentModes || [])
+      .map(String)
+      .filter((value) => allowedChoiceValues.has(value));
+    const assignedPaymentAccountIds = assignedPaymentModes
+      .filter((value) => value.startsWith("BANK:"))
+      .map((value) => value.slice("BANK:".length))
+      .filter((id) => operationalBanks.some((row) => row.id === id));
+
+    if (!assignedPaymentModes.length) {
+      setModalError("Enable at least one payment option (Cash, delivery account, or a bank).");
+      return;
+    }
+
     const loginEmail = String(form.loginEmail || "").trim().toLowerCase();
     const loginPassword = String(form.loginPassword || "");
     const creatingLogin = Boolean(loginEmail || loginPassword);
@@ -185,6 +325,9 @@ export default function DeliveryBoyManager({
         commissionEnabled,
         commissionRate: commissionEnabled ? rateNum : 0,
         assignedTerminalIds,
+        assignedPaymentModes,
+        assignedPaymentModesConfigured: true,
+        assignedPaymentAccountIds,
         updatedAt: serverTimestamp(),
         updatedAtMs: Date.now(),
         updatedBy: user?.uid || null,
@@ -193,13 +336,15 @@ export default function DeliveryBoyManager({
       let boyId = editingId;
       if (editingId) {
         await updateDoc(doc(db, "delivery_boys", editingId), payload);
-        // Keep linked user terminal assignments in sync.
+        // Keep linked user terminal / payment assignments in sync.
         if (deliveryBoys.find((row) => row.id === editingId)?.linkedUserId) {
           const linkedUserId = deliveryBoys.find(
             (row) => row.id === editingId
           ).linkedUserId;
           await updateDoc(doc(db, "users", linkedUserId), {
             assignedTerminalIds,
+            assignedPaymentModes,
+            assignedPaymentAccountIds,
             name,
             isActive: Boolean(form.isActive),
             updatedAt: Date.now(),
@@ -243,6 +388,8 @@ export default function DeliveryBoyManager({
           assignedShops: [clientId],
           deliveryBoyId: boyId,
           assignedTerminalIds,
+          assignedPaymentModes,
+          assignedPaymentAccountIds,
           createdBy: user?.uid || null,
           createdAt: Date.now(),
           isActive: Boolean(form.isActive),
@@ -324,6 +471,7 @@ export default function DeliveryBoyManager({
               <tr>
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Terminals</th>
+                <th className="px-4 py-3">Payment accounts</th>
                 <th className="px-4 py-3">Login</th>
                 <th className="px-4 py-3">Commission</th>
                 <th className="px-4 py-3">Status</th>
@@ -334,7 +482,7 @@ export default function DeliveryBoyManager({
               {loading ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-4 py-8 text-center text-slate-500"
                   >
                     Loading…
@@ -352,6 +500,26 @@ export default function DeliveryBoyManager({
                         terminals.find((t) => t.id === id)?.name || id.slice(0, 6)
                     )
                     .join(", ");
+                  const payModes = resolveDeliveryBoyAssignedPaymentModes(
+                    row,
+                    operationalBanks
+                  );
+                  const payNames = payModes
+                    .map((value) => {
+                      if (value === "CASH") return "Cash";
+                      if (value === "DELIVERY_ACCOUNT") return row.name || "Delivery";
+                      if (value.startsWith("BANK:")) {
+                        const id = value.slice(5);
+                        const acc = operationalBanks.find((a) => a.id === id);
+                        return (
+                          acc?.accountName ||
+                          acc?.bankName ||
+                          String(id).slice(0, 6)
+                        );
+                      }
+                      return value;
+                    })
+                    .join(", ");
                   return (
                     <tr
                       key={row.id}
@@ -362,6 +530,9 @@ export default function DeliveryBoyManager({
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-400">
                         {termNames || "—"}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-400">
+                        {payNames || "—"}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-400">
                         {row.linkedUserEmail || "—"}
@@ -411,7 +582,7 @@ export default function DeliveryBoyManager({
               ) : (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-4 py-8 text-center text-slate-500"
                   >
                     No delivery boys yet. Add staff used for delivery bills.
@@ -504,6 +675,103 @@ export default function DeliveryBoyManager({
                     No active terminals. Create terminals in Setup first.
                   </p>
                 )}
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-slate-800 bg-slate-950/40 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-sm font-semibold text-white">
+                    Payment options (enable / disable)
+                  </div>
+                  <div className="flex gap-2 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => setAllPaymentModes(true)}
+                      className="rounded-lg border border-slate-700 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                    >
+                      Enable all
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAllPaymentModes(false)}
+                      className="rounded-lg border border-slate-700 px-2 py-1 text-slate-300 hover:bg-slate-800"
+                    >
+                      Disable all
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-500">
+                  All shop payment accounts are listed. Enable/disable Cash,
+                  delivery account, and banks for Delivery Entry. Inactive and
+                  reserve banks are shown but cannot be enabled for bills.
+                </p>
+                {loadingBanks && !allBankAccounts.length ? (
+                  <p className="text-xs text-slate-400">Loading bank accounts…</p>
+                ) : null}
+                {paymentModeChoices.map((choice) => {
+                  const enabled = form.assignedPaymentModes.includes(
+                    choice.value
+                  );
+                  const locked = choice.canAssign === false;
+                  const meta =
+                    choice.kind === "delivery"
+                      ? "Delivery account"
+                      : choice.kind === "cash"
+                        ? "Cash"
+                        : choice.isReserve
+                          ? "Reserve"
+                          : choice.inactive
+                            ? "Inactive"
+                            : "Bank";
+                  return (
+                    <label
+                      key={choice.value}
+                      className={`flex items-center justify-between gap-3 rounded-lg border border-slate-800/80 bg-slate-950/50 px-3 py-2 text-sm text-slate-300 ${
+                        locked ? "opacity-60" : ""
+                      }`}
+                    >
+                      <span className="flex min-w-0 items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={enabled && !locked}
+                          disabled={locked}
+                          onChange={() => {
+                            if (!locked) togglePaymentMode(choice.value);
+                          }}
+                          className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-blue-600 disabled:opacity-40"
+                        />
+                        <span className="truncate font-medium text-white">
+                          {choice.label}
+                        </span>
+                        <span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
+                          {meta}
+                        </span>
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                          locked
+                            ? "bg-slate-800 text-slate-500"
+                            : enabled
+                              ? "bg-emerald-950/70 text-emerald-300"
+                              : "bg-slate-800 text-slate-500"
+                        }`}
+                      >
+                        {locked
+                          ? choice.isReserve
+                            ? "Reserve"
+                            : "Inactive"
+                          : enabled
+                            ? "Enabled"
+                            : "Disabled"}
+                      </span>
+                    </label>
+                  );
+                })}
+                {!loadingBanks && !allBankAccounts.length ? (
+                  <p className="text-xs text-amber-200">
+                    No bank accounts found for this shop. Add them under Bank
+                    Accounts, then reopen this form.
+                  </p>
+                ) : null}
               </div>
 
               <div className="rounded-xl border border-slate-800 bg-slate-950/40 p-3 space-y-3">
