@@ -45,6 +45,43 @@ service cloud.firestore {
         );
     }
 
+    function isDeliveryBoy() {
+      return activeUser() && profile().role == 'delivery_boy';
+    }
+
+    function isDeliveryBoyForClient(clientId) {
+      return isDeliveryBoy()
+        && assignedTo(clientId)
+        && profile().deliveryBoyId is string
+        && profile().deliveryBoyId.size() > 0;
+    }
+
+    function deliveryBoyOwnsBill() {
+      return isDeliveryBoyForClient(request.resource.data.clientId)
+        && request.resource.data.deliveryBoyId == profile().deliveryBoyId
+        && request.resource.data.saleType == 'DELIVERY'
+        && request.resource.data.entrySource == 'DELIVERY_APP'
+        && request.resource.data.entryLocalId is string
+        && request.resource.data.entryLocalId.size() > 0
+        && profile().assignedTerminalIds is list
+        && profile().assignedTerminalIds.hasAny([request.resource.data.terminalId]);
+    }
+
+    /** Bank payments must reference an OPERATIONAL account for the same shop. */
+    function externalBillBankIsOperational() {
+      return request.resource.data.bankAccountId == ''
+        || (
+          exists(/databases/$(database)/documents/bank_accounts/$(request.resource.data.bankAccountId))
+          && get(/databases/$(database)/documents/bank_accounts/$(request.resource.data.bankAccountId)).data.clientId
+            == request.resource.data.clientId
+          && get(/databases/$(database)/documents/bank_accounts/$(request.resource.data.bankAccountId)).data.isActive != false
+          && (
+            !('accountType' in get(/databases/$(database)/documents/bank_accounts/$(request.resource.data.bankAccountId)).data)
+            || get(/databases/$(database)/documents/bank_accounts/$(request.resource.data.bankAccountId)).data.accountType != 'RESERVE'
+          )
+        );
+    }
+
     function canReadTenantResource() {
       return canAccessClient(resource.data.clientId);
     }
@@ -107,7 +144,39 @@ service cloud.firestore {
 
     match /users/{uid} {
       allow get: if activeUser() && (request.auth.uid == uid || isSuperAdmin());
-      allow list, create, update, delete: if isSuperAdmin();
+      allow list, delete: if isSuperAdmin();
+
+      // Super admin: full user management.
+      // Shop admin: may create/update delivery_boy logins for their shops only.
+      allow create: if isSuperAdmin()
+        || (
+          activeUser()
+          && profile().role == 'admin'
+          && request.resource.data.role == 'delivery_boy'
+          && request.resource.data.uid == uid
+          && request.resource.data.email is string
+          && request.resource.data.deliveryBoyId is string
+          && request.resource.data.deliveryBoyId.size() > 0
+          && request.resource.data.assignedShops is list
+          && request.resource.data.assignedShops.size() == 1
+          && assignedTo(request.resource.data.assignedShops[0])
+          && request.resource.data.assignedTerminalIds is list
+        );
+
+      allow update: if isSuperAdmin()
+        || (
+          activeUser()
+          && profile().role == 'admin'
+          && resource.data.role == 'delivery_boy'
+          && request.resource.data.role == 'delivery_boy'
+          && request.resource.data.uid == resource.data.uid
+          && request.resource.data.deliveryBoyId == resource.data.deliveryBoyId
+          && request.resource.data.assignedShops is list
+          && request.resource.data.assignedShops.size() == 1
+          && assignedTo(request.resource.data.assignedShops[0])
+          && assignedTo(resource.data.assignedShops[0])
+          && request.resource.data.assignedTerminalIds is list
+        );
     }
 
     match /clients/{clientId} {
@@ -956,21 +1025,37 @@ service cloud.firestore {
         && request.resource.data.salesSource == 'EXTERNAL_BILL_ENTRY'
         && request.resource.data.voided == false
         && validExternalBillPayment()
+        && externalBillBankIsOperational()
         && (
           request.resource.data.saleType != 'DELIVERY'
           || (
             request.resource.data.deliveryBoyId is string
             && request.resource.data.deliveryBoyId.size() > 0
           )
+        )
+        && (
+          // Manual Analytics entry may omit entryLocalId (legacy + admin UI).
+          !('entryLocalId' in request.resource.data)
+          || request.resource.data.entryLocalId is string
+        )
+        && (
+          request.resource.data.entrySource == 'MANUAL'
+          || request.resource.data.entrySource == 'DELIVERY_APP'
+          || !('entrySource' in request.resource.data)
         );
     }
 
     function validExternalBillCreate() {
       return request.resource.data.clientId is string
-        && canManageClient(request.resource.data.clientId)
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.updatedBy == request.auth.uid
-        && validExternalBillFields();
+        && validExternalBillFields()
+        && (
+          // Shop admins (Analytics Bill Entry)
+          canManageClient(request.resource.data.clientId)
+          // Delivery Entry app — ownership + assigned terminal enforced
+          || deliveryBoyOwnsBill()
+        );
     }
 
     function validExternalBillEdit() {

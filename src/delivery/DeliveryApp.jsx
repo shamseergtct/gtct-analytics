@@ -1,0 +1,899 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  where,
+} from "firebase/firestore";
+import { db } from "../firebase";
+import { useAuth } from "../context/AuthContext";
+import {
+  buildPaymentModeOptions,
+  findBankAccountName,
+  parsePaymentModeSelection,
+} from "../utils/paymentModes.js";
+import { filterBankAccountsForPurpose } from "../utils/bankAccountTypes.js";
+import {
+  DELIVERY_ACCOUNT_PAYMENT,
+  EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
+  getTerminalTheme,
+  normalizeBillNumber,
+  sortBillingTerminals,
+} from "../utils/externalSales.js";
+import { moneyInputStep, numMoney, resolveCurrencyDecimals } from "../utils/money.js";
+import {
+  SYNC_STATUS,
+  createEntryLocalId,
+  findLocalDuplicateBill,
+  getDeliveryMeta,
+  getUnsyncedSummary,
+  putLocalBill,
+  setDeliveryMeta,
+} from "../utils/deliveryBillQueue.js";
+import {
+  getDeliverySyncState,
+  installDeliveryNetworkListeners,
+  installUnsyncedNavigationGuard,
+  refreshDeliverySyncCounts,
+  runDeliveryBillSync,
+  subscribeDeliverySync,
+} from "../utils/deliveryBillSync.js";
+
+function todayYYYYMMDD() {
+  const date = new Date();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${month}-${day}`;
+}
+
+function FieldLabel({ children }) {
+  return (
+    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-400">
+      {children}
+    </label>
+  );
+}
+
+const inputClass =
+  "w-full rounded-2xl border border-slate-700 bg-slate-900 px-4 py-3.5 text-lg text-white outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/30";
+
+export default function DeliveryApp() {
+  const {
+    user,
+    profile,
+    role,
+    authLoading,
+    login,
+    logout,
+    displayName,
+    isDisabled,
+  } = useAuth();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loggingIn, setLoggingIn] = useState(false);
+
+  const clientId = useMemo(() => {
+    const shops = Array.isArray(profile?.assignedShops)
+      ? profile.assignedShops.filter(Boolean)
+      : [];
+    return String(profile?.clientId || shops[0] || "").trim();
+  }, [profile]);
+
+  const deliveryBoyId = String(profile?.deliveryBoyId || "").trim();
+  const assignedTerminalIds = useMemo(() => {
+    const fromProfile = Array.isArray(profile?.assignedTerminalIds)
+      ? profile.assignedTerminalIds.map(String).filter(Boolean)
+      : [];
+    return fromProfile;
+  }, [profile]);
+
+  const [shop, setShop] = useState(null);
+  const [deliveryBoy, setDeliveryBoy] = useState(null);
+  const [terminals, setTerminals] = useState([]);
+  const [bankAccounts, setBankAccounts] = useState([]);
+  const [businessDate, setBusinessDate] = useState(todayYYYYMMDD());
+  const [selectedTerminalId, setSelectedTerminalId] = useState("");
+  const [billNumber, setBillNumber] = useState("");
+  const [billAmount, setBillAmount] = useState("");
+  const [paymentMode, setPaymentMode] = useState(DELIVERY_ACCOUNT_PAYMENT);
+  const [customerName, setCustomerName] = useState("");
+  const [deliveryCharge, setDeliveryCharge] = useState("");
+  const [formError, setFormError] = useState("");
+  const [formMessage, setFormMessage] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [syncState, setSyncState] = useState(getDeliverySyncState());
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+
+  const billNumberRef = useRef(null);
+  const syncCtxRef = useRef(null);
+
+  const currencyDecimals = resolveCurrencyDecimals(shop, "OMR");
+  const currency = shop?.currency || "";
+
+  const allowedTerminals = useMemo(() => {
+    const active = terminals.filter((row) => row.isActive !== false);
+    if (!assignedTerminalIds.length) return [];
+    const allowed = new Set(assignedTerminalIds);
+    return active.filter((row) => allowed.has(row.id));
+  }, [terminals, assignedTerminalIds]);
+
+  const selectedTerminal = useMemo(
+    () => allowedTerminals.find((row) => row.id === selectedTerminalId) || null,
+    [allowedTerminals, selectedTerminalId]
+  );
+
+  const theme = getTerminalTheme(
+    selectedTerminal,
+    Math.max(
+      0,
+      allowedTerminals.findIndex((row) => row.id === selectedTerminalId)
+    )
+  );
+
+  const paymentOptions = useMemo(() => {
+    const boyLabel =
+      String(deliveryBoy?.name || displayName || "").trim() || "Delivery";
+    const banks = buildPaymentModeOptions({
+      bankAccounts,
+      includeCredit: false,
+    });
+    return [
+      { value: DELIVERY_ACCOUNT_PAYMENT, label: boyLabel },
+      ...banks,
+    ];
+  }, [bankAccounts, deliveryBoy?.name, displayName]);
+
+  const isDeliveryBoyUser = role === "delivery_boy";
+
+  // Sync context for network listeners
+  syncCtxRef.current = {
+    userUid: user?.uid,
+    bankAccounts,
+    deliveryBoy,
+    currency,
+    currencyDecimals,
+  };
+
+  useEffect(() => subscribeDeliverySync(setSyncState), []);
+  useEffect(() => installUnsyncedNavigationGuard(), []);
+  useEffect(() => {
+    return installDeliveryNetworkListeners(() => syncCtxRef.current);
+  }, []);
+
+  // Resolve business date: open shift → cached → today
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const cached = await getDeliveryMeta(`businessDate:${clientId}`);
+      if (!cancelled && cached) setBusinessDate(String(cached).slice(0, 10));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  useEffect(() => {
+    if (!clientId || !user) return undefined;
+    const q = query(
+      collection(db, "shifts"),
+      where("clientId", "==", clientId),
+      where("status", "==", "OPEN")
+    );
+    return onSnapshot(
+      q,
+      async (snap) => {
+        const open = snap.docs[0]?.data();
+        const date = String(open?.businessDate || "").slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          setBusinessDate(date);
+          await setDeliveryMeta(`businessDate:${clientId}`, date);
+        } else {
+          const fallback = todayYYYYMMDD();
+          setBusinessDate(fallback);
+          await setDeliveryMeta(`businessDate:${clientId}`, fallback);
+        }
+      },
+      async () => {
+        const cached = await getDeliveryMeta(`businessDate:${clientId}`);
+        setBusinessDate(
+          /^\d{4}-\d{2}-\d{2}$/.test(String(cached || ""))
+            ? String(cached).slice(0, 10)
+            : todayYYYYMMDD()
+        );
+      }
+    );
+  }, [clientId, user]);
+
+  // Load shop
+  useEffect(() => {
+    if (!clientId) {
+      setShop(null);
+      return undefined;
+    }
+    return onSnapshot(
+      doc(db, "clients", clientId),
+      (snap) => setShop(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+      () => setShop(null)
+    );
+  }, [clientId]);
+
+  // Load delivery boy master
+  useEffect(() => {
+    if (!deliveryBoyId) {
+      setDeliveryBoy(null);
+      return undefined;
+    }
+    return onSnapshot(
+      doc(db, "delivery_boys", deliveryBoyId),
+      (snap) =>
+        setDeliveryBoy(snap.exists() ? { id: snap.id, ...snap.data() } : null),
+      () => setDeliveryBoy(null)
+    );
+  }, [deliveryBoyId]);
+
+  // Load terminals
+  useEffect(() => {
+    if (!clientId) {
+      setTerminals([]);
+      return undefined;
+    }
+    const q = query(
+      collection(db, "billing_terminals"),
+      where("clientId", "==", clientId)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        setTerminals(
+          sortBillingTerminals(
+            snap.docs.map((item) => ({ id: item.id, ...item.data() }))
+          )
+        );
+      },
+      () => setTerminals([])
+    );
+  }, [clientId]);
+
+  // Load operational banks
+  useEffect(() => {
+    if (!clientId) {
+      setBankAccounts([]);
+      return undefined;
+    }
+    const q = query(
+      collection(db, "bank_accounts"),
+      where("clientId", "==", clientId)
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        const rows = snap.docs
+          .map((item) => ({ id: item.id, ...item.data() }))
+          .filter((row) => row.isActive !== false);
+        setBankAccounts(filterBankAccountsForPurpose(rows, "transaction"));
+      },
+      () => setBankAccounts([])
+    );
+  }, [clientId]);
+
+  // Auto-select single terminal / restore last choice
+  useEffect(() => {
+    if (!allowedTerminals.length) {
+      setSelectedTerminalId("");
+      return;
+    }
+    if (allowedTerminals.length === 1) {
+      setSelectedTerminalId(allowedTerminals[0].id);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const saved = await getDeliveryMeta(`terminal:${clientId}:${deliveryBoyId}`);
+      if (cancelled) return;
+      if (saved && allowedTerminals.some((row) => row.id === saved)) {
+        setSelectedTerminalId(String(saved));
+      } else if (
+        !selectedTerminalId ||
+        !allowedTerminals.some((row) => row.id === selectedTerminalId)
+      ) {
+        setSelectedTerminalId("");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedTerminals, clientId, deliveryBoyId]);
+
+  useEffect(() => {
+    if (selectedTerminalId && clientId && deliveryBoyId) {
+      setDeliveryMeta(
+        `terminal:${clientId}:${deliveryBoyId}`,
+        selectedTerminalId
+      );
+    }
+  }, [selectedTerminalId, clientId, deliveryBoyId]);
+
+  const triggerSync = useCallback(async (retryFailed = false) => {
+    if (!user?.uid) return;
+    await runDeliveryBillSync({
+      ...syncCtxRef.current,
+      userUid: user.uid,
+      retryFailed,
+    });
+  }, [user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid || !isDeliveryBoyUser) return;
+    refreshDeliverySyncCounts().then(() => triggerSync());
+  }, [user?.uid, isDeliveryBoyUser, triggerSync, bankAccounts.length, deliveryBoy?.id]);
+
+  async function handleLogin(event) {
+    event.preventDefault();
+    setLoginError("");
+    setLoggingIn(true);
+    try {
+      await login(email, password);
+    } catch (error) {
+      setLoginError(error?.message || "Login failed.");
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
+  async function handleLogout() {
+    const summary = await getUnsyncedSummary();
+    if (summary.total > 0 && !logoutConfirmOpen) {
+      setLogoutConfirmOpen(true);
+      return;
+    }
+    setLogoutConfirmOpen(false);
+    await logout();
+  }
+
+  function clearBillFields() {
+    setBillNumber("");
+    setBillAmount("");
+    setCustomerName("");
+    setDeliveryCharge("");
+    setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
+    setFormError("");
+    requestAnimationFrame(() => billNumberRef.current?.focus());
+  }
+
+  async function handleSave(event) {
+    event.preventDefault();
+    setFormError("");
+    setFormMessage("");
+
+    if (!user?.uid || !isDeliveryBoyUser) {
+      setFormError("Delivery boy login required.");
+      return;
+    }
+    if (deliveryBoy?.isActive === false) {
+      setFormError("Your delivery account is inactive.");
+      return;
+    }
+    if (!selectedTerminal) {
+      setFormError("Select an assigned terminal.");
+      return;
+    }
+    if (!assignedTerminalIds.includes(selectedTerminal.id)) {
+      setFormError("You are not assigned to this terminal.");
+      return;
+    }
+
+    const billNo = normalizeBillNumber(billNumber);
+    if (!billNo) {
+      setFormError("Bill number is required.");
+      return;
+    }
+    if (billAmount === "" || billAmount == null) {
+      setFormError("Bill amount is required.");
+      return;
+    }
+    const amountNum = numMoney(billAmount);
+    if (!Number.isFinite(Number(billAmount)) || !Number.isFinite(amountNum)) {
+      setFormError("Bill amount must be a valid number.");
+      return;
+    }
+
+    let chargeNum = 0;
+    if (deliveryCharge !== "" && deliveryCharge != null) {
+      chargeNum = numMoney(deliveryCharge);
+      if (!Number.isFinite(Number(deliveryCharge)) || chargeNum < 0) {
+        setFormError("Delivery charge must be a non-negative number.");
+        return;
+      }
+    }
+
+    const resolved = parsePaymentModeSelection(paymentMode);
+    let savedPaymentMode = resolved.paymentMode;
+    let bankAccountId = "";
+    let bankAccountNameSnapshot = "";
+
+    if (paymentMode === DELIVERY_ACCOUNT_PAYMENT) {
+      savedPaymentMode = DELIVERY_ACCOUNT_PAYMENT;
+    } else if (resolved.paymentMode === "BANK") {
+      bankAccountId = String(resolved.bankAccountId || "").trim();
+      if (!bankAccountId) {
+        setFormError("Select a bank account.");
+        return;
+      }
+      if (!bankAccounts.some((row) => row.id === bankAccountId)) {
+        setFormError("Only active operational bank accounts are allowed.");
+        return;
+      }
+      bankAccountNameSnapshot = findBankAccountName(bankAccounts, bankAccountId);
+      savedPaymentMode = "BANK";
+    } else if (resolved.paymentMode === "CASH") {
+      savedPaymentMode = "CASH";
+    } else {
+      setFormError("Select a valid payment type.");
+      return;
+    }
+
+    const date = String(businessDate || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      setFormError("Business date is unavailable. Reconnect once to continue.");
+      return;
+    }
+
+    const duplicate = await findLocalDuplicateBill({
+      clientId,
+      businessDate: date,
+      terminalId: selectedTerminal.id,
+      billNumber: billNo,
+    });
+    if (duplicate) {
+      setFormError(
+        `Bill ${billNo} is already saved locally for ${selectedTerminal.name}.`
+      );
+      return;
+    }
+
+    const entryLocalId = createEntryLocalId();
+    const nowMs = Date.now();
+    const localRecord = {
+      entryLocalId,
+      clientId,
+      businessDate: date,
+      terminalId: selectedTerminal.id,
+      terminalNameSnapshot: selectedTerminal.name || "",
+      billNumber: billNo,
+      billAmount: amountNum,
+      paymentMode: savedPaymentMode,
+      bankAccountId,
+      bankAccountNameSnapshot,
+      customerName: String(customerName || "").trim(),
+      deliveryCharge: chargeNum,
+      deliveryBoyId,
+      deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
+      commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
+      commissionRate: Number(deliveryBoy?.commissionRate) || 0,
+      currency,
+      currencyDecimals,
+      notes: "",
+      entrySource: EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
+      syncStatus: SYNC_STATUS.PENDING,
+      syncError: "",
+      createdAtMs: nowMs,
+      updatedAtMs: nowMs,
+      createdBy: user.uid,
+    };
+
+    setSaving(true);
+    try {
+      // LOCAL SAVE FIRST — never wait on the network for confirmation.
+      await putLocalBill(localRecord);
+      await refreshDeliverySyncCounts();
+
+      const online = typeof navigator === "undefined" ? true : navigator.onLine;
+      setFormMessage(
+        online
+          ? "Bill saved."
+          : "Bill saved. Waiting for connection."
+      );
+      clearBillFields();
+
+      // Sync in background — does not block next entry.
+      triggerSync();
+    } catch (error) {
+      setFormError(error?.message || "Could not save bill locally.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-dvh items-center justify-center bg-slate-950 text-slate-200">
+        Loading…
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-dvh bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 px-4 py-10">
+        <div className="mx-auto w-full max-w-md">
+          <div className="mb-8 text-center">
+            <div className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-400">
+              GTCT
+            </div>
+            <h1 className="mt-2 text-3xl font-bold text-white">Delivery Entry</h1>
+            <p className="mt-2 text-sm text-slate-400">
+              Fast bill entry for delivery boys
+            </p>
+          </div>
+          <form
+            onSubmit={handleLogin}
+            className="space-y-4 rounded-3xl border border-slate-800 bg-slate-950/80 p-6 shadow-2xl"
+          >
+            <div>
+              <FieldLabel>Email</FieldLabel>
+              <input
+                type="email"
+                autoComplete="username"
+                className={inputClass}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+            <div>
+              <FieldLabel>Password</FieldLabel>
+              <input
+                type="password"
+                autoComplete="current-password"
+                className={inputClass}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            {loginError ? (
+              <div className="rounded-xl border border-rose-800 bg-rose-950/40 px-3 py-2 text-sm text-rose-100">
+                {loginError}
+              </div>
+            ) : null}
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="w-full rounded-2xl bg-sky-500 py-3.5 text-base font-semibold text-slate-950 hover:bg-sky-400 disabled:opacity-60"
+            >
+              {loggingIn ? "Signing in…" : "Sign in"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  if (isDisabled || !isDeliveryBoyUser) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-slate-950 px-4 text-center text-slate-200">
+        <p className="max-w-sm text-sm text-slate-300">
+          {isDisabled
+            ? "This account is disabled."
+            : "This app is for delivery boy accounts only. Use GTCT Analytics for admin access."}
+        </p>
+        <button
+          type="button"
+          onClick={() => logout()}
+          className="rounded-xl border border-slate-700 px-4 py-2 text-sm"
+        >
+          Sign out
+        </button>
+        <a href="/" className="text-sm text-sky-400 underline">
+          Open Analytics
+        </a>
+      </div>
+    );
+  }
+
+  if (!deliveryBoyId || !clientId) {
+    return (
+      <div className="flex min-h-dvh flex-col items-center justify-center gap-4 bg-slate-950 px-4 text-center">
+        <p className="max-w-sm text-sm text-amber-100">
+          Your login is not linked to a delivery boy / shop. Ask an admin to
+          finish setup.
+        </p>
+        <button
+          type="button"
+          onClick={() => logout()}
+          className="rounded-xl border border-slate-700 px-4 py-2 text-sm"
+        >
+          Sign out
+        </button>
+      </div>
+    );
+  }
+
+  const pendingTotal = (syncState.pending || 0) + (syncState.failed || 0);
+
+  return (
+    <div
+      className="min-h-dvh bg-slate-950 text-slate-100"
+      style={{
+        "--term-accent": theme.accent,
+        "--term-tint": theme.tint,
+        "--term-border": theme.border,
+        "--term-ring": theme.ring,
+      }}
+    >
+      <header className="sticky top-0 z-20 border-b border-slate-800 bg-slate-950/95 px-4 py-3 backdrop-blur">
+        <div className="mx-auto flex max-w-lg items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-semibold text-white">
+              {deliveryBoy?.name || displayName}
+            </div>
+            <div className="truncate text-xs text-slate-400">
+              {shop?.name || clientId} · {businessDate}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="shrink-0 rounded-xl border border-slate-700 px-3 py-2 text-xs text-slate-300"
+          >
+            Logout
+          </button>
+        </div>
+
+        <div className="mx-auto mt-2 flex max-w-lg items-center gap-2 text-xs">
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 ${
+              syncState.online
+                ? "bg-emerald-950/60 text-emerald-300"
+                : "bg-amber-950/60 text-amber-200"
+            }`}
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                syncState.online ? "bg-emerald-400" : "bg-amber-400"
+              }`}
+            />
+            {syncState.online ? "Online" : "Offline"}
+          </span>
+          {syncState.syncing ? (
+            <span className="text-sky-300">⟳ Syncing…</span>
+          ) : pendingTotal > 0 ? (
+            <span className="text-amber-200">
+              {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting to sync
+            </span>
+          ) : (
+            <span className="text-slate-500">All synced</span>
+          )}
+        </div>
+      </header>
+
+      {pendingTotal > 0 ? (
+        <div className="border-b border-amber-900/50 bg-amber-950/40 px-4 py-2.5">
+          <div className="mx-auto flex max-w-lg items-start justify-between gap-3">
+            <div>
+              <div className="text-sm font-medium text-amber-100">
+                🟠 {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting to
+                sync
+              </div>
+              <div className="text-xs text-amber-200/80">
+                Keep the app open while connection returns.
+              </div>
+              {syncState.lastError ? (
+                <div className="mt-1 text-xs text-rose-200">{syncState.lastError}</div>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              onClick={() => triggerSync(true)}
+              className="shrink-0 rounded-lg border border-amber-700/60 px-2 py-1 text-xs text-amber-100"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      ) : syncState.message === "All bills synced" ? (
+        <div className="border-b border-emerald-900/40 bg-emerald-950/30 px-4 py-2 text-center text-sm text-emerald-200">
+          ✓ All bills synced
+        </div>
+      ) : null}
+
+      <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
+        <section>
+          <FieldLabel>Terminal</FieldLabel>
+          {!allowedTerminals.length ? (
+            <div className="rounded-2xl border border-amber-800/60 bg-amber-950/30 p-4 text-sm text-amber-100">
+              No terminals assigned. Ask an admin to assign terminals to your
+              account.
+            </div>
+          ) : (
+            <div className="grid gap-2">
+              {allowedTerminals.map((terminal, index) => {
+                const t = getTerminalTheme(terminal, index);
+                const selected = terminal.id === selectedTerminalId;
+                return (
+                  <button
+                    key={terminal.id}
+                    type="button"
+                    onClick={() => setSelectedTerminalId(terminal.id)}
+                    className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition ${
+                      selected
+                        ? "border-[color:var(--term-border)] bg-[color:var(--term-tint)] ring-2 ring-[color:var(--term-ring)]"
+                        : "border-slate-800 bg-slate-900/70"
+                    }`}
+                    style={
+                      selected
+                        ? {
+                            "--term-border": t.border,
+                            "--term-tint": t.tint,
+                            "--term-ring": t.ring,
+                          }
+                        : undefined
+                    }
+                  >
+                    <span
+                      className={`flex h-5 w-5 items-center justify-center rounded-full border-2 ${
+                        selected ? "border-white" : "border-slate-500"
+                      }`}
+                    >
+                      {selected ? (
+                        <span
+                          className="h-2.5 w-2.5 rounded-full"
+                          style={{ backgroundColor: t.accent }}
+                        />
+                      ) : null}
+                    </span>
+                    <span
+                      className="h-3 w-3 rounded-full"
+                      style={{ backgroundColor: t.accent }}
+                    />
+                    <span className="text-base font-semibold text-white">
+                      {terminal.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <form
+          onSubmit={handleSave}
+          className="space-y-4 rounded-3xl border p-4"
+          style={{
+            borderColor: theme.border,
+            background: theme.tint,
+          }}
+        >
+          <div
+            className="rounded-2xl px-3 py-2 text-sm font-semibold text-white"
+            style={{ background: theme.accentSoft, color: theme.accent }}
+          >
+            {selectedTerminal?.name || "Select terminal"}
+          </div>
+
+          <div>
+            <FieldLabel>Bill Number</FieldLabel>
+            <input
+              ref={billNumberRef}
+              inputMode="numeric"
+              autoComplete="off"
+              className={inputClass}
+              value={billNumber}
+              onChange={(e) => setBillNumber(e.target.value)}
+              placeholder="1256"
+            />
+          </div>
+
+          <div>
+            <FieldLabel>Bill Amount</FieldLabel>
+            <input
+              inputMode="decimal"
+              step={moneyInputStep(currencyDecimals)}
+              autoComplete="off"
+              className={inputClass}
+              value={billAmount}
+              onChange={(e) => setBillAmount(e.target.value)}
+              placeholder="0.000"
+            />
+          </div>
+
+          <div>
+            <FieldLabel>Payment Type</FieldLabel>
+            <select
+              className={inputClass}
+              value={paymentMode}
+              onChange={(e) => setPaymentMode(e.target.value)}
+            >
+              {paymentOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <FieldLabel>Customer Name</FieldLabel>
+            <input
+              autoComplete="off"
+              className={inputClass}
+              value={customerName}
+              onChange={(e) => setCustomerName(e.target.value)}
+              placeholder="Optional"
+            />
+          </div>
+
+          <div>
+            <FieldLabel>Delivery Charge</FieldLabel>
+            <input
+              inputMode="decimal"
+              step={moneyInputStep(currencyDecimals)}
+              autoComplete="off"
+              className={inputClass}
+              value={deliveryCharge}
+              onChange={(e) => setDeliveryCharge(e.target.value)}
+              placeholder="0.000"
+            />
+          </div>
+
+          {formError ? (
+            <div className="rounded-xl border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
+              {formError}
+            </div>
+          ) : null}
+          {formMessage ? (
+            <div className="rounded-xl border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-100">
+              ✓ {formMessage}
+            </div>
+          ) : null}
+
+          <button
+            type="submit"
+            disabled={saving || !selectedTerminal}
+            className="w-full rounded-2xl py-4 text-lg font-bold text-slate-950 disabled:opacity-50"
+            style={{ backgroundColor: theme.accent }}
+          >
+            {saving ? "Saving…" : "Save Bill"}
+          </button>
+        </form>
+      </main>
+
+      {logoutConfirmOpen ? (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
+          <div className="w-full max-w-sm rounded-3xl border border-slate-700 bg-slate-950 p-5 shadow-2xl">
+            <div className="text-base font-semibold text-white">
+              {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting to sync
+            </div>
+            <p className="mt-2 text-sm text-slate-400">
+              Please wait until synchronization is complete. Pending bills stay
+              on this device if you log out.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setLogoutConfirmOpen(false)}
+                className="flex-1 rounded-xl border border-slate-700 py-3 text-sm font-semibold"
+              >
+                Stay
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setLogoutConfirmOpen(false);
+                  await logout();
+                }}
+                className="flex-1 rounded-xl bg-rose-600 py-3 text-sm font-semibold text-white"
+              >
+                Logout Anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}

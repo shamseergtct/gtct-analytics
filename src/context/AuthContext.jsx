@@ -129,6 +129,7 @@ export function AuthProvider({ children }) {
   const isSuperAdmin = role === "super_admin";
   const isAdmin = role === "admin";
   const isPartner = role === "partner";
+  const isDeliveryBoy = role === "delivery_boy";
 
   // ✅ nicer display helpers
   const displayName =
@@ -144,6 +145,7 @@ export function AuthProvider({ children }) {
       isSuperAdmin,
       isAdmin,
       isPartner,
+      isDeliveryBoy,
       isDisabled,
       authLoading,
 
@@ -164,6 +166,7 @@ export function AuthProvider({ children }) {
       isSuperAdmin,
       isAdmin,
       isPartner,
+      isDeliveryBoy,
       isDisabled,
       authLoading,
       authError,

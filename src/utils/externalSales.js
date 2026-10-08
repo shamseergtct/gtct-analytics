@@ -326,6 +326,8 @@ export function resolveDeliveryCommissionSettings(settingsOrBoy) {
 
 export const EXTERNAL_SALES_SOURCE = "EXTERNAL_BILL_ENTRY";
 export const EXTERNAL_ENTRY_SOURCE_MANUAL = "MANUAL";
+/** Bills entered from GTCT Delivery Entry (offline-first PWA). */
+export const EXTERNAL_ENTRY_SOURCE_DELIVERY_APP = "DELIVERY_APP";
 
 export const EXTERNAL_PAYMENT_MODES = [
   "CASH",

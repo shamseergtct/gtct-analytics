@@ -117,6 +117,13 @@ export default function Login() {
             </>
           )}
         </div>
+
+        <div className="mt-5 border-t border-slate-800 pt-4 text-center text-sm text-slate-400">
+          Delivery boy?{" "}
+          <a href="/delivery" className="font-medium text-sky-400 underline">
+            Open Delivery Entry
+          </a>
+        </div>
       </div>
     </div>
   );

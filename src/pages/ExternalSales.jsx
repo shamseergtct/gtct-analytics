@@ -307,6 +307,7 @@ export default function ExternalSales() {
           <DeliveryBoyManager
             clientId={activeClientId}
             deliveryBoys={deliveryBoys}
+            terminals={terminals}
             loading={loadingBoys}
             onMessage={(text) => {
               setPageError("");

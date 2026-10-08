@@ -25,6 +25,7 @@ import Help from "./pages/Help";
 
 // ✅ NEW: Range Txn Reports (6 tabs)
 import TxnReports from "./pages/TxnReports.jsx";
+import DeliveryApp from "./delivery/DeliveryApp.jsx";
 
 import ProtectedRoute from "./components/ProtectedRoute";
 import RoleRoute from "./components/RoleRoute";
@@ -32,7 +33,7 @@ import RequireActiveShift from "./components/RequireActiveShift";
 import Layout from "./components/Layout";
 
 export default function App() {
-  const { user, authLoading } = useAuth();
+  const { user, authLoading, isDeliveryBoy } = useAuth();
 
   if (authLoading) {
     return (
@@ -42,18 +43,34 @@ export default function App() {
     );
   }
 
+  const postLoginPath = isDeliveryBoy ? "/delivery" : "/dashboard";
+
   return (
     <Routes>
       {/* Public */}
       <Route
         path="/"
-        element={<Navigate to={user ? "/dashboard" : "/login"} replace />}
+        element={
+          <Navigate to={user ? postLoginPath : "/login"} replace />
+        }
       />
 
       <Route
         path="/login"
-        element={user ? <Navigate to="/dashboard" replace /> : <Login />}
+        element={user ? <Navigate to={postLoginPath} replace /> : <Login />}
       />
+
+      {/* GTCT Delivery Entry (SPA path — works on hosting that only serves index.html) */}
+      <Route path="/delivery" element={<DeliveryApp />} />
+      <Route
+        path="/delivery.html"
+        element={<Navigate to="/delivery" replace />}
+      />
+
+      {/* Delivery boys stay on Delivery Entry — not Analytics shell */}
+      {isDeliveryBoy ? (
+        <Route path="*" element={<Navigate to="/delivery" replace />} />
+      ) : null}
 
       {/* Protected + Layout */}
       <Route

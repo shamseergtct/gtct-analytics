@@ -7,7 +7,6 @@ import {
   onSnapshot,
   orderBy,
   query,
-  runTransaction,
   serverTimestamp,
   updateDoc,
   where,
@@ -33,7 +32,6 @@ import {
   DELIVERY_ACCOUNT_PAYMENT,
   EXTERNAL_ENTRY_SOURCE_MANUAL,
   EXTERNAL_SALE_TYPES,
-  EXTERNAL_SALES_SOURCE,
   SPLIT_PAYMENT,
   calculateDeliveryCommission,
   externalPaymentModeLabel,
@@ -48,6 +46,7 @@ import {
   pickNextTerminalColorId,
   resolveDeliveryBoyCommission,
 } from "../../utils/externalSales.js";
+import { writeExternalSalesBill } from "../../utils/externalSalesBillWrite.js";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -656,106 +655,34 @@ function TerminalBillForm({
       }
     }
 
-    const boyCommission = resolveDeliveryBoyCommission(boy);
-    const commissionSnap = calculateDeliveryCommission({
-      saleType: type,
-      deliveryCharge: chargeNum,
-      commissionEnabled: boyCommission.enabled,
-      commissionRate: boyCommission.rate,
-      decimals: currencyDecimals,
-    });
-
-    const docId = externalSalesBillDocId({
-      clientId,
-      businessDate: date,
-      terminalId: terminal.id,
-      billNumber: billNo,
-    });
-
     setSaving(true);
     try {
-      await runTransaction(db, async (tx) => {
-        const ref = doc(db, "external_sales_bills", docId);
-        const existing = await tx.get(ref);
-        const existsActive =
-          existing.exists() && existing.data()?.voided !== true;
-
-        if (existsActive && !editMode) {
-          throw new Error(
-            `Bill ${billNo} already exists for ${terminal.name}. Leave the bill number field to load it for editing.`
-          );
-        }
-        if (editMode && !existsActive) {
-          throw new Error(
-            `Bill ${billNo} is no longer available to edit. Clear and enter again.`
-          );
-        }
-
-        const nowMs = Date.now();
-        const wasVoided = existing.exists() && existing.data()?.voided === true;
-        const preserveCreated =
-          editMode || wasVoided
-            ? {
-                createdAt:
-                  existing.data()?.createdAt ||
-                  existingMeta?.createdAt ||
-                  serverTimestamp(),
-                createdAtMs:
-                  existing.data()?.createdAtMs ||
-                  existingMeta?.createdAtMs ||
-                  nowMs,
-                createdBy:
-                  existing.data()?.createdBy ||
-                  existingMeta?.createdBy ||
-                  user.uid,
-              }
-            : {
-                createdAt: serverTimestamp(),
-                createdAtMs: nowMs,
-                createdBy: user.uid,
-              };
-
-        const payload = {
-          clientId,
-          businessDate: date,
-          terminalId: terminal.id,
-          terminalNameSnapshot: terminal.name || "",
-          billNumber: billNo,
-          billAmount: roundMoney(amountNum, currencyDecimals),
-          saleType: type,
-          paymentMode: savedPaymentMode,
-          bankAccountId,
-          bankAccountNameSnapshot,
-          ...(savedPaymentMode === SPLIT_PAYMENT
-            ? {
-                paidCash,
-                paidBank,
-              }
-            : {}),
-          customerId: customerPartyId,
-          customerName,
-          customerLocation: String(customerLocation || "").trim(),
-          deliveryBoyId: type === "DELIVERY" ? boy.id : "",
-          deliveryBoyNameSnapshot: type === "DELIVERY" ? boy.name || "" : "",
-          deliveryCharge:
-            type === "DELIVERY"
-              ? roundMoney(chargeNum, currencyDecimals)
-              : 0,
-          commissionEnabled: commissionSnap.commissionEnabled,
-          commissionRate: commissionSnap.commissionRate,
-          commissionAmount: commissionSnap.commissionAmount,
-          notes: String(notes || "").trim(),
-          salesSource: EXTERNAL_SALES_SOURCE,
-          entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
-          voided: false,
-          currency: currency || "",
-          ...preserveCreated,
-          updatedAt: serverTimestamp(),
-          updatedAtMs: nowMs,
-          updatedBy: user.uid,
-        };
-
-        tx.set(ref, payload);
+      await writeExternalSalesBill({
+        userUid: user.uid,
+        clientId,
+        currency: currency || "",
+        currencyDecimals,
+        businessDate: date,
+        terminal,
+        billNumber: billNo,
+        billAmount: amountNum,
+        saleType: type,
+        paymentMode: savedPaymentMode,
+        bankAccounts,
+        bankAccountId,
+        bankAccountNameSnapshot,
+        paidCash,
+        paidBank,
+        customerId: customerPartyId,
+        customerName,
+        customerLocation: String(customerLocation || "").trim(),
+        deliveryBoy: boy,
+        deliveryCharge: chargeNum,
+        notes: String(notes || "").trim(),
+        entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
+        entryLocalId: "",
+        editMode,
+        existingMeta,
       });
 
       const ok = editMode
