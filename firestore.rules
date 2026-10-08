@@ -92,7 +92,34 @@ service cloud.firestore {
         && request.resource.data.deliveryCharge is number
         && request.resource.data.deliveryCharge >= 0
         && request.resource.data.paymentMode in ['CASH', 'BANK', 'DELIVERY_ACCOUNT']
-        && request.resource.data.status in ['PENDING', 'APPROVED', 'REJECTED'];
+        && request.resource.data.status in ['PENDING', 'EDITED_PENDING', 'APPROVED', 'REJECTED'];
+    }
+
+    /** Delivery boy may edit own pending / approved bills (re-check via EDITED_PENDING). */
+    function deliveryBoyMayEditOwnSubmission() {
+      return isDeliveryBoyForClient(resource.data.clientId)
+        && resource.data.deliveryBoyId == profile().deliveryBoyId
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.deliveryBoyId == resource.data.deliveryBoyId
+        && request.resource.data.entryLocalId == resource.data.entryLocalId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.saleType == 'DELIVERY'
+        && validDeliveryBillSubmissionFields()
+        && (
+          (
+            resource.data.status == 'PENDING'
+            && request.resource.data.status == 'PENDING'
+          )
+          || (
+            resource.data.status in ['APPROVED', 'EDITED_PENDING']
+            && request.resource.data.status == 'EDITED_PENDING'
+            && request.resource.data.businessDate == resource.data.businessDate
+            && request.resource.data.terminalId == resource.data.terminalId
+            && request.resource.data.billNumber == resource.data.billNumber
+          )
+        )
+        && deliveryBoyMayUseTerminal(request.resource.data.terminalId);
     }
 
     /** Bank payments must reference an OPERATIONAL account for the same shop. */
@@ -1204,17 +1231,20 @@ service cloud.firestore {
           || deliveryBoyOwnsSubmission()
         );
 
-      allow update: if canManageClient(resource.data.clientId)
-        && request.resource.data.clientId == resource.data.clientId
-        && request.resource.data.updatedBy == request.auth.uid
-        && request.resource.data.createdBy == resource.data.createdBy
-        && request.resource.data.entryLocalId == resource.data.entryLocalId
-        && request.resource.data.businessDate == resource.data.businessDate
-        && request.resource.data.terminalId == resource.data.terminalId
-        && request.resource.data.billNumber == resource.data.billNumber
-        && resource.data.status == 'PENDING'
-        && request.resource.data.status in ['APPROVED', 'REJECTED']
-        && validDeliveryBillSubmissionFields();
+      allow update: if deliveryBoyMayEditOwnSubmission()
+        || (
+          canManageClient(resource.data.clientId)
+          && request.resource.data.clientId == resource.data.clientId
+          && request.resource.data.updatedBy == request.auth.uid
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.entryLocalId == resource.data.entryLocalId
+          && request.resource.data.businessDate == resource.data.businessDate
+          && request.resource.data.terminalId == resource.data.terminalId
+          && request.resource.data.billNumber == resource.data.billNumber
+          && resource.data.status in ['PENDING', 'EDITED_PENDING']
+          && request.resource.data.status in ['APPROVED', 'REJECTED']
+          && validDeliveryBillSubmissionFields()
+        );
 
       allow delete: if isSuperAdmin();
     }

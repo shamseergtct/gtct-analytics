@@ -94,6 +94,7 @@ async function syncOneBill(record, ctx) {
     if (existing) {
       if (
         existing.status === SUBMISSION_STATUS.PENDING ||
+        existing.status === SUBMISSION_STATUS.EDITED_PENDING ||
         existing.status === SUBMISSION_STATUS.APPROVED
       ) {
         await deleteLocalBill(record.entryLocalId);

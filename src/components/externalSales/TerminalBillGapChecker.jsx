@@ -17,6 +17,7 @@ import {
   externalTerminalBillRangeDocId,
   findMissingBillNumbers,
   parseBillSequence,
+  sanitizeBillNumberInput,
 } from "../../utils/externalSales.js";
 import { BTN_PRIMARY, BTN_SECONDARY } from "./externalSalesUi.js";
 
@@ -150,9 +151,12 @@ function TerminalBillControlCard({
           <input
             type="text"
             inputMode="numeric"
+            pattern="[0-9]*"
             value={draft.startBillNumber}
             onChange={(event) =>
-              onDraftChange({ startBillNumber: event.target.value })
+              onDraftChange({
+                startBillNumber: sanitizeBillNumberInput(event.target.value),
+              })
             }
             className={RANGE_INPUT}
             aria-label={`${terminal.name} starting bill number`}
@@ -163,9 +167,12 @@ function TerminalBillControlCard({
           <input
             type="text"
             inputMode="numeric"
+            pattern="[0-9]*"
             value={draft.endBillNumber}
             onChange={(event) =>
-              onDraftChange({ endBillNumber: event.target.value })
+              onDraftChange({
+                endBillNumber: sanitizeBillNumberInput(event.target.value),
+              })
             }
             className={RANGE_INPUT}
             aria-label={`${terminal.name} last bill number`}

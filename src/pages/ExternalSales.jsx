@@ -191,23 +191,44 @@ export default function ExternalSales() {
         className="sticky top-16 z-30 -mx-1 border-b border-slate-800/80 bg-slate-950/90 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-slate-950/75"
       >
         <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
-          <div className="min-w-0 overflow-x-auto overscroll-x-contain">
-            <div className="flex min-w-max gap-2 sm:min-w-0 sm:flex-wrap">
-              {TABS.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setTab(item.id)}
-                  className={`rounded-lg px-3 py-2 text-sm font-semibold whitespace-nowrap shadow-sm transition-colors ${
-                    tab === item.id
-                      ? "bg-blue-600 text-white shadow-blue-900/40"
-                      : "border border-slate-800 bg-slate-900/90 text-slate-300 hover:bg-slate-800"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
+          <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+            <div className="min-w-0 overflow-x-auto overscroll-x-contain">
+              <div className="flex min-w-max gap-2 sm:min-w-0 sm:flex-wrap">
+                {TABS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setTab(item.id)}
+                    className={`rounded-lg px-3 py-2 text-sm font-semibold whitespace-nowrap shadow-sm transition-colors ${
+                      tab === item.id
+                        ? "bg-blue-600 text-white shadow-blue-900/40"
+                        : "border border-slate-800 bg-slate-900/90 text-slate-300 hover:bg-slate-800"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
             </div>
+            {tab === "entry" ? (
+              <DeliveryBillApprovals
+                clientId={activeClientId}
+                businessDate={effectiveFilterDate}
+                currency={currency}
+                currencyDecimals={currencyDecimals}
+                onReviewSubmission={(row) => {
+                  setApprovalSubmission(row);
+                }}
+                onMessage={(text) => {
+                  setPageError("");
+                  setMessage(text);
+                }}
+                onError={(text) => {
+                  setMessage("");
+                  setPageError(text);
+                }}
+              />
+            ) : null}
           </div>
 
           {DATE_TABS.has(tab) ? (
@@ -236,23 +257,6 @@ export default function ExternalSales() {
 
       {tab === "entry" ? (
         <div className="space-y-4">
-          <DeliveryBillApprovals
-            clientId={activeClientId}
-            businessDate={effectiveFilterDate}
-            currency={currency}
-            currencyDecimals={currencyDecimals}
-            onReviewSubmission={(row) => {
-              setApprovalSubmission(row);
-            }}
-            onMessage={(text) => {
-              setPageError("");
-              setMessage(text);
-            }}
-            onError={(text) => {
-              setMessage("");
-              setPageError(text);
-            }}
-          />
           <ExternalSalesForm
             clientId={activeClientId}
             currency={currency}

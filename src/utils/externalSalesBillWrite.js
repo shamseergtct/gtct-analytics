@@ -70,8 +70,8 @@ export function buildExternalSalesBillPayload({
 
   const billNo = normalizeBillNumber(billNumber);
   if (!billNo) throw new Error("Bill number is required.");
-  if (!/^[\w./#-]+(?:\s[\w./#-]+)*$/i.test(billNo) || billNo.length > 40) {
-    throw new Error("Bill number format is invalid.");
+  if (!/^\d+$/.test(billNo) || billNo.length > 12) {
+    throw new Error("Bill number must be a whole number (digits only).");
   }
 
   if (billAmount === "" || billAmount === null || billAmount === undefined) {

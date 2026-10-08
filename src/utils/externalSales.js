@@ -34,10 +34,25 @@ export function isDeliverySaleType(value) {
   return normalizeExternalSaleType(value) === "DELIVERY";
 }
 
+/**
+ * Bill numbers are whole integers only: digits, no decimals, letters, or spaces.
+ * Non-digits are stripped; leading zeros are removed (e.g. "001" → "1").
+ */
 export function normalizeBillNumber(value) {
-  return String(value || "")
-    .trim()
-    .replace(/\s+/g, " ");
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  const stripped = digits.replace(/^0+/, "");
+  return stripped || "";
+}
+
+/** Keep only digit characters while typing (does not strip leading zeros yet). */
+export function sanitizeBillNumberInput(value) {
+  return String(value || "").replace(/\D/g, "");
+}
+
+export function isValidBillNumber(value) {
+  const normalized = normalizeBillNumber(value);
+  return Boolean(normalized) && /^\d+$/.test(normalized) && normalized.length <= 12;
 }
 
 /** Screen order for billing terminal cards (Setup ↑↓). */

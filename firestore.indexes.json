@@ -175,6 +175,16 @@
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "deliveryBoyId", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "delivery_bill_submissions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "deliveryBoyId", "order": "ASCENDING" },
+        { "fieldPath": "businessDate", "order": "ASCENDING" },
+        { "fieldPath": "createdAtMs", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

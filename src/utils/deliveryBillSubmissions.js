@@ -29,9 +29,25 @@ export const DELIVERY_BILL_SUBMISSIONS = "delivery_bill_submissions";
 
 export const SUBMISSION_STATUS = {
   PENDING: "PENDING",
+  /** Boy edited an already-approved bill — shop must re-check. */
+  EDITED_PENDING: "EDITED_PENDING",
   APPROVED: "APPROVED",
   REJECTED: "REJECTED",
 };
+
+/** Statuses waiting for shop review (new or re-check after boy edit). */
+export const SUBMISSION_REVIEW_STATUSES = [
+  SUBMISSION_STATUS.PENDING,
+  SUBMISSION_STATUS.EDITED_PENDING,
+];
+
+export function isSubmissionAwaitingReview(status) {
+  return SUBMISSION_REVIEW_STATUSES.includes(String(status || "").trim());
+}
+
+export function isEditedSubmission(status) {
+  return String(status || "").trim() === SUBMISSION_STATUS.EDITED_PENDING;
+}
 
 function clean(value) {
   return String(value || "").trim();
@@ -65,7 +81,9 @@ export async function upsertDeliveryBillSubmission({
     throw new Error("Shop and business date are required.");
   }
   if (!terminalId) throw new Error("Terminal is required.");
-  if (!billNo) throw new Error("Bill number is required.");
+  if (!billNo) {
+    throw new Error("Bill number must be a whole number (e.g. 1, 2, 3).");
+  }
 
   const amountNum = numMoney(record.billAmount);
   if (!Number.isFinite(amountNum)) {
@@ -120,7 +138,7 @@ export async function upsertDeliveryBillSubmission({
         where("businessDate", "==", businessDate),
         where("terminalId", "==", terminalId),
         where("billNumber", "==", billNo),
-        where("status", "==", SUBMISSION_STATUS.PENDING),
+        where("status", "in", SUBMISSION_REVIEW_STATUSES),
         where("deliveryBoyId", "==", clean(boy.id))
       )
     );
@@ -197,8 +215,168 @@ export async function findDeliveryBillSubmissionByLocalId(entryLocalId) {
   }
 }
 
+function buildSubmissionFieldPatch({
+  record,
+  deliveryBoy,
+  bankAccounts,
+  currency,
+  currencyDecimals,
+}) {
+  const billNo = normalizeBillNumber(record.billNumber);
+  if (!billNo) {
+    throw new Error("Bill number must be a whole number (e.g. 1, 2, 3).");
+  }
+
+  const amountNum = numMoney(record.billAmount);
+  if (!Number.isFinite(amountNum)) {
+    throw new Error("Bill amount must be a valid number.");
+  }
+
+  let paymentMode =
+    clean(record.paymentMode).toUpperCase() || DELIVERY_ACCOUNT_PAYMENT;
+  let bankAccountId = clean(record.bankAccountId);
+  let bankAccountNameSnapshot = clean(record.bankAccountNameSnapshot);
+
+  if (paymentMode === "BANK") {
+    if (!bankAccountId) throw new Error("Select a bank account.");
+    const bankCheck = assertOperationalBankAccount(bankAccounts, bankAccountId);
+    if (!bankCheck.ok) throw new Error(bankCheck.message);
+    bankAccountNameSnapshot =
+      bankAccountNameSnapshot ||
+      findBankAccountName(bankAccounts, bankAccountId);
+  } else if (
+    paymentMode === "CASH" ||
+    paymentMode === DELIVERY_ACCOUNT_PAYMENT
+  ) {
+    bankAccountId = "";
+    bankAccountNameSnapshot = "";
+  } else {
+    throw new Error("Invalid payment type.");
+  }
+
+  const chargeNum = Math.max(0, numMoney(record.deliveryCharge));
+  const boy = deliveryBoy || {
+    id: record.deliveryBoyId,
+    name: record.deliveryBoyNameSnapshot,
+    commissionEnabled: record.commissionEnabled,
+    commissionRate: record.commissionRate,
+  };
+  if (!clean(boy?.id)) throw new Error("Delivery boy is required.");
+
+  const boyCommission = resolveDeliveryBoyCommission(boy);
+  const commissionSnap = calculateDeliveryCommission({
+    saleType: "DELIVERY",
+    deliveryCharge: chargeNum,
+    commissionEnabled: boyCommission.enabled,
+    commissionRate: boyCommission.rate,
+    decimals: currencyDecimals,
+  });
+
+  return {
+    terminalId: clean(record.terminalId),
+    terminalNameSnapshot: clean(record.terminalNameSnapshot),
+    billNumber: billNo,
+    billAmount: roundMoney(amountNum, currencyDecimals),
+    saleType: "DELIVERY",
+    paymentMode,
+    bankAccountId,
+    bankAccountNameSnapshot,
+    customerName: clean(record.customerName),
+    deliveryCharge: roundMoney(chargeNum, currencyDecimals),
+    deliveryBoyId: clean(boy.id),
+    deliveryBoyNameSnapshot: clean(boy.name || record.deliveryBoyNameSnapshot),
+    commissionEnabled: commissionSnap.commissionEnabled,
+    commissionRate: commissionSnap.commissionRate,
+    commissionAmount: commissionSnap.commissionAmount,
+    currency: clean(currency || record.currency),
+    currencyDecimals: currencyDecimals ?? record.currencyDecimals ?? 3,
+    notes: clean(record.notes),
+  };
+}
+
 /**
- * Approve a pending submission → create normal external_sales_bills via shared writer.
+ * Delivery boy edits their own submission.
+ * PENDING stays PENDING; APPROVED / EDITED_PENDING → EDITED_PENDING for shop re-check.
+ * After approval, terminal / date / bill number stay locked.
+ */
+export async function updateDeliveryBillSubmissionByBoy({
+  userUid,
+  submissionId,
+  record,
+  deliveryBoy = null,
+  bankAccounts = [],
+  currency = "",
+  currencyDecimals = 3,
+} = {}) {
+  if (!userUid) throw new Error("You must be signed in.");
+  const id = clean(submissionId);
+  if (!id) throw new Error("Submission id is required.");
+
+  const patch = buildSubmissionFieldPatch({
+    record,
+    deliveryBoy,
+    bankAccounts,
+    currency,
+    currencyDecimals,
+  });
+
+  const ref = doc(db, DELIVERY_BILL_SUBMISSIONS, id);
+  let nextStatus = SUBMISSION_STATUS.PENDING;
+
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists()) throw new Error("Bill not found.");
+    const data = snap.data() || {};
+    const current = clean(data.status);
+
+    if (current === SUBMISSION_STATUS.REJECTED) {
+      throw new Error("Rejected bills cannot be edited.");
+    }
+    if (
+      current !== SUBMISSION_STATUS.PENDING &&
+      current !== SUBMISSION_STATUS.APPROVED &&
+      current !== SUBMISSION_STATUS.EDITED_PENDING
+    ) {
+      throw new Error("This bill cannot be edited right now.");
+    }
+
+    const lockedAfterApproval =
+      current === SUBMISSION_STATUS.APPROVED ||
+      current === SUBMISSION_STATUS.EDITED_PENDING;
+
+    if (lockedAfterApproval) {
+      if (clean(data.businessDate) !== clean(record.businessDate).slice(0, 10)) {
+        throw new Error("Business date cannot change after approval.");
+      }
+      if (clean(data.terminalId) !== patch.terminalId) {
+        throw new Error("Terminal cannot change after approval.");
+      }
+      if (clean(data.billNumber) !== patch.billNumber) {
+        throw new Error("Bill number cannot change after approval.");
+      }
+      nextStatus = SUBMISSION_STATUS.EDITED_PENDING;
+    } else {
+      nextStatus = SUBMISSION_STATUS.PENDING;
+    }
+
+    const nowMs = Date.now();
+    tx.update(ref, {
+      ...patch,
+      status: nextStatus,
+      editedAt: lockedAfterApproval ? serverTimestamp() : data.editedAt || null,
+      editedAtMs: lockedAfterApproval ? nowMs : data.editedAtMs || null,
+      editedBy: lockedAfterApproval ? userUid : data.editedBy || null,
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+      updatedBy: userUid,
+    });
+  });
+
+  return { submissionId: id, status: nextStatus };
+}
+
+/**
+ * Approve a pending / edited submission → create or update external_sales_bills.
  */
 export async function approveDeliveryBillSubmission({
   submissionId,
@@ -216,7 +394,7 @@ export async function approveDeliveryBillSubmission({
   const snap = await getDoc(ref);
   if (!snap.exists()) throw new Error("Submission not found.");
   const submission = snap.data() || {};
-  if (submission.status !== SUBMISSION_STATUS.PENDING) {
+  if (!isSubmissionAwaitingReview(submission.status)) {
     throw new Error("This submission is no longer pending.");
   }
 
@@ -228,6 +406,7 @@ export async function approveDeliveryBillSubmission({
       commissionRate: submission.commissionRate,
     };
 
+  const reApprove = Boolean(clean(submission.approvedBillId));
   const billResult = await writeExternalSalesBill({
     userUid,
     clientId: submission.clientId,
@@ -252,18 +431,24 @@ export async function approveDeliveryBillSubmission({
     deliveryBoy: boy,
     deliveryCharge: submission.deliveryCharge,
     notes: submission.notes || "",
-    // Approved bills become normal terminal entries.
     entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
     entryLocalId: submission.entryLocalId || "",
     createdAtMs: submission.createdAtMs,
     createdBy: userUid,
-    editMode: false,
+    editMode: reApprove,
+    existingMeta: reApprove
+      ? {
+          createdAt: submission.createdAt || null,
+          createdAtMs: submission.createdAtMs || null,
+          createdBy: submission.createdBy || null,
+        }
+      : null,
   });
 
   await runTransaction(db, async (tx) => {
     const fresh = await tx.get(ref);
     if (!fresh.exists()) return;
-    if (fresh.data()?.status !== SUBMISSION_STATUS.PENDING) return;
+    if (!isSubmissionAwaitingReview(fresh.data()?.status)) return;
     const nowMs = Date.now();
     tx.update(ref, {
       status: SUBMISSION_STATUS.APPROVED,
@@ -281,8 +466,8 @@ export async function approveDeliveryBillSubmission({
 }
 
 /**
- * Mark a pending submission APPROVED after the admin saved the bill via the
- * terminal form (edited amount / customer / payment / delivery charge).
+ * Mark a pending/edited submission APPROVED after the admin saved via the
+ * terminal form.
  */
 export async function markDeliveryBillSubmissionApproved({
   submissionId,
@@ -297,7 +482,7 @@ export async function markDeliveryBillSubmissionApproved({
   await runTransaction(db, async (tx) => {
     const fresh = await tx.get(ref);
     if (!fresh.exists()) throw new Error("Submission not found.");
-    if (fresh.data()?.status !== SUBMISSION_STATUS.PENDING) {
+    if (!isSubmissionAwaitingReview(fresh.data()?.status)) {
       throw new Error("This submission is no longer pending.");
     }
     const nowMs = Date.now();
@@ -306,7 +491,7 @@ export async function markDeliveryBillSubmissionApproved({
       approvedAt: serverTimestamp(),
       approvedAtMs: nowMs,
       approvedBy: userUid,
-      approvedBillId: clean(approvedBillId),
+      approvedBillId: clean(approvedBillId) || clean(fresh.data()?.approvedBillId),
       updatedAt: serverTimestamp(),
       updatedAtMs: nowMs,
       updatedBy: userUid,
@@ -327,7 +512,7 @@ export async function rejectDeliveryBillSubmission({
   await runTransaction(db, async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists()) throw new Error("Submission not found.");
-    if (snap.data()?.status !== SUBMISSION_STATUS.PENDING) {
+    if (!isSubmissionAwaitingReview(snap.data()?.status)) {
       throw new Error("This submission is no longer pending.");
     }
     const nowMs = Date.now();

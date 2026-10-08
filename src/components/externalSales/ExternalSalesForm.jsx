@@ -43,6 +43,7 @@ import {
   isValidTerminalColorId,
   normalizeBillNumber,
   normalizeExternalSaleType,
+  sanitizeBillNumberInput,
   pickNextTerminalColorId,
   resolveDeliveryBoyCommission,
 } from "../../utils/externalSales.js";
@@ -140,6 +141,10 @@ function TerminalBillForm({
     useState("");
   const [pendingApprovalCreatedAtMs, setPendingApprovalCreatedAtMs] =
     useState(null);
+  const [pendingApprovalApprovedBillId, setPendingApprovalApprovedBillId] =
+    useState("");
+  const [pendingApprovalIsEditReview, setPendingApprovalIsEditReview] =
+    useState(false);
   const [localError, setLocalError] = useState("");
   const [localMessage, setLocalMessage] = useState("");
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
@@ -314,6 +319,8 @@ function TerminalBillForm({
     setPendingApprovalSubmissionId("");
     setPendingApprovalEntryLocalId("");
     setPendingApprovalCreatedAtMs(null);
+    setPendingApprovalApprovedBillId("");
+    setPendingApprovalIsEditReview(false);
   }
 
   function clearBillFields({ keepDeliveryBoy = false } = {}) {
@@ -459,6 +466,10 @@ function TerminalBillForm({
       setPendingApprovalCreatedAtMs(
         bill.createdAtMs != null ? Number(bill.createdAtMs) : null
       );
+      setPendingApprovalApprovedBillId(
+        String(bill.__approvedBillId || bill.approvedBillId || "").trim()
+      );
+      setPendingApprovalIsEditReview(Boolean(bill.__isEditReview));
       onEditingBillIdChange?.(null);
       return;
     }
@@ -578,13 +589,10 @@ function TerminalBillForm({
 
     const billNo = normalizeBillNumber(billNumber);
     if (!billNo) {
-      setLocalError("Bill number is required.");
+      setLocalError("Bill number must be a whole number (e.g. 1, 2, 3).");
       return;
     }
-    if (!/^[\w./#-]+(?:\s[\w./#-]+)*$/i.test(billNo) || billNo.length > 40) {
-      setLocalError("Bill number format is invalid.");
-      return;
-    }
+    if (billNo !== billNumber) setBillNumber(billNo);
 
     if (billAmount === "" || billAmount === null || billAmount === undefined) {
       setLocalError("Bill amount is required.");
@@ -771,20 +779,31 @@ function TerminalBillForm({
         entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
         entryLocalId: approvalMode ? pendingApprovalEntryLocalId : "",
         createdAtMs: approvalMode ? pendingApprovalCreatedAtMs : undefined,
-        editMode: approvalMode ? false : editMode,
-        existingMeta: approvalMode ? null : existingMeta,
+        editMode: approvalMode
+          ? Boolean(pendingApprovalApprovedBillId)
+          : editMode,
+        existingMeta: approvalMode
+          ? pendingApprovalApprovedBillId
+            ? {
+                createdAtMs: pendingApprovalCreatedAtMs,
+                createdBy: null,
+              }
+            : null
+          : existingMeta,
       });
 
       if (approvalMode && pendingApprovalSubmissionId) {
         await markDeliveryBillSubmissionApproved({
           submissionId: pendingApprovalSubmissionId,
           userUid: user.uid,
-          approvedBillId: result.docId,
+          approvedBillId: result.docId || pendingApprovalApprovedBillId,
         });
       }
 
       const ok = approvalMode
-        ? `Approved & saved bill ${billNo} · ${terminal.name}`
+        ? pendingApprovalIsEditReview
+          ? `Re-checked & updated bill ${billNo} · ${terminal.name}`
+          : `Approved & saved bill ${billNo} · ${terminal.name}`
         : editMode
           ? `Bill updated successfully · ${terminal.name}`
           : `Bill saved successfully · ${terminal.name}`;
@@ -831,7 +850,11 @@ function TerminalBillForm({
           <p className="mt-0.5 text-xs text-slate-400">
             Terminal {String(terminalIndex + 1).padStart(2, "0")}
             {approvalMode ? (
-              <span className="text-amber-300"> · Approving delivery bill</span>
+              <span className="text-amber-300">
+                {pendingApprovalIsEditReview
+                  ? " · Re-checking edited delivery bill"
+                  : " · Approving delivery bill"}
+              </span>
             ) : editMode ? (
               <span className="text-amber-300"> · Editing existing bill</span>
             ) : null}
@@ -841,15 +864,19 @@ function TerminalBillForm({
           className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white"
           style={{ backgroundColor: resolvedTheme.accentSoft, color: resolvedTheme.accent }}
         >
-          {approvalMode ? "Approve" : "Bill Entry"}
+          {approvalMode
+            ? pendingApprovalIsEditReview
+              ? "Re-check"
+              : "Approve"
+            : "Bill Entry"}
         </span>
       </div>
 
       {approvalMode ? (
         <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-2.5 text-sm text-amber-100">
-          Review and edit amount, customer, payment mode, and delivery charge,
-          then click <span className="font-semibold">Approve & Save</span>.
-          Delivery boys cannot change this bill after submit until it is voided.
+          {pendingApprovalIsEditReview
+            ? "Delivery boy edited this approved bill. Re-check amount, customer, payment mode, and delivery charge, then save."
+            : "Review and edit amount, customer, payment mode, and delivery charge, then click Approve & Save."}
           <div className="mt-2">
             <button
               type="button"
@@ -895,12 +922,16 @@ function TerminalBillForm({
           <input
             ref={billNumberRef}
             required
+            inputMode="numeric"
+            pattern="[0-9]*"
             value={billNumber}
             onChange={(event) => {
-              setBillNumber(event.target.value);
+              setBillNumber(sanitizeBillNumberInput(event.target.value));
               if (editMode) resetEditState();
             }}
             onBlur={() => {
+              const cleaned = normalizeBillNumber(billNumber);
+              if (cleaned !== billNumber) setBillNumber(cleaned);
               void lookupExistingBill();
             }}
             className={fieldClass}
@@ -1151,12 +1182,16 @@ function TerminalBillForm({
         >
           {saving
             ? approvalMode
-              ? "Approving…"
+              ? pendingApprovalIsEditReview
+                ? "Updating…"
+                : "Approving…"
               : editMode
                 ? "Updating…"
                 : "Saving…"
             : approvalMode
-              ? "Approve & Save"
+              ? pendingApprovalIsEditReview
+                ? "Re-check & Save"
+                : "Approve & Save"
               : editMode
                 ? "Update Bill"
                 : "Save Bill"}
@@ -1258,6 +1293,8 @@ function recentBillPartyLabel(bill) {
 
 function submissionToBillDraft(submission) {
   if (!submission) return null;
+  const edited =
+    String(submission.status || "").trim() === "EDITED_PENDING";
   return {
     id: submission.id,
     terminalId: submission.terminalId,
@@ -1275,7 +1312,10 @@ function submissionToBillDraft(submission) {
     notes: submission.notes || "",
     entryLocalId: submission.entryLocalId || "",
     createdAtMs: submission.createdAtMs || null,
+    approvedBillId: submission.approvedBillId || "",
     __approvalSubmissionId: submission.id,
+    __approvedBillId: submission.approvedBillId || "",
+    __isEditReview: edited,
   };
 }
 

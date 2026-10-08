@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff } from "lucide-react";
+import { Eye, EyeOff, Pencil } from "lucide-react";
 import {
   collection,
   doc,
   onSnapshot,
+  orderBy,
   query,
   where,
 } from "firebase/firestore";
@@ -12,23 +13,38 @@ import { useAuth } from "../context/AuthContext";
 import {
   findBankAccountName,
   parsePaymentModeSelection,
+  paymentModeSelectionFromSaved,
 } from "../utils/paymentModes.js";
 import { filterBankAccountsForPurpose } from "../utils/bankAccountTypes.js";
 import {
   DELIVERY_ACCOUNT_PAYMENT,
   EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
   buildDeliveryBoyPaymentModeChoices,
+  externalPaymentModeLabel,
   getTerminalTheme,
+  isDeliveryBoyAccountPayment,
   normalizeBillNumber,
   resolveDeliveryBoyAssignedPaymentModes,
+  sanitizeBillNumberInput,
   sortBillingTerminals,
 } from "../utils/externalSales.js";
-import { moneyInputStep, numMoney, resolveCurrencyDecimals } from "../utils/money.js";
+import {
+  formatMoney,
+  moneyInputStep,
+  numMoney,
+  resolveCurrencyDecimals,
+} from "../utils/money.js";
 import {
   buildDeliveryChargeSelectOptions,
   deliveryChargeSelectValue,
 } from "../utils/deliveryCharges.js";
 import { useDeliveryChargeSettings } from "../hooks/useDeliveryChargeSettings.js";
+import {
+  DELIVERY_BILL_SUBMISSIONS,
+  SUBMISSION_STATUS,
+  isEditedSubmission,
+  updateDeliveryBillSubmissionByBoy,
+} from "../utils/deliveryBillSubmissions.js";
 import {
   SYNC_STATUS,
   createEntryLocalId,
@@ -48,6 +64,15 @@ import {
   runDeliveryBillSync,
   subscribeDeliverySync,
 } from "../utils/deliveryBillSync.js";
+
+function submissionStatusLabel(status) {
+  const value = String(status || "").trim();
+  if (value === SUBMISSION_STATUS.APPROVED) return "Approved";
+  if (value === SUBMISSION_STATUS.EDITED_PENDING) return "Edited · waiting";
+  if (value === SUBMISSION_STATUS.REJECTED) return "Rejected";
+  if (value === SUBMISSION_STATUS.PENDING) return "Waiting approval";
+  return value || "—";
+}
 
 function todayYYYYMMDD() {
   const date = new Date();
@@ -133,6 +158,8 @@ export default function DeliveryApp() {
   const [syncState, setSyncState] = useState(getDeliverySyncState());
   const [failedBills, setFailedBills] = useState([]);
   const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
+  const [daySubmissions, setDaySubmissions] = useState([]);
+  const [editingSubmission, setEditingSubmission] = useState(null);
 
   const billNumberRef = useRef(null);
   const syncCtxRef = useRef(null);
@@ -231,9 +258,71 @@ export default function DeliveryApp() {
 
   useEffect(() => {
     if (chargeSettingsLoading || chargeReady) return;
+    if (editingSubmission) {
+      setChargeReady(true);
+      return;
+    }
     setDeliveryCharge(defaultChargeValue);
     setChargeReady(true);
-  }, [chargeSettingsLoading, chargeReady, defaultChargeValue]);
+  }, [
+    chargeSettingsLoading,
+    chargeReady,
+    defaultChargeValue,
+    editingSubmission,
+  ]);
+
+  useEffect(() => {
+    if (!clientId || !deliveryBoyId || !businessDate) {
+      setDaySubmissions([]);
+      return undefined;
+    }
+    const date = String(businessDate).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      setDaySubmissions([]);
+      return undefined;
+    }
+    const q = query(
+      collection(db, DELIVERY_BILL_SUBMISSIONS),
+      where("clientId", "==", clientId),
+      where("deliveryBoyId", "==", deliveryBoyId),
+      where("businessDate", "==", date),
+      orderBy("createdAtMs", "asc")
+    );
+    return onSnapshot(
+      q,
+      (snap) => {
+        setDaySubmissions(
+          snap.docs.map((item) => ({ id: item.id, ...item.data() }))
+        );
+      },
+      () => setDaySubmissions([])
+    );
+  }, [clientId, deliveryBoyId, businessDate]);
+
+  const dayTotals = useMemo(() => {
+    let boyAccount = 0;
+    let shopAccount = 0;
+    for (const row of daySubmissions) {
+      if (row?.status === SUBMISSION_STATUS.REJECTED) continue;
+      const amount = numMoney(row.billAmount);
+      if (isDeliveryBoyAccountPayment(row)) boyAccount += amount;
+      else shopAccount += amount;
+    }
+    return {
+      boyAccount,
+      shopAccount,
+      all: boyAccount + shopAccount,
+      count: daySubmissions.filter(
+        (row) => row?.status !== SUBMISSION_STATUS.REJECTED
+      ).length,
+    };
+  }, [daySubmissions]);
+
+  const editingLockedIdentity = Boolean(
+    editingSubmission &&
+      (editingSubmission.status === SUBMISSION_STATUS.APPROVED ||
+        editingSubmission.status === SUBMISSION_STATUS.EDITED_PENDING)
+  );
 
   // Resolve business date: open shift → cached → today
   useEffect(() => {
@@ -437,12 +526,15 @@ export default function DeliveryApp() {
   async function fixFailedBillNumber(bill) {
     if (!bill?.entryLocalId) return;
     const next = window.prompt(
-      `Bill ${bill.billNumber} already exists for ${bill.terminalNameSnapshot || "this terminal"}.\n\nEnter a new bill number to sync instead:`,
+      `Bill ${bill.billNumber} already exists for ${bill.terminalNameSnapshot || "this terminal"}.\n\nEnter a new whole bill number (digits only) to sync instead:`,
       String(bill.billNumber || "")
     );
     if (next == null) return;
-    const billNo = String(next).trim();
-    if (!billNo) return;
+    const billNo = normalizeBillNumber(next);
+    if (!billNo) {
+      window.alert("Bill number must be a whole number (e.g. 1, 2, 3).");
+      return;
+    }
     await updateLocalBill(bill.entryLocalId, {
       billNumber: billNo,
       syncStatus: SYNC_STATUS.PENDING,
@@ -484,6 +576,7 @@ export default function DeliveryApp() {
   }
 
   function clearBillFields() {
+    setEditingSubmission(null);
     setBillNumber("");
     setBillAmount("");
     setCustomerName("");
@@ -492,6 +585,36 @@ export default function DeliveryApp() {
       paymentOptions[0]?.value || DELIVERY_ACCOUNT_PAYMENT
     );
     setFormError("");
+    requestAnimationFrame(() => billNumberRef.current?.focus());
+  }
+
+  function loadSubmissionForEdit(row) {
+    if (!row?.id) return;
+    if (row.status === SUBMISSION_STATUS.REJECTED) {
+      setFormError("Rejected bills cannot be edited.");
+      return;
+    }
+    setFormError("");
+    setFormMessage("");
+    setEditingSubmission(row);
+    if (row.terminalId) setSelectedTerminalId(row.terminalId);
+    setBillNumber(String(row.billNumber || ""));
+    setBillAmount(
+      row.billAmount === 0 || row.billAmount
+        ? formatMoney(row.billAmount, currencyDecimals)
+        : ""
+    );
+    setCustomerName(String(row.customerName || ""));
+    setDeliveryCharge(
+      deliveryChargeSelectValue(row.deliveryCharge, currencyDecimals)
+    );
+    setPaymentMode(
+      paymentModeSelectionFromSaved(
+        row.paymentMode || DELIVERY_ACCOUNT_PAYMENT,
+        row.bankAccountId || ""
+      )
+    );
+    window.scrollTo({ top: 0, behavior: "smooth" });
     requestAnimationFrame(() => billNumberRef.current?.focus());
   }
 
@@ -519,8 +642,11 @@ export default function DeliveryApp() {
 
     const billNo = normalizeBillNumber(billNumber);
     if (!billNo) {
-      setFormError("Bill number is required.");
+      setFormError("Bill number must be a whole number (e.g. 1, 2, 3).");
       return;
+    }
+    if (billNo !== String(billNumber || "").trim()) {
+      setBillNumber(billNo);
     }
     if (billAmount === "" || billAmount == null) {
       setFormError("Bill amount is required.");
@@ -582,6 +708,58 @@ export default function DeliveryApp() {
     const date = String(businessDate || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       setFormError("Business date is unavailable. Reconnect once to continue.");
+      return;
+    }
+
+    if (editingSubmission?.id) {
+      if (editingLockedIdentity) {
+        if (billNo !== normalizeBillNumber(editingSubmission.billNumber)) {
+          setFormError("Bill number cannot change after shop approval.");
+          return;
+        }
+        if (selectedTerminal.id !== editingSubmission.terminalId) {
+          setFormError("Terminal cannot change after shop approval.");
+          return;
+        }
+      }
+      setSaving(true);
+      try {
+        const result = await updateDeliveryBillSubmissionByBoy({
+          userUid: user.uid,
+          submissionId: editingSubmission.id,
+          record: {
+            businessDate: date,
+            terminalId: selectedTerminal.id,
+            terminalNameSnapshot: selectedTerminal.name || "",
+            billNumber: billNo,
+            billAmount: amountNum,
+            paymentMode: savedPaymentMode,
+            bankAccountId,
+            bankAccountNameSnapshot,
+            customerName: String(customerName || "").trim(),
+            deliveryCharge: chargeNum,
+            notes: "",
+            deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
+            deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
+          },
+          deliveryBoy,
+          bankAccounts: allowedBankAccounts,
+          currency,
+          currencyDecimals,
+        });
+        const editedAgain =
+          result.status === SUBMISSION_STATUS.EDITED_PENDING;
+        setFormMessage(
+          editedAgain
+            ? `Bill ${billNo} updated. Sent to shop for re-check.`
+            : `Bill ${billNo} updated. Waiting for shop approval.`
+        );
+        clearBillFields();
+      } catch (error) {
+        setFormError(error?.message || "Failed to update bill.");
+      } finally {
+        setSaving(false);
+      }
       return;
     }
 
@@ -912,8 +1090,9 @@ export default function DeliveryApp() {
                   <button
                     key={terminal.id}
                     type="button"
+                    disabled={editingLockedIdentity && !selected}
                     onClick={() => setSelectedTerminalId(terminal.id)}
-                    className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition ${
+                    className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition disabled:opacity-50 ${
                       selected
                         ? "border-[color:var(--term-border)] bg-[color:var(--term-tint)] ring-2 ring-[color:var(--term-ring)]"
                         : "border-slate-800 bg-slate-900/70"
@@ -966,18 +1145,43 @@ export default function DeliveryApp() {
             className="rounded-2xl px-3 py-2 text-sm font-semibold text-white"
             style={{ background: theme.accentSoft, color: theme.accent }}
           >
-            {selectedTerminal?.name || "Select terminal"}
+            {editingSubmission
+              ? `Editing bill ${editingSubmission.billNumber}`
+              : selectedTerminal?.name || "Select terminal"}
           </div>
+
+          {editingSubmission ? (
+            <div className="rounded-xl border border-sky-800/60 bg-sky-950/30 px-3 py-2 text-xs text-sky-100">
+              {editingLockedIdentity
+                ? "Approved bill — after you save, the shop gets an edited-bill notification to re-check. Bill number and terminal stay locked."
+                : "Update this bill. It stays waiting for shop approval."}
+              <button
+                type="button"
+                onClick={() => clearBillFields()}
+                className="mt-2 block text-sky-300 underline"
+              >
+                Cancel edit
+              </button>
+            </div>
+          ) : null}
 
           <div>
             <FieldLabel>Bill Number</FieldLabel>
             <input
               ref={billNumberRef}
               inputMode="numeric"
+              pattern="[0-9]*"
               autoComplete="off"
               className={inputClass}
               value={billNumber}
-              onChange={(e) => setBillNumber(e.target.value)}
+              disabled={editingLockedIdentity}
+              onChange={(e) =>
+                setBillNumber(sanitizeBillNumberInput(e.target.value))
+              }
+              onBlur={() => {
+                const cleaned = normalizeBillNumber(billNumber);
+                if (cleaned !== billNumber) setBillNumber(cleaned);
+              }}
               placeholder="1256"
             />
           </div>
@@ -1053,9 +1257,145 @@ export default function DeliveryApp() {
             className="w-full rounded-2xl py-4 text-lg font-bold text-slate-950 disabled:opacity-50"
             style={{ backgroundColor: theme.accent }}
           >
-            {saving ? "Saving…" : "Save Bill"}
+            {saving
+              ? editingSubmission
+                ? "Updating…"
+                : "Saving…"
+              : editingSubmission
+                ? editingLockedIdentity
+                  ? "Save & send for re-check"
+                  : "Update Bill"
+                : "Save Bill"}
           </button>
         </form>
+
+        <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              Today’s bills
+            </h2>
+            <p className="mt-0.5 text-xs text-slate-500">
+              {dayTotals.count} bill{dayTotals.count === 1 ? "" : "s"} · tap to
+              edit
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                My account
+              </div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                {formatMoney(dayTotals.boyAccount, currencyDecimals)}
+              </div>
+              {currency ? (
+                <div className="text-[11px] text-slate-500">{currency}</div>
+              ) : null}
+            </div>
+            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Shop account
+              </div>
+              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                {formatMoney(dayTotals.shopAccount, currencyDecimals)}
+              </div>
+              {currency ? (
+                <div className="text-[11px] text-slate-500">{currency}</div>
+              ) : null}
+            </div>
+          </div>
+          <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
+            Combined total{" "}
+            <span className="font-semibold text-white tabular-nums">
+              {formatMoney(dayTotals.all, currencyDecimals)}
+            </span>
+            {currency ? (
+              <span className="ml-1 text-xs text-slate-500">{currency}</span>
+            ) : null}
+          </div>
+
+          {!daySubmissions.length ? (
+            <p className="py-2 text-center text-sm text-slate-500">
+              No bills entered for this date yet.
+            </p>
+          ) : (
+            <ul className="max-h-80 space-y-2 overflow-y-auto overscroll-y-contain">
+              {daySubmissions
+                .slice()
+                .reverse()
+                .map((row) => {
+                  const rejected = row.status === SUBMISSION_STATUS.REJECTED;
+                  const edited = isEditedSubmission(row.status);
+                  const boyAcct = isDeliveryBoyAccountPayment(row);
+                  const selected = editingSubmission?.id === row.id;
+                  return (
+                    <li key={row.id}>
+                      <button
+                        type="button"
+                        disabled={rejected}
+                        onClick={() => loadSubmissionForEdit(row)}
+                        className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
+                          selected
+                            ? "border-sky-600/70 bg-sky-950/40"
+                            : rejected
+                              ? "cursor-not-allowed border-slate-800/60 bg-slate-950/30 opacity-60"
+                              : "border-slate-800 bg-slate-950/60 hover:border-slate-600"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-semibold text-white">
+                              Bill {row.billNumber}
+                            </span>
+                            <span className="truncate text-xs text-slate-400">
+                              {row.terminalNameSnapshot || "Terminal"}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            {externalPaymentModeLabel(row)}
+                            {row.customerName ? ` · ${row.customerName}` : ""}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="font-semibold tabular-nums text-white">
+                              {formatMoney(row.billAmount, currencyDecimals)}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                boyAcct
+                                  ? "bg-violet-950/70 text-violet-200"
+                                  : "bg-emerald-950/70 text-emerald-200"
+                              }`}
+                            >
+                              {boyAcct ? "My account" : "Shop"}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                edited
+                                  ? "bg-sky-950/70 text-sky-200"
+                                  : row.status === SUBMISSION_STATUS.APPROVED
+                                    ? "bg-emerald-950/70 text-emerald-200"
+                                    : row.status === SUBMISSION_STATUS.REJECTED
+                                      ? "bg-rose-950/70 text-rose-200"
+                                      : "bg-amber-950/70 text-amber-200"
+                              }`}
+                            >
+                              {submissionStatusLabel(row.status)}
+                            </span>
+                          </div>
+                        </div>
+                        {!rejected ? (
+                          <Pencil
+                            size={15}
+                            className="mt-1 shrink-0 text-slate-500"
+                          />
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+        </section>
       </main>
 
       {logoutConfirmOpen ? (
