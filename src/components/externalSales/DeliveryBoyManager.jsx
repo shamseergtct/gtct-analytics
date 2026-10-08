@@ -12,9 +12,10 @@ import {
   getAuth,
   signOut,
 } from "firebase/auth";
+import { httpsCallable } from "firebase/functions";
 import { getApps, initializeApp } from "firebase/app";
-import { Pencil, Plus, X } from "lucide-react";
-import { db, firebaseConfig } from "../../firebase";
+import { Eye, EyeOff, Pencil, Plus, X } from "lucide-react";
+import { db, firebaseConfig, functions } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
 import { numMoney } from "../../utils/money.js";
@@ -30,6 +31,11 @@ import {
   FIELD_NUMBER_CLASS,
   LABEL_CLASS,
 } from "./externalSalesUi.js";
+
+const updateDeliveryBoyLoginFn = httpsCallable(
+  functions,
+  "updateDeliveryBoyLogin"
+);
 
 const EMPTY = {
   name: "",
@@ -70,6 +76,7 @@ export default function DeliveryBoyManager({
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
   const [modalError, setModalError] = useState("");
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
 
   const activeTerminals = useMemo(
     () => (terminals || []).filter((row) => row.isActive !== false),
@@ -179,6 +186,7 @@ export default function DeliveryBoyManager({
       .filter((row) => row.canAssign !== false)
       .map((row) => row.value);
     setForm({ ...EMPTY, assignedPaymentModes: allModes });
+    setShowLoginPassword(false);
     setModalError("");
     setIsOpen(true);
   }
@@ -198,9 +206,10 @@ export default function DeliveryBoyManager({
         row,
         operationalBanks.length ? operationalBanks : allBankAccounts
       ),
-      loginEmail: "",
+      loginEmail: String(row.linkedUserEmail || "").trim(),
       loginPassword: "",
     });
+    setShowLoginPassword(false);
     setModalError("");
     setIsOpen(true);
   }
@@ -208,6 +217,7 @@ export default function DeliveryBoyManager({
   function closeModal() {
     setIsOpen(false);
     setSaving(false);
+    setShowLoginPassword(false);
     setModalError("");
   }
 
@@ -300,7 +310,20 @@ export default function DeliveryBoyManager({
 
     const loginEmail = String(form.loginEmail || "").trim().toLowerCase();
     const loginPassword = String(form.loginPassword || "");
-    const creatingLogin = Boolean(loginEmail || loginPassword);
+    const editingRow = editingId
+      ? deliveryBoys.find((row) => row.id === editingId)
+      : null;
+    const hasLinkedLogin = Boolean(editingRow?.linkedUserId);
+    const currentLoginEmail = String(editingRow?.linkedUserEmail || "")
+      .trim()
+      .toLowerCase();
+    const emailChanged =
+      hasLinkedLogin && loginEmail && loginEmail !== currentLoginEmail;
+    const passwordProvided = Boolean(loginPassword);
+    const creatingLogin = !hasLinkedLogin && Boolean(loginEmail || loginPassword);
+    const updatingLogin =
+      hasLinkedLogin && (emailChanged || passwordProvided);
+
     if (creatingLogin) {
       if (!loginEmail || !loginPassword) {
         setModalError("Login email and password are both required.");
@@ -312,6 +335,23 @@ export default function DeliveryBoyManager({
       }
       if (!assignedTerminalIds.length) {
         setModalError("Assign at least one terminal before creating a login.");
+        return;
+      }
+    }
+
+    if (updatingLogin) {
+      if (!loginEmail) {
+        setModalError("Login email is required.");
+        return;
+      }
+      if (emailChanged && !passwordProvided) {
+        setModalError(
+          "Enter a new password when changing the login email."
+        );
+        return;
+      }
+      if (passwordProvided && loginPassword.length < 6) {
+        setModalError("New password must be at least 6 characters.");
         return;
       }
     }
@@ -337,11 +377,8 @@ export default function DeliveryBoyManager({
       if (editingId) {
         await updateDoc(doc(db, "delivery_boys", editingId), payload);
         // Keep linked user terminal / payment assignments in sync.
-        if (deliveryBoys.find((row) => row.id === editingId)?.linkedUserId) {
-          const linkedUserId = deliveryBoys.find(
-            (row) => row.id === editingId
-          ).linkedUserId;
-          await updateDoc(doc(db, "users", linkedUserId), {
+        if (editingRow?.linkedUserId) {
+          await updateDoc(doc(db, "users", editingRow.linkedUserId), {
             assignedTerminalIds,
             assignedPaymentModes,
             assignedPaymentAccountIds,
@@ -364,54 +401,178 @@ export default function DeliveryBoyManager({
       }
 
       if (creatingLogin && boyId) {
-        const existing = deliveryBoys.find((row) => row.id === boyId);
-        if (existing?.linkedUserId) {
-          setModalError(
-            "This delivery boy already has a login. Update terminals above; password resets are done in Super Admin."
-          );
-          setSaving(false);
-          return;
-        }
-
-        const secondaryAuth = getSecondaryAuth();
-        const cred = await createUserWithEmailAndPassword(
-          secondaryAuth,
+        await createDeliveryBoyAuthLogin({
+          boyId,
           loginEmail,
-          loginPassword
-        );
-        const uid = cred.user.uid;
-        await setDoc(doc(db, "users", uid), {
-          uid,
-          email: loginEmail,
+          loginPassword,
           name,
-          role: "delivery_boy",
-          assignedShops: [clientId],
-          deliveryBoyId: boyId,
+          clientId,
           assignedTerminalIds,
           assignedPaymentModes,
           assignedPaymentAccountIds,
-          createdBy: user?.uid || null,
-          createdAt: Date.now(),
           isActive: Boolean(form.isActive),
         });
-        await updateDoc(doc(db, "delivery_boys", boyId), {
-          linkedUserId: uid,
-          linkedUserEmail: loginEmail,
-          updatedAt: serverTimestamp(),
-          updatedAtMs: Date.now(),
-          updatedBy: user?.uid || null,
-        });
-        await signOut(secondaryAuth);
         onMessage?.(
           `Delivery boy saved. Login created for Delivery Entry: ${loginEmail}`
+        );
+      } else if (updatingLogin && editingRow?.linkedUserId && boyId) {
+        await updateExistingDeliveryBoyLogin({
+          editingRow,
+          boyId,
+          clientId,
+          loginEmail,
+          loginPassword,
+          emailChanged,
+          passwordProvided,
+          name,
+          assignedTerminalIds,
+          assignedPaymentModes,
+          assignedPaymentAccountIds,
+          isActive: Boolean(form.isActive),
+        });
+        onMessage?.(
+          passwordProvided
+            ? `Delivery Entry login updated (${loginEmail}). Password changed.`
+            : `Delivery Entry login email updated to ${loginEmail}.`
         );
       }
 
       closeModal();
     } catch (reason) {
-      setModalError(reason?.message || "Failed to save delivery boy.");
+      setModalError(
+        reason?.message ||
+          reason?.details ||
+          "Failed to save delivery boy."
+      );
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function createDeliveryBoyAuthLogin({
+    boyId,
+    loginEmail,
+    loginPassword,
+    name,
+    clientId: shopId,
+    assignedTerminalIds,
+    assignedPaymentModes,
+    assignedPaymentAccountIds,
+    isActive,
+  }) {
+    const secondaryAuth = getSecondaryAuth();
+    try {
+      const cred = await createUserWithEmailAndPassword(
+        secondaryAuth,
+        loginEmail,
+        loginPassword
+      );
+      const uid = cred.user.uid;
+      await setDoc(doc(db, "users", uid), {
+        uid,
+        email: loginEmail,
+        name,
+        role: "delivery_boy",
+        assignedShops: [shopId],
+        deliveryBoyId: boyId,
+        assignedTerminalIds,
+        assignedPaymentModes,
+        assignedPaymentAccountIds,
+        createdBy: user?.uid || null,
+        createdAt: Date.now(),
+        isActive,
+      });
+      await updateDoc(doc(db, "delivery_boys", boyId), {
+        linkedUserId: uid,
+        linkedUserEmail: loginEmail,
+        updatedAt: serverTimestamp(),
+        updatedAtMs: Date.now(),
+        updatedBy: user?.uid || null,
+      });
+    } finally {
+      try {
+        await signOut(secondaryAuth);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  /**
+   * Prefer Cloud Function (Auth Admin SDK). If unavailable (e.g. no Blaze),
+   * recreate login when email changes; password-only same-email needs the function.
+   */
+  async function updateExistingDeliveryBoyLogin({
+    editingRow,
+    boyId,
+    clientId: shopId,
+    loginEmail,
+    loginPassword,
+    emailChanged,
+    passwordProvided,
+    name,
+    assignedTerminalIds,
+    assignedPaymentModes,
+    assignedPaymentAccountIds,
+    isActive,
+  }) {
+    try {
+      await updateDeliveryBoyLoginFn({
+        targetUid: editingRow.linkedUserId,
+        deliveryBoyId: boyId,
+        clientId: shopId,
+        email: emailChanged || passwordProvided ? loginEmail : "",
+        password: passwordProvided ? loginPassword : "",
+      });
+      return;
+    } catch (error) {
+      const code = String(error?.code || "");
+      const message = String(error?.message || "");
+      const functionsUnavailable =
+        code.includes("functions/not-found") ||
+        code.includes("functions/unavailable") ||
+        code.includes("functions/internal") ||
+        message.toLowerCase().includes("not-found") ||
+        message.toLowerCase().includes("blaze") ||
+        message.toLowerCase().includes("internal");
+
+      if (!functionsUnavailable) {
+        throw new Error(message || "Failed to update Delivery Entry login.");
+      }
+
+      // Fallback without Cloud Functions:
+      if (!passwordProvided) {
+        throw new Error(
+          "Login email/password updates need the updateDeliveryBoyLogin Cloud Function (Firebase Blaze). Or set a new email and a new password together to recreate the login."
+        );
+      }
+      if (!emailChanged) {
+        throw new Error(
+          "Changing password for the same email needs the Cloud Function (Firebase Blaze). Tip: set a new email + new password to recreate the login without Blaze."
+        );
+      }
+
+      // Recreate with new email + password, deactivate old profile.
+      await createDeliveryBoyAuthLogin({
+        boyId,
+        loginEmail,
+        loginPassword,
+        name,
+        clientId: shopId,
+        assignedTerminalIds,
+        assignedPaymentModes,
+        assignedPaymentAccountIds,
+        isActive,
+      });
+      try {
+        await updateDoc(doc(db, "users", editingRow.linkedUserId), {
+          isActive: false,
+          updatedAt: Date.now(),
+          updatedBy: user?.uid || null,
+        });
+      } catch {
+        // old profile may already be gone
+      }
     }
   }
 
@@ -822,20 +983,24 @@ export default function DeliveryBoyManager({
                   Delivery Entry login
                 </div>
                 <p className="text-xs text-slate-400">
-                  Creates a <b>delivery_boy</b> account for{" "}
-                  <code className="text-sky-200">/delivery.html</code>. Leave
-                  blank if not creating a login now.
                   {editingId &&
                   deliveryBoys.find((row) => row.id === editingId)
-                    ?.linkedUserEmail
-                    ? ` Current: ${
-                        deliveryBoys.find((row) => row.id === editingId)
-                          .linkedUserEmail
-                      }`
-                    : ""}
+                    ?.linkedUserId ? (
+                    <>
+                      Edit email and/or password for{" "}
+                      <code className="text-sky-200">/delivery</code>. Leave
+                      password blank to keep the current password.
+                    </>
+                  ) : (
+                    <>
+                      Creates a <b>delivery_boy</b> account for{" "}
+                      <code className="text-sky-200">/delivery</code>. Leave
+                      blank if not creating a login now.
+                    </>
+                  )}
                 </p>
                 <label className={LABEL_CLASS}>
-                  Email
+                  Email / username
                   <input
                     type="email"
                     autoComplete="off"
@@ -848,33 +1013,45 @@ export default function DeliveryBoyManager({
                     }
                     className={FIELD_CLASS}
                     placeholder="boy@example.com"
-                    disabled={Boolean(
-                      editingId &&
-                        deliveryBoys.find((row) => row.id === editingId)
-                          ?.linkedUserId
-                    )}
                   />
                 </label>
                 <label className={LABEL_CLASS}>
                   Password
-                  <input
-                    type="password"
-                    autoComplete="new-password"
-                    value={form.loginPassword}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        loginPassword: event.target.value,
-                      }))
-                    }
-                    className={FIELD_CLASS}
-                    placeholder="Min 6 characters"
-                    disabled={Boolean(
-                      editingId &&
+                  <div className="relative">
+                    <input
+                      type={showLoginPassword ? "text" : "password"}
+                      autoComplete="new-password"
+                      value={form.loginPassword}
+                      onChange={(event) =>
+                        setForm((current) => ({
+                          ...current,
+                          loginPassword: event.target.value,
+                        }))
+                      }
+                      className={`${FIELD_CLASS} pr-11`}
+                      placeholder={
+                        editingId &&
                         deliveryBoys.find((row) => row.id === editingId)
                           ?.linkedUserId
-                    )}
-                  />
+                          ? "Leave blank to keep current password"
+                          : "Min 6 characters"
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowLoginPassword((v) => !v)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg p-1.5 text-slate-400 hover:text-slate-200"
+                      aria-label={
+                        showLoginPassword ? "Hide password" : "Show password"
+                      }
+                    >
+                      {showLoginPassword ? (
+                        <EyeOff size={16} />
+                      ) : (
+                        <Eye size={16} />
+                      )}
+                    </button>
+                  </div>
                 </label>
               </div>
 

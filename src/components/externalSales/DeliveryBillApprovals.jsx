@@ -9,12 +9,10 @@ import {
 import { Check, X } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
-import { useBankAccounts } from "../../hooks/useBankAccounts.js";
 import { formatMoney } from "../../utils/money.js";
 import {
   DELIVERY_BILL_SUBMISSIONS,
   SUBMISSION_STATUS,
-  approveDeliveryBillSubmission,
   rejectDeliveryBillSubmission,
 } from "../../utils/deliveryBillSubmissions.js";
 import { externalPaymentModeLabel } from "../../utils/externalSales.js";
@@ -23,17 +21,13 @@ import { BTN_PRIMARY, BTN_SECONDARY } from "./externalSalesUi.js";
 export default function DeliveryBillApprovals({
   clientId,
   businessDate,
-  deliveryBoys = [],
   currency = "",
   currencyDecimals = 3,
   onMessage,
   onError,
-  onApproved,
+  onReviewSubmission,
 }) {
   const { user } = useAuth();
-  const { accounts: bankAccounts } = useBankAccounts(clientId, {
-    purpose: "transaction",
-  });
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
@@ -82,28 +76,12 @@ export default function DeliveryBillApprovals({
     return `${count} delivery bill${count === 1 ? "" : "s"} waiting for approval`;
   }, [count]);
 
-  async function handleApprove(row) {
-    if (!user?.uid || !row?.id) return;
-    setBusyId(row.id);
-    onError?.("");
-    try {
-      await approveDeliveryBillSubmission({
-        submissionId: row.id,
-        userUid: user.uid,
-        bankAccounts,
-        deliveryBoys,
-        currency,
-        currencyDecimals,
-      });
-      onMessage?.(
-        `Approved bill ${row.billNumber} · ${row.terminalNameSnapshot || "Terminal"}`
-      );
-      onApproved?.();
-    } catch (error) {
-      onError?.(error?.message || "Failed to approve bill.");
-    } finally {
-      setBusyId("");
-    }
+  function handleApprove(row) {
+    if (!row?.id) return;
+    onReviewSubmission?.(row);
+    onMessage?.(
+      `Review bill ${row.billNumber} on ${row.terminalNameSnapshot || "terminal"} — edit then Save to approve.`
+    );
   }
 
   async function handleReject(row) {
@@ -139,8 +117,9 @@ export default function DeliveryBillApprovals({
             🔔 {title}
           </div>
           <p className="mt-1 text-xs text-amber-200/80">
-            Delivery Entry bills stay pending until you approve. Approved bills
-            become normal terminal bill entries.
+            Approve opens the terminal form so you can edit amount, customer,
+            payment mode, and delivery charge before saving. Delivery boys
+            cannot change a bill after submit until it is voided.
           </p>
         </div>
       </div>
@@ -191,7 +170,7 @@ export default function DeliveryBillApprovals({
                     className={`${BTN_PRIMARY} disabled:opacity-60`}
                   >
                     <Check size={15} />
-                    {busy ? "…" : "Approve"}
+                    Approve
                   </button>
                   <button
                     type="button"

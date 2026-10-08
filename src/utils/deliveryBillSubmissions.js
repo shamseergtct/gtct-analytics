@@ -111,22 +111,29 @@ export async function upsertDeliveryBillSubmission({
   const submissionId = deliveryBillSubmissionDocId(entryLocalId);
   const ref = doc(db, DELIVERY_BILL_SUBMISSIONS, submissionId);
 
-  // Best-effort duplicate pending check before create.
-  const dupSnap = await getDocs(
-    query(
-      collection(db, DELIVERY_BILL_SUBMISSIONS),
-      where("clientId", "==", clientId),
-      where("businessDate", "==", businessDate),
-      where("terminalId", "==", terminalId),
-      where("billNumber", "==", billNo),
-      where("status", "==", SUBMISSION_STATUS.PENDING)
-    )
-  );
-  const otherPending = dupSnap.docs.find((item) => item.id !== submissionId);
-  if (otherPending) {
-    throw new Error(
-      `Bill ${billNo} is already waiting for approval for ${terminalNameSnapshot || "this terminal"}.`
+  // Best-effort duplicate pending check (scoped to this delivery boy for rules).
+  try {
+    const dupSnap = await getDocs(
+      query(
+        collection(db, DELIVERY_BILL_SUBMISSIONS),
+        where("clientId", "==", clientId),
+        where("businessDate", "==", businessDate),
+        where("terminalId", "==", terminalId),
+        where("billNumber", "==", billNo),
+        where("status", "==", SUBMISSION_STATUS.PENDING),
+        where("deliveryBoyId", "==", clean(boy.id))
+      )
     );
+    const otherPending = dupSnap.docs.find((item) => item.id !== submissionId);
+    if (otherPending) {
+      throw new Error(
+        `Bill ${billNo} is already waiting for approval for ${terminalNameSnapshot || "this terminal"}.`
+      );
+    }
+  } catch (error) {
+    if (error?.message?.includes("already waiting")) throw error;
+    // Index / permission issues must not block create — approve path is final authority.
+    console.warn("delivery submission duplicate check skipped:", error);
   }
 
   await runTransaction(db, async (tx) => {
@@ -180,9 +187,14 @@ export async function upsertDeliveryBillSubmission({
 export async function findDeliveryBillSubmissionByLocalId(entryLocalId) {
   const id = deliveryBillSubmissionDocId(entryLocalId);
   if (!id) return null;
-  const snap = await getDoc(doc(db, DELIVERY_BILL_SUBMISSIONS, id));
-  if (!snap.exists()) return null;
-  return { id: snap.id, ...snap.data() };
+  try {
+    const snap = await getDoc(doc(db, DELIVERY_BILL_SUBMISSIONS, id));
+    if (!snap.exists()) return null;
+    return { id: snap.id, ...snap.data() };
+  } catch {
+    // Treat permission / offline as "not found" so sync can attempt create.
+    return null;
+  }
 }
 
 /**
@@ -266,6 +278,40 @@ export async function approveDeliveryBillSubmission({
   });
 
   return billResult;
+}
+
+/**
+ * Mark a pending submission APPROVED after the admin saved the bill via the
+ * terminal form (edited amount / customer / payment / delivery charge).
+ */
+export async function markDeliveryBillSubmissionApproved({
+  submissionId,
+  userUid,
+  approvedBillId = "",
+} = {}) {
+  if (!userUid) throw new Error("You must be signed in.");
+  const id = clean(submissionId);
+  if (!id) throw new Error("Submission id is required.");
+
+  const ref = doc(db, DELIVERY_BILL_SUBMISSIONS, id);
+  await runTransaction(db, async (tx) => {
+    const fresh = await tx.get(ref);
+    if (!fresh.exists()) throw new Error("Submission not found.");
+    if (fresh.data()?.status !== SUBMISSION_STATUS.PENDING) {
+      throw new Error("This submission is no longer pending.");
+    }
+    const nowMs = Date.now();
+    tx.update(ref, {
+      status: SUBMISSION_STATUS.APPROVED,
+      approvedAt: serverTimestamp(),
+      approvedAtMs: nowMs,
+      approvedBy: userUid,
+      approvedBillId: clean(approvedBillId),
+      updatedAt: serverTimestamp(),
+      updatedAtMs: nowMs,
+      updatedBy: userUid,
+    });
+  });
 }
 
 export async function rejectDeliveryBillSubmission({

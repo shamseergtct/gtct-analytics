@@ -56,6 +56,19 @@ service cloud.firestore {
         && profile().deliveryBoyId.size() > 0;
     }
 
+    /** Terminal allowed via users profile or delivery_boys master assignment. */
+    function deliveryBoyMayUseTerminal(terminalId) {
+      return (
+          profile().assignedTerminalIds is list
+          && profile().assignedTerminalIds.hasAny([terminalId])
+        )
+        || (
+          exists(/databases/$(database)/documents/delivery_boys/$(profile().deliveryBoyId))
+          && get(/databases/$(database)/documents/delivery_boys/$(profile().deliveryBoyId)).data.assignedTerminalIds is list
+          && get(/databases/$(database)/documents/delivery_boys/$(profile().deliveryBoyId)).data.assignedTerminalIds.hasAny([terminalId])
+        );
+    }
+
     /** Delivery Entry may only create pending submissions — not live bills. */
     function deliveryBoyOwnsSubmission() {
       return isDeliveryBoyForClient(request.resource.data.clientId)
@@ -64,8 +77,7 @@ service cloud.firestore {
         && request.resource.data.status == 'PENDING'
         && request.resource.data.entryLocalId is string
         && request.resource.data.entryLocalId.size() > 0
-        && profile().assignedTerminalIds is list
-        && profile().assignedTerminalIds.hasAny([request.resource.data.terminalId]);
+        && deliveryBoyMayUseTerminal(request.resource.data.terminalId);
     }
 
     function validDeliveryBillSubmissionFields() {
@@ -1159,10 +1171,27 @@ service cloud.firestore {
     }
 
     match /delivery_bill_submissions/{submissionId} {
-      allow read: if canReadTenantResource()
+      // get on a missing doc (idempotent create) has resource == null.
+      allow get: if isDeliveryBoy()
         || (
-          isDeliveryBoyForClient(resource.data.clientId)
-          && resource.data.deliveryBoyId == profile().deliveryBoyId
+          resource != null
+          && (
+            canReadTenantResource()
+            || (
+              isDeliveryBoyForClient(resource.data.clientId)
+              && resource.data.deliveryBoyId == profile().deliveryBoyId
+            )
+          )
+        );
+
+      // List queries must include clientId (admins) or clientId+deliveryBoyId (boys).
+      allow list: if resource != null
+        && (
+          canReadTenantResource()
+          || (
+            isDeliveryBoyForClient(resource.data.clientId)
+            && resource.data.deliveryBoyId == profile().deliveryBoyId
+          )
         );
 
       allow create: if request.resource.data.clientId is string

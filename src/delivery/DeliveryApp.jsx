@@ -25,6 +25,11 @@ import {
 } from "../utils/externalSales.js";
 import { moneyInputStep, numMoney, resolveCurrencyDecimals } from "../utils/money.js";
 import {
+  buildDeliveryChargeSelectOptions,
+  deliveryChargeSelectValue,
+} from "../utils/deliveryCharges.js";
+import { useDeliveryChargeSettings } from "../hooks/useDeliveryChargeSettings.js";
+import {
   SYNC_STATUS,
   createEntryLocalId,
   deleteLocalBill,
@@ -121,6 +126,7 @@ export default function DeliveryApp() {
   const [paymentMode, setPaymentMode] = useState(DELIVERY_ACCOUNT_PAYMENT);
   const [customerName, setCustomerName] = useState("");
   const [deliveryCharge, setDeliveryCharge] = useState("");
+  const [chargeReady, setChargeReady] = useState(false);
   const [formError, setFormError] = useState("");
   const [formMessage, setFormMessage] = useState("");
   const [saving, setSaving] = useState(false);
@@ -133,6 +139,25 @@ export default function DeliveryApp() {
 
   const currencyDecimals = resolveCurrencyDecimals(shop, "OMR");
   const currency = shop?.currency || "";
+  const {
+    loading: chargeSettingsLoading,
+    options: deliveryChargeOptions,
+    defaultCharge,
+  } = useDeliveryChargeSettings(clientId, currencyDecimals);
+  const defaultChargeValue = deliveryChargeSelectValue(
+    defaultCharge,
+    currencyDecimals
+  );
+  const chargeSelectOptions = useMemo(
+    () =>
+      buildDeliveryChargeSelectOptions({
+        options: deliveryChargeOptions,
+        currencyDecimals,
+        currency,
+        includeAmount: deliveryCharge,
+      }),
+    [deliveryChargeOptions, currencyDecimals, currency, deliveryCharge]
+  );
 
   const allowedTerminals = useMemo(() => {
     const active = terminals.filter((row) => row.isActive !== false);
@@ -203,6 +228,12 @@ export default function DeliveryApp() {
   useEffect(() => {
     return installDeliveryNetworkListeners(() => syncCtxRef.current);
   }, []);
+
+  useEffect(() => {
+    if (chargeSettingsLoading || chargeReady) return;
+    setDeliveryCharge(defaultChargeValue);
+    setChargeReady(true);
+  }, [chargeSettingsLoading, chargeReady, defaultChargeValue]);
 
   // Resolve business date: open shift → cached → today
   useEffect(() => {
@@ -456,7 +487,7 @@ export default function DeliveryApp() {
     setBillNumber("");
     setBillAmount("");
     setCustomerName("");
-    setDeliveryCharge("");
+    setDeliveryCharge(defaultChargeValue);
     setPaymentMode(
       paymentOptions[0]?.value || DELIVERY_ACCOUNT_PAYMENT
     );
@@ -992,15 +1023,17 @@ export default function DeliveryApp() {
 
           <div>
             <FieldLabel>Delivery Charge</FieldLabel>
-            <input
-              inputMode="decimal"
-              step={moneyInputStep(currencyDecimals)}
-              autoComplete="off"
+            <select
               className={inputClass}
               value={deliveryCharge}
               onChange={(e) => setDeliveryCharge(e.target.value)}
-              placeholder="0.000"
-            />
+            >
+              {chargeSelectOptions.map((row) => (
+                <option key={row.value || "none"} value={row.value}>
+                  {row.label}
+                </option>
+              ))}
+            </select>
           </div>
 
           {formError ? (

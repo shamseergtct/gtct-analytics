@@ -172,7 +172,8 @@
         { "fieldPath": "businessDate", "order": "ASCENDING" },
         { "fieldPath": "terminalId", "order": "ASCENDING" },
         { "fieldPath": "billNumber", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" }
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "deliveryBoyId", "order": "ASCENDING" }
       ]
     }
   ],

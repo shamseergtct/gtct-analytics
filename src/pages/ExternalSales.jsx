@@ -20,6 +20,7 @@ import DeliveryBoyManager from "../components/externalSales/DeliveryBoyManager.j
 import DeliveryBoyCollection from "../components/externalSales/DeliveryBoyCollection.jsx";
 import DeliveryBillApprovals from "../components/externalSales/DeliveryBillApprovals.jsx";
 import DaySummaryPrivacySettings from "../components/externalSales/DaySummaryPrivacySettings.jsx";
+import DeliveryChargeSettings from "../components/externalSales/DeliveryChargeSettings.jsx";
 import { sortBillingTerminals } from "../utils/externalSales.js";
 import { useBankAccounts } from "../hooks/useBankAccounts.js";
 import {
@@ -59,6 +60,7 @@ export default function ExternalSales() {
   const [message, setMessage] = useState("");
   const [pageError, setPageError] = useState("");
   const [dateLocked, setDateLocked] = useState(false);
+  const [approvalSubmission, setApprovalSubmission] = useState(null);
 
   const [terminals, setTerminals] = useState([]);
   const [loadingTerminals, setLoadingTerminals] = useState(true);
@@ -237,9 +239,11 @@ export default function ExternalSales() {
           <DeliveryBillApprovals
             clientId={activeClientId}
             businessDate={effectiveFilterDate}
-            deliveryBoys={deliveryBoys}
             currency={currency}
             currencyDecimals={currencyDecimals}
+            onReviewSubmission={(row) => {
+              setApprovalSubmission(row);
+            }}
             onMessage={(text) => {
               setPageError("");
               setMessage(text);
@@ -259,6 +263,8 @@ export default function ExternalSales() {
             bills={bills}
             loadingBills={loadingBills}
             toolbarPortalEl={terminalToolbarEl}
+            approvalSubmission={approvalSubmission}
+            onApprovalSubmissionConsumed={() => setApprovalSubmission(null)}
             onMessage={(text) => {
               setPageError("");
               setMessage(text);
@@ -342,7 +348,20 @@ export default function ExternalSales() {
               setPageError(text);
             }}
           />
-          <div className="xl:col-span-2">
+          <div className="xl:col-span-2 grid gap-8 lg:grid-cols-2">
+            <DeliveryChargeSettings
+              clientId={activeClientId}
+              currency={currency}
+              currencyDecimals={currencyDecimals}
+              onMessage={(text) => {
+                setPageError("");
+                setMessage(text);
+              }}
+              onError={(text) => {
+                setMessage("");
+                setPageError(text);
+              }}
+            />
             <DaySummaryPrivacySettings
               clientId={activeClientId}
               onMessage={(text) => {

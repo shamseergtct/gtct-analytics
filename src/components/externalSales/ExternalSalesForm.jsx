@@ -47,6 +47,12 @@ import {
   resolveDeliveryBoyCommission,
 } from "../../utils/externalSales.js";
 import { writeExternalSalesBill } from "../../utils/externalSalesBillWrite.js";
+import { markDeliveryBillSubmissionApproved } from "../../utils/deliveryBillSubmissions.js";
+import {
+  buildDeliveryChargeSelectOptions,
+  deliveryChargeSelectValue,
+} from "../../utils/deliveryCharges.js";
+import { useDeliveryChargeSettings } from "../../hooks/useDeliveryChargeSettings.js";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -128,9 +134,42 @@ function TerminalBillForm({
   const [lookingUp, setLookingUp] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [existingMeta, setExistingMeta] = useState(null);
+  const [pendingApprovalSubmissionId, setPendingApprovalSubmissionId] =
+    useState("");
+  const [pendingApprovalEntryLocalId, setPendingApprovalEntryLocalId] =
+    useState("");
+  const [pendingApprovalCreatedAtMs, setPendingApprovalCreatedAtMs] =
+    useState(null);
   const [localError, setLocalError] = useState("");
   const [localMessage, setLocalMessage] = useState("");
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
+  const [chargeReady, setChargeReady] = useState(false);
+
+  const approvalMode = Boolean(pendingApprovalSubmissionId);
+  const {
+    loading: chargeSettingsLoading,
+    options: deliveryChargeOptions,
+    defaultCharge,
+  } = useDeliveryChargeSettings(clientId, currencyDecimals);
+  const defaultChargeValue = deliveryChargeSelectValue(
+    defaultCharge,
+    currencyDecimals
+  );
+  const chargeSelectOptions = useMemo(
+    () =>
+      buildDeliveryChargeSelectOptions({
+        options: deliveryChargeOptions,
+        currencyDecimals,
+        currency,
+        includeAmount: deliveryCharge,
+      }),
+    [
+      deliveryChargeOptions,
+      currencyDecimals,
+      currency,
+      deliveryCharge,
+    ]
+  );
 
   const activeBoys = useMemo(
     () => deliveryBoys.filter((row) => row.isActive !== false),
@@ -207,6 +246,12 @@ function TerminalBillForm({
   }, [terminal?.id]);
 
   useEffect(() => {
+    if (chargeSettingsLoading || chargeReady) return;
+    setDeliveryCharge(defaultChargeValue);
+    setChargeReady(true);
+  }, [chargeSettingsLoading, chargeReady, defaultChargeValue]);
+
+  useEffect(() => {
     if (!onDirtyChange) return undefined;
     // Delivery boy is intentionally kept after a successful save for faster
     // next-bill entry — that alone must not count as unsaved work.
@@ -214,11 +259,12 @@ function TerminalBillForm({
       String(billNumber || "").trim() ||
         String(billAmount || "").trim() ||
         String(customerLocation || "").trim() ||
-        String(deliveryCharge || "").trim() ||
+        (chargeReady && deliveryCharge !== defaultChargeValue) ||
         String(notes || "").trim() ||
         String(customerId || "").trim() ||
         multiPayment ||
         editMode ||
+        approvalMode ||
         saleType !== "DELIVERY" ||
         (isDeliverySaleType(saleType)
           ? paymentMode !== DELIVERY_ACCOUNT_PAYMENT
@@ -231,10 +277,13 @@ function TerminalBillForm({
     billAmount,
     customerLocation,
     deliveryCharge,
+    defaultChargeValue,
+    chargeReady,
     notes,
     customerId,
     multiPayment,
     editMode,
+    approvalMode,
     saleType,
     paymentMode,
     onDirtyChange,
@@ -261,11 +310,17 @@ function TerminalBillForm({
     setExistingMeta(null);
   }
 
+  function clearApprovalState() {
+    setPendingApprovalSubmissionId("");
+    setPendingApprovalEntryLocalId("");
+    setPendingApprovalCreatedAtMs(null);
+  }
+
   function clearBillFields({ keepDeliveryBoy = false } = {}) {
     setBillNumber("");
     setBillAmount("");
     setCustomerLocation("");
-    setDeliveryCharge("");
+    setDeliveryCharge(defaultChargeValue);
     setNotes("");
     setCustomerId("");
     setPaymentMode(DELIVERY_ACCOUNT_PAYMENT);
@@ -275,6 +330,7 @@ function TerminalBillForm({
     setSplitBankAccountId("");
     setSaleType("DELIVERY");
     resetEditState();
+    clearApprovalState();
     setLocalError("");
     onEditingBillIdChange?.(null);
     if (!keepDeliveryBoy) setDeliveryBoyId("");
@@ -286,12 +342,13 @@ function TerminalBillForm({
       String(billNumber || "").trim() ||
         String(billAmount || "").trim() ||
         String(customerLocation || "").trim() ||
-        String(deliveryCharge || "").trim() ||
+        (chargeReady && deliveryCharge !== defaultChargeValue) ||
         String(notes || "").trim() ||
         String(customerId || "").trim() ||
         String(deliveryBoyId || "").trim() ||
         multiPayment ||
         editMode ||
+        approvalMode ||
         saleType !== "DELIVERY" ||
         (isDeliverySaleType(saleType)
           ? paymentMode !== DELIVERY_ACCOUNT_PAYMENT
@@ -338,7 +395,7 @@ function TerminalBillForm({
     setSplitBankAccountId("");
   }
 
-  function applyExistingBill(bill) {
+  function applyExistingBill(bill, { asApproval = false } = {}) {
     setBillNumber(bill.billNumber || "");
     setBillAmount(
       bill.billAmount === 0 || bill.billAmount
@@ -380,14 +437,33 @@ function TerminalBillForm({
       );
     }
     setCustomerId(bill.customerId || "");
-    setCustomerLocation(bill.customerLocation || "");
+    setCustomerLocation(
+      bill.customerLocation || bill.customerName || ""
+    );
     setDeliveryBoyId(bill.deliveryBoyId || "");
     setDeliveryCharge(
-      bill.deliveryCharge === 0 || bill.deliveryCharge
-        ? formatMoney(bill.deliveryCharge, currencyDecimals)
-        : ""
+      deliveryChargeSelectValue(bill.deliveryCharge, currencyDecimals)
     );
     setNotes(bill.notes || "");
+    setLocalError("");
+    setLocalMessage("");
+
+    if (asApproval || bill.__approvalSubmissionId) {
+      resetEditState();
+      setPendingApprovalSubmissionId(
+        String(bill.__approvalSubmissionId || bill.id || "").trim()
+      );
+      setPendingApprovalEntryLocalId(
+        String(bill.entryLocalId || "").trim()
+      );
+      setPendingApprovalCreatedAtMs(
+        bill.createdAtMs != null ? Number(bill.createdAtMs) : null
+      );
+      onEditingBillIdChange?.(null);
+      return;
+    }
+
+    clearApprovalState();
     setExistingMeta({
       createdAt: bill.createdAt || null,
       createdAtMs: bill.createdAtMs || null,
@@ -399,13 +475,21 @@ function TerminalBillForm({
 
   useEffect(() => {
     if (!billToApply || billToApply.terminalId !== terminal?.id) return;
-    applyExistingBill(billToApply);
+    applyExistingBill(billToApply, {
+      asApproval: Boolean(billToApply.__approvalSubmissionId),
+    });
     onBillApplied?.();
-    window.setTimeout(() => billNumberRef.current?.focus(), 0);
+    window.setTimeout(() => {
+      billNumberRef.current?.focus();
+      if (formRef.current) scrollBillFieldIntoView(formRef.current);
+    }, 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- apply when parent sends bill once
   }, [billToApply, terminal?.id]);
 
   async function lookupExistingBill() {
+    // During delivery-bill approval, keep the pending submission draft intact.
+    if (approvalMode) return;
+
     setLocalError("");
     const date = String(businessDate || "").trim();
     const billNo = normalizeBillNumber(billNumber);
@@ -524,6 +608,7 @@ function TerminalBillForm({
     let bankAccountNameSnapshot = "";
     let customerPartyId = "";
     let customerName = "";
+    const freeCustomerName = String(customerLocation || "").trim();
     let paidCash = 0;
     let paidBank = 0;
 
@@ -655,9 +740,13 @@ function TerminalBillForm({
       }
     }
 
+    if (!customerName && type === "DELIVERY" && freeCustomerName) {
+      customerName = freeCustomerName;
+    }
+
     setSaving(true);
     try {
-      await writeExternalSalesBill({
+      const result = await writeExternalSalesBill({
         userUid: user.uid,
         clientId,
         currency: currency || "",
@@ -675,19 +764,30 @@ function TerminalBillForm({
         paidBank,
         customerId: customerPartyId,
         customerName,
-        customerLocation: String(customerLocation || "").trim(),
+        customerLocation: freeCustomerName,
         deliveryBoy: boy,
         deliveryCharge: chargeNum,
         notes: String(notes || "").trim(),
         entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
-        entryLocalId: "",
-        editMode,
-        existingMeta,
+        entryLocalId: approvalMode ? pendingApprovalEntryLocalId : "",
+        createdAtMs: approvalMode ? pendingApprovalCreatedAtMs : undefined,
+        editMode: approvalMode ? false : editMode,
+        existingMeta: approvalMode ? null : existingMeta,
       });
 
-      const ok = editMode
-        ? `Bill updated successfully · ${terminal.name}`
-        : `Bill saved successfully · ${terminal.name}`;
+      if (approvalMode && pendingApprovalSubmissionId) {
+        await markDeliveryBillSubmissionApproved({
+          submissionId: pendingApprovalSubmissionId,
+          userUid: user.uid,
+          approvedBillId: result.docId,
+        });
+      }
+
+      const ok = approvalMode
+        ? `Approved & saved bill ${billNo} · ${terminal.name}`
+        : editMode
+          ? `Bill updated successfully · ${terminal.name}`
+          : `Bill saved successfully · ${terminal.name}`;
       setLocalMessage(ok);
       onMessage?.(ok);
       clearBillFields({ keepDeliveryBoy: type === "DELIVERY" });
@@ -713,7 +813,7 @@ function TerminalBillForm({
         "--term-accent-soft": resolvedTheme.accentSoft,
       }}
       className={`flex h-full min-w-0 flex-col space-y-3 rounded-2xl border p-3 transition-[border-color,background-color,box-shadow] duration-200 sm:space-y-4 sm:p-4 ${
-        editMode
+        editMode || approvalMode
           ? "border-amber-700/70 bg-[color:var(--term-tint)] shadow-[inset_0_0_0_1px_rgba(245,158,11,0.25)]"
           : "border-[color:var(--term-border)] bg-[color:var(--term-tint)] shadow-[0_0_0_1px_var(--term-chip)]"
       }`}
@@ -730,7 +830,9 @@ function TerminalBillForm({
           </h2>
           <p className="mt-0.5 text-xs text-slate-400">
             Terminal {String(terminalIndex + 1).padStart(2, "0")}
-            {editMode ? (
+            {approvalMode ? (
+              <span className="text-amber-300"> · Approving delivery bill</span>
+            ) : editMode ? (
               <span className="text-amber-300"> · Editing existing bill</span>
             ) : null}
           </p>
@@ -739,9 +841,26 @@ function TerminalBillForm({
           className="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-white"
           style={{ backgroundColor: resolvedTheme.accentSoft, color: resolvedTheme.accent }}
         >
-          Bill Entry
+          {approvalMode ? "Approve" : "Bill Entry"}
         </span>
       </div>
+
+      {approvalMode ? (
+        <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-2.5 text-sm text-amber-100">
+          Review and edit amount, customer, payment mode, and delivery charge,
+          then click <span className="font-semibold">Approve & Save</span>.
+          Delivery boys cannot change this bill after submit until it is voided.
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => clearBillFields()}
+              className={BTN_SECONDARY}
+            >
+              Cancel approval
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {editMode ? (
         <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-2.5 text-sm text-amber-100">
@@ -948,12 +1067,12 @@ function TerminalBillForm({
         {deliveryMode ? (
           <>
             <label className={`${LABEL_CLASS} sm:col-span-2`}>
-              Customer / Location
+              Customer
               <input
                 value={customerLocation}
                 onChange={(event) => setCustomerLocation(event.target.value)}
                 className={fieldClass}
-                placeholder="Optional delivery location"
+                placeholder="Customer name or location"
               />
             </label>
             <label className={LABEL_CLASS}>
@@ -975,15 +1094,17 @@ function TerminalBillForm({
             </label>
             <label className={LABEL_CLASS}>
               Delivery Charge {currency ? `(${currency})` : ""}
-              <input
-                type="number"
-                min="0"
-                step={moneyInputStep(currencyDecimals)}
+              <select
                 value={deliveryCharge}
                 onChange={(event) => setDeliveryCharge(event.target.value)}
-                className={fieldNumberClass}
-                placeholder={formatMoney(0, currencyDecimals)}
-              />
+                className={fieldClass}
+              >
+                {chargeSelectOptions.map((row) => (
+                  <option key={row.value || "none"} value={row.value}>
+                    {row.label}
+                  </option>
+                ))}
+              </select>
             </label>
           </>
         ) : null}
@@ -1029,12 +1150,16 @@ function TerminalBillForm({
           style={{ backgroundColor: resolvedTheme.accent }}
         >
           {saving
-            ? editMode
-              ? "Updating…"
-              : "Saving…"
-            : editMode
-              ? "Update Bill"
-              : "Save Bill"}
+            ? approvalMode
+              ? "Approving…"
+              : editMode
+                ? "Updating…"
+                : "Saving…"
+            : approvalMode
+              ? "Approve & Save"
+              : editMode
+                ? "Update Bill"
+                : "Save Bill"}
         </button>
         <button
           type="button"
@@ -1131,6 +1256,29 @@ function recentBillPartyLabel(bill) {
   return mode;
 }
 
+function submissionToBillDraft(submission) {
+  if (!submission) return null;
+  return {
+    id: submission.id,
+    terminalId: submission.terminalId,
+    billNumber: submission.billNumber,
+    billAmount: submission.billAmount,
+    saleType: submission.saleType || "DELIVERY",
+    paymentMode: submission.paymentMode,
+    bankAccountId: submission.bankAccountId || "",
+    bankAccountNameSnapshot: submission.bankAccountNameSnapshot || "",
+    customerId: submission.customerId || "",
+    customerName: submission.customerName || "",
+    customerLocation: submission.customerLocation || "",
+    deliveryBoyId: submission.deliveryBoyId || "",
+    deliveryCharge: submission.deliveryCharge,
+    notes: submission.notes || "",
+    entryLocalId: submission.entryLocalId || "",
+    createdAtMs: submission.createdAtMs || null,
+    __approvalSubmissionId: submission.id,
+  };
+}
+
 export default function ExternalSalesForm({
   clientId,
   currency,
@@ -1141,6 +1289,8 @@ export default function ExternalSalesForm({
   bills = [],
   loadingBills = false,
   toolbarPortalEl = null,
+  approvalSubmission = null,
+  onApprovalSubmissionConsumed,
   onMessage,
   onError,
 }) {
@@ -1233,6 +1383,34 @@ export default function ExternalSalesForm({
     }
     setSelectedTerminalId(activeTerminals[0].id);
   }, [activeTerminals, selectedTerminalId]);
+
+  // Approve from banner → open that terminal form with editable draft.
+  useEffect(() => {
+    if (!approvalSubmission?.id) return;
+    const draft = submissionToBillDraft(approvalSubmission);
+    if (!draft?.terminalId) {
+      onError?.("This delivery bill has no terminal to open.");
+      onApprovalSubmissionConsumed?.();
+      return;
+    }
+    const terminalExists = activeTerminals.some(
+      (row) => row.id === draft.terminalId
+    );
+    if (!terminalExists) {
+      onError?.(
+        `Terminal “${approvalSubmission.terminalNameSnapshot || draft.terminalId}” is not available.`
+      );
+      onApprovalSubmissionConsumed?.();
+      return;
+    }
+    setFormDirty(false);
+    setPendingListBill(null);
+    setPendingTerminalId("");
+    setSelectedTerminalId(draft.terminalId);
+    setBillToApply(draft);
+    onApprovalSubmissionConsumed?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- apply once per submission handoff
+  }, [approvalSubmission]);
 
   // Persist missing terminal colors once (backward compatible).
   useEffect(() => {
