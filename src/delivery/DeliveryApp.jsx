@@ -52,6 +52,7 @@ import {
   getUnsyncedSummary,
   listLocalBills,
   putLocalBill,
+  queueDraftsForSync,
   setDeliveryMeta,
   updateLocalBill,
 } from "../utils/deliveryBillQueue.js";
@@ -82,6 +83,18 @@ function dayBillStatusMeta(row) {
       return {
         label: "Syncing…",
         className: "bg-sky-950/70 text-sky-200",
+      };
+    }
+    if (sync === SYNC_STATUS.DRAFT) {
+      return {
+        label: "On device",
+        className: "bg-violet-950/70 text-violet-200",
+      };
+    }
+    if (sync === SYNC_STATUS.PENDING) {
+      return {
+        label: "Ready to sync",
+        className: "bg-amber-950/70 text-amber-200",
       };
     }
     return {
@@ -219,6 +232,8 @@ export default function DeliveryApp() {
   const [dayLocalBills, setDayLocalBills] = useState([]);
   const [dayListError, setDayListError] = useState("");
   const [editingSubmission, setEditingSubmission] = useState(null);
+  /** entry | drafts | approved */
+  const [activePage, setActivePage] = useState("entry");
 
   const billNumberRef = useRef(null);
   const syncCtxRef = useRef(null);
@@ -386,7 +401,6 @@ export default function DeliveryApp() {
             .map((item) => ({ id: item.id, ...item.data() }))
             .filter(
               (bill) =>
-                bill.voided !== true &&
                 String(bill.deliveryBoyId || "").trim() === deliveryBoyId
             );
           setDayLiveBills(rows);
@@ -473,11 +487,14 @@ export default function DeliveryApp() {
         lastEditSource: "",
         approvedBillId: "",
         createdAtMs: local.updatedAtMs || local.createdAtMs || 0,
-        editable: true,
+        editable:
+          local.syncStatus === SYNC_STATUS.DRAFT ||
+          local.syncStatus === SYNC_STATUS.FAILED,
       });
     }
 
     for (const bill of dayLiveBills) {
+      if (bill.voided === true) continue;
       const key = `${bill.terminalId}__${bill.billNumber}`;
       const linked = daySubmissions.find(
         (sub) =>
@@ -519,7 +536,7 @@ export default function DeliveryApp() {
         lastEditSource: linked?.lastEditSource || "",
         approvedBillId: bill.id,
         createdAtMs: bill.createdAtMs || 0,
-        editable: Boolean(linked?.id),
+        editable: false,
       });
     }
 
@@ -562,7 +579,7 @@ export default function DeliveryApp() {
         lastEditSource: sub.lastEditSource || "",
         approvedBillId: sub.approvedBillId || "",
         createdAtMs: sub.createdAtMs || sub.updatedAtMs || 0,
-        editable: sub.status !== SUBMISSION_STATUS.REJECTED,
+        editable: false,
       });
     }
 
@@ -570,31 +587,90 @@ export default function DeliveryApp() {
     return rows;
   }, [dayLiveBills, daySubmissions, dayLocalBills, deliveryBoyId]);
 
-  const dayTotals = useMemo(() => {
+  const draftRows = useMemo(
+    () =>
+      dayRows.filter(
+        (row) =>
+          row.source === "local" &&
+          (row.syncStatus === SYNC_STATUS.DRAFT ||
+            row.syncStatus === SYNC_STATUS.PENDING ||
+            row.syncStatus === SYNC_STATUS.FAILED ||
+            row.syncStatus === SYNC_STATUS.SYNCING)
+      ),
+    [dayRows]
+  );
+
+  const editableDraftRows = useMemo(
+    () =>
+      draftRows.filter(
+        (row) =>
+          row.syncStatus === SYNC_STATUS.DRAFT ||
+          row.syncStatus === SYNC_STATUS.FAILED
+      ),
+    [draftRows]
+  );
+
+  const approvedRows = useMemo(() => {
+    return dayLiveBills
+      .slice()
+      .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))
+      .map((bill) => ({
+        key: `approved:${bill.id}`,
+        id: bill.id,
+        billNumber: bill.billNumber,
+        terminalId: bill.terminalId,
+        terminalNameSnapshot: bill.terminalNameSnapshot || "",
+        billAmount: bill.billAmount,
+        saleType: bill.saleType || "DELIVERY",
+        paymentMode: bill.paymentMode,
+        bankAccountId: bill.bankAccountId || "",
+        bankAccountNameSnapshot: bill.bankAccountNameSnapshot || "",
+        customerName: bill.customerName || "",
+        deliveryCharge: bill.deliveryCharge,
+        deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
+        voided: bill.voided === true,
+        createdAtMs: bill.createdAtMs || 0,
+        updatedAtMs: bill.updatedAtMs || 0,
+      }));
+  }, [dayLiveBills]);
+
+  const approvedTotals = useMemo(() => {
     let boyAccount = 0;
     let shopAccount = 0;
     let count = 0;
-    for (const row of dayRows) {
-      if (row?.status === SUBMISSION_STATUS.REJECTED) continue;
+    for (const row of approvedRows) {
+      if (row.voided) continue;
       count += 1;
       const amount = numMoney(row.billAmount);
       if (isDeliveryBoyAccountPayment(row)) boyAccount += amount;
       else shopAccount += amount;
     }
-    return {
-      boyAccount,
-      shopAccount,
-      all: boyAccount + shopAccount,
-      count,
-    };
-  }, [dayRows]);
+    return { boyAccount, shopAccount, all: boyAccount + shopAccount, count };
+  }, [approvedRows]);
 
-  const editingLockedIdentity = Boolean(
-    editingSubmission &&
-      editingSubmission.source !== "local" &&
-      (editingSubmission.status === SUBMISSION_STATUS.APPROVED ||
-        editingSubmission.status === SUBMISSION_STATUS.EDITED_PENDING)
-  );
+  const waitingShopRows = useMemo(() => {
+    const approvedKeys = new Set(
+      approvedRows
+        .filter((row) => !row.voided)
+        .map((row) => `${row.terminalId}__${normalizeBillNumber(row.billNumber)}`)
+    );
+    return daySubmissions
+      .filter(
+        (sub) =>
+          (sub.status === SUBMISSION_STATUS.PENDING ||
+            sub.status === SUBMISSION_STATUS.EDITED_PENDING) &&
+          !approvedKeys.has(
+            `${sub.terminalId}__${normalizeBillNumber(sub.billNumber)}`
+          )
+      )
+      .sort(
+        (a, b) =>
+          Number(b.updatedAtMs || b.createdAtMs || 0) -
+          Number(a.updatedAtMs || a.createdAtMs || 0)
+      );
+  }, [daySubmissions, approvedRows]);
+
+  const draftCount = editableDraftRows.length;
 
   // Resolve business date: open shift → cached → today
   useEffect(() => {
@@ -839,7 +915,8 @@ export default function DeliveryApp() {
 
   async function handleLogout() {
     const summary = await getUnsyncedSummary();
-    if (summary.total > 0 && !logoutConfirmOpen) {
+    const drafts = draftCount || editableDraftRows.length;
+    if ((summary.total > 0 || drafts > 0) && !logoutConfirmOpen) {
       setLogoutConfirmOpen(true);
       return;
     }
@@ -860,37 +937,30 @@ export default function DeliveryApp() {
     requestAnimationFrame(() => billNumberRef.current?.focus());
   }
 
-  function loadSubmissionForEdit(row) {
+  function loadDraftForEdit(row) {
     if (!row) return;
-    if (row.status === SUBMISSION_STATUS.REJECTED) {
-      setFormError("Rejected bills cannot be edited.");
+    if (row.source !== "local") {
+      setFormError("Synced and shop bills cannot be edited.");
       return;
     }
-    if (!row.editable) {
-      setFormError("This bill cannot be edited.");
-      return;
-    }
-
-    const isLocal = row.source === "local";
-    const submissionId = cleanId(
-      row.submissionId || (row.source === "submission" ? row.id : "")
-    );
-    if (!isLocal && !submissionId) {
+    if (
+      row.syncStatus !== SYNC_STATUS.DRAFT &&
+      row.syncStatus !== SYNC_STATUS.FAILED
+    ) {
       setFormError(
-        "This bill was entered by the shop. Ask admin to edit it, or enter new bills from Delivery Entry."
+        "This bill is already queued or synced and cannot be edited."
       );
       return;
     }
 
     setFormError("");
     setFormMessage("");
+    setActivePage("entry");
     setEditingSubmission({
-      id: isLocal ? row.entryLocalId : submissionId,
+      id: row.entryLocalId,
       ...row,
-      source: row.source,
-      status: row.status,
+      source: "local",
       syncStatus: row.syncStatus,
-      approvedBillId: row.approvedBillId || row.billId || "",
     });
     if (row.terminalId) setSelectedTerminalId(row.terminalId);
     setBillNumber(String(row.billNumber || ""));
@@ -913,52 +983,37 @@ export default function DeliveryApp() {
     requestAnimationFrame(() => billNumberRef.current?.focus());
   }
 
-  async function handleSave(event) {
-    event.preventDefault();
-    setFormError("");
-    setFormMessage("");
-
+  function validateBillForm() {
     if (!user?.uid || !isDeliveryBoyUser) {
-      setFormError("Delivery boy login required.");
-      return;
+      return { error: "Delivery boy login required." };
     }
     if (deliveryBoy?.isActive === false) {
-      setFormError("Your delivery account is inactive.");
-      return;
+      return { error: "Your delivery account is inactive." };
     }
     if (!selectedTerminal) {
-      setFormError("Select an assigned terminal.");
-      return;
+      return { error: "Select an assigned terminal." };
     }
     if (!assignedTerminalIds.includes(selectedTerminal.id)) {
-      setFormError("You are not assigned to this terminal.");
-      return;
+      return { error: "You are not assigned to this terminal." };
     }
 
     const billNo = normalizeBillNumber(billNumber);
     if (!billNo) {
-      setFormError("Bill number must be a whole number (e.g. 1, 2, 3).");
-      return;
-    }
-    if (billNo !== String(billNumber || "").trim()) {
-      setBillNumber(billNo);
+      return { error: "Bill number must be a whole number (e.g. 1, 2, 3)." };
     }
     if (billAmount === "" || billAmount == null) {
-      setFormError("Bill amount is required.");
-      return;
+      return { error: "Bill amount is required." };
     }
     const amountNum = numMoney(billAmount);
     if (!Number.isFinite(Number(billAmount)) || !Number.isFinite(amountNum)) {
-      setFormError("Bill amount must be a valid number.");
-      return;
+      return { error: "Bill amount must be a valid number." };
     }
 
     let chargeNum = 0;
     if (deliveryCharge !== "" && deliveryCharge != null) {
       chargeNum = numMoney(deliveryCharge);
       if (!Number.isFinite(Number(deliveryCharge)) || chargeNum < 0) {
-        setFormError("Delivery charge must be a non-negative number.");
-        return;
+        return { error: "Delivery charge must be a non-negative number." };
       }
     }
 
@@ -968,10 +1023,10 @@ export default function DeliveryApp() {
     let bankAccountNameSnapshot = "";
 
     if (!paymentOptions.some((row) => row.value === paymentMode)) {
-      setFormError(
-        "That payment option is not enabled for you. Ask an admin to update your payment options."
-      );
-      return;
+      return {
+        error:
+          "That payment option is not enabled for you. Ask an admin to update your payment options.",
+      };
     }
 
     if (paymentMode === DELIVERY_ACCOUNT_PAYMENT) {
@@ -979,14 +1034,13 @@ export default function DeliveryApp() {
     } else if (resolved.paymentMode === "BANK") {
       bankAccountId = String(resolved.bankAccountId || "").trim();
       if (!bankAccountId) {
-        setFormError("Select a bank account.");
-        return;
+        return { error: "Select a bank account." };
       }
       if (!allowedBankAccounts.some((row) => row.id === bankAccountId)) {
-        setFormError(
-          "That bank account is not assigned to you. Ask an admin to update your payment options."
-        );
-        return;
+        return {
+          error:
+            "That bank account is not assigned to you. Ask an admin to update your payment options.",
+        };
       }
       bankAccountNameSnapshot = findBankAccountName(
         allowedBankAccounts,
@@ -996,112 +1050,120 @@ export default function DeliveryApp() {
     } else if (resolved.paymentMode === "CASH") {
       savedPaymentMode = "CASH";
     } else {
-      setFormError("Select a valid payment type.");
-      return;
+      return { error: "Select a valid payment type." };
     }
 
     const date = String(businessDate || "").slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      setFormError("Business date is unavailable. Reconnect once to continue.");
-      return;
+      return {
+        error: "Business date is unavailable. Reconnect once to continue.",
+      };
+    }
+
+    return {
+      billNo,
+      amountNum,
+      chargeNum,
+      savedPaymentMode,
+      bankAccountId,
+      bankAccountNameSnapshot,
+      date,
+    };
+  }
+
+  function formHasAnyInput() {
+    return Boolean(
+      String(billNumber || "").trim() ||
+        String(billAmount || "").trim() ||
+        String(customerName || "").trim() ||
+        editingSubmission?.id
+    );
+  }
+
+  async function persistLocalBill({ syncStatus }) {
+    const validated = validateBillForm();
+    if (validated.error) {
+      setFormError(validated.error);
+      return null;
+    }
+
+    const {
+      billNo,
+      amountNum,
+      chargeNum,
+      savedPaymentMode,
+      bankAccountId,
+      bankAccountNameSnapshot,
+      date,
+    } = validated;
+
+    if (billNo !== String(billNumber || "").trim()) {
+      setBillNumber(billNo);
     }
 
     if (editingSubmission?.id) {
-      if (editingLockedIdentity) {
-        if (billNo !== normalizeBillNumber(editingSubmission.billNumber)) {
-          setFormError("Bill number cannot change after shop approval.");
-          return;
-        }
-        if (selectedTerminal.id !== editingSubmission.terminalId) {
-          setFormError("Terminal cannot change after shop approval.");
-          return;
-        }
+      if (
+        editingSubmission.syncStatus !== SYNC_STATUS.DRAFT &&
+        editingSubmission.syncStatus !== SYNC_STATUS.FAILED
+      ) {
+        setFormError(
+          "This bill was already synced and cannot be edited."
+        );
+        return null;
+      }
+    } else {
+      const alreadyInList = dayRows.some(
+        (row) =>
+          row.status !== SUBMISSION_STATUS.REJECTED &&
+          !row.voided &&
+          cleanId(row.terminalId) === cleanId(selectedTerminal.id) &&
+          normalizeBillNumber(row.billNumber) === billNo
+      );
+      if (alreadyInList) {
+        setFormError(
+          `Bill ${billNo} is already listed for ${selectedTerminal.name}. Open View & Edit if it is still on this phone.`
+        );
+        return null;
       }
 
-      // Treat edits like a new local bill: save on phone, sync later for approval.
-      const entryLocalId = cleanId(
-        editingSubmission.entryLocalId || editingSubmission.id
-      );
-      const serverEdit =
-        editingSubmission.source === "submission" ||
-        editingSubmission.source === "bill";
-      const nowMs = Date.now();
-      const localRecord = {
-        entryLocalId,
+      const duplicate = await findLocalDuplicateBill({
         clientId,
         businessDate: date,
         terminalId: selectedTerminal.id,
-        terminalNameSnapshot: selectedTerminal.name || "",
         billNumber: billNo,
-        billAmount: amountNum,
-        paymentMode: savedPaymentMode,
-        bankAccountId,
-        bankAccountNameSnapshot,
-        customerName: String(customerName || "").trim(),
-        deliveryCharge: chargeNum,
-        deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
-        deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
-        commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
-        commissionRate: Number(deliveryBoy?.commissionRate) || 0,
-        currency,
-        currencyDecimals,
-        notes: "",
-        entrySource: EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
-        resubmitEdit: serverEdit,
-        syncStatus: SYNC_STATUS.PENDING,
-        syncError: "",
-        createdAtMs: Number(editingSubmission.createdAtMs) || nowMs,
-        updatedAtMs: nowMs,
-        createdBy: user.uid,
-      };
-
-      setSaving(true);
-      try {
-        await putLocalBill(localRecord);
-        await refreshDeliverySyncCounts();
-        await refreshLocalDayBills();
-        setFormMessage(
-          `Bill ${billNo} saved on this phone. Will sync for shop approval.`
+        excludeEntryLocalId: "",
+      });
+      if (duplicate) {
+        setFormError(
+          `Bill ${billNo} is already saved on this phone for ${selectedTerminal.name}. Open View & Edit to change it.`
         );
-        clearBillFields();
-        triggerSync();
-      } catch (error) {
-        setFormError(error?.message || "Failed to save bill.");
-      } finally {
-        setSaving(false);
+        return null;
       }
-      return;
     }
 
-    // New bills only: block if this bill number is already on today's list.
-    const alreadyInList = dayRows.some(
-      (row) =>
-        row.status !== SUBMISSION_STATUS.REJECTED &&
-        cleanId(row.terminalId) === cleanId(selectedTerminal.id) &&
-        normalizeBillNumber(row.billNumber) === billNo
-    );
-    if (alreadyInList) {
-      setFormError(
-        `Bill ${billNo} is already in today’s list for ${selectedTerminal.name}. Open it from the list to edit.`
-      );
-      return;
+    if (editingSubmission?.id) {
+      const duplicate = await findLocalDuplicateBill({
+        clientId,
+        businessDate: date,
+        terminalId: selectedTerminal.id,
+        billNumber: billNo,
+        excludeEntryLocalId: cleanId(
+          editingSubmission.entryLocalId || editingSubmission.id
+        ),
+      });
+      if (duplicate) {
+        setFormError(
+          `Bill ${billNo} is already saved on this phone for ${selectedTerminal.name}.`
+        );
+        return null;
+      }
     }
 
-    const duplicate = await findLocalDuplicateBill({
-      clientId,
-      businessDate: date,
-      terminalId: selectedTerminal.id,
-      billNumber: billNo,
-    });
-    if (duplicate) {
-      setFormError(
-        `Bill ${billNo} is already saved locally for ${selectedTerminal.name}. Open it from the list to edit.`
-      );
-      return;
-    }
-
-    const entryLocalId = createEntryLocalId();
     const nowMs = Date.now();
+    const entryLocalId = editingSubmission?.id
+      ? cleanId(editingSubmission.entryLocalId || editingSubmission.id)
+      : createEntryLocalId();
+
     const localRecord = {
       entryLocalId,
       clientId,
@@ -1115,7 +1177,7 @@ export default function DeliveryApp() {
       bankAccountNameSnapshot,
       customerName: String(customerName || "").trim(),
       deliveryCharge: chargeNum,
-      deliveryBoyId,
+      deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
       deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
       commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
       commissionRate: Number(deliveryBoy?.commissionRate) || 0,
@@ -1123,32 +1185,73 @@ export default function DeliveryApp() {
       currencyDecimals,
       notes: "",
       entrySource: EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
-      syncStatus: SYNC_STATUS.PENDING,
+      syncStatus,
       syncError: "",
-      createdAtMs: nowMs,
+      createdAtMs: Number(editingSubmission?.createdAtMs) || nowMs,
       updatedAtMs: nowMs,
       createdBy: user.uid,
     };
 
+    await putLocalBill(localRecord);
+    return localRecord;
+  }
+
+  async function handleSaveOnDevice(event) {
+    event.preventDefault();
+    setFormError("");
+    setFormMessage("");
     setSaving(true);
     try {
-      // LOCAL SAVE FIRST — list updates immediately; sync runs in background.
-      await putLocalBill(localRecord);
-      await refreshDeliverySyncCounts();
+      const saved = await persistLocalBill({ syncStatus: SYNC_STATUS.DRAFT });
+      if (!saved) return;
       await refreshLocalDayBills();
-
-      const online = typeof navigator === "undefined" ? true : navigator.onLine;
       setFormMessage(
-        online
-          ? "Bill saved. Appears below — syncing for shop approval."
-          : "Bill saved on this phone. Waiting for connection."
+        `Bill ${saved.billNumber} saved on this phone. Edit anytime, then Sync when ready.`
       );
       clearBillFields();
-
-      // Sync in background — does not block next entry.
-      triggerSync();
+      setActivePage("drafts");
     } catch (error) {
-      setFormError(error?.message || "Could not save bill locally.");
+      setFormError(error?.message || "Could not save bill on this phone.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleSyncNow() {
+    setFormError("");
+    setFormMessage("");
+    setSaving(true);
+    try {
+      if (activePage === "entry" && formHasAnyInput()) {
+        const saved = await persistLocalBill({
+          syncStatus: SYNC_STATUS.PENDING,
+        });
+        if (!saved) return;
+        clearBillFields();
+      }
+
+      const queued = await queueDraftsForSync({
+        clientId,
+        businessDate,
+      });
+      await refreshDeliverySyncCounts();
+      await refreshLocalDayBills();
+      const summary = await getUnsyncedSummary();
+      if (summary.total === 0) {
+        setFormMessage("Nothing to sync. Save bills on this phone first.");
+        return;
+      }
+
+      setFormMessage(
+        queued > 0
+          ? `Sending ${queued} bill${queued === 1 ? "" : "s"} for shop approval…`
+          : "Syncing bills for shop approval…"
+      );
+      await triggerSync(true);
+      await refreshLocalDayBills();
+      setFormMessage("Sync finished. Check Approved after the shop confirms.");
+    } catch (error) {
+      setFormError(error?.message || "Sync failed.");
     } finally {
       setSaving(false);
     }
@@ -1325,6 +1428,10 @@ export default function DeliveryApp() {
             <span className="text-amber-200">
               {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting to sync
             </span>
+          ) : draftCount > 0 ? (
+            <span className="text-violet-200">
+              {draftCount} on device (not synced)
+            </span>
           ) : (
             <span className="text-slate-500">All synced</span>
           )}
@@ -1401,339 +1508,550 @@ export default function DeliveryApp() {
         </div>
       ) : null}
 
+      <nav className="mx-auto grid max-w-lg grid-cols-3 gap-1 border-b border-slate-800 px-2 py-2">
+        {[
+          { id: "entry", label: "New entry" },
+          {
+            id: "drafts",
+            label: "View & Edit",
+            badge: draftCount > 0 ? draftCount : null,
+          },
+          {
+            id: "approved",
+            label: "Approved",
+            badge: approvedTotals.count > 0 ? approvedTotals.count : null,
+          },
+        ].map((tab) => {
+          const active = activePage === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActivePage(tab.id)}
+              className={`relative rounded-xl px-2 py-2.5 text-xs font-semibold transition ${
+                active
+                  ? "bg-sky-500 text-slate-950"
+                  : "bg-slate-900 text-slate-300"
+              }`}
+            >
+              {tab.label}
+              {tab.badge != null ? (
+                <span
+                  className={`ml-1 inline-flex min-w-[1.1rem] justify-center rounded-full px-1 text-[10px] ${
+                    active
+                      ? "bg-slate-950/20 text-slate-950"
+                      : "bg-slate-700 text-slate-200"
+                  }`}
+                >
+                  {tab.badge}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </nav>
+
       <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
-        <section>
-          <FieldLabel>Terminal</FieldLabel>
-          {!allowedTerminals.length ? (
-            <div className="rounded-2xl border border-amber-800/60 bg-amber-950/30 p-4 text-sm text-amber-100">
-              No terminals assigned. Ask an admin to assign terminals to your
-              account.
-            </div>
-          ) : (
-            <div className="grid gap-2">
-              {allowedTerminals.map((terminal, index) => {
-                const t = getTerminalTheme(terminal, index);
-                const selected = terminal.id === selectedTerminalId;
-                return (
-                  <button
-                    key={terminal.id}
-                    type="button"
-                    disabled={editingLockedIdentity && !selected}
-                    onClick={() => setSelectedTerminalId(terminal.id)}
-                    className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition disabled:opacity-50 ${
-                      selected
-                        ? "border-[color:var(--term-border)] bg-[color:var(--term-tint)] ring-2 ring-[color:var(--term-ring)]"
-                        : "border-slate-800 bg-slate-900/70"
-                    }`}
-                    style={
-                      selected
-                        ? {
-                            "--term-border": t.border,
-                            "--term-tint": t.tint,
-                            "--term-ring": t.ring,
-                          }
-                        : undefined
-                    }
-                  >
-                    <span
-                      className={`flex h-5 w-5 items-center justify-center rounded-full border-2 ${
-                        selected ? "border-white" : "border-slate-500"
-                      }`}
-                    >
-                      {selected ? (
+        {activePage === "entry" ? (
+          <>
+            <section>
+              <FieldLabel>Terminal</FieldLabel>
+              {!allowedTerminals.length ? (
+                <div className="rounded-2xl border border-amber-800/60 bg-amber-950/30 p-4 text-sm text-amber-100">
+                  No terminals assigned. Ask an admin to assign terminals to your
+                  account.
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  {allowedTerminals.map((terminal, index) => {
+                    const t = getTerminalTheme(terminal, index);
+                    const selected = terminal.id === selectedTerminalId;
+                    return (
+                      <button
+                        key={terminal.id}
+                        type="button"
+                        onClick={() => setSelectedTerminalId(terminal.id)}
+                        className={`flex items-center gap-3 rounded-2xl border px-4 py-3.5 text-left transition ${
+                          selected
+                            ? "border-[color:var(--term-border)] bg-[color:var(--term-tint)] ring-2 ring-[color:var(--term-ring)]"
+                            : "border-slate-800 bg-slate-900/70"
+                        }`}
+                        style={
+                          selected
+                            ? {
+                                "--term-border": t.border,
+                                "--term-tint": t.tint,
+                                "--term-ring": t.ring,
+                              }
+                            : undefined
+                        }
+                      >
                         <span
-                          className="h-2.5 w-2.5 rounded-full"
+                          className={`flex h-5 w-5 items-center justify-center rounded-full border-2 ${
+                            selected ? "border-white" : "border-slate-500"
+                          }`}
+                        >
+                          {selected ? (
+                            <span
+                              className="h-2.5 w-2.5 rounded-full"
+                              style={{ backgroundColor: t.accent }}
+                            />
+                          ) : null}
+                        </span>
+                        <span
+                          className="h-3 w-3 rounded-full"
                           style={{ backgroundColor: t.accent }}
                         />
-                      ) : null}
-                    </span>
-                    <span
-                      className="h-3 w-3 rounded-full"
-                      style={{ backgroundColor: t.accent }}
-                    />
-                    <span className="text-base font-semibold text-white">
-                      {terminal.name}
-                    </span>
+                        <span className="text-base font-semibold text-white">
+                          {terminal.name}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <form
+              onSubmit={handleSaveOnDevice}
+              className="space-y-4 rounded-3xl border p-4"
+              style={{
+                borderColor: theme.border,
+                background: theme.tint,
+              }}
+            >
+              <div
+                className="rounded-2xl px-3 py-2 text-sm font-semibold text-white"
+                style={{ background: theme.accentSoft, color: theme.accent }}
+              >
+                {editingSubmission
+                  ? `Editing bill ${editingSubmission.billNumber}`
+                  : selectedTerminal?.name || "Select terminal"}
+              </div>
+
+              {editingSubmission ? (
+                <div className="rounded-xl border border-sky-800/60 bg-sky-950/30 px-3 py-2 text-xs text-sky-100">
+                  Editing a bill saved on this phone. Save on device to update,
+                  or Sync to send for shop approval.
+                  <button
+                    type="button"
+                    onClick={() => clearBillFields()}
+                    className="mt-2 block text-sky-300 underline"
+                  >
+                    Cancel edit
                   </button>
-                );
-              })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400">
+                  Save on device to keep editing. Sync sends bills for shop
+                  approval — after sync they cannot be edited here.
+                </p>
+              )}
+
+              <div>
+                <FieldLabel>Bill Number</FieldLabel>
+                <input
+                  ref={billNumberRef}
+                  inputMode="numeric"
+                  pattern="[0-9]*"
+                  autoComplete="off"
+                  className={inputClass}
+                  value={billNumber}
+                  onChange={(e) =>
+                    setBillNumber(sanitizeBillNumberInput(e.target.value))
+                  }
+                  onBlur={() => {
+                    const cleaned = normalizeBillNumber(billNumber);
+                    if (cleaned !== billNumber) setBillNumber(cleaned);
+                  }}
+                  placeholder="1256"
+                />
+              </div>
+
+              <div>
+                <FieldLabel>Bill Amount</FieldLabel>
+                <input
+                  inputMode="decimal"
+                  step={moneyInputStep(currencyDecimals)}
+                  autoComplete="off"
+                  className={inputClass}
+                  value={billAmount}
+                  onChange={(e) => setBillAmount(e.target.value)}
+                  placeholder="0.000"
+                />
+              </div>
+
+              <div>
+                <FieldLabel>Payment Type</FieldLabel>
+                <select
+                  className={inputClass}
+                  value={paymentMode}
+                  onChange={(e) => setPaymentMode(e.target.value)}
+                >
+                  {paymentOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <FieldLabel>Customer Name</FieldLabel>
+                <input
+                  autoComplete="off"
+                  className={inputClass}
+                  value={customerName}
+                  onChange={(e) => setCustomerName(e.target.value)}
+                  placeholder="Optional"
+                />
+              </div>
+
+              <div>
+                <FieldLabel>Delivery Charge</FieldLabel>
+                <select
+                  className={inputClass}
+                  value={deliveryCharge}
+                  onChange={(e) => setDeliveryCharge(e.target.value)}
+                >
+                  {chargeSelectOptions.map((row) => (
+                    <option key={row.value || "none"} value={row.value}>
+                      {row.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {formError ? (
+                <div className="rounded-xl border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
+                  {formError}
+                </div>
+              ) : null}
+              {formMessage ? (
+                <div className="rounded-xl border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-100">
+                  ✓ {formMessage}
+                </div>
+              ) : null}
+
+              <div className="grid gap-2">
+                <button
+                  type="submit"
+                  disabled={saving || !selectedTerminal}
+                  className="w-full rounded-2xl py-4 text-lg font-bold text-slate-950 disabled:opacity-50"
+                  style={{ backgroundColor: theme.accent }}
+                >
+                  {saving
+                    ? "Saving…"
+                    : editingSubmission
+                      ? "Update on device"
+                      : "Save on device"}
+                </button>
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void handleSyncNow()}
+                  className="w-full rounded-2xl border border-sky-600/70 bg-sky-950/50 py-3.5 text-base font-semibold text-sky-100 disabled:opacity-50"
+                >
+                  {saving ? "Working…" : "Sync"}
+                </button>
+              </div>
+            </form>
+          </>
+        ) : null}
+
+        {activePage === "drafts" ? (
+          <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
+            <div>
+              <h2 className="text-sm font-semibold text-white">
+                On this phone
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Edit drafts anytime. After Sync they move to shop approval and
+                cannot be changed here.
+              </p>
             </div>
-          )}
-        </section>
 
-        <form
-          onSubmit={handleSave}
-          className="space-y-4 rounded-3xl border p-4"
-          style={{
-            borderColor: theme.border,
-            background: theme.tint,
-          }}
-        >
-          <div
-            className="rounded-2xl px-3 py-2 text-sm font-semibold text-white"
-            style={{ background: theme.accentSoft, color: theme.accent }}
-          >
-            {editingSubmission
-              ? `Editing bill ${editingSubmission.billNumber}`
-              : selectedTerminal?.name || "Select terminal"}
-          </div>
+            {formError ? (
+              <div className="rounded-xl border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
+                {formError}
+              </div>
+            ) : null}
+            {formMessage ? (
+              <div className="rounded-xl border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-100">
+                ✓ {formMessage}
+              </div>
+            ) : null}
 
-          {editingSubmission ? (
-            <div className="rounded-xl border border-sky-800/60 bg-sky-950/30 px-3 py-2 text-xs text-sky-100">
-              {editingLockedIdentity
-                ? "Editing an approved bill. Save stores it on this phone like a new entry, then syncs later for shop re-approval. Bill number and terminal stay locked."
-                : "Editing this bill. Save stores it on this phone, then syncs later for shop approval."}
+            <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => clearBillFields()}
-                className="mt-2 block text-sky-300 underline"
+                disabled={
+                  saving ||
+                  (draftCount === 0 &&
+                    !draftRows.some(
+                      (row) =>
+                        row.syncStatus === SYNC_STATUS.PENDING ||
+                        row.syncStatus === SYNC_STATUS.FAILED
+                    ))
+                }
+                onClick={() => void handleSyncNow()}
+                className="flex-1 rounded-xl bg-sky-500 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
               >
-                Cancel edit
+                Sync
+              </button>
+              <button
+                type="button"
+                onClick={() => setActivePage("entry")}
+                className="rounded-xl border border-slate-700 px-3 py-3 text-sm text-slate-200"
+              >
+                New
               </button>
             </div>
-          ) : null}
 
-          <div>
-            <FieldLabel>Bill Number</FieldLabel>
-            <input
-              ref={billNumberRef}
-              inputMode="numeric"
-              pattern="[0-9]*"
-              autoComplete="off"
-              className={inputClass}
-              value={billNumber}
-              disabled={editingLockedIdentity}
-              onChange={(e) =>
-                setBillNumber(sanitizeBillNumberInput(e.target.value))
-              }
-              onBlur={() => {
-                const cleaned = normalizeBillNumber(billNumber);
-                if (cleaned !== billNumber) setBillNumber(cleaned);
-              }}
-              placeholder="1256"
-            />
-          </div>
+            {!draftRows.length ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                No bills saved on this phone. Use New entry → Save on device.
+              </p>
+            ) : (
+              <ul className="space-y-2">
+                {draftRows.map((row) => {
+                  const boyAcct = isDeliveryBoyAccountPayment(row);
+                  const statusMeta = dayBillStatusMeta(row);
+                  const canEdit = row.editable;
+                  return (
+                    <li key={row.key}>
+                      <button
+                        type="button"
+                        disabled={!canEdit}
+                        onClick={() => loadDraftForEdit(row)}
+                        className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
+                          canEdit
+                            ? "border-slate-800 bg-slate-950/60 hover:border-slate-600"
+                            : "cursor-default border-slate-800/60 bg-slate-950/30 opacity-80"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-sm font-semibold text-white">
+                              Bill {row.billNumber}
+                            </span>
+                            <span className="truncate text-xs text-slate-400">
+                              {row.terminalNameSnapshot || "Terminal"}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-400">
+                            {externalPaymentModeLabel(row)}
+                            {row.customerName ? ` · ${row.customerName}` : ""}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="font-semibold tabular-nums text-white">
+                              {formatMoney(row.billAmount, currencyDecimals)}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                                boyAcct
+                                  ? "bg-violet-950/70 text-violet-200"
+                                  : "bg-emerald-950/70 text-emerald-200"
+                              }`}
+                            >
+                              {boyAcct ? "My account" : "Shop"}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
+                            >
+                              {statusMeta.label}
+                            </span>
+                          </div>
+                          {row.syncError ? (
+                            <div className="text-[11px] text-rose-300">
+                              {row.syncError}
+                            </div>
+                          ) : null}
+                        </div>
+                        {canEdit ? (
+                          <Pencil
+                            size={15}
+                            className="mt-1 shrink-0 text-slate-500"
+                          />
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+        ) : null}
 
-          <div>
-            <FieldLabel>Bill Amount</FieldLabel>
-            <input
-              inputMode="decimal"
-              step={moneyInputStep(currencyDecimals)}
-              autoComplete="off"
-              className={inputClass}
-              value={billAmount}
-              onChange={(e) => setBillAmount(e.target.value)}
-              placeholder="0.000"
-            />
-          </div>
-
-          <div>
-            <FieldLabel>Payment Type</FieldLabel>
-            <select
-              className={inputClass}
-              value={paymentMode}
-              onChange={(e) => setPaymentMode(e.target.value)}
-            >
-              {paymentOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <FieldLabel>Customer Name</FieldLabel>
-            <input
-              autoComplete="off"
-              className={inputClass}
-              value={customerName}
-              onChange={(e) => setCustomerName(e.target.value)}
-              placeholder="Optional"
-            />
-          </div>
-
-          <div>
-            <FieldLabel>Delivery Charge</FieldLabel>
-            <select
-              className={inputClass}
-              value={deliveryCharge}
-              onChange={(e) => setDeliveryCharge(e.target.value)}
-            >
-              {chargeSelectOptions.map((row) => (
-                <option key={row.value || "none"} value={row.value}>
-                  {row.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {formError ? (
-            <div className="rounded-xl border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
-              {formError}
+        {activePage === "approved" ? (
+          <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
+            <div>
+              <h2 className="text-sm font-semibold text-white">
+                Approved / shop bills
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Live list from the shop — includes your synced bills and
+                delivery bills the shop entered for you. Updates when the shop
+                edits or voids a bill. View only.
+              </p>
             </div>
-          ) : null}
-          {formMessage ? (
-            <div className="rounded-xl border border-emerald-800 bg-emerald-950/40 px-3 py-2 text-sm text-emerald-100">
-              ✓ {formMessage}
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  My account
+                </div>
+                <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                  {formatMoney(approvedTotals.boyAccount, currencyDecimals)}
+                </div>
+                {currency ? (
+                  <div className="text-[11px] text-slate-500">{currency}</div>
+                ) : null}
+              </div>
+              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                  Shop account
+                </div>
+                <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                  {formatMoney(approvedTotals.shopAccount, currencyDecimals)}
+                </div>
+                {currency ? (
+                  <div className="text-[11px] text-slate-500">{currency}</div>
+                ) : null}
+              </div>
             </div>
-          ) : null}
-
-          <button
-            type="submit"
-            disabled={saving || !selectedTerminal}
-            className="w-full rounded-2xl py-4 text-lg font-bold text-slate-950 disabled:opacity-50"
-            style={{ backgroundColor: theme.accent }}
-          >
-            {saving
-              ? "Saving…"
-              : editingSubmission
-                ? "Save (sync later)"
-                : "Save Bill"}
-          </button>
-        </form>
-
-        <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-          <div>
-            <h2 className="text-sm font-semibold text-white">
-              Today’s bills
-            </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
-              {dayTotals.count} bill{dayTotals.count === 1 ? "" : "s"} · updates
-              live · tap to edit
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                My account
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                {formatMoney(dayTotals.boyAccount, currencyDecimals)}
-              </div>
+            <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
+              {approvedTotals.count} active bill
+              {approvedTotals.count === 1 ? "" : "s"} · Combined{" "}
+              <span className="font-semibold text-white tabular-nums">
+                {formatMoney(approvedTotals.all, currencyDecimals)}
+              </span>
               {currency ? (
-                <div className="text-[11px] text-slate-500">{currency}</div>
+                <span className="ml-1 text-xs text-slate-500">{currency}</span>
               ) : null}
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-              <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Shop account
-              </div>
-              <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                {formatMoney(dayTotals.shopAccount, currencyDecimals)}
-              </div>
-              {currency ? (
-                <div className="text-[11px] text-slate-500">{currency}</div>
-              ) : null}
-            </div>
-          </div>
-          <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
-            Combined total{" "}
-            <span className="font-semibold text-white tabular-nums">
-              {formatMoney(dayTotals.all, currencyDecimals)}
-            </span>
-            {currency ? (
-              <span className="ml-1 text-xs text-slate-500">{currency}</span>
+
+            {dayListError ? (
+              <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
+                {dayListError}
+              </p>
             ) : null}
-          </div>
 
-          {dayListError ? (
-            <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
-              {dayListError}
-            </p>
-          ) : null}
+            {waitingShopRows.length ? (
+              <div className="space-y-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-200/90">
+                  Waiting for shop
+                </h3>
+                <ul className="space-y-2">
+                  {waitingShopRows.map((row) => (
+                    <li
+                      key={row.id}
+                      className="rounded-2xl border border-amber-900/40 bg-amber-950/20 px-3 py-2.5"
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-white">
+                          Bill {row.billNumber}
+                        </span>
+                        <span className="truncate text-xs text-slate-400">
+                          {row.terminalNameSnapshot || "Terminal"}
+                        </span>
+                        <span className="rounded-full bg-amber-950/70 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                          Pending approval
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-400">
+                        {externalPaymentModeLabel(row)}
+                        {row.customerName ? ` · ${row.customerName}` : ""}
+                      </div>
+                      <div className="mt-1 text-xs font-semibold tabular-nums text-white">
+                        {formatMoney(row.billAmount, currencyDecimals)}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
 
-          {!dayRows.length ? (
-            <p className="py-2 text-center text-sm text-slate-500">
-              No bills entered for this date yet.
-            </p>
-          ) : (
-            <ul className="max-h-72 space-y-2 overflow-y-auto overscroll-y-contain">
-              {dayRows.map((row) => {
-                const rejected = row.status === SUBMISSION_STATUS.REJECTED;
-                const boyAcct = isDeliveryBoyAccountPayment(row);
-                const statusMeta = dayBillStatusMeta(row);
-                const selected =
-                  editingSubmission?.id === row.submissionId ||
-                  editingSubmission?.id === row.id ||
-                  editingSubmission?.id === row.entryLocalId;
-                return (
-                  <li key={row.key}>
-                    <button
-                      type="button"
-                      disabled={rejected}
-                      onClick={() => loadSubmissionForEdit(row)}
-                      className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
-                        selected
-                          ? "border-sky-600/70 bg-sky-950/40"
-                          : rejected
-                            ? "cursor-not-allowed border-slate-800/60 bg-slate-950/30 opacity-60"
-                            : "border-slate-800 bg-slate-950/60 hover:border-slate-600"
+            {!approvedRows.length && !waitingShopRows.length ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                No approved bills for this date yet.
+              </p>
+            ) : approvedRows.length ? (
+              <ul className="space-y-2">
+                {approvedRows.map((row) => {
+                  const boyAcct = isDeliveryBoyAccountPayment(row);
+                  return (
+                    <li
+                      key={row.key}
+                      className={`rounded-2xl border px-3 py-2.5 ${
+                        row.voided
+                          ? "border-rose-900/40 bg-rose-950/20 opacity-75"
+                          : "border-slate-800 bg-slate-950/60"
                       }`}
                     >
-                      <div className="min-w-0 flex-1 space-y-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-white">
-                            Bill {row.billNumber}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-semibold text-white">
+                          Bill {row.billNumber}
+                        </span>
+                        <span className="truncate text-xs text-slate-400">
+                          {row.terminalNameSnapshot || "Terminal"}
+                        </span>
+                        {row.voided ? (
+                          <span className="rounded-full bg-rose-950/70 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
+                            Deleted / voided
                           </span>
-                          <span className="truncate text-xs text-slate-400">
-                            {row.terminalNameSnapshot || "Terminal"}
+                        ) : (
+                          <span className="rounded-full bg-emerald-950/70 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
+                            In shop
                           </span>
-                        </div>
-                        <div className="text-xs text-slate-400">
-                          {externalPaymentModeLabel(row)}
-                          {row.customerName ? ` · ${row.customerName}` : ""}
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 text-xs">
-                          <span className="font-semibold tabular-nums text-white">
-                            {formatMoney(row.billAmount, currencyDecimals)}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                              boyAcct
-                                ? "bg-violet-950/70 text-violet-200"
-                                : "bg-emerald-950/70 text-emerald-200"
-                            }`}
-                          >
-                            {boyAcct ? "My account" : "Shop"}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
-                          >
-                            {statusMeta.label}
-                          </span>
-                        </div>
-                        {row.syncError ? (
-                          <div className="text-[11px] text-rose-300">
-                            {row.syncError}
-                          </div>
-                        ) : null}
+                        )}
                       </div>
-                      {!rejected ? (
-                        <Pencil
-                          size={15}
-                          className="mt-1 shrink-0 text-slate-500"
-                        />
-                      ) : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </section>
+                      <div className="mt-1 text-xs text-slate-400">
+                        {externalPaymentModeLabel(row)}
+                        {row.customerName ? ` · ${row.customerName}` : ""}
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                        <span
+                          className={`font-semibold tabular-nums ${
+                            row.voided
+                              ? "text-slate-500 line-through"
+                              : "text-white"
+                          }`}
+                        >
+                          {formatMoney(row.billAmount, currencyDecimals)}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                            boyAcct
+                              ? "bg-violet-950/70 text-violet-200"
+                              : "bg-emerald-950/70 text-emerald-200"
+                          }`}
+                        >
+                          {boyAcct ? "My account" : "Shop"}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : null}
+          </section>
+        ) : null}
       </main>
 
       {logoutConfirmOpen ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
           <div className="w-full max-w-sm rounded-3xl border border-slate-700 bg-slate-950 p-5 shadow-2xl">
             <div className="text-base font-semibold text-white">
-              {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting to sync
+              {pendingTotal + draftCount > 0
+                ? `${pendingTotal + draftCount} bill${
+                    pendingTotal + draftCount === 1 ? "" : "s"
+                  } still on this phone`
+                : "Bills still on this phone"}
             </div>
             <p className="mt-2 text-sm text-slate-400">
-              Please wait until synchronization is complete. Pending bills stay
-              on this device if you log out.
+              Device drafts and bills waiting to sync stay on this phone if you
+              log out. Sync before logout if you want the shop to receive them.
             </p>
             <div className="mt-4 flex gap-2">
               <button

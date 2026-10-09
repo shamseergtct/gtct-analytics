@@ -4,6 +4,8 @@
  */
 
 export const SYNC_STATUS = {
+  /** Saved on device only — editable, not sent until Sync. */
+  DRAFT: "DRAFT",
   PENDING: "PENDING",
   SYNCING: "SYNCING",
   SYNCED: "SYNCED",
@@ -209,6 +211,40 @@ export async function listPendingLocalBills() {
         row.syncStatus === SYNC_STATUS.FAILED
     )
     .sort((a, b) => Number(a.createdAtMs || 0) - Number(b.createdAtMs || 0));
+}
+
+/** Device-only drafts (not queued for sync yet). */
+export async function listDraftLocalBills() {
+  const rows = await listLocalBills();
+  return rows
+    .filter((row) => row.syncStatus === SYNC_STATUS.DRAFT)
+    .sort((a, b) => Number(b.updatedAtMs || b.createdAtMs || 0) - Number(a.updatedAtMs || a.createdAtMs || 0));
+}
+
+/** Mark device drafts as ready to sync (DRAFT → PENDING). */
+export async function queueDraftsForSync({
+  clientId = "",
+  businessDate = "",
+  entryLocalIds = null,
+} = {}) {
+  const rows = await listDraftLocalBills();
+  const date = String(businessDate || "").slice(0, 10);
+  const idSet = Array.isArray(entryLocalIds)
+    ? new Set(entryLocalIds.map(String))
+    : null;
+  const targets = rows.filter((row) => {
+    if (clientId && String(row.clientId || "") !== String(clientId)) return false;
+    if (date && String(row.businessDate || "").slice(0, 10) !== date) return false;
+    if (idSet && !idSet.has(String(row.entryLocalId))) return false;
+    return true;
+  });
+  for (const row of targets) {
+    await updateLocalBill(row.entryLocalId, {
+      syncStatus: SYNC_STATUS.PENDING,
+      syncError: "",
+    });
+  }
+  return targets.length;
 }
 
 export async function countUnsyncedLocalBills() {
