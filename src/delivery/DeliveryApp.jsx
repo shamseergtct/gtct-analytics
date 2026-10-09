@@ -20,6 +20,7 @@ import {
   DELIVERY_ACCOUNT_PAYMENT,
   EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
   buildDeliveryBoyPaymentModeChoices,
+  deliveryBoyOutstandingPayable,
   externalPaymentModeLabel,
   getTerminalTheme,
   isDeliveryBoyAccountPayment,
@@ -230,6 +231,7 @@ export default function DeliveryApp() {
   const [daySubmissions, setDaySubmissions] = useState([]);
   const [dayLiveBills, setDayLiveBills] = useState([]);
   const [dayLocalBills, setDayLocalBills] = useState([]);
+  const [dayCollections, setDayCollections] = useState([]);
   const [dayListError, setDayListError] = useState("");
   const [editingSubmission, setEditingSubmission] = useState(null);
   /** entry | drafts | approved */
@@ -374,6 +376,7 @@ export default function DeliveryApp() {
     if (!clientId || !deliveryBoyId || !businessDate) {
       setDaySubmissions([]);
       setDayLiveBills([]);
+      setDayCollections([]);
       setDayListError("");
       return undefined;
     }
@@ -381,6 +384,7 @@ export default function DeliveryApp() {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       setDaySubmissions([]);
       setDayLiveBills([]);
+      setDayCollections([]);
       return undefined;
     }
 
@@ -455,6 +459,27 @@ export default function DeliveryApp() {
             reason?.message ||
             "Could not load pending delivery submissions."
           );
+        }
+      )
+    );
+
+    // Shop settlement collections for this boy (balance owed).
+    unsubscribers.push(
+      onSnapshot(
+        query(
+          collection(db, "delivery_boy_collections"),
+          where("clientId", "==", clientId),
+          where("deliveryBoyId", "==", deliveryBoyId),
+          where("businessDate", "==", date)
+        ),
+        (snap) => {
+          setDayCollections(
+            snap.docs.map((item) => ({ id: item.id, ...item.data() }))
+          );
+        },
+        (reason) => {
+          console.error("delivery day collections failed:", reason);
+          setDayCollections([]);
         }
       )
     );
@@ -659,19 +684,31 @@ export default function DeliveryApp() {
       });
   }, [dayLiveBills]);
 
-  const approvedTotals = useMemo(() => {
-    let boyAccount = 0;
-    let shopAccount = 0;
-    let count = 0;
-    for (const row of approvedRows) {
-      if (row.voided) continue;
-      count += 1;
-      const amount = numMoney(row.billAmount);
-      if (isDeliveryBoyAccountPayment(row)) boyAccount += amount;
-      else shopAccount += amount;
-    }
-    return { boyAccount, shopAccount, all: boyAccount + shopAccount, count };
-  }, [approvedRows]);
+  const approvedSummary = useMemo(() => {
+    const activeBills = dayLiveBills.filter((bill) => bill.voided !== true);
+    const outstanding = deliveryBoyOutstandingPayable({
+      bills: activeBills,
+      collections: dayCollections,
+      deliveryBoyId,
+    });
+    const shopEnteredCount = approvedRows.filter(
+      (row) => !row.voided && row.fromShop
+    ).length;
+    return {
+      count: outstanding.totalBills || activeBills.length,
+      shopEnteredCount,
+      /** Money collected on the boy’s account (payment / collection). */
+      collection: outstanding.grossAmount,
+      /** Cash/bank already paid at the shop (not boy account). */
+      shopPaid: outstanding.shopCollectionAmount ?? outstanding.shopPaidAmount,
+      credit: outstanding.creditAmount,
+      commission: outstanding.totalCommissionAmount,
+      alreadySettled: outstanding.alreadyCollected,
+      /** Remaining amount the boy still owes the shop. */
+      balanceToShop: outstanding.remainingPayable,
+      all: outstanding.totalAmount,
+    };
+  }, [dayLiveBills, dayCollections, deliveryBoyId, approvedRows]);
 
   const waitingShopRows = useMemo(() => {
     const approvedKeys = new Set(
@@ -1544,7 +1581,7 @@ export default function DeliveryApp() {
           {
             id: "approved",
             label: "Approved",
-            badge: approvedTotals.count > 0 ? approvedTotals.count : null,
+            badge: approvedSummary.count > 0 ? approvedSummary.count : null,
           },
         ].map((tab) => {
           const active = activePage === tab.id;
@@ -1579,16 +1616,19 @@ export default function DeliveryApp() {
       <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
         {activePage === "entry" ? (
           <>
-            {approvedTotals.count > 0 ? (
+            {approvedSummary.count > 0 ? (
               <button
                 type="button"
                 onClick={() => setActivePage("approved")}
                 className="flex w-full items-center justify-between rounded-2xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 text-left"
               >
                 <span className="text-sm text-emerald-100">
-                  {approvedTotals.count} bill
-                  {approvedTotals.count === 1 ? "" : "s"} in shop under your
+                  {approvedSummary.count} bill
+                  {approvedSummary.count === 1 ? "" : "s"} in shop under your
                   name
+                  {approvedSummary.shopEnteredCount
+                    ? ` · ${approvedSummary.shopEnteredCount} entered by shop`
+                    : ""}
                 </span>
                 <span className="text-xs font-semibold text-emerald-300">
                   View Approved →
@@ -1926,50 +1966,83 @@ export default function DeliveryApp() {
         ) : null}
 
         {activePage === "approved" ? (
-          <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
+          <section className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
             <div>
               <h2 className="text-sm font-semibold text-white">
                 Approved / shop bills
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                Live list: bills the shop entered in your name, plus your synced
-                Delivery Entry bills after approval. Updates when the shop edits
-                or voids a bill. View only.
+                Bills the shop entered in your name and your approved Delivery
+                Entry bills. Collection is money on your account; balance is
+                what you still pay to the shop after commission and settlements.
               </p>
             </div>
 
             <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                  My account
+              <div className="rounded-2xl border border-violet-800/50 bg-violet-950/30 p-3">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-violet-300/80">
+                  Collection
                 </div>
                 <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                  {formatMoney(approvedTotals.boyAccount, currencyDecimals)}
+                  {formatMoney(approvedSummary.collection, currencyDecimals)}
                 </div>
-                {currency ? (
-                  <div className="text-[11px] text-slate-500">{currency}</div>
-                ) : null}
+                <div className="mt-0.5 text-[11px] text-violet-200/70">
+                  Payment on my account
+                </div>
               </div>
-              <div className="rounded-2xl border border-slate-800 bg-slate-950/70 p-3">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                  Shop account
+              <div className="rounded-2xl border border-amber-800/50 bg-amber-950/30 p-3">
+                <div className="text-[11px] font-medium uppercase tracking-wide text-amber-300/80">
+                  Balance to shop
                 </div>
                 <div className="mt-1 text-lg font-semibold tabular-nums text-white">
-                  {formatMoney(approvedTotals.shopAccount, currencyDecimals)}
+                  {formatMoney(approvedSummary.balanceToShop, currencyDecimals)}
                 </div>
-                {currency ? (
-                  <div className="text-[11px] text-slate-500">{currency}</div>
-                ) : null}
+                <div className="mt-0.5 text-[11px] text-amber-200/70">
+                  After commission
+                  {approvedSummary.alreadySettled > 0
+                    ? " & settlements"
+                    : ""}
+                </div>
               </div>
             </div>
-            <div className="rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2 text-sm text-slate-300">
-              {approvedTotals.count} active bill
-              {approvedTotals.count === 1 ? "" : "s"} · Combined{" "}
-              <span className="font-semibold text-white tabular-nums">
-                {formatMoney(approvedTotals.all, currencyDecimals)}
-              </span>
-              {currency ? (
-                <span className="ml-1 text-xs text-slate-500">{currency}</span>
+
+            <div className="space-y-1.5 rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2.5 text-xs text-slate-400">
+              <div className="flex justify-between gap-3">
+                <span>Total bills</span>
+                <span className="tabular-nums text-slate-200">
+                  {approvedSummary.count} ·{" "}
+                  {formatMoney(approvedSummary.all, currencyDecimals)}
+                  {currency ? ` ${currency}` : ""}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Shop paid (cash/bank)</span>
+                <span className="tabular-nums text-slate-200">
+                  {formatMoney(approvedSummary.shopPaid, currencyDecimals)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Credit</span>
+                <span className="tabular-nums text-slate-200">
+                  {formatMoney(approvedSummary.credit, currencyDecimals)}
+                </span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Commission</span>
+                <span className="tabular-nums text-slate-200">
+                  {formatMoney(approvedSummary.commission, currencyDecimals)}
+                </span>
+              </div>
+              {approvedSummary.alreadySettled > 0 ? (
+                <div className="flex justify-between gap-3">
+                  <span>Already settled with shop</span>
+                  <span className="tabular-nums text-slate-200">
+                    {formatMoney(
+                      approvedSummary.alreadySettled,
+                      currencyDecimals
+                    )}
+                  </span>
+                </div>
               ) : null}
             </div>
 
@@ -1977,6 +2050,86 @@ export default function DeliveryApp() {
               <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-100">
                 {dayListError}
               </p>
+            ) : null}
+
+            {!approvedRows.length && !waitingShopRows.length ? (
+              <p className="py-6 text-center text-sm text-slate-500">
+                No approved bills for this date yet.
+              </p>
+            ) : null}
+
+            {approvedRows.length ? (
+              <div className="space-y-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-emerald-200/90">
+                  In shop
+                  {approvedSummary.shopEnteredCount
+                    ? ` · ${approvedSummary.shopEnteredCount} entered by shop`
+                    : ""}
+                </h3>
+                <ul className="space-y-2">
+                  {approvedRows.map((row) => {
+                    const boyAcct = isDeliveryBoyAccountPayment(row);
+                    return (
+                      <li
+                        key={row.key}
+                        className={`rounded-2xl border px-3 py-2.5 ${
+                          row.voided
+                            ? "border-rose-900/40 bg-rose-950/20 opacity-75"
+                            : row.fromShop
+                              ? "border-sky-800/50 bg-sky-950/20"
+                              : "border-slate-800 bg-slate-950/60"
+                        }`}
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-semibold text-white">
+                            Bill {row.billNumber}
+                          </span>
+                          <span className="truncate text-xs text-slate-400">
+                            {row.terminalNameSnapshot || "Terminal"}
+                          </span>
+                          {row.voided ? (
+                            <span className="rounded-full bg-rose-950/70 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
+                              Deleted / voided
+                            </span>
+                          ) : row.fromShop ? (
+                            <span className="rounded-full bg-sky-950/70 px-2 py-0.5 text-[10px] font-semibold text-sky-200">
+                              Entered by shop
+                            </span>
+                          ) : (
+                            <span className="rounded-full bg-emerald-950/70 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
+                              Approved
+                            </span>
+                          )}
+                        </div>
+                        <div className="mt-1 text-xs text-slate-400">
+                          Payment: {externalPaymentModeLabel(row)}
+                          {row.customerName ? ` · ${row.customerName}` : ""}
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
+                          <span
+                            className={`font-semibold tabular-nums ${
+                              row.voided
+                                ? "text-slate-500 line-through"
+                                : "text-white"
+                            }`}
+                          >
+                            {formatMoney(row.billAmount, currencyDecimals)}
+                          </span>
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              boyAcct
+                                ? "bg-violet-950/70 text-violet-200"
+                                : "bg-emerald-950/70 text-emerald-200"
+                            }`}
+                          >
+                            {boyAcct ? "Collection" : "Shop paid"}
+                          </span>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             ) : null}
 
             {waitingShopRows.length ? (
@@ -2002,7 +2155,7 @@ export default function DeliveryApp() {
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-slate-400">
-                        {externalPaymentModeLabel(row)}
+                        Payment: {externalPaymentModeLabel(row)}
                         {row.customerName ? ` · ${row.customerName}` : ""}
                       </div>
                       <div className="mt-1 text-xs font-semibold tabular-nums text-white">
@@ -2012,74 +2165,6 @@ export default function DeliveryApp() {
                   ))}
                 </ul>
               </div>
-            ) : null}
-
-            {!approvedRows.length && !waitingShopRows.length ? (
-              <p className="py-6 text-center text-sm text-slate-500">
-                No approved bills for this date yet.
-              </p>
-            ) : approvedRows.length ? (
-              <ul className="space-y-2">
-                {approvedRows.map((row) => {
-                  const boyAcct = isDeliveryBoyAccountPayment(row);
-                  return (
-                    <li
-                      key={row.key}
-                      className={`rounded-2xl border px-3 py-2.5 ${
-                        row.voided
-                          ? "border-rose-900/40 bg-rose-950/20 opacity-75"
-                          : "border-slate-800 bg-slate-950/60"
-                      }`}
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold text-white">
-                          Bill {row.billNumber}
-                        </span>
-                        <span className="truncate text-xs text-slate-400">
-                          {row.terminalNameSnapshot || "Terminal"}
-                        </span>
-                        {row.voided ? (
-                          <span className="rounded-full bg-rose-950/70 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
-                            Deleted / voided
-                          </span>
-                        ) : row.fromShop ? (
-                          <span className="rounded-full bg-sky-950/70 px-2 py-0.5 text-[10px] font-semibold text-sky-200">
-                            Entered by shop
-                          </span>
-                        ) : (
-                          <span className="rounded-full bg-emerald-950/70 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
-                            Approved
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 text-xs text-slate-400">
-                        {externalPaymentModeLabel(row)}
-                        {row.customerName ? ` · ${row.customerName}` : ""}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                        <span
-                          className={`font-semibold tabular-nums ${
-                            row.voided
-                              ? "text-slate-500 line-through"
-                              : "text-white"
-                          }`}
-                        >
-                          {formatMoney(row.billAmount, currencyDecimals)}
-                        </span>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-                            boyAcct
-                              ? "bg-violet-950/70 text-violet-200"
-                              : "bg-emerald-950/70 text-emerald-200"
-                          }`}
-                        >
-                          {boyAcct ? "My account" : "Shop"}
-                        </span>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
             ) : null}
           </section>
         ) : null}

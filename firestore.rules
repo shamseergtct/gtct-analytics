@@ -1180,7 +1180,21 @@ service cloud.firestore {
     }
 
     match /delivery_boy_collections/{collectionId} {
-      allow read: if canReadTenantResource();
+      // Shop staff: any collection for assigned shops.
+      // Delivery boys: only their own collection rows (for balance on Approved).
+      allow get: if canReadTenantResource()
+        || (
+          isDeliveryBoyForClient(resource.data.clientId)
+          && resource.data.deliveryBoyId == profile().deliveryBoyId
+        );
+      allow list: if resource != null
+        && (
+          canReadTenantResource()
+          || (
+            isDeliveryBoyForClient(resource.data.clientId)
+            && resource.data.deliveryBoyId == profile().deliveryBoyId
+          )
+        );
       allow create: if request.resource.data.clientId is string
         && canManageClient(request.resource.data.clientId)
         && request.resource.data.createdBy == request.auth.uid

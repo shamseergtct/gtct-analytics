@@ -166,6 +166,15 @@
       ]
     },
     {
+      "collectionGroup": "delivery_boy_collections",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "deliveryBoyId", "order": "ASCENDING" },
+        { "fieldPath": "businessDate", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "external_terminal_bill_ranges",
       "queryScope": "COLLECTION",
       "fields": [
