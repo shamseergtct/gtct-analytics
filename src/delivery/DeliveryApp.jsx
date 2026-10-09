@@ -70,6 +70,32 @@ function cleanId(value) {
   return String(value || "").trim();
 }
 
+/** Status chip for live bills on the Approved page. */
+function approvedBillStatusMeta({ fromShop, edited, voided }) {
+  if (voided) {
+    return {
+      label: "Deleted",
+      className: "bg-rose-950/70 text-rose-200",
+    };
+  }
+  if (fromShop) {
+    return {
+      label: "Entered by shop",
+      className: "bg-sky-950/70 text-sky-200",
+    };
+  }
+  if (edited) {
+    return {
+      label: "Edited & approved",
+      className: "bg-amber-950/70 text-amber-200",
+    };
+  }
+  return {
+    label: "Approved",
+    className: "bg-emerald-950/70 text-emerald-200",
+  };
+}
+
 /** Status chip for today’s bills list (local + server). */
 function dayBillStatusMeta(row) {
   if (row?.source === "local") {
@@ -658,9 +684,28 @@ export default function DeliveryApp() {
       .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))
       .map((bill) => {
         const entrySource = String(bill.entrySource || "").trim().toUpperCase();
-        const fromShop =
-          entrySource !== EXTERNAL_ENTRY_SOURCE_DELIVERY_APP &&
-          entrySource !== "DELIVERY_APP";
+        const linked = daySubmissions.find(
+          (sub) =>
+            cleanId(sub.approvedBillId) === cleanId(bill.id) ||
+            (cleanId(bill.entryLocalId) &&
+              cleanId(sub.entryLocalId) === cleanId(bill.entryLocalId))
+        );
+        const fromDeliveryApp =
+          entrySource === EXTERNAL_ENTRY_SOURCE_DELIVERY_APP ||
+          entrySource === "DELIVERY_APP" ||
+          Boolean(cleanId(bill.entryLocalId)) ||
+          Boolean(linked?.id);
+        const fromShop = !fromDeliveryApp;
+        const lastEdit = String(
+          linked?.lastEditSource || bill.lastEditSource || ""
+        )
+          .trim()
+          .toLowerCase();
+        const edited =
+          fromDeliveryApp &&
+          (lastEdit === "delivery_boy" ||
+            lastEdit === "shop" ||
+            linked?.status === SUBMISSION_STATUS.EDITED_PENDING);
         return {
           key: `approved:${bill.id}`,
           id: bill.id,
@@ -677,12 +722,13 @@ export default function DeliveryApp() {
           deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
           entrySource,
           fromShop,
+          edited,
           voided: bill.voided === true,
           createdAtMs: bill.createdAtMs || 0,
           updatedAtMs: bill.updatedAtMs || 0,
         };
       });
-  }, [dayLiveBills]);
+  }, [dayLiveBills, daySubmissions]);
 
   const approvedSummary = useMemo(() => {
     const activeBills = dayLiveBills.filter((bill) => bill.voided !== true);
@@ -691,12 +737,8 @@ export default function DeliveryApp() {
       collections: dayCollections,
       deliveryBoyId,
     });
-    const shopEnteredCount = approvedRows.filter(
-      (row) => !row.voided && row.fromShop
-    ).length;
     return {
       count: outstanding.totalBills || activeBills.length,
-      shopEnteredCount,
       /** Money collected on the boy’s account (payment / collection). */
       collection: outstanding.grossAmount,
       /** Cash/bank already paid at the shop (not boy account). */
@@ -708,7 +750,7 @@ export default function DeliveryApp() {
       balanceToShop: outstanding.remainingPayable,
       all: outstanding.totalAmount,
     };
-  }, [dayLiveBills, dayCollections, deliveryBoyId, approvedRows]);
+  }, [dayLiveBills, dayCollections, deliveryBoyId]);
 
   const waitingShopRows = useMemo(() => {
     const approvedKeys = new Set(
@@ -1267,9 +1309,7 @@ export default function DeliveryApp() {
       const saved = await persistLocalBill({ syncStatus: SYNC_STATUS.DRAFT });
       if (!saved) return;
       await refreshLocalDayBills();
-      setFormMessage(
-        `Bill ${saved.billNumber} saved on this phone. Edit anytime, then Sync when ready.`
-      );
+      setFormMessage(`Bill ${saved.billNumber} saved on this phone.`);
       clearBillFields();
       setActivePage("drafts");
     } catch (error) {
@@ -1304,14 +1344,10 @@ export default function DeliveryApp() {
         return;
       }
 
-      setFormMessage(
-        queued > 0
-          ? `Sending ${queued} bill${queued === 1 ? "" : "s"} for shop approval…`
-          : "Syncing bills for shop approval…"
-      );
+      setFormMessage(queued > 0 ? `Syncing ${queued}…` : "Syncing…");
       await triggerSync(true);
       await refreshLocalDayBills();
-      setFormMessage("Sync finished. Check Approved after the shop confirms.");
+      setFormMessage("Synced.");
     } catch (error) {
       setFormError(error?.message || "Sync failed.");
     } finally {
@@ -1506,13 +1542,7 @@ export default function DeliveryApp() {
             <div className="flex items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-medium text-amber-100">
-                  🟠 {pendingTotal} bill{pendingTotal === 1 ? "" : "s"} waiting
-                  to sync
-                </div>
-                <div className="text-xs text-amber-200/80">
-                  {failedBills.length
-                    ? "A bill needs attention. Retry sync, or discard it from this phone."
-                    : "Keep the app open while connection returns."}
+                  {pendingTotal} waiting to sync
                 </div>
                 {syncState.lastError ? (
                   <div className="mt-1 text-xs text-rose-200">
@@ -1624,14 +1654,10 @@ export default function DeliveryApp() {
               >
                 <span className="text-sm text-emerald-100">
                   {approvedSummary.count} bill
-                  {approvedSummary.count === 1 ? "" : "s"} in shop under your
-                  name
-                  {approvedSummary.shopEnteredCount
-                    ? ` · ${approvedSummary.shopEnteredCount} entered by shop`
-                    : ""}
+                  {approvedSummary.count === 1 ? "" : "s"} in shop
                 </span>
                 <span className="text-xs font-semibold text-emerald-300">
-                  View Approved →
+                  Approved →
                 </span>
               </button>
             ) : null}
@@ -1712,23 +1738,14 @@ export default function DeliveryApp() {
               </div>
 
               {editingSubmission ? (
-                <div className="rounded-xl border border-sky-800/60 bg-sky-950/30 px-3 py-2 text-xs text-sky-100">
-                  Editing a bill saved on this phone. Save on device to update,
-                  or Sync to send for shop approval.
-                  <button
-                    type="button"
-                    onClick={() => clearBillFields()}
-                    className="mt-2 block text-sky-300 underline"
-                  >
-                    Cancel edit
-                  </button>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-400">
-                  Save on device to keep editing. Sync sends bills for shop
-                  approval — after sync they cannot be edited here.
-                </p>
-              )}
+                <button
+                  type="button"
+                  onClick={() => clearBillFields()}
+                  className="text-xs text-sky-300 underline"
+                >
+                  Cancel edit
+                </button>
+              ) : null}
 
               <div>
                 <FieldLabel>Bill Number</FieldLabel>
@@ -1843,15 +1860,7 @@ export default function DeliveryApp() {
 
         {activePage === "drafts" ? (
           <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-            <div>
-              <h2 className="text-sm font-semibold text-white">
-                On this phone
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Edit drafts anytime. After Sync they move to shop approval and
-                cannot be changed here.
-              </p>
-            </div>
+            <h2 className="text-sm font-semibold text-white">On this phone</h2>
 
             {formError ? (
               <div className="rounded-xl border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
@@ -1892,7 +1901,7 @@ export default function DeliveryApp() {
 
             {!draftRows.length ? (
               <p className="py-6 text-center text-sm text-slate-500">
-                No bills saved on this phone. Use New entry → Save on device.
+                No bills on this phone.
               </p>
             ) : (
               <ul className="space-y-2">
@@ -1967,16 +1976,7 @@ export default function DeliveryApp() {
 
         {activePage === "approved" ? (
           <section className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-            <div>
-              <h2 className="text-sm font-semibold text-white">
-                Approved / shop bills
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                Bills the shop entered in your name and your approved Delivery
-                Entry bills. Collection is money on your account; balance is
-                what you still pay to the shop after commission and settlements.
-              </p>
-            </div>
+            <h2 className="text-sm font-semibold text-white">Approved</h2>
 
             <div className="grid grid-cols-2 gap-2">
               <div className="rounded-2xl border border-violet-800/50 bg-violet-950/30 p-3">
@@ -1986,9 +1986,6 @@ export default function DeliveryApp() {
                 <div className="mt-1 text-lg font-semibold tabular-nums text-white">
                   {formatMoney(approvedSummary.collection, currencyDecimals)}
                 </div>
-                <div className="mt-0.5 text-[11px] text-violet-200/70">
-                  Payment on my account
-                </div>
               </div>
               <div className="rounded-2xl border border-amber-800/50 bg-amber-950/30 p-3">
                 <div className="text-[11px] font-medium uppercase tracking-wide text-amber-300/80">
@@ -1996,12 +1993,6 @@ export default function DeliveryApp() {
                 </div>
                 <div className="mt-1 text-lg font-semibold tabular-nums text-white">
                   {formatMoney(approvedSummary.balanceToShop, currencyDecimals)}
-                </div>
-                <div className="mt-0.5 text-[11px] text-amber-200/70">
-                  After commission
-                  {approvedSummary.alreadySettled > 0
-                    ? " & settlements"
-                    : ""}
                 </div>
               </div>
             </div>
@@ -2062,13 +2053,11 @@ export default function DeliveryApp() {
               <div className="space-y-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-emerald-200/90">
                   In shop
-                  {approvedSummary.shopEnteredCount
-                    ? ` · ${approvedSummary.shopEnteredCount} entered by shop`
-                    : ""}
                 </h3>
                 <ul className="space-y-2">
                   {approvedRows.map((row) => {
                     const boyAcct = isDeliveryBoyAccountPayment(row);
+                    const statusMeta = approvedBillStatusMeta(row);
                     return (
                       <li
                         key={row.key}
@@ -2077,7 +2066,9 @@ export default function DeliveryApp() {
                             ? "border-rose-900/40 bg-rose-950/20 opacity-75"
                             : row.fromShop
                               ? "border-sky-800/50 bg-sky-950/20"
-                              : "border-slate-800 bg-slate-950/60"
+                              : row.edited
+                                ? "border-amber-800/40 bg-amber-950/15"
+                                : "border-slate-800 bg-slate-950/60"
                         }`}
                       >
                         <div className="flex flex-wrap items-center gap-2">
@@ -2087,22 +2078,14 @@ export default function DeliveryApp() {
                           <span className="truncate text-xs text-slate-400">
                             {row.terminalNameSnapshot || "Terminal"}
                           </span>
-                          {row.voided ? (
-                            <span className="rounded-full bg-rose-950/70 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
-                              Deleted / voided
-                            </span>
-                          ) : row.fromShop ? (
-                            <span className="rounded-full bg-sky-950/70 px-2 py-0.5 text-[10px] font-semibold text-sky-200">
-                              Entered by shop
-                            </span>
-                          ) : (
-                            <span className="rounded-full bg-emerald-950/70 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
-                              Approved
-                            </span>
-                          )}
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
+                          >
+                            {statusMeta.label}
+                          </span>
                         </div>
                         <div className="mt-1 text-xs text-slate-400">
-                          Payment: {externalPaymentModeLabel(row)}
+                          {externalPaymentModeLabel(row)}
                           {row.customerName ? ` · ${row.customerName}` : ""}
                         </div>
                         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
@@ -2155,7 +2138,7 @@ export default function DeliveryApp() {
                         </span>
                       </div>
                       <div className="mt-1 text-xs text-slate-400">
-                        Payment: {externalPaymentModeLabel(row)}
+                        {externalPaymentModeLabel(row)}
                         {row.customerName ? ` · ${row.customerName}` : ""}
                       </div>
                       <div className="mt-1 text-xs font-semibold tabular-nums text-white">
@@ -2180,10 +2163,6 @@ export default function DeliveryApp() {
                   } still on this phone`
                 : "Bills still on this phone"}
             </div>
-            <p className="mt-2 text-sm text-slate-400">
-              Device drafts and bills waiting to sync stay on this phone if you
-              log out. Sync before logout if you want the shop to receive them.
-            </p>
             <div className="mt-4 flex gap-2">
               <button
                 type="button"

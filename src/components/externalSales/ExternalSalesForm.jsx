@@ -30,6 +30,7 @@ import {
 } from "../../utils/paymentModes.js";
 import {
   DELIVERY_ACCOUNT_PAYMENT,
+  EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
   EXTERNAL_ENTRY_SOURCE_MANUAL,
   EXTERNAL_SALE_TYPES,
   SPLIT_PAYMENT,
@@ -776,7 +777,9 @@ function TerminalBillForm({
         deliveryBoy: boy,
         deliveryCharge: chargeNum,
         notes: String(notes || "").trim(),
-        entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
+        entrySource: approvalMode
+          ? EXTERNAL_ENTRY_SOURCE_DELIVERY_APP
+          : EXTERNAL_ENTRY_SOURCE_MANUAL,
         entryLocalId: approvalMode ? pendingApprovalEntryLocalId : "",
         createdAtMs: approvalMode ? pendingApprovalCreatedAtMs : undefined,
         editMode: approvalMode

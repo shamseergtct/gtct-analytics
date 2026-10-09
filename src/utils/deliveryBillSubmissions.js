@@ -15,8 +15,7 @@ import { db } from "../firebase";
 import { numMoney, roundMoney } from "./money.js";
 import {
   DELIVERY_ACCOUNT_PAYMENT,
-  EXTERNAL_ENTRY_SOURCE_MANUAL,
-  externalSalesBillDocId,
+  EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
   normalizeBillNumber,
   resolveDeliveryBoyCommission,
   calculateDeliveryCommission,
@@ -432,7 +431,7 @@ export async function approveDeliveryBillSubmission({
     deliveryBoy: boy,
     deliveryCharge: submission.deliveryCharge,
     notes: submission.notes || "",
-    entrySource: EXTERNAL_ENTRY_SOURCE_MANUAL,
+    entrySource: EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
     entryLocalId: submission.entryLocalId || "",
     createdAtMs: submission.createdAtMs,
     createdBy: userUid,
