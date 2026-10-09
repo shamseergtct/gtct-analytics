@@ -150,6 +150,9 @@ function TerminalBillForm({
   const [localMessage, setLocalMessage] = useState("");
   const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [chargeReady, setChargeReady] = useState(false);
+  /** Approval double-check: OK near payment / charge when non-default. */
+  const [approvalPaymentOk, setApprovalPaymentOk] = useState(false);
+  const [approvalChargeOk, setApprovalChargeOk] = useState(false);
 
   const approvalMode = Boolean(pendingApprovalSubmissionId);
   const {
@@ -207,6 +210,17 @@ function TerminalBillForm({
   }, [deliveryMode, paymentModeOptions, selectedBoy?.name]);
   const resolvedPayment = parsePaymentModeSelection(paymentMode);
   const isCredit = !multiPayment && resolvedPayment.paymentMode === "CREDIT";
+  const needsApprovalPaymentOk =
+    approvalMode &&
+    deliveryMode &&
+    (multiPayment || paymentMode !== DELIVERY_ACCOUNT_PAYMENT);
+  const needsApprovalChargeOk =
+    approvalMode &&
+    deliveryMode &&
+    String(deliveryCharge ?? "") !== String(defaultChargeValue ?? "");
+  const approvalChecksReady =
+    (!needsApprovalPaymentOk || approvalPaymentOk) &&
+    (!needsApprovalChargeOk || approvalChargeOk);
   const splitCashNum = numMoney(splitCash);
   const splitBankNum = numMoney(splitBank);
   const splitRemaining = roundMoney(
@@ -322,7 +336,17 @@ function TerminalBillForm({
     setPendingApprovalCreatedAtMs(null);
     setPendingApprovalApprovedBillId("");
     setPendingApprovalIsEditReview(false);
+    setApprovalPaymentOk(false);
+    setApprovalChargeOk(false);
   }
+
+  useEffect(() => {
+    setApprovalPaymentOk(false);
+  }, [paymentMode, multiPayment]);
+
+  useEffect(() => {
+    setApprovalChargeOk(false);
+  }, [deliveryCharge]);
 
   function clearBillFields({ keepDeliveryBoy = false } = {}) {
     setBillNumber("");
@@ -458,6 +482,8 @@ function TerminalBillForm({
 
     if (asApproval || bill.__approvalSubmissionId) {
       resetEditState();
+      setApprovalPaymentOk(false);
+      setApprovalChargeOk(false);
       setPendingApprovalSubmissionId(
         String(bill.__approvalSubmissionId || bill.id || "").trim()
       );
@@ -566,6 +592,9 @@ function TerminalBillForm({
 
   async function handleSave(event) {
     event.preventDefault();
+    if (approvalMode && !approvalChecksReady) {
+      return;
+    }
     setLocalError("");
     onError?.("");
 
@@ -988,7 +1017,14 @@ function TerminalBillForm({
 
         <div className={LABEL_CLASS}>
           <span className="flex items-center justify-between gap-2">
-            <span>Payment Mode</span>
+            <span className="inline-flex items-center gap-2">
+              Payment Mode
+              {needsApprovalPaymentOk && approvalPaymentOk ? (
+                <span className="rounded-md bg-emerald-600/90 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                  ✓
+                </span>
+              ) : null}
+            </span>
             <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] font-normal normal-case tracking-normal text-slate-400">
               <input
                 type="checkbox"
@@ -1003,79 +1039,100 @@ function TerminalBillForm({
             </label>
           </span>
 
-          {multiPayment ? (
-            <div className="mt-1 space-y-2">
-              <div className="grid grid-cols-2 gap-2">
+          <div
+            className={
+              needsApprovalPaymentOk && !approvalPaymentOk
+                ? "relative mt-1 rounded-xl ring-2 ring-amber-400/70"
+                : "mt-1"
+            }
+          >
+            {multiPayment ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    Cash
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step={moneyInputStep(currencyDecimals)}
+                      value={splitCash}
+                      onChange={(event) => setSplitCash(event.target.value)}
+                      className={fieldNumberClass}
+                      placeholder={formatMoney(0, currencyDecimals)}
+                    />
+                  </label>
+                  <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
+                    Bank
+                    <input
+                      required
+                      type="number"
+                      min="0"
+                      step={moneyInputStep(currencyDecimals)}
+                      value={splitBank}
+                      onChange={(event) => setSplitBank(event.target.value)}
+                      className={fieldNumberClass}
+                      placeholder={formatMoney(0, currencyDecimals)}
+                    />
+                  </label>
+                </div>
                 <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                  Cash
-                  <input
+                  Bank Account
+                  <select
                     required
-                    type="number"
-                    min="0"
-                    step={moneyInputStep(currencyDecimals)}
-                    value={splitCash}
-                    onChange={(event) => setSplitCash(event.target.value)}
-                    className={fieldNumberClass}
-                    placeholder={formatMoney(0, currencyDecimals)}
-                  />
+                    value={splitBankAccountId}
+                    onChange={(event) =>
+                      setSplitBankAccountId(event.target.value)
+                    }
+                    className={fieldClass}
+                  >
+                    <option value="">Select bank account…</option>
+                    {bankAccounts.map((account) => (
+                      <option key={account.id} value={account.id}>
+                        {account.accountName || account.name || "Bank"}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                  Bank
-                  <input
-                    required
-                    type="number"
-                    min="0"
-                    step={moneyInputStep(currencyDecimals)}
-                    value={splitBank}
-                    onChange={(event) => setSplitBank(event.target.value)}
-                    className={fieldNumberClass}
-                    placeholder={formatMoney(0, currencyDecimals)}
-                  />
-                </label>
-              </div>
-              <label className="block text-[11px] font-medium uppercase tracking-wide text-slate-400">
-                Bank Account
-                <select
-                  required
-                  value={splitBankAccountId}
-                  onChange={(event) => setSplitBankAccountId(event.target.value)}
-                  className={fieldClass}
+                <div
+                  className={`text-[11px] ${
+                    splitRemaining === 0
+                      ? "text-emerald-400"
+                      : "text-amber-300"
+                  }`}
                 >
-                  <option value="">Select bank account…</option>
-                  {bankAccounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.accountName || account.name || "Bank"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <div
-                className={`text-[11px] ${
-                  splitRemaining === 0 ? "text-emerald-400" : "text-amber-300"
-                }`}
-              >
-                Remaining: {currency ? `${currency} ` : ""}
-                {formatMoney(splitRemaining, currencyDecimals)}
+                  Remaining: {currency ? `${currency} ` : ""}
+                  {formatMoney(splitRemaining, currencyDecimals)}
+                </div>
               </div>
-            </div>
-          ) : (
-            <PaymentModeSearchSelect
-              required
-              options={effectivePaymentOptions}
-              value={paymentMode}
-              onChange={(next) => {
-                setPaymentMode(next);
-                if (
-                  next === DELIVERY_ACCOUNT_PAYMENT ||
-                  parsePaymentModeSelection(next).paymentMode !== "CREDIT"
-                ) {
-                  setCustomerId("");
-                }
-              }}
-              inputClassName={fieldClass}
-              placeholder="Search cash, credit, bank…"
-            />
-          )}
+            ) : (
+              <PaymentModeSearchSelect
+                required
+                options={effectivePaymentOptions}
+                value={paymentMode}
+                onChange={(next) => {
+                  setPaymentMode(next);
+                  if (
+                    next === DELIVERY_ACCOUNT_PAYMENT ||
+                    parsePaymentModeSelection(next).paymentMode !== "CREDIT"
+                  ) {
+                    setCustomerId("");
+                  }
+                }}
+                inputClassName={fieldClass}
+                placeholder="Search cash, credit, bank…"
+              />
+            )}
+            {needsApprovalPaymentOk && !approvalPaymentOk ? (
+              <button
+                type="button"
+                onClick={() => setApprovalPaymentOk(true)}
+                className="absolute -right-1 -top-3 z-10 rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-slate-950 shadow-lg ring-2 ring-amber-200"
+              >
+                OK
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {isCredit ? (
@@ -1126,20 +1183,44 @@ function TerminalBillForm({
                 ))}
               </select>
             </label>
-            <label className={LABEL_CLASS}>
-              Delivery Charge {currency ? `(${currency})` : ""}
-              <select
-                value={deliveryCharge}
-                onChange={(event) => setDeliveryCharge(event.target.value)}
-                className={fieldClass}
+            <div className={LABEL_CLASS}>
+              <span className="inline-flex items-center gap-2">
+                Delivery Charge {currency ? `(${currency})` : ""}
+                {needsApprovalChargeOk && approvalChargeOk ? (
+                  <span className="rounded-md bg-emerald-600/90 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                    ✓
+                  </span>
+                ) : null}
+              </span>
+              <div
+                className={
+                  needsApprovalChargeOk && !approvalChargeOk
+                    ? "relative mt-1 rounded-xl ring-2 ring-amber-400/70"
+                    : "mt-1"
+                }
               >
-                {chargeSelectOptions.map((row) => (
-                  <option key={row.value || "none"} value={row.value}>
-                    {row.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <select
+                  value={deliveryCharge}
+                  onChange={(event) => setDeliveryCharge(event.target.value)}
+                  className={fieldClass}
+                >
+                  {chargeSelectOptions.map((row) => (
+                    <option key={row.value || "none"} value={row.value}>
+                      {row.label}
+                    </option>
+                  ))}
+                </select>
+                {needsApprovalChargeOk && !approvalChargeOk ? (
+                  <button
+                    type="button"
+                    onClick={() => setApprovalChargeOk(true)}
+                    className="absolute -right-1 -top-3 z-10 rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-slate-950 shadow-lg ring-2 ring-amber-200"
+                  >
+                    OK
+                  </button>
+                ) : null}
+              </div>
+            </div>
           </>
         ) : null}
 
@@ -1179,7 +1260,12 @@ function TerminalBillForm({
       <div className="mt-auto flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <button
           type="submit"
-          disabled={saving || lookingUp || (isCredit && !customers.length)}
+          disabled={
+            saving ||
+            lookingUp ||
+            (isCredit && !customers.length) ||
+            (approvalMode && !approvalChecksReady)
+          }
           className="inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white transition-colors hover:brightness-110 disabled:opacity-50 sm:w-auto"
           style={{ backgroundColor: resolvedTheme.accent }}
         >
