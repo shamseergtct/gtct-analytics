@@ -387,33 +387,50 @@ export default function DeliveryApp() {
     setDayListError("");
     const unsubscribers = [];
 
-    // Approved bills live on external_sales_bills (same source as shop "Bills entered today").
-    unsubscribers.push(
-      onSnapshot(
-        query(
-          collection(db, "external_sales_bills"),
-          where("clientId", "==", clientId),
-          where("businessDate", "==", date),
-          orderBy("createdAtMs", "desc")
-        ),
+    // Live shop bills for this boy (shop-entered Delivery + approved Delivery Entry).
+    // Query must include deliveryBoyId so Firestore list rules allow the boy to read them.
+    let stopLiveBills = null;
+    const attachLiveBills = (withOrderBy) => {
+      const constraints = [
+        where("clientId", "==", clientId),
+        where("deliveryBoyId", "==", deliveryBoyId),
+        where("businessDate", "==", date),
+      ];
+      if (withOrderBy) constraints.push(orderBy("createdAtMs", "desc"));
+      stopLiveBills = onSnapshot(
+        query(collection(db, "external_sales_bills"), ...constraints),
         (snap) => {
-          const rows = snap.docs
-            .map((item) => ({ id: item.id, ...item.data() }))
-            .filter(
-              (bill) =>
-                String(bill.deliveryBoyId || "").trim() === deliveryBoyId
+          const rows = snap.docs.map((item) => ({
+            id: item.id,
+            ...item.data(),
+          }));
+          if (!withOrderBy) {
+            rows.sort(
+              (a, b) =>
+                Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0)
             );
+          }
           setDayLiveBills(rows);
+          setDayListError("");
         },
         (reason) => {
           console.error("delivery day live bills failed:", reason);
+          if (withOrderBy) {
+            if (typeof stopLiveBills === "function") stopLiveBills();
+            attachLiveBills(false);
+            return;
+          }
           setDayLiveBills([]);
           setDayListError(
             reason?.message || "Could not load today’s approved bills."
           );
         }
-      )
-    );
+      );
+    };
+    attachLiveBills(true);
+    unsubscribers.push(() => {
+      if (typeof stopLiveBills === "function") stopLiveBills();
+    });
 
     // Pending / edited / rejected submissions from Delivery Entry.
     unsubscribers.push(
@@ -614,24 +631,32 @@ export default function DeliveryApp() {
     return dayLiveBills
       .slice()
       .sort((a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0))
-      .map((bill) => ({
-        key: `approved:${bill.id}`,
-        id: bill.id,
-        billNumber: bill.billNumber,
-        terminalId: bill.terminalId,
-        terminalNameSnapshot: bill.terminalNameSnapshot || "",
-        billAmount: bill.billAmount,
-        saleType: bill.saleType || "DELIVERY",
-        paymentMode: bill.paymentMode,
-        bankAccountId: bill.bankAccountId || "",
-        bankAccountNameSnapshot: bill.bankAccountNameSnapshot || "",
-        customerName: bill.customerName || "",
-        deliveryCharge: bill.deliveryCharge,
-        deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
-        voided: bill.voided === true,
-        createdAtMs: bill.createdAtMs || 0,
-        updatedAtMs: bill.updatedAtMs || 0,
-      }));
+      .map((bill) => {
+        const entrySource = String(bill.entrySource || "").trim().toUpperCase();
+        const fromShop =
+          entrySource !== EXTERNAL_ENTRY_SOURCE_DELIVERY_APP &&
+          entrySource !== "DELIVERY_APP";
+        return {
+          key: `approved:${bill.id}`,
+          id: bill.id,
+          billNumber: bill.billNumber,
+          terminalId: bill.terminalId,
+          terminalNameSnapshot: bill.terminalNameSnapshot || "",
+          billAmount: bill.billAmount,
+          saleType: bill.saleType || "DELIVERY",
+          paymentMode: bill.paymentMode,
+          bankAccountId: bill.bankAccountId || "",
+          bankAccountNameSnapshot: bill.bankAccountNameSnapshot || "",
+          customerName: bill.customerName || "",
+          deliveryCharge: bill.deliveryCharge,
+          deliveryBoyNameSnapshot: bill.deliveryBoyNameSnapshot || "",
+          entrySource,
+          fromShop,
+          voided: bill.voided === true,
+          createdAtMs: bill.createdAtMs || 0,
+          updatedAtMs: bill.updatedAtMs || 0,
+        };
+      });
   }, [dayLiveBills]);
 
   const approvedTotals = useMemo(() => {
@@ -1554,6 +1579,23 @@ export default function DeliveryApp() {
       <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
         {activePage === "entry" ? (
           <>
+            {approvedTotals.count > 0 ? (
+              <button
+                type="button"
+                onClick={() => setActivePage("approved")}
+                className="flex w-full items-center justify-between rounded-2xl border border-emerald-800/50 bg-emerald-950/30 px-4 py-3 text-left"
+              >
+                <span className="text-sm text-emerald-100">
+                  {approvedTotals.count} bill
+                  {approvedTotals.count === 1 ? "" : "s"} in shop under your
+                  name
+                </span>
+                <span className="text-xs font-semibold text-emerald-300">
+                  View Approved →
+                </span>
+              </button>
+            ) : null}
+
             <section>
               <FieldLabel>Terminal</FieldLabel>
               {!allowedTerminals.length ? (
@@ -1890,9 +1932,9 @@ export default function DeliveryApp() {
                 Approved / shop bills
               </h2>
               <p className="mt-0.5 text-xs text-slate-500">
-                Live list from the shop — includes your synced bills and
-                delivery bills the shop entered for you. Updates when the shop
-                edits or voids a bill. View only.
+                Live list: bills the shop entered in your name, plus your synced
+                Delivery Entry bills after approval. Updates when the shop edits
+                or voids a bill. View only.
               </p>
             </div>
 
@@ -2000,9 +2042,13 @@ export default function DeliveryApp() {
                           <span className="rounded-full bg-rose-950/70 px-2 py-0.5 text-[10px] font-semibold text-rose-200">
                             Deleted / voided
                           </span>
+                        ) : row.fromShop ? (
+                          <span className="rounded-full bg-sky-950/70 px-2 py-0.5 text-[10px] font-semibold text-sky-200">
+                            Entered by shop
+                          </span>
                         ) : (
                           <span className="rounded-full bg-emerald-950/70 px-2 py-0.5 text-[10px] font-semibold text-emerald-200">
-                            In shop
+                            Approved
                           </span>
                         )}
                       </div>

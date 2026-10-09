@@ -138,6 +138,25 @@
       ]
     },
     {
+      "collectionGroup": "external_sales_bills",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "deliveryBoyId", "order": "ASCENDING" },
+        { "fieldPath": "businessDate", "order": "ASCENDING" },
+        { "fieldPath": "createdAtMs", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "external_sales_bills",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "deliveryBoyId", "order": "ASCENDING" },
+        { "fieldPath": "businessDate", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "delivery_boy_collections",
       "queryScope": "COLLECTION",
       "fields": [

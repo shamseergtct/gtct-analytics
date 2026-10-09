@@ -1249,7 +1249,21 @@ service cloud.firestore {
     }
 
     match /external_sales_bills/{billId} {
-      allow read: if canReadTenantResource();
+      // Shop staff: any bill for assigned shops.
+      // Delivery boys: only bills entered/approved in their name (shop or Delivery Entry).
+      allow get: if canReadTenantResource()
+        || (
+          isDeliveryBoyForClient(resource.data.clientId)
+          && resource.data.deliveryBoyId == profile().deliveryBoyId
+        );
+      allow list: if resource != null
+        && (
+          canReadTenantResource()
+          || (
+            isDeliveryBoyForClient(resource.data.clientId)
+            && resource.data.deliveryBoyId == profile().deliveryBoyId
+          )
+        );
       allow create: if validExternalBillCreate();
       allow update: if canManageClient(resource.data.clientId)
         && request.resource.data.clientId == resource.data.clientId
