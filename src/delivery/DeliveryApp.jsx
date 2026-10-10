@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Eye, EyeOff, Pencil } from "lucide-react";
+import { Check, Eye, EyeOff, Pencil } from "lucide-react";
 import {
   collection,
   doc,
@@ -262,6 +262,7 @@ export default function DeliveryApp() {
   const [editingSubmission, setEditingSubmission] = useState(null);
   /** entry | drafts | approved */
   const [activePage, setActivePage] = useState("entry");
+  const [selectedDraftIds, setSelectedDraftIds] = useState(() => new Set());
 
   const billNumberRef = useRef(null);
   const syncCtxRef = useRef(null);
@@ -775,6 +776,65 @@ export default function DeliveryApp() {
   }, [daySubmissions, approvedRows]);
 
   const draftCount = editableDraftRows.length;
+
+  const syncableDraftIds = useMemo(
+    () =>
+      draftRows
+        .filter(
+          (row) =>
+            row.syncStatus === SYNC_STATUS.DRAFT ||
+            row.syncStatus === SYNC_STATUS.FAILED ||
+            row.syncStatus === SYNC_STATUS.PENDING
+        )
+        .map((row) => cleanId(row.entryLocalId))
+        .filter(Boolean),
+    [draftRows]
+  );
+
+  const selectedDraftCount = useMemo(() => {
+    let n = 0;
+    for (const id of selectedDraftIds) {
+      if (syncableDraftIds.includes(id)) n += 1;
+    }
+    return n;
+  }, [selectedDraftIds, syncableDraftIds]);
+
+  const allSyncableSelected =
+    syncableDraftIds.length > 0 &&
+    selectedDraftCount === syncableDraftIds.length;
+
+  useEffect(() => {
+    setSelectedDraftIds((prev) => {
+      if (!prev.size) return prev;
+      const valid = new Set(syncableDraftIds);
+      let changed = false;
+      const next = new Set();
+      for (const id of prev) {
+        if (valid.has(id)) next.add(id);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [syncableDraftIds]);
+
+  function toggleDraftSelected(entryLocalId) {
+    const id = cleanId(entryLocalId);
+    if (!id) return;
+    setSelectedDraftIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAllDrafts() {
+    if (allSyncableSelected) {
+      setSelectedDraftIds(new Set());
+      return;
+    }
+    setSelectedDraftIds(new Set(syncableDraftIds));
+  }
 
   // Resolve business date: open shift → cached → today
   useEffect(() => {
@@ -1319,7 +1379,7 @@ export default function DeliveryApp() {
     }
   }
 
-  async function handleSyncNow() {
+  async function handleSyncNow({ onlySelected = false } = {}) {
     setFormError("");
     setFormMessage("");
     setSaving(true);
@@ -1332,21 +1392,37 @@ export default function DeliveryApp() {
         clearBillFields();
       }
 
+      const selectedIds = [...selectedDraftIds].filter((id) =>
+        syncableDraftIds.includes(id)
+      );
+      if (onlySelected && selectedIds.length === 0) {
+        setFormMessage("Select bills to sync.");
+        return;
+      }
+
       const queued = await queueDraftsForSync({
         clientId,
         businessDate,
+        entryLocalIds: onlySelected ? selectedIds : null,
       });
       await refreshDeliverySyncCounts();
       await refreshLocalDayBills();
       const summary = await getUnsyncedSummary();
-      if (summary.total === 0) {
-        setFormMessage("Nothing to sync. Save bills on this phone first.");
+      if (summary.total === 0 && queued === 0) {
+        setFormMessage("Nothing to sync.");
         return;
       }
 
-      setFormMessage(queued > 0 ? `Syncing ${queued}…` : "Syncing…");
+      setFormMessage(
+        onlySelected
+          ? `Syncing ${selectedIds.length}…`
+          : queued > 0
+            ? `Syncing ${queued}…`
+            : "Syncing…"
+      );
       await triggerSync(true);
       await refreshLocalDayBills();
+      if (onlySelected) setSelectedDraftIds(new Set());
       setFormMessage("Synced.");
     } catch (error) {
       setFormError(error?.message || "Sync failed.");
@@ -1594,7 +1670,7 @@ export default function DeliveryApp() {
             ))}
           </div>
         </div>
-      ) : syncState.message === "All bills synced" ? (
+      ) : syncState.message === "All bills synced" && draftCount === 0 ? (
         <div className="border-b border-emerald-900/40 bg-emerald-950/30 px-4 py-2 text-center text-sm text-emerald-200">
           ✓ All bills synced
         </div>
@@ -1859,8 +1935,29 @@ export default function DeliveryApp() {
         ) : null}
 
         {activePage === "drafts" ? (
-          <section className="space-y-3 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-            <h2 className="text-sm font-semibold text-white">On this phone</h2>
+          <section className="space-y-4">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-white">
+                  On this phone
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  {draftRows.length
+                    ? `${draftRows.length} bill${draftRows.length === 1 ? "" : "s"}`
+                    : "Empty"}
+                  {selectedDraftCount
+                    ? ` · ${selectedDraftCount} selected`
+                    : ""}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActivePage("entry")}
+                className="rounded-xl border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200"
+              >
+                New
+              </button>
+            </div>
 
             {formError ? (
               <div className="rounded-xl border border-rose-800 bg-rose-950/50 px-3 py-2 text-sm text-rose-100">
@@ -1873,71 +1970,140 @@ export default function DeliveryApp() {
               </div>
             ) : null}
 
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={
-                  saving ||
-                  (draftCount === 0 &&
-                    !draftRows.some(
-                      (row) =>
-                        row.syncStatus === SYNC_STATUS.PENDING ||
-                        row.syncStatus === SYNC_STATUS.FAILED
-                    ))
-                }
-                onClick={() => void handleSyncNow()}
-                className="flex-1 rounded-xl bg-sky-500 py-3 text-sm font-semibold text-slate-950 disabled:opacity-50"
-              >
-                Sync
-              </button>
-              <button
-                type="button"
-                onClick={() => setActivePage("entry")}
-                className="rounded-xl border border-slate-700 px-3 py-3 text-sm text-slate-200"
-              >
-                New
-              </button>
-            </div>
+            {draftRows.length ? (
+              <div className="flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={toggleSelectAllDrafts}
+                  className="text-xs font-semibold text-sky-300"
+                >
+                  {allSyncableSelected ? "Clear selection" : "Select all"}
+                </button>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={saving || selectedDraftCount === 0}
+                    onClick={() =>
+                      void handleSyncNow({ onlySelected: true })
+                    }
+                    className="rounded-xl bg-sky-500 px-3.5 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40"
+                  >
+                    Sync selected
+                    {selectedDraftCount ? ` (${selectedDraftCount})` : ""}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={saving || syncableDraftIds.length === 0}
+                    onClick={() => void handleSyncNow({ onlySelected: false })}
+                    className="rounded-xl border border-sky-600/60 bg-sky-950/40 px-3.5 py-2.5 text-xs font-semibold text-sky-100 disabled:opacity-40"
+                  >
+                    Sync all
+                  </button>
+                </div>
+              </div>
+            ) : null}
 
             {!draftRows.length ? (
-              <p className="py-6 text-center text-sm text-slate-500">
+              <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500">
                 No bills on this phone.
-              </p>
+              </div>
             ) : (
-              <ul className="space-y-2">
+              <ul className="space-y-2.5">
                 {draftRows.map((row) => {
                   const boyAcct = isDeliveryBoyAccountPayment(row);
                   const statusMeta = dayBillStatusMeta(row);
                   const canEdit = row.editable;
+                  const id = cleanId(row.entryLocalId);
+                  const selected = selectedDraftIds.has(id);
+                  const charge = numMoney(row.deliveryCharge);
+                  const canSelect =
+                    row.syncStatus === SYNC_STATUS.DRAFT ||
+                    row.syncStatus === SYNC_STATUS.FAILED ||
+                    row.syncStatus === SYNC_STATUS.PENDING;
                   return (
-                    <li key={row.key}>
-                      <button
-                        type="button"
-                        disabled={!canEdit}
-                        onClick={() => loadDraftForEdit(row)}
-                        className={`flex w-full min-w-0 items-start gap-3 rounded-2xl border px-3 py-2.5 text-left transition ${
-                          canEdit
-                            ? "border-slate-800 bg-slate-950/60 hover:border-slate-600"
-                            : "cursor-default border-slate-800/60 bg-slate-950/30 opacity-80"
-                        }`}
-                      >
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-semibold text-white">
-                              Bill {row.billNumber}
-                            </span>
-                            <span className="truncate text-xs text-slate-400">
-                              {row.terminalNameSnapshot || "Terminal"}
-                            </span>
+                    <li
+                      key={row.key}
+                      className={`rounded-2xl border transition ${
+                        selected
+                          ? "border-sky-500/70 bg-sky-950/35"
+                          : "border-slate-800 bg-slate-900/70"
+                      }`}
+                    >
+                      <div className="flex items-stretch gap-0">
+                        <button
+                          type="button"
+                          disabled={!canSelect}
+                          onClick={() => toggleDraftSelected(id)}
+                          aria-label={
+                            selected ? "Deselect bill" : "Select bill"
+                          }
+                          className="flex w-12 shrink-0 items-center justify-center border-r border-slate-800/80 disabled:opacity-40"
+                        >
+                          <span
+                            className={`flex h-5 w-5 items-center justify-center rounded-md border-2 ${
+                              selected
+                                ? "border-sky-400 bg-sky-500 text-slate-950"
+                                : "border-slate-500 bg-transparent"
+                            }`}
+                          >
+                            {selected ? (
+                              <Check size={12} strokeWidth={3} />
+                            ) : null}
+                          </span>
+                        </button>
+
+                        <div className="min-w-0 flex-1 px-3 py-3">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                                <span className="text-sm font-semibold text-white">
+                                  Bill {row.billNumber}
+                                </span>
+                                <span className="truncate text-xs text-slate-400">
+                                  {row.terminalNameSnapshot || "Terminal"}
+                                </span>
+                              </div>
+                              <div className="mt-1 truncate text-xs text-slate-400">
+                                {externalPaymentModeLabel(row)}
+                                {row.customerName
+                                  ? ` · ${row.customerName}`
+                                  : ""}
+                              </div>
+                            </div>
+                            {canEdit ? (
+                              <button
+                                type="button"
+                                onClick={() => loadDraftForEdit(row)}
+                                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-700 text-slate-300 hover:border-slate-500 hover:text-white"
+                                aria-label={`Edit bill ${row.billNumber}`}
+                              >
+                                <Pencil size={14} />
+                              </button>
+                            ) : null}
                           </div>
-                          <div className="text-xs text-slate-400">
-                            {externalPaymentModeLabel(row)}
-                            {row.customerName ? ` · ${row.customerName}` : ""}
+
+                          <div className="mt-3 grid grid-cols-2 gap-2">
+                            <div className="rounded-xl bg-slate-950/70 px-2.5 py-2">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                Amount
+                              </div>
+                              <div className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+                                {formatMoney(row.billAmount, currencyDecimals)}
+                              </div>
+                            </div>
+                            <div className="rounded-xl bg-slate-950/70 px-2.5 py-2">
+                              <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                Delivery charge
+                              </div>
+                              <div className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+                                {charge
+                                  ? formatMoney(charge, currencyDecimals)
+                                  : "—"}
+                              </div>
+                            </div>
                           </div>
-                          <div className="flex flex-wrap items-center gap-2 text-xs">
-                            <span className="font-semibold tabular-nums text-white">
-                              {formatMoney(row.billAmount, currencyDecimals)}
-                            </span>
+
+                          <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                             <span
                               className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
                                 boyAcct
@@ -1954,18 +2120,12 @@ export default function DeliveryApp() {
                             </span>
                           </div>
                           {row.syncError ? (
-                            <div className="text-[11px] text-rose-300">
+                            <div className="mt-2 text-[11px] text-rose-300">
                               {row.syncError}
                             </div>
                           ) : null}
                         </div>
-                        {canEdit ? (
-                          <Pencil
-                            size={15}
-                            className="mt-1 shrink-0 text-slate-500"
-                          />
-                        ) : null}
-                      </button>
+                      </div>
                     </li>
                   );
                 })}

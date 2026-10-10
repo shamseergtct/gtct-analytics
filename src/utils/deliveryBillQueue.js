@@ -221,18 +221,25 @@ export async function listDraftLocalBills() {
     .sort((a, b) => Number(b.updatedAtMs || b.createdAtMs || 0) - Number(a.updatedAtMs || a.createdAtMs || 0));
 }
 
-/** Mark device drafts as ready to sync (DRAFT → PENDING). */
+/**
+ * Mark device drafts (and optional failed rows) as ready to sync → PENDING.
+ * Pass entryLocalIds to sync only selected bills; omit to queue all for the day.
+ */
 export async function queueDraftsForSync({
   clientId = "",
   businessDate = "",
   entryLocalIds = null,
 } = {}) {
-  const rows = await listDraftLocalBills();
+  const rows = await listLocalBills();
   const date = String(businessDate || "").slice(0, 10);
   const idSet = Array.isArray(entryLocalIds)
     ? new Set(entryLocalIds.map(String))
     : null;
   const targets = rows.filter((row) => {
+    const status = String(row.syncStatus || "").trim();
+    if (status !== SYNC_STATUS.DRAFT && status !== SYNC_STATUS.FAILED) {
+      return false;
+    }
     if (clientId && String(row.clientId || "") !== String(clientId)) return false;
     if (date && String(row.businessDate || "").slice(0, 10) !== date) return false;
     if (idSet && !idSet.has(String(row.entryLocalId))) return false;
