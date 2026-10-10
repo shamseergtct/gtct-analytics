@@ -33,7 +33,9 @@ import {
   formatMoney,
   moneyInputStep,
   numMoney,
+  parseMoneyInput,
   resolveCurrencyDecimals,
+  roundMoney,
 } from "../utils/money.js";
 import {
   buildDeliveryChargeSelectOptions,
@@ -248,6 +250,8 @@ export default function DeliveryApp() {
   const [customerName, setCustomerName] = useState("");
   const [deliveryCharge, setDeliveryCharge] = useState("");
   const [chargeReady, setChargeReady] = useState(false);
+  /** True once the boy changes charge — don’t overwrite with shop default. */
+  const [chargeTouched, setChargeTouched] = useState(false);
   const [formError, setFormError] = useState("");
   const [formMessage, setFormMessage] = useState("");
   const [saving, setSaving] = useState(false);
@@ -361,7 +365,8 @@ export default function DeliveryApp() {
 
   useEffect(() => {
     if (chargeSettingsLoading || chargeReady) return;
-    if (editingSubmission) {
+    // Editing a draft or a manually chosen charge must not be reset to default.
+    if (editingSubmission || chargeTouched) {
       setChargeReady(true);
       return;
     }
@@ -372,6 +377,7 @@ export default function DeliveryApp() {
     chargeReady,
     defaultChargeValue,
     editingSubmission,
+    chargeTouched,
   ]);
 
   const refreshLocalDayBills = useCallback(async () => {
@@ -1094,6 +1100,7 @@ export default function DeliveryApp() {
     setBillAmount("");
     setCustomerName("");
     setDeliveryCharge(defaultChargeValue);
+    setChargeTouched(false);
     setPaymentMode(
       paymentOptions[0]?.value || DELIVERY_ACCOUNT_PAYMENT
     );
@@ -1137,6 +1144,8 @@ export default function DeliveryApp() {
     setDeliveryCharge(
       deliveryChargeSelectValue(row.deliveryCharge, currencyDecimals)
     );
+    setChargeTouched(true);
+    setChargeReady(true);
     setPaymentMode(
       paymentModeSelectionFromSaved(
         row.paymentMode || DELIVERY_ACCOUNT_PAYMENT,
@@ -1168,18 +1177,19 @@ export default function DeliveryApp() {
     if (billAmount === "" || billAmount == null) {
       return { error: "Bill amount is required." };
     }
-    const amountNum = numMoney(billAmount);
-    if (!Number.isFinite(Number(billAmount)) || !Number.isFinite(amountNum)) {
+    const amountNum = parseMoneyInput(billAmount, currencyDecimals);
+    if (!Number.isFinite(Number(String(billAmount).trim().replace(/,/g, "")))) {
       return { error: "Bill amount must be a valid number." };
     }
 
     let chargeNum = 0;
     if (deliveryCharge !== "" && deliveryCharge != null) {
-      chargeNum = numMoney(deliveryCharge);
-      if (!Number.isFinite(Number(deliveryCharge)) || chargeNum < 0) {
+      chargeNum = parseMoneyInput(deliveryCharge, currencyDecimals);
+      if (chargeNum < 0) {
         return { error: "Delivery charge must be a non-negative number." };
       }
     }
+    chargeNum = roundMoney(Math.max(0, chargeNum), currencyDecimals);
 
     const resolved = parsePaymentModeSelection(paymentMode);
     let savedPaymentMode = resolved.paymentMode;
@@ -1335,12 +1345,12 @@ export default function DeliveryApp() {
       terminalId: selectedTerminal.id,
       terminalNameSnapshot: selectedTerminal.name || "",
       billNumber: billNo,
-      billAmount: amountNum,
+      billAmount: roundMoney(amountNum, currencyDecimals),
       paymentMode: savedPaymentMode,
       bankAccountId,
       bankAccountNameSnapshot,
       customerName: String(customerName || "").trim(),
-      deliveryCharge: chargeNum,
+      deliveryCharge: roundMoney(chargeNum, currencyDecimals),
       deliveryBoyId: deliveryBoy?.id || deliveryBoyId,
       deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
       commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
@@ -1887,7 +1897,10 @@ export default function DeliveryApp() {
                 <select
                   className={inputClass}
                   value={deliveryCharge}
-                  onChange={(e) => setDeliveryCharge(e.target.value)}
+                  onChange={(e) => {
+                    setChargeTouched(true);
+                    setDeliveryCharge(e.target.value);
+                  }}
                 >
                   {chargeSelectOptions.map((row) => (
                     <option key={row.value || "none"} value={row.value}>
@@ -1979,27 +1992,15 @@ export default function DeliveryApp() {
                 >
                   {allSyncableSelected ? "Clear selection" : "Select all"}
                 </button>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={saving || selectedDraftCount === 0}
-                    onClick={() =>
-                      void handleSyncNow({ onlySelected: true })
-                    }
-                    className="rounded-xl bg-sky-500 px-3.5 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40"
-                  >
-                    Sync selected
-                    {selectedDraftCount ? ` (${selectedDraftCount})` : ""}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={saving || syncableDraftIds.length === 0}
-                    onClick={() => void handleSyncNow({ onlySelected: false })}
-                    className="rounded-xl border border-sky-600/60 bg-sky-950/40 px-3.5 py-2.5 text-xs font-semibold text-sky-100 disabled:opacity-40"
-                  >
-                    Sync all
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  disabled={saving || selectedDraftCount === 0}
+                  onClick={() => void handleSyncNow({ onlySelected: true })}
+                  className="rounded-xl bg-sky-500 px-3.5 py-2.5 text-xs font-semibold text-slate-950 disabled:opacity-40"
+                >
+                  Sync selected
+                  {selectedDraftCount ? ` (${selectedDraftCount})` : ""}
+                </button>
               </div>
             ) : null}
 
@@ -2135,58 +2136,68 @@ export default function DeliveryApp() {
         ) : null}
 
         {activePage === "approved" ? (
-          <section className="space-y-4 rounded-3xl border border-slate-800 bg-slate-900/50 p-4">
-            <h2 className="text-sm font-semibold text-white">Approved</h2>
+          <section className="space-y-4">
+            <div>
+              <h2 className="text-base font-semibold text-white">Approved</h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                {approvedSummary.count
+                  ? `${approvedSummary.count} bill${
+                      approvedSummary.count === 1 ? "" : "s"
+                    } in shop`
+                  : "No bills yet"}
+                {waitingShopRows.length
+                  ? ` · ${waitingShopRows.length} waiting`
+                  : ""}
+              </p>
+            </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              <div className="rounded-2xl border border-violet-800/50 bg-violet-950/30 p-3">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-violet-300/80">
+            <div className="grid grid-cols-2 gap-2.5">
+              <div className="rounded-2xl border border-violet-800/40 bg-violet-950/25 px-3 py-3">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-violet-300/80">
                   Collection
                 </div>
-                <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                <div className="mt-1 text-xl font-semibold tabular-nums text-white">
                   {formatMoney(approvedSummary.collection, currencyDecimals)}
                 </div>
               </div>
-              <div className="rounded-2xl border border-amber-800/50 bg-amber-950/30 p-3">
-                <div className="text-[11px] font-medium uppercase tracking-wide text-amber-300/80">
+              <div className="rounded-2xl border border-amber-800/40 bg-amber-950/25 px-3 py-3">
+                <div className="text-[10px] font-medium uppercase tracking-wide text-amber-300/80">
                   Balance to shop
                 </div>
-                <div className="mt-1 text-lg font-semibold tabular-nums text-white">
+                <div className="mt-1 text-xl font-semibold tabular-nums text-white">
                   {formatMoney(approvedSummary.balanceToShop, currencyDecimals)}
                 </div>
               </div>
             </div>
 
-            <div className="space-y-1.5 rounded-2xl border border-slate-700/80 bg-slate-950/40 px-3 py-2.5 text-xs text-slate-400">
-              <div className="flex justify-between gap-3">
-                <span>Total bills</span>
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 rounded-2xl border border-slate-800 bg-slate-900/60 px-3 py-2.5 text-xs text-slate-400">
+              <div className="flex justify-between gap-2">
+                <span>Total</span>
                 <span className="tabular-nums text-slate-200">
-                  {approvedSummary.count} ·{" "}
                   {formatMoney(approvedSummary.all, currencyDecimals)}
-                  {currency ? ` ${currency}` : ""}
                 </span>
               </div>
-              <div className="flex justify-between gap-3">
-                <span>Shop paid (cash/bank)</span>
+              <div className="flex justify-between gap-2">
+                <span>Shop paid</span>
                 <span className="tabular-nums text-slate-200">
                   {formatMoney(approvedSummary.shopPaid, currencyDecimals)}
                 </span>
               </div>
-              <div className="flex justify-between gap-3">
+              <div className="flex justify-between gap-2">
                 <span>Credit</span>
                 <span className="tabular-nums text-slate-200">
                   {formatMoney(approvedSummary.credit, currencyDecimals)}
                 </span>
               </div>
-              <div className="flex justify-between gap-3">
+              <div className="flex justify-between gap-2">
                 <span>Commission</span>
                 <span className="tabular-nums text-slate-200">
                   {formatMoney(approvedSummary.commission, currencyDecimals)}
                 </span>
               </div>
               {approvedSummary.alreadySettled > 0 ? (
-                <div className="flex justify-between gap-3">
-                  <span>Already settled with shop</span>
+                <div className="col-span-2 flex justify-between gap-2 border-t border-slate-800 pt-1.5">
+                  <span>Settled</span>
                   <span className="tabular-nums text-slate-200">
                     {formatMoney(
                       approvedSummary.alreadySettled,
@@ -2204,60 +2215,92 @@ export default function DeliveryApp() {
             ) : null}
 
             {!approvedRows.length && !waitingShopRows.length ? (
-              <p className="py-6 text-center text-sm text-slate-500">
+              <div className="rounded-3xl border border-dashed border-slate-800 bg-slate-900/40 px-4 py-10 text-center text-sm text-slate-500">
                 No approved bills for this date yet.
-              </p>
+              </div>
             ) : null}
 
             {approvedRows.length ? (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-emerald-200/90">
                   In shop
                 </h3>
-                <ul className="space-y-2">
+                <ul className="space-y-2.5">
                   {approvedRows.map((row) => {
                     const boyAcct = isDeliveryBoyAccountPayment(row);
                     const statusMeta = approvedBillStatusMeta(row);
+                    const charge = numMoney(row.deliveryCharge);
                     return (
                       <li
                         key={row.key}
-                        className={`rounded-2xl border px-3 py-2.5 ${
+                        className={`rounded-2xl border px-3 py-3 ${
                           row.voided
                             ? "border-rose-900/40 bg-rose-950/20 opacity-75"
                             : row.fromShop
-                              ? "border-sky-800/50 bg-sky-950/20"
+                              ? "border-sky-800/45 bg-sky-950/20"
                               : row.edited
                                 ? "border-amber-800/40 bg-amber-950/15"
-                                : "border-slate-800 bg-slate-950/60"
+                                : "border-slate-800 bg-slate-900/70"
                         }`}
                       >
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-semibold text-white">
-                            Bill {row.billNumber}
-                          </span>
-                          <span className="truncate text-xs text-slate-400">
-                            {row.terminalNameSnapshot || "Terminal"}
-                          </span>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="text-sm font-semibold text-white">
+                                Bill {row.billNumber}
+                              </span>
+                              <span className="truncate text-xs text-slate-400">
+                                {row.terminalNameSnapshot || "Terminal"}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate text-xs text-slate-400">
+                              {externalPaymentModeLabel(row)}
+                              {row.customerName
+                                ? ` · ${row.customerName}`
+                                : ""}
+                            </div>
+                          </div>
                           <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
+                            className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${statusMeta.className}`}
                           >
                             {statusMeta.label}
                           </span>
                         </div>
-                        <div className="mt-1 text-xs text-slate-400">
-                          {externalPaymentModeLabel(row)}
-                          {row.customerName ? ` · ${row.customerName}` : ""}
+
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl bg-slate-950/70 px-2.5 py-2">
+                            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                              Amount
+                            </div>
+                            <div
+                              className={`mt-0.5 text-sm font-semibold tabular-nums ${
+                                row.voided
+                                  ? "text-slate-500 line-through"
+                                  : "text-white"
+                              }`}
+                            >
+                              {formatMoney(row.billAmount, currencyDecimals)}
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-slate-950/70 px-2.5 py-2">
+                            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                              Delivery charge
+                            </div>
+                            <div
+                              className={`mt-0.5 text-sm font-semibold tabular-nums ${
+                                row.voided
+                                  ? "text-slate-500 line-through"
+                                  : "text-white"
+                              }`}
+                            >
+                              {charge
+                                ? formatMoney(charge, currencyDecimals)
+                                : "—"}
+                            </div>
+                          </div>
                         </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                          <span
-                            className={`font-semibold tabular-nums ${
-                              row.voided
-                                ? "text-slate-500 line-through"
-                                : "text-white"
-                            }`}
-                          >
-                            {formatMoney(row.billAmount, currencyDecimals)}
-                          </span>
+
+                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                           <span
                             className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
                               boyAcct
@@ -2276,36 +2319,62 @@ export default function DeliveryApp() {
             ) : null}
 
             {waitingShopRows.length ? (
-              <div className="space-y-2">
+              <div className="space-y-2.5">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-amber-200/90">
                   Waiting for shop
                 </h3>
-                <ul className="space-y-2">
-                  {waitingShopRows.map((row) => (
-                    <li
-                      key={row.id}
-                      className="rounded-2xl border border-amber-900/40 bg-amber-950/20 px-3 py-2.5"
-                    >
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-semibold text-white">
-                          Bill {row.billNumber}
-                        </span>
-                        <span className="truncate text-xs text-slate-400">
-                          {row.terminalNameSnapshot || "Terminal"}
-                        </span>
-                        <span className="rounded-full bg-amber-950/70 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
-                          Pending approval
-                        </span>
-                      </div>
-                      <div className="mt-1 text-xs text-slate-400">
-                        {externalPaymentModeLabel(row)}
-                        {row.customerName ? ` · ${row.customerName}` : ""}
-                      </div>
-                      <div className="mt-1 text-xs font-semibold tabular-nums text-white">
-                        {formatMoney(row.billAmount, currencyDecimals)}
-                      </div>
-                    </li>
-                  ))}
+                <ul className="space-y-2.5">
+                  {waitingShopRows.map((row) => {
+                    const charge = numMoney(row.deliveryCharge);
+                    return (
+                      <li
+                        key={row.id}
+                        className="rounded-2xl border border-amber-900/40 bg-amber-950/20 px-3 py-3"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                              <span className="text-sm font-semibold text-white">
+                                Bill {row.billNumber}
+                              </span>
+                              <span className="truncate text-xs text-slate-400">
+                                {row.terminalNameSnapshot || "Terminal"}
+                              </span>
+                            </div>
+                            <div className="mt-1 truncate text-xs text-slate-400">
+                              {externalPaymentModeLabel(row)}
+                              {row.customerName
+                                ? ` · ${row.customerName}`
+                                : ""}
+                            </div>
+                          </div>
+                          <span className="shrink-0 rounded-full bg-amber-950/70 px-2 py-0.5 text-[10px] font-semibold text-amber-200">
+                            Pending
+                          </span>
+                        </div>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="rounded-xl bg-slate-950/50 px-2.5 py-2">
+                            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                              Amount
+                            </div>
+                            <div className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+                              {formatMoney(row.billAmount, currencyDecimals)}
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-slate-950/50 px-2.5 py-2">
+                            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                              Delivery charge
+                            </div>
+                            <div className="mt-0.5 text-sm font-semibold tabular-nums text-white">
+                              {charge
+                                ? formatMoney(charge, currencyDecimals)
+                                : "—"}
+                            </div>
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
             ) : null}

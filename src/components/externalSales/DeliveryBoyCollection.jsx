@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, Fragment } from "react";
+import { useEffect, useMemo, useRef, useState, Fragment } from "react";
 import {
   collection,
   doc,
@@ -191,6 +191,29 @@ function groupDeliveryBillsByTerminal(bills = [], deliveryBoyId) {
     );
 }
 
+function collectionBalanceAmount(row) {
+  if (row?.balanceAmount != null) return numMoney(row.balanceAmount);
+  return Math.max(
+    0,
+    numMoney(row?.payableAmount) -
+      numMoney(row?.paidCash) -
+      numMoney(row?.paidBank)
+  );
+}
+
+function collectionTimeLabel(row) {
+  const ms = Number(row?.createdAtMs);
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  try {
+    return new Date(ms).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
 export default function DeliveryBoyCollection({
   clientId,
   currency,
@@ -234,6 +257,7 @@ export default function DeliveryBoyCollection({
   const [expandedBoyId, setExpandedBoyId] = useState("");
   const [printPreview, setPrintPreview] = useState(null);
   const [printMode, setPrintMode] = useState("THERMAL");
+  const formRef = useRef(null);
 
   const activeBoys = useMemo(
     () => deliveryBoys.filter((row) => row.isActive !== false),
@@ -413,7 +437,12 @@ export default function DeliveryBoyCollection({
   }, [clientId, effectiveDate]);
 
   useEffect(() => {
-    if (!clientId || !effectiveDate) return undefined;
+    if (!clientId || !effectiveDate) {
+      setCollections([]);
+      setLoadingCollections(false);
+      return undefined;
+    }
+    setLoadingCollections(true);
     const q = query(
       collection(db, "delivery_boy_collections"),
       where("clientId", "==", clientId),
@@ -428,9 +457,14 @@ export default function DeliveryBoyCollection({
         );
         setLoadingCollections(false);
       },
-      () => {
+      (error) => {
         setCollections([]);
         setLoadingCollections(false);
+        onError?.(
+          error?.message
+            ? `Could not load collections: ${error.message}`
+            : "Could not load collections for this date."
+        );
       }
     );
   }, [clientId, effectiveDate]);
@@ -535,7 +569,138 @@ export default function DeliveryBoyCollection({
         : null
     );
     setNotes(row.notes || "");
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    requestAnimationFrame(() => {
+      formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  const collectionsByBoyId = useMemo(() => {
+    const map = new Map();
+    for (const row of collections) {
+      const key = String(row.deliveryBoyId || "");
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(row);
+    }
+    return map;
+  }, [collections]);
+
+  function renderCollectionCard(row) {
+    const rowBalance = collectionBalanceAmount(row);
+    const timeLabel = collectionTimeLabel(row);
+    const commissionPaidLabel =
+      row.commissionPaid === true
+        ? `${currencyPrefix}${formatMoney(
+            numMoney(row.commissionPaidAmount),
+            currencyDecimals
+          )}${
+            row.commissionPaidMode
+              ? ` (${String(row.commissionPaidMode).toUpperCase() === "BANK" ? "Bank" : "Cash"})`
+              : ""
+          }`
+        : null;
+    const isEditing = editingId === row.id;
+
+    return (
+      <div
+        key={row.id}
+        className={`rounded-xl border px-3 py-3 ${
+          isEditing
+            ? "border-amber-700/70 bg-amber-950/20"
+            : "border-slate-800 bg-slate-950/40"
+        }`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className="font-medium text-white">
+                {row.deliveryBoyNameSnapshot || "—"}
+              </span>
+              {timeLabel ? (
+                <span className="text-xs tabular-nums text-slate-500">
+                  {timeLabel}
+                </span>
+              ) : null}
+              {isEditing ? (
+                <span className="rounded bg-amber-900/50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                  Editing
+                </span>
+              ) : null}
+            </div>
+            {row.notes ? (
+              <p className="mt-0.5 truncate text-xs text-slate-400">
+                {row.notes}
+              </p>
+            ) : null}
+          </div>
+          <button
+            type="button"
+            onClick={() => startEdit(row)}
+            className="shrink-0 rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs font-medium text-slate-200 hover:border-blue-500 hover:text-blue-300"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Pencil size={14} />
+              Edit
+            </span>
+          </button>
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Payable
+            </div>
+            <div className="text-sm tabular-nums text-slate-200">
+              {currencyPrefix}
+              {formatMoney(row.payableAmount, currencyDecimals)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Cash
+            </div>
+            <div className="text-sm tabular-nums text-slate-200">
+              {currencyPrefix}
+              {formatMoney(row.paidCash, currencyDecimals)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Bank
+            </div>
+            <div className="text-sm tabular-nums text-slate-200">
+              {currencyPrefix}
+              {formatMoney(row.paidBank, currencyDecimals)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              Remaining
+            </div>
+            <div className="text-sm tabular-nums text-slate-200">
+              {currencyPrefix}
+              {formatMoney(rowBalance, currencyDecimals)}
+            </div>
+          </div>
+        </div>
+        {(numMoney(row.commissionAmount) > 0 ||
+          commissionPaidLabel ||
+          row.bankAccountNameSnapshot) && (
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-400">
+            {numMoney(row.commissionAmount) > 0 ? (
+              <span>
+                Comm. {currencyPrefix}
+                {formatMoney(row.commissionAmount, currencyDecimals)}
+              </span>
+            ) : null}
+            {commissionPaidLabel ? (
+              <span className="text-amber-200">Paid {commissionPaidLabel}</span>
+            ) : null}
+            {row.bankAccountNameSnapshot ? (
+              <span>{row.bankAccountNameSnapshot}</span>
+            ) : null}
+          </div>
+        )}
+      </div>
+    );
   }
 
   async function handleSave(event) {
@@ -1215,6 +1380,20 @@ export default function DeliveryBoyCollection({
                                   ) : null}
                                 </div>
 
+                                {(collectionsByBoyId.get(row.deliveryBoyId)
+                                  ?.length || 0) > 0 ? (
+                                  <div className="space-y-2">
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Collection history
+                                    </div>
+                                    {(
+                                      collectionsByBoyId.get(
+                                        row.deliveryBoyId
+                                      ) || []
+                                    ).map((item) => renderCollectionCard(item))}
+                                  </div>
+                                ) : null}
+
                                 <div className="flex flex-wrap justify-end gap-2">
                                   <button
                                     type="button"
@@ -1227,8 +1406,24 @@ export default function DeliveryBoyCollection({
                                 </div>
                               </div>
                             ) : (
-                              <div className="py-4 text-center text-sm text-slate-500">
-                                No delivery bills for this boy on this date.
+                              <div className="space-y-3">
+                                {(collectionsByBoyId.get(row.deliveryBoyId)
+                                  ?.length || 0) > 0 ? (
+                                  <div className="space-y-2">
+                                    <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                      Collection history
+                                    </div>
+                                    {(
+                                      collectionsByBoyId.get(
+                                        row.deliveryBoyId
+                                      ) || []
+                                    ).map((item) => renderCollectionCard(item))}
+                                  </div>
+                                ) : (
+                                  <div className="py-4 text-center text-sm text-slate-500">
+                                    No delivery bills for this boy on this date.
+                                  </div>
+                                )}
                               </div>
                             )}
                           </td>
@@ -1252,7 +1447,39 @@ export default function DeliveryBoyCollection({
         </div>
       </section>
 
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+          <div>
+            <div className="text-sm font-semibold text-white">
+              Collections
+            </div>
+            <div className="text-xs text-slate-500">
+              {effectiveDate
+                ? formatIsoDate(effectiveDate)
+                : "Select a business date"}
+              {collections.length
+                ? ` · ${collections.length} entr${collections.length === 1 ? "y" : "ies"}`
+                : null}
+            </div>
+          </div>
+        </div>
+        <div className="space-y-2 p-3 sm:p-4">
+          {loadingCollections ? (
+            <div className="px-2 py-8 text-center text-sm text-slate-500">
+              Loading…
+            </div>
+          ) : collections.length ? (
+            collections.map((row) => renderCollectionCard(row))
+          ) : (
+            <div className="px-2 py-8 text-center text-sm text-slate-500">
+              No collections for this date.
+            </div>
+          )}
+        </div>
+      </section>
+
       <form
+        ref={formRef}
         onSubmit={handleSave}
         className={`space-y-4 rounded-2xl border p-4 ${
           editingId
@@ -1555,125 +1782,6 @@ export default function DeliveryBoyCollection({
           </button>
         </div>
       </form>
-
-      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
-        <div className="border-b border-slate-800 px-4 py-3 text-sm font-semibold text-white">
-          Collections
-        </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm text-slate-300">
-            <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2">Delivery Boy</th>
-                <th className="px-4 py-2 text-right">Commission</th>
-                <th className="px-4 py-2 text-right">Comm. Paid</th>
-                <th className="px-4 py-2 text-right">Payable</th>
-                <th className="px-4 py-2 text-right">Cash</th>
-                <th className="px-4 py-2 text-right">Bank</th>
-                <th className="px-4 py-2 text-right">Balance</th>
-                <th className="px-4 py-2">Bank Account</th>
-                <th className="px-4 py-2">Notes</th>
-                <th className="px-4 py-2 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loadingCollections ? (
-                <tr>
-                  <td
-                    colSpan={10}
-                    className="px-4 py-8 text-center text-slate-500"
-                  >
-                    Loading…
-                  </td>
-                </tr>
-              ) : collections.length ? (
-                collections.map((row) => {
-                  const rowBalance =
-                    row.balanceAmount != null
-                      ? numMoney(row.balanceAmount)
-                      : Math.max(
-                          0,
-                          numMoney(row.payableAmount) -
-                            numMoney(row.paidCash) -
-                            numMoney(row.paidBank)
-                        );
-                  const commissionPaidLabel =
-                    row.commissionPaid === true
-                      ? `${currencyPrefix}${formatMoney(
-                          numMoney(row.commissionPaidAmount),
-                          currencyDecimals
-                        )}${
-                          row.commissionPaidMode
-                            ? ` (${String(row.commissionPaidMode).toUpperCase() === "BANK" ? "Bank" : "Cash"})`
-                            : ""
-                        }`
-                      : "—";
-                  return (
-                    <tr
-                      key={row.id}
-                      className={`border-t border-slate-800/80 ${
-                        editingId === row.id ? "bg-amber-950/20" : ""
-                      }`}
-                    >
-                      <td className="px-4 py-2.5 text-white">
-                        {row.deliveryBoyNameSnapshot || "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {currencyPrefix}
-                        {formatMoney(row.commissionAmount, currencyDecimals)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums text-amber-200">
-                        {commissionPaidLabel}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {currencyPrefix}
-                        {formatMoney(row.payableAmount, currencyDecimals)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {currencyPrefix}
-                        {formatMoney(row.paidCash, currencyDecimals)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {currencyPrefix}
-                        {formatMoney(row.paidBank, currencyDecimals)}
-                      </td>
-                      <td className="px-4 py-2.5 text-right tabular-nums">
-                        {currencyPrefix}
-                        {formatMoney(rowBalance, currencyDecimals)}
-                      </td>
-                      <td className="px-4 py-2.5">
-                        {row.bankAccountNameSnapshot || "—"}
-                      </td>
-                      <td className="max-w-[12rem] truncate px-4 py-2.5">
-                        {row.notes || "—"}
-                      </td>
-                      <td className="px-4 py-2.5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => startEdit(row)}
-                          className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:border-blue-500 hover:text-blue-300"
-                          aria-label="Edit collection"
-                        >
-                          <Pencil size={15} />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              ) : (
-                <tr>
-                  <td
-                    colSpan={10}
-                    className="px-4 py-8 text-center text-slate-500"
-                  >
-                    No collections for this date.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
 
       {printPreview ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">

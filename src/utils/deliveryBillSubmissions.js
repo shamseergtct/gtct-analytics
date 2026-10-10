@@ -12,7 +12,7 @@ import {
   where,
 } from "firebase/firestore";
 import { db } from "../firebase";
-import { numMoney, roundMoney } from "./money.js";
+import { numMoney, parseMoneyInput, roundMoney } from "./money.js";
 import {
   DELIVERY_ACCOUNT_PAYMENT,
   EXTERNAL_ENTRY_SOURCE_DELIVERY_APP,
@@ -84,8 +84,8 @@ export async function upsertDeliveryBillSubmission({
     throw new Error("Bill number must be a whole number (e.g. 1, 2, 3).");
   }
 
-  const amountNum = numMoney(record.billAmount);
-  if (!Number.isFinite(amountNum)) {
+  const amountNum = parseMoneyInput(record.billAmount, currencyDecimals);
+  if (!Number.isFinite(numMoney(record.billAmount))) {
     throw new Error("Bill amount must be a valid number.");
   }
 
@@ -107,7 +107,10 @@ export async function upsertDeliveryBillSubmission({
     throw new Error("Invalid payment type.");
   }
 
-  const chargeNum = Math.max(0, numMoney(record.deliveryCharge));
+  const chargeNum = Math.max(
+    0,
+    parseMoneyInput(record.deliveryCharge, currencyDecimals)
+  );
   const boy = deliveryBoy || {
     id: record.deliveryBoyId,
     name: record.deliveryBoyNameSnapshot,
@@ -155,16 +158,38 @@ export async function upsertDeliveryBillSubmission({
 
   await runTransaction(db, async (tx) => {
     const existing = await tx.get(ref);
+    const nowMs = Date.now();
     if (existing.exists()) {
       const data = existing.data() || {};
-      // Idempotent: already submitted / approved / rejected with same local id.
-      if (clean(data.entryLocalId) === entryLocalId) {
-        return;
+      if (clean(data.entryLocalId) !== entryLocalId) {
+        throw new Error("A conflicting submission already exists.");
       }
-      throw new Error("A conflicting submission already exists.");
+      // Same local bill already queued as pending — refresh fields (e.g. charge).
+      if (data.status === SUBMISSION_STATUS.PENDING) {
+        tx.update(ref, {
+          billAmount: roundMoney(amountNum, currencyDecimals),
+          paymentMode,
+          bankAccountId,
+          bankAccountNameSnapshot,
+          customerName: clean(record.customerName),
+          deliveryCharge: roundMoney(chargeNum, currencyDecimals),
+          deliveryBoyId: clean(boy.id),
+          deliveryBoyNameSnapshot: clean(
+            boy.name || record.deliveryBoyNameSnapshot
+          ),
+          commissionEnabled: commissionSnap.commissionEnabled,
+          commissionRate: commissionSnap.commissionRate,
+          commissionAmount: commissionSnap.commissionAmount,
+          notes: clean(record.notes),
+          updatedAt: serverTimestamp(),
+          updatedAtMs: nowMs,
+          updatedBy: userUid,
+        });
+      }
+      // Approved / rejected / edited: leave as-is (idempotent).
+      return;
     }
 
-    const nowMs = Date.now();
     tx.set(ref, {
       clientId,
       businessDate,
@@ -226,8 +251,8 @@ function buildSubmissionFieldPatch({
     throw new Error("Bill number must be a whole number (e.g. 1, 2, 3).");
   }
 
-  const amountNum = numMoney(record.billAmount);
-  if (!Number.isFinite(amountNum)) {
+  const amountNum = parseMoneyInput(record.billAmount, currencyDecimals);
+  if (!Number.isFinite(numMoney(record.billAmount))) {
     throw new Error("Bill amount must be a valid number.");
   }
 
@@ -253,7 +278,10 @@ function buildSubmissionFieldPatch({
     throw new Error("Invalid payment type.");
   }
 
-  const chargeNum = Math.max(0, numMoney(record.deliveryCharge));
+  const chargeNum = Math.max(
+    0,
+    parseMoneyInput(record.deliveryCharge, currencyDecimals)
+  );
   const boy = deliveryBoy || {
     id: record.deliveryBoyId,
     name: record.deliveryBoyNameSnapshot,

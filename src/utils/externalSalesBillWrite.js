@@ -11,7 +11,7 @@ import {
 import { db } from "../firebase";
 import { assertOperationalBankAccount } from "./bankAccountTypes.js";
 import { findBankAccountName } from "./paymentModes.js";
-import { numMoney, roundMoney } from "./money.js";
+import { numMoney, parseMoneyInput, roundMoney } from "./money.js";
 import {
   DELIVERY_ACCOUNT_PAYMENT,
   EXTERNAL_ENTRY_SOURCE_MANUAL,
@@ -77,10 +77,11 @@ export function buildExternalSalesBillPayload({
   if (billAmount === "" || billAmount === null || billAmount === undefined) {
     throw new Error("Bill amount is required.");
   }
-  const amountNum = numMoney(billAmount);
-  if (!Number.isFinite(Number(billAmount)) || !Number.isFinite(amountNum)) {
+  const rawAmount = numMoney(billAmount);
+  if (!Number.isFinite(rawAmount)) {
     throw new Error("Bill amount must be a valid number.");
   }
+  const amountNum = parseMoneyInput(billAmount, currencyDecimals);
 
   const type = normalizeExternalSaleType(saleType);
   if (!type) throw new Error("Sale type is required.");
@@ -168,10 +169,11 @@ export function buildExternalSalesBillPayload({
     ) {
       chargeNum = 0;
     } else {
-      chargeNum = numMoney(deliveryCharge);
-      if (!Number.isFinite(Number(deliveryCharge)) || chargeNum < 0) {
+      const rawCharge = numMoney(deliveryCharge);
+      if (!Number.isFinite(rawCharge) || rawCharge < 0) {
         throw new Error("Delivery charge must be a non-negative number.");
       }
+      chargeNum = parseMoneyInput(deliveryCharge, currencyDecimals);
     }
   }
 

@@ -115,17 +115,44 @@ export function resolveCurrencyDecimals(source, fallbackCurrency) {
 
 export function numMoney(value) {
   if (value === "" || value === null || value === undefined) return 0;
+  if (typeof value === "string") {
+    const cleaned = value.trim().replace(/,/g, "");
+    if (!cleaned) return 0;
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : 0;
+  }
   const n = Number(value);
   return Number.isFinite(n) ? n : 0;
 }
 
-/** Round half-up to the business currency precision. */
+/**
+ * Round half-up to the business currency precision.
+ * Uses decimal exponent shifting so values like 1.005 @ 2dp → 1.01
+ * (naive `Math.round(n * 100) / 100` can yield 1.00 because 1.005*100 is
+ * 100.4999… in binary float). Prevents display glitches such as 1.500 → 1.499.
+ */
 export function roundMoney(amount, decimals) {
   const d = resolvedDecimals(decimals);
   const n = numMoney(amount);
+  if (!Number.isFinite(n)) return 0;
   if (d === 0) return Math.round(n);
-  const factor = 10 ** d;
-  return Math.round((n + Number.EPSILON) * factor) / factor;
+
+  const sign = n < 0 ? -1 : 1;
+  const abs = Math.abs(n);
+  const scaled = Number(`${abs}e${d}`);
+  if (!Number.isFinite(scaled)) {
+    const factor = 10 ** d;
+    return (sign * Math.round(abs * factor)) / factor;
+  }
+  return sign * Number(`${Math.round(scaled)}e-${d}`);
+}
+
+/**
+ * Parse a form/input amount and snap it to currency precision.
+ * Prefer this over raw numMoney when saving or comparing money.
+ */
+export function parseMoneyInput(value, decimals) {
+  return roundMoney(numMoney(value), decimals);
 }
 
 /** Fixed-fraction display string (no thousands separators). */
@@ -146,14 +173,21 @@ export function formatMoneyLocale(amount, decimals) {
 /** Convert to integer minor units for exact equality checks. */
 export function toMinorUnits(amount, decimals) {
   const d = resolvedDecimals(decimals);
-  return Math.round(numMoney(amount) * 10 ** d);
+  const n = numMoney(amount);
+  if (!Number.isFinite(n)) return 0;
+  const sign = n < 0 ? -1 : 1;
+  const scaled = Number(`${Math.abs(n)}e${d}`);
+  if (!Number.isFinite(scaled)) {
+    return sign * Math.round(Math.abs(n) * 10 ** d);
+  }
+  return sign * Math.round(scaled);
 }
 
 /** HTML number input step for the currency. */
 export function moneyInputStep(decimals) {
   const d = resolvedDecimals(decimals);
   if (d <= 0) return "1";
-  return (1 / 10 ** d).toFixed(d);
+  return `0.${"0".repeat(d - 1)}1`;
 }
 
 /** Preview string shown in setup UI, e.g. "1.000". */

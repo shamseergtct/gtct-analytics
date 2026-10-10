@@ -18,6 +18,7 @@ import {
   formatMoney,
   moneyInputStep,
   numMoney,
+  parseMoneyInput,
   roundMoney,
   toMinorUnits,
 } from "../../utils/money.js";
@@ -267,9 +268,20 @@ function TerminalBillForm({
 
   useEffect(() => {
     if (chargeSettingsLoading || chargeReady) return;
+    // Loaded bill / approval draft already has its own charge — do not reset.
+    if (editMode || approvalMode) {
+      setChargeReady(true);
+      return;
+    }
     setDeliveryCharge(defaultChargeValue);
     setChargeReady(true);
-  }, [chargeSettingsLoading, chargeReady, defaultChargeValue]);
+  }, [
+    chargeSettingsLoading,
+    chargeReady,
+    defaultChargeValue,
+    editMode,
+    approvalMode,
+  ]);
 
   useEffect(() => {
     if (!onDirtyChange) return undefined;
@@ -476,6 +488,7 @@ function TerminalBillForm({
     setDeliveryCharge(
       deliveryChargeSelectValue(bill.deliveryCharge, currencyDecimals)
     );
+    setChargeReady(true);
     setNotes(bill.notes || "");
     setLocalError("");
     setLocalMessage("");
@@ -628,12 +641,13 @@ function TerminalBillForm({
       setLocalError("Bill amount is required.");
       return;
     }
-    const amountNum = numMoney(billAmount);
+    const rawAmount = numMoney(billAmount);
     // Negative amounts are allowed for cash returns (e.g. bank overpay returned as cash).
-    if (!Number.isFinite(Number(billAmount)) || !Number.isFinite(amountNum)) {
+    if (!Number.isFinite(rawAmount)) {
       setLocalError("Bill amount must be a valid number.");
       return;
     }
+    const amountNum = parseMoneyInput(billAmount, currencyDecimals);
 
     const type = normalizeExternalSaleType(saleType);
     if (!type) {
@@ -770,11 +784,12 @@ function TerminalBillForm({
       ) {
         chargeNum = 0;
       } else {
-        chargeNum = numMoney(deliveryCharge);
-        if (!Number.isFinite(Number(deliveryCharge)) || chargeNum < 0) {
+        const rawCharge = numMoney(deliveryCharge);
+        if (!Number.isFinite(rawCharge) || rawCharge < 0) {
           setLocalError("Delivery charge must be a non-negative number.");
           return;
         }
+        chargeNum = parseMoneyInput(deliveryCharge, currencyDecimals);
       }
     }
 
