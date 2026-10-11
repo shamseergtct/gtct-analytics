@@ -139,12 +139,36 @@ export function CoreItemFields({
   setCost,
   sellingPrice,
   setSellingPrice,
+  stockQty = "",
+  setStockQty,
+  isEditing = false,
+  directSale = true,
+  setDirectSale,
   itemCodeLabel = "Item Code",
   itemCodePlaceholder = "e.g. ITM-001",
   sellingLabel = "Selling Price",
 }) {
   return (
     <>
+      <div className="md:col-span-2">
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3">
+          <input
+            type="checkbox"
+            checked={Boolean(directSale)}
+            onChange={(event) => setDirectSale?.(event.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
+          />
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-slate-100">
+              Direct sale
+            </span>
+            <span className="mt-0.5 block text-xs text-slate-400">
+              Checked: appears in Sales and reduces stock on billing. Unchecked:
+              ingredient / prep only — not sold at POS.
+            </span>
+          </span>
+        </label>
+      </div>
       <div className="min-w-0">
         <label className={LABEL_CLASS}>Category</label>
         <select
@@ -204,6 +228,26 @@ export function CoreItemFields({
           placeholder="0.00"
           required
         />
+      </div>
+      <div className="min-w-0 md:col-span-2">
+        <label className={LABEL_CLASS}>
+          {isEditing ? "Current qty" : "Opening qty"}
+        </label>
+        <input
+          type="number"
+          inputMode="decimal"
+          min="0"
+          step="any"
+          value={stockQty}
+          onChange={(event) => setStockQty?.(event.target.value)}
+          className={`${FIELD_CLASS} text-right`}
+          placeholder="0"
+        />
+        <p className="mt-1 text-xs text-slate-500">
+          {isEditing
+            ? "Editing qty updates on-hand stock and records a stock adjustment."
+            : "Optional. Sets opening stock when you save a new item."}
+        </p>
       </div>
     </>
   );

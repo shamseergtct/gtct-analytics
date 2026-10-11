@@ -1,0 +1,166 @@
+import {
+  collection,
+  doc,
+  onSnapshot,
+  query,
+  runTransaction,
+  serverTimestamp,
+  where,
+} from "firebase/firestore";
+import { db } from "../firebase";
+import { numMoney } from "./money.js";
+
+export const USAGE_REASONS = [
+  "DAILY_USE",
+  "PRODUCTION",
+  "WASTE",
+  "SAMPLE",
+  "OTHER",
+];
+
+export const USAGE_REASON_META = {
+  DAILY_USE: { label: "Daily use" },
+  PRODUCTION: { label: "Production" },
+  WASTE: { label: "Waste" },
+  SAMPLE: { label: "Sample" },
+  OTHER: { label: "Other" },
+};
+
+export const STOCK_USAGE_SOURCE = "STOCK_USAGE";
+export const STOCK_USAGE_REASON = "USAGE";
+
+export function isUsageReason(value) {
+  return USAGE_REASONS.includes(String(value || "").trim().toUpperCase());
+}
+
+/**
+ * Deduct stock for daily usage. Online transaction only.
+ * Writes inventory.currentStock + inventory_movements (STOCK_USAGE).
+ */
+export async function recordInventoryStockUsage({
+  clientId,
+  businessDate,
+  item,
+  qty,
+  usageReason,
+  notes = "",
+  userUid,
+  userName = "",
+  shiftId = "",
+}) {
+  const shop = String(clientId || "").trim();
+  const date = String(businessDate || "").trim();
+  const uid = String(userUid || "").trim();
+  const itemId = String(item?.id || "").trim();
+  const reason = String(usageReason || "")
+    .trim()
+    .toUpperCase();
+  const qtyNum = numMoney(qty);
+  const noteText = String(notes || "").trim().slice(0, 500);
+
+  if (!shop) throw new Error("Select an active shop first.");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    throw new Error("Business date is required. Open a shift first.");
+  }
+  if (!uid) throw new Error("You must be signed in.");
+  if (!itemId) throw new Error("Item is required.");
+  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+    throw new Error("Enter a usage quantity greater than zero.");
+  }
+  if (!isUsageReason(reason)) {
+    throw new Error("Select a usage reason.");
+  }
+
+  const itemRef = doc(db, "inventory", itemId);
+  const movementRef = doc(collection(db, "inventory_movements"));
+  const nowMs = Date.now();
+
+  await runTransaction(db, async (tx) => {
+    const itemSnap = await tx.get(itemRef);
+    if (!itemSnap.exists()) {
+      throw new Error("Item was not found.");
+    }
+    const data = itemSnap.data() || {};
+    if (String(data.clientId || "") !== shop) {
+      throw new Error("Item does not belong to this shop.");
+    }
+
+    const oldStock = numMoney(data.currentStock);
+    if (qtyNum > oldStock) {
+      throw new Error(
+        `Not enough stock. On hand is ${oldStock}, usage is ${qtyNum}.`
+      );
+    }
+    const totalStock = numMoney(oldStock - qtyNum);
+    const unitCost = Math.max(0, numMoney(data.cost));
+    const amount = numMoney(qtyNum * unitCost);
+
+    tx.update(itemRef, {
+      currentStock: totalStock,
+      updatedAt: serverTimestamp(),
+      updatedBy: uid,
+    });
+
+    tx.set(movementRef, {
+      clientId: shop,
+      businessDate: date,
+      itemId,
+      itemCode: String(data.itemCode || item.itemCode || "").trim(),
+      itemName: String(data.itemName || item.itemName || "").trim(),
+      type: "OUT",
+      qty: qtyNum,
+      unitCost,
+      amount,
+      oldStock,
+      totalStock,
+      source: STOCK_USAGE_SOURCE,
+      reason: STOCK_USAGE_REASON,
+      usageReason: reason,
+      notes: noteText,
+      shiftId: String(shiftId || "").trim(),
+      userId: uid,
+      userName: String(userName || "").trim(),
+      createdBy: uid,
+      date: new Date(nowMs),
+      dateMs: nowMs,
+      createdAt: serverTimestamp(),
+    });
+  });
+
+  return { movementId: movementRef.id, itemId };
+}
+
+export function subscribeTodayStockUsage(
+  clientId,
+  businessDate,
+  onRows,
+  onError
+) {
+  const shop = String(clientId || "").trim();
+  const date = String(businessDate || "").trim();
+  if (!shop || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    onRows([]);
+    return () => {};
+  }
+
+  const q = query(
+    collection(db, "inventory_movements"),
+    where("clientId", "==", shop),
+    where("businessDate", "==", date),
+    where("source", "==", STOCK_USAGE_SOURCE)
+  );
+
+  return onSnapshot(
+    q,
+    (snap) => {
+      const rows = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => numMoney(b.dateMs) - numMoney(a.dateMs));
+      onRows(rows);
+    },
+    (err) => {
+      onError?.(err);
+      onRows([]);
+    }
+  );
+}

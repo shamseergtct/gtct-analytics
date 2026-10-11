@@ -21,7 +21,7 @@ export default function CafeInventory(props) {
     >
       <CoreItemFields {...props} itemCodePlaceholder="e.g. MENU-01" />
 
-      <div className="min-w-0">
+      <div className="min-w-0 md:col-span-2">
         <label className={LABEL_CLASS}>Base Unit</label>
         <select
           value={baseUnit || "pcs"}
@@ -34,13 +34,6 @@ export default function CafeInventory(props) {
             </option>
           ))}
         </select>
-      </div>
-
-      <div className="min-w-0">
-        <label className={LABEL_CLASS}>Quick tip</label>
-        <div className="mt-1 flex h-11 items-center rounded-lg border border-slate-800 bg-slate-950/40 px-3 text-xs text-slate-400">
-          Stock adjusts in Stock Update (piece/unit).
-        </div>
       </div>
 
       <div className="md:col-span-2">

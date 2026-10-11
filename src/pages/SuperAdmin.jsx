@@ -137,7 +137,7 @@ export default function SuperAdmin() {
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPassword, setNewPassword] = useState("");
-  const [newRole, setNewRole] = useState("admin"); // admin | partner
+  const [newRole, setNewRole] = useState("admin"); // admin | partner | staff
   const [selectedShopIds, setSelectedShopIds] = useState([]);
   const [creatingUser, setCreatingUser] = useState(false);
 
@@ -521,7 +521,12 @@ export default function SuperAdmin() {
 
     const email = String(newEmail || "").trim().toLowerCase();
     const password = String(newPassword || "");
-    const roleToSet = newRole === "partner" ? "partner" : "admin";
+    const roleToSet =
+      newRole === "partner"
+        ? "partner"
+        : newRole === "staff"
+          ? "staff"
+          : "admin";
     const name = String(newName || "").trim();
 
     if (!email || !password) {
@@ -534,6 +539,10 @@ export default function SuperAdmin() {
     }
     if (!selectedShopIds.length) {
       setErr("Please assign at least 1 shop.");
+      return;
+    }
+    if (roleToSet === "staff" && selectedShopIds.length !== 1) {
+      setErr("Staff users must be assigned to exactly 1 shop.");
       return;
     }
 
@@ -668,12 +677,16 @@ export default function SuperAdmin() {
       setErr("Assign at least 1 shop to this user.");
       return;
     }
+    if (editForm.role === "staff" && editForm.assignedShops.length !== 1) {
+      setErr("Staff users must be assigned to exactly 1 shop.");
+      return;
+    }
 
     setSavingEdit(true);
     try {
       await updateDoc(doc(db, "users", uid), {
         name: name || (editingUser.email ? editingUser.email.split("@")[0] : "User"),
-        role: editForm.role, // admin | partner | super_admin
+        role: editForm.role, // admin | partner | staff | super_admin
         isActive: editForm.isActive,
         assignedShops: editForm.assignedShops,
         updatedAt: Date.now(),
@@ -953,6 +966,7 @@ export default function SuperAdmin() {
                 >
                   <option value="admin">admin</option>
                   <option value="partner">partner</option>
+                  <option value="staff">staff</option>
                 </select>
               </div>
 
@@ -1451,6 +1465,7 @@ export default function SuperAdmin() {
                   >
                     <option value="admin">admin</option>
                     <option value="partner">partner</option>
+                    <option value="staff">staff</option>
                     <option value="super_admin">super_admin</option>
                   </select>
                   {editingUser?.id === user?.uid ? (

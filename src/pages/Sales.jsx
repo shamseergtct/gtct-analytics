@@ -42,6 +42,7 @@ import { getSalesLayout } from "../components/sales/index.js";
 import { openHtmlPrintWindow } from "../utils/openPrintWindow.js";
 import {
   formatPaymentLabel,
+  isDirectSaleItem,
   itemMatchesSearchQuery,
   resolveSaleTenders,
   saleTenderTxnId,
@@ -662,16 +663,24 @@ export default function Sales() {
    * Computed / Filters
    * =========================
    */
+  /** POS catalog: direct-sale items only (ingredients excluded). */
+  const sellableItems = useMemo(
+    () => items.filter((item) => isDirectSaleItem(item)),
+    [items]
+  );
+
   const selectedItem = useMemo(
-    () => items.find((x) => x.id === selectedItemId) || null,
-    [items, selectedItemId]
+    () => sellableItems.find((x) => x.id === selectedItemId) || null,
+    [sellableItems, selectedItemId]
   );
 
   const filteredItems = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q || selectedItemId) return [];
-    return items.filter((it) => itemMatchesSearchQuery(it, q)).slice(0, 8);
-  }, [items, search, selectedItemId]);
+    return sellableItems
+      .filter((it) => itemMatchesSearchQuery(it, q))
+      .slice(0, 8);
+  }, [sellableItems, search, selectedItemId]);
 
   // ✅ Totals + Tax (item-wise) — rounded to client currency decimals
   const totals = useMemo(() => {
@@ -1395,8 +1404,14 @@ export default function Sales() {
           }
 
           const itemId = itemIds[index];
+          // Always restore previously posted stock; only deduct again for
+          // current direct-sale items (ingredients stay out of POS deduct).
           const restoredQty = oldStockWasPosted ? num(oldQty.get(itemId)) : 0;
-          const deductedQty = num(newQty.get(itemId));
+          const deductedQty = isDirectSaleItem(snap.data())
+            ? num(newQty.get(itemId))
+            : 0;
+          if (restoredQty === 0 && deductedQty === 0) return;
+
           const nextStock =
             num(snap.data()?.currentStock) + restoredQty - deductedQty;
 
@@ -1449,7 +1464,11 @@ export default function Sales() {
         inventorySnaps.forEach((snap, index) => {
           const itemId = itemIds[index];
           const restoredQty = oldStockWasPosted ? num(oldQty.get(itemId)) : 0;
-          const deductedQty = num(newQty.get(itemId));
+          const deductedQty = isDirectSaleItem(snap.data())
+            ? num(newQty.get(itemId))
+            : 0;
+          if (restoredQty === 0 && deductedQty === 0) return;
+
           const delta = deductedQty - restoredQty;
           const nextStock =
             num(snap.data()?.currentStock) + restoredQty - deductedQty;
@@ -1890,8 +1909,11 @@ export default function Sales() {
         });
 
         if (shouldRestoreStock) {
+          // Restore whatever was deducted at sale time, even if the item was
+          // later unmarked as direct sale.
           inventorySnaps.forEach((itemSnap, index) => {
             const qty = num(qtyByItem.get(itemIds[index]));
+            if (qty <= 0) return;
             tx.update(itemRefs[index], {
               currentStock: num(itemSnap.data()?.currentStock) + qty,
               updatedAt: serverTimestamp(),
@@ -2019,7 +2041,7 @@ export default function Sales() {
     setSelectedItemId,
     searchRef,
     filteredItems,
-    items,
+    items: sellableItems,
     selectedItem,
     selectedItemId,
     qty,

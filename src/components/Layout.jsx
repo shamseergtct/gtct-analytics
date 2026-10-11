@@ -67,14 +67,23 @@ export default function Layout() {
   }, [sidebarOpen]);
 
   const isPartner = role === "partner";
+  const isStaff = role === "staff";
   const partnerCanSwitchShop = isPartner && !loadingClients && clients.length >= 2;
-  const showClientDropdownDesktop = !isPartner || partnerCanSwitchShop;
-  const showClientDropdownMobile = !isPartner || partnerCanSwitchShop;
-  const homePath = isPartner ? "/reports-hub" : "/dashboard";
+  const staffCanSwitchShop = isStaff && !loadingClients && clients.length >= 2;
+  const showClientDropdownDesktop =
+    (!isPartner && !isStaff) || partnerCanSwitchShop || staffCanSwitchShop;
+  const showClientDropdownMobile =
+    (!isPartner && !isStaff) || partnerCanSwitchShop || staffCanSwitchShop;
+  const homePath = isPartner
+    ? "/reports-hub"
+    : isStaff
+      ? "/staff-inventory"
+      : "/dashboard";
   const isHome =
     location.pathname === homePath ||
     location.pathname === "/dashboard" ||
-    (isPartner && location.pathname === "/reports");
+    (isPartner && location.pathname === "/reports") ||
+    (isStaff && location.pathname === "/staff-inventory");
 
   useEffect(() => {
     if (mobileOpen) document.body.style.overflow = "hidden";
@@ -162,17 +171,48 @@ export default function Layout() {
       ];
     }
 
+    if (isStaff) {
+      return [
+        { to: "/staff-inventory", label: "Staff Inventory", icon: Package },
+        { to: "/help", label: "Help", icon: CircleHelp },
+      ];
+    }
+
     const items = [...baseNavItems];
+    const inventoryNavIndex = items.findIndex((row) => row.to === "/inventory");
+    const inventoryExtraNav = [
+      {
+        to: "/staff-inventory",
+        label: "Staff Inventory",
+        icon: Package,
+      },
+      {
+        to: "/inventory-daily-expense",
+        label: "Daily Inv. Expense",
+        icon: ReceiptText,
+      },
+    ];
+    if (inventoryNavIndex >= 0) {
+      items.splice(inventoryNavIndex + 1, 0, ...inventoryExtraNav);
+    } else {
+      items.push(...inventoryExtraNav);
+    }
     if (role === "super_admin") {
       items.unshift({ to: "/superadmin", label: "Super Admin", icon: Shield });
     }
     return items;
-  }, [baseNavItems, role, isPartner]);
+  }, [baseNavItems, role, isPartner, isStaff]);
 
   const noAccessibleShops = !isSuperAdmin && !loadingClients && clients.length === 0;
 
   const roleLabel =
-    role === "super_admin" ? "Super Admin" : role === "partner" ? "Partner" : "Admin";
+    role === "super_admin"
+      ? "Super Admin"
+      : role === "partner"
+        ? "Partner"
+        : role === "staff"
+          ? "Staff"
+          : "Admin";
 
   return (
     <div className="min-h-dvh min-w-0 bg-slate-950 text-slate-100">

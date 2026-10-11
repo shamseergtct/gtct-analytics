@@ -188,6 +188,14 @@ export function getItemBarcode(item) {
   return String(item?.barcode || "").trim();
 }
 
+/**
+ * Items sold at POS. Missing field = true (legacy catalog keeps working).
+ * Ingredients set directSale: false and are excluded from sales stock deduction.
+ */
+export function isDirectSaleItem(item) {
+  return item?.directSale !== false;
+}
+
 /** Case-insensitive exact match for scanner Enter (item code or inventory barcode). */
 export function itemMatchesScanCode(item, code) {
   const q = String(code || "").trim().toLowerCase();

@@ -8,6 +8,8 @@ import Clients from "./pages/Clients";
 import Parties from "./pages/Parties.jsx";
 import Transactions from "./pages/Transactions";
 import Inventory from "./pages/Inventory";
+import StaffInventory from "./pages/StaffInventory";
+import InventoryDailyExpense from "./pages/InventoryDailyExpense";
 import Reports from "./pages/Reports";
 import ReportsHub from "./pages/ReportsHub";
 import PartyReports from "./pages/PartyReports";
@@ -33,7 +35,7 @@ import RequireActiveShift from "./components/RequireActiveShift";
 import Layout from "./components/Layout";
 
 export default function App() {
-  const { user, authLoading, isDeliveryBoy } = useAuth();
+  const { user, authLoading, isDeliveryBoy, isStaff } = useAuth();
 
   if (authLoading) {
     return (
@@ -43,7 +45,11 @@ export default function App() {
     );
   }
 
-  const postLoginPath = isDeliveryBoy ? "/delivery" : "/dashboard";
+  const postLoginPath = isDeliveryBoy
+    ? "/delivery"
+    : isStaff
+      ? "/staff-inventory"
+      : "/dashboard";
 
   return (
     <Routes>
@@ -80,7 +86,12 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/dashboard" element={<Dashboard />} />
+        <Route
+          path="/dashboard"
+          element={
+            isStaff ? <Navigate to="/staff-inventory" replace /> : <Dashboard />
+          }
+        />
 
         {/* ✅ Super Admin only (Admins cannot add clients) */}
         <Route
@@ -159,27 +170,95 @@ export default function App() {
         <Route
           path="/inventory"
           element={
-            <RequireActiveShift>
-              <Inventory />
-            </RequireActiveShift>
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <RequireActiveShift>
+                <Inventory />
+              </RequireActiveShift>
+            </RoleRoute>
           }
         />
-        <Route path="/parties" element={<Parties />} />
-        <Route path="/bank-accounts" element={<BankAccounts />} />
-        <Route path="/transactions" element={<Transactions />} />
-        <Route path="/party-reports" element={<PartyReports />} />
+        <Route
+          path="/staff-inventory"
+          element={
+            <RoleRoute allow={["admin", "super_admin", "staff"]}>
+              <RequireActiveShift>
+                <StaffInventory />
+              </RequireActiveShift>
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/inventory-daily-expense"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <InventoryDailyExpense />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/parties"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <Parties />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/bank-accounts"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <BankAccounts />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/transactions"
+          element={
+            <RoleRoute allow={["admin", "super_admin"]}>
+              <Transactions />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/party-reports"
+          element={
+            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+              <PartyReports />
+            </RoleRoute>
+          }
+        />
 
-        <Route path="/reports" element={<Reports />} />
-        <Route path="/reports-hub" element={<ReportsHub />} />
-        <Route path="/reports/end-of-day" element={<EndOfDay />} />
+        <Route
+          path="/reports"
+          element={
+            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+              <Reports />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/reports-hub"
+          element={
+            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+              <ReportsHub />
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/reports/end-of-day"
+          element={
+            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+              <EndOfDay />
+            </RoleRoute>
+          }
+        />
         <Route path="/help" element={<Help />} />
-        
 
         {/* ✅ NEW: Transaction Range Reports (6 tabs) */}
         <Route
           path="/reports/transactions"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "super_admin", "partner"]}>
               <TxnReports />
             </RoleRoute>
           }

@@ -233,6 +233,9 @@ export default function Inventory() {
   const [recipeNotes, setRecipeNotes] = useState("");
   const [unitsPerCarton, setUnitsPerCarton] = useState("12");
   const [wholesalePrice, setWholesalePrice] = useState("");
+  const [stockQty, setStockQty] = useState("");
+  const [originalStockQty, setOriginalStockQty] = useState(null);
+  const [directSale, setDirectSale] = useState(true);
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState("");
   const [imageStatus, setImageStatus] = useState("No image selected");
@@ -489,6 +492,9 @@ export default function Inventory() {
     setRecipeNotes("");
     setUnitsPerCarton("12");
     setWholesalePrice("");
+    setStockQty("");
+    setOriginalStockQty(null);
+    setDirectSale(true);
     setImageFile(null);
     setImagePreview("");
     setImageStatus("No image selected");
@@ -517,6 +523,9 @@ export default function Inventory() {
         ? ""
         : String(num(item.wholesalePrice))
     );
+    setStockQty(String(num(item.currentStock)));
+    setOriginalStockQty(num(item.currentStock));
+    setDirectSale(item.directSale !== false);
     setImageFile(null);
     const url = String(item.imageUrl || "");
     setExistingImage({
@@ -654,6 +663,7 @@ export default function Inventory() {
           itemName: row.itemName,
           cost: row.cost,
           sellingPrice: row.sellingPrice,
+          directSale: true,
           imageUrl: "",
           imagePath: "",
           imageName: "",
@@ -741,6 +751,13 @@ export default function Inventory() {
     if (sellingPrice === "" || sellingValue < 0) {
       return setEntryMessage("Enter a valid non-negative Selling Price.");
     }
+    const stockQtyValue = num(stockQty);
+    if (
+      stockQty !== "" &&
+      (!Number.isFinite(stockQtyValue) || stockQtyValue < 0)
+    ) {
+      return setEntryMessage("Qty must be a non-negative number.");
+    }
     const duplicateCode = items.some(
       (item) =>
         item.id !== editingItemId &&
@@ -787,6 +804,7 @@ export default function Inventory() {
         recipeNotes: String(recipeNotes || "").trim(),
         unitsPerCarton: Math.max(1, num(unitsPerCarton) || 12),
         wholesalePrice: Math.max(0, num(wholesalePrice)),
+        directSale: Boolean(directSale),
         imageUrl,
         imagePath,
         imageName,
@@ -796,8 +814,56 @@ export default function Inventory() {
       };
 
       if (isEditing) {
-        await updateDoc(itemRef, sharedFields);
-        setEntryMessage("Item updated successfully.");
+        const priorStock =
+          originalStockQty == null ? stockQtyValue : num(originalStockQty);
+        const qtyChanged = Math.abs(stockQtyValue - priorStock) > 0.000001;
+
+        if (qtyChanged) {
+          const movementRef = doc(collection(db, "inventory_movements"));
+          const timestamp = Date.now();
+          const diff = stockQtyValue - priorStock;
+          await runTransaction(db, async (transaction) => {
+            const snap = await transaction.get(itemRef);
+            if (!snap.exists()) {
+              throw new Error("Item no longer exists.");
+            }
+            const liveStock = num(snap.data()?.currentStock);
+            if (Math.abs(liveStock - priorStock) > 0.000001) {
+              throw new Error(
+                "Stock changed elsewhere. Refresh the item and try again."
+              );
+            }
+            transaction.update(itemRef, {
+              ...sharedFields,
+              currentStock: stockQtyValue,
+            });
+            transaction.set(movementRef, {
+              clientId: activeClientId,
+              itemId: itemRef.id,
+              itemCode: cleanCode,
+              itemName: cleanName,
+              type: diff >= 0 ? "IN" : "OUT",
+              qty: Math.abs(diff),
+              oldStock: priorStock,
+              totalStock: stockQtyValue,
+              source: "STOCK_RECONCILIATION",
+              reason: "CURRENT_STOCK_EDIT",
+              shiftId: activeShift?.status === "OPEN" ? activeShift.id : "",
+              userId: user?.uid || "",
+              userName: displayName || "",
+              createdBy: user?.uid || null,
+              date: new Date(timestamp),
+              dateMs: timestamp,
+              createdAt: serverTimestamp(),
+            });
+          });
+          setEntryMessage(
+            `Item updated. Qty set to ${money(stockQtyValue)}.`
+          );
+        } else {
+          await updateDoc(itemRef, sharedFields);
+          setEntryMessage("Item updated successfully.");
+        }
       } else {
         await setDoc(itemRef, {
           clientId: activeClientId,
@@ -807,7 +873,46 @@ export default function Inventory() {
           createdAtMs: Date.now(),
           createdBy: user?.uid || null,
         });
-        setEntryMessage("Item saved successfully.");
+
+        if (stockQtyValue > 0) {
+          const movementRef = doc(collection(db, "inventory_movements"));
+          const timestamp = Date.now();
+          await runTransaction(db, async (transaction) => {
+            const snap = await transaction.get(itemRef);
+            if (!snap.exists()) {
+              throw new Error("Item was created but could not be loaded for stock.");
+            }
+            transaction.update(itemRef, {
+              currentStock: stockQtyValue,
+              updatedAt: serverTimestamp(),
+              updatedBy: user?.uid || null,
+            });
+            transaction.set(movementRef, {
+              clientId: activeClientId,
+              itemId: itemRef.id,
+              itemCode: cleanCode,
+              itemName: cleanName,
+              type: "IN",
+              qty: stockQtyValue,
+              oldStock: 0,
+              totalStock: stockQtyValue,
+              source: "STOCK_RECEIVING",
+              reason: "NEW_STOCK",
+              shiftId: activeShift?.status === "OPEN" ? activeShift.id : "",
+              userId: user?.uid || "",
+              userName: displayName || "",
+              createdBy: user?.uid || null,
+              date: new Date(timestamp),
+              dateMs: timestamp,
+              createdAt: serverTimestamp(),
+            });
+          });
+          setEntryMessage(
+            `Item saved with opening qty ${money(stockQtyValue)}.`
+          );
+        } else {
+          setEntryMessage("Item saved successfully.");
+        }
       }
 
       clearItemForm();
@@ -1065,6 +1170,11 @@ export default function Inventory() {
     setUnitsPerCarton,
     wholesalePrice,
     setWholesalePrice,
+    stockQty,
+    setStockQty,
+    directSale,
+    setDirectSale,
+    isEditing: Boolean(editingItemId),
     imagePreview,
     imageStatus,
     handleImageChange,
