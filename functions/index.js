@@ -142,7 +142,11 @@ async function assertShopAdmin(request, clientId) {
   if (role === "super_admin") {
     return { uid, profile: data };
   }
-  if (role === "admin" && shop && shops.includes(shop)) {
+  if (
+    (role === "admin" || role === "shop_admin") &&
+    shop &&
+    shops.includes(shop)
+  ) {
     return { uid, profile: data };
   }
   throw new HttpsError(

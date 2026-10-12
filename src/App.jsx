@@ -107,7 +107,7 @@ export default function App() {
         <Route
           path="/sales"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <Sales />
               </RequireActiveShift>
@@ -118,7 +118,7 @@ export default function App() {
         <Route
           path="/external-sales"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <ExternalSales />
               </RequireActiveShift>
@@ -129,7 +129,7 @@ export default function App() {
         <Route
           path="/shift-close"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <ShiftClose />
               </RequireActiveShift>
@@ -139,7 +139,7 @@ export default function App() {
         <Route
           path="/purchases"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <PurchaseExpenseEntry />
               </RequireActiveShift>
@@ -149,7 +149,7 @@ export default function App() {
         <Route
           path="/payments-receipts"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <PaymentReceiptEntry />
               </RequireActiveShift>
@@ -159,7 +159,7 @@ export default function App() {
         <Route
           path="/internal-transfers"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <InternalTransferEntry />
               </RequireActiveShift>
@@ -170,7 +170,7 @@ export default function App() {
         <Route
           path="/inventory"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <RequireActiveShift>
                 <Inventory />
               </RequireActiveShift>
@@ -180,7 +180,7 @@ export default function App() {
         <Route
           path="/staff-inventory"
           element={
-            <RoleRoute allow={["admin", "super_admin", "staff"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin", "staff"]}>
               <RequireActiveShift>
                 <StaffInventory />
               </RequireActiveShift>
@@ -190,7 +190,7 @@ export default function App() {
         <Route
           path="/inventory-daily-expense"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <InventoryDailyExpense />
             </RoleRoute>
           }
@@ -198,7 +198,7 @@ export default function App() {
         <Route
           path="/parties"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <Parties />
             </RoleRoute>
           }
@@ -206,7 +206,7 @@ export default function App() {
         <Route
           path="/bank-accounts"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <BankAccounts />
             </RoleRoute>
           }
@@ -214,7 +214,7 @@ export default function App() {
         <Route
           path="/transactions"
           element={
-            <RoleRoute allow={["admin", "super_admin"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
               <Transactions />
             </RoleRoute>
           }
@@ -222,7 +222,7 @@ export default function App() {
         <Route
           path="/party-reports"
           element={
-            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin", "partner"]}>
               <PartyReports />
             </RoleRoute>
           }
@@ -231,7 +231,7 @@ export default function App() {
         <Route
           path="/reports"
           element={
-            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin", "partner"]}>
               <Reports />
             </RoleRoute>
           }
@@ -239,7 +239,7 @@ export default function App() {
         <Route
           path="/reports-hub"
           element={
-            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin", "partner"]}>
               <ReportsHub />
             </RoleRoute>
           }
@@ -247,7 +247,7 @@ export default function App() {
         <Route
           path="/reports/end-of-day"
           element={
-            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin", "partner"]}>
               <EndOfDay />
             </RoleRoute>
           }
@@ -258,7 +258,7 @@ export default function App() {
         <Route
           path="/reports/transactions"
           element={
-            <RoleRoute allow={["admin", "super_admin", "partner"]}>
+            <RoleRoute allow={["admin", "shop_admin", "super_admin", "partner"]}>
               <TxnReports />
             </RoleRoute>
           }

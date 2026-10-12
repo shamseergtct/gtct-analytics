@@ -842,7 +842,7 @@ export default function DeliveryApp() {
     setSelectedDraftIds(new Set(syncableDraftIds));
   }
 
-  // Resolve business date: open shift → cached → today
+  // Resolve business date: shop operations shift → cached → today
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -856,24 +856,57 @@ export default function DeliveryApp() {
 
   useEffect(() => {
     if (!clientId || !user) return undefined;
-    const q = query(
-      collection(db, "shifts"),
-      where("clientId", "==", clientId),
-      where("status", "==", "OPEN")
-    );
-    return onSnapshot(
-      q,
-      async (snap) => {
-        const open = snap.docs[0]?.data();
-        const date = String(open?.businessDate || "").slice(0, 10);
-        if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-          setBusinessDate(date);
-          await setDeliveryMeta(`businessDate:${clientId}`, date);
-        } else {
-          const fallback = todayYYYYMMDD();
-          setBusinessDate(fallback);
-          await setDeliveryMeta(`businessDate:${clientId}`, fallback);
+
+    let shiftUnsub = null;
+    const settingsUnsub = onSnapshot(
+      doc(db, "client_settings", clientId),
+      (settingsSnap) => {
+        if (shiftUnsub) {
+          shiftUnsub();
+          shiftUnsub = null;
         }
+        const opsId = String(settingsSnap.data()?.operationsShiftId || "").trim();
+        if (!opsId) {
+          (async () => {
+            const cached = await getDeliveryMeta(`businessDate:${clientId}`);
+            setBusinessDate(
+              /^\d{4}-\d{2}-\d{2}$/.test(String(cached || ""))
+                ? String(cached).slice(0, 10)
+                : todayYYYYMMDD()
+            );
+          })();
+          return;
+        }
+        shiftUnsub = onSnapshot(
+          doc(db, "shifts", opsId),
+          async (shiftSnap) => {
+            const data = shiftSnap.data();
+            const date = String(data?.businessDate || "").slice(0, 10);
+            const isOpenOps =
+              shiftSnap.exists() &&
+              data?.clientId === clientId &&
+              data?.status === "OPEN" &&
+              /^\d{4}-\d{2}-\d{2}$/.test(date);
+            if (isOpenOps) {
+              setBusinessDate(date);
+              await setDeliveryMeta(`businessDate:${clientId}`, date);
+              return;
+            }
+            const cached = await getDeliveryMeta(`businessDate:${clientId}`);
+            const fallback = /^\d{4}-\d{2}-\d{2}$/.test(String(cached || ""))
+              ? String(cached).slice(0, 10)
+              : todayYYYYMMDD();
+            setBusinessDate(fallback);
+          },
+          async () => {
+            const cached = await getDeliveryMeta(`businessDate:${clientId}`);
+            setBusinessDate(
+              /^\d{4}-\d{2}-\d{2}$/.test(String(cached || ""))
+                ? String(cached).slice(0, 10)
+                : todayYYYYMMDD()
+            );
+          }
+        );
       },
       async () => {
         const cached = await getDeliveryMeta(`businessDate:${clientId}`);
@@ -884,6 +917,11 @@ export default function DeliveryApp() {
         );
       }
     );
+
+    return () => {
+      if (shiftUnsub) shiftUnsub();
+      settingsUnsub();
+    };
   }, [clientId, user]);
 
   // Load shop

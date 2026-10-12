@@ -15,7 +15,7 @@ function todayYYYYMMDD() {
 }
 
 export default function ShiftStatusBar() {
-  const { role } = useAuth();
+  const { canManageShopOps, isShopAdmin, isAdmin, isSuperAdmin } = useAuth();
   const { activeClientId } = useClient();
   const {
     activeShift,
@@ -38,7 +38,8 @@ export default function ShiftStatusBar() {
     businessDate
   );
 
-  const canManageShift = role === "admin" || role === "super_admin";
+  const canManageShift = canManageShopOps;
+  const canOpenOtherDates = isAdmin || isSuperAdmin;
   const shiftOpen = activeShift?.status === "OPEN";
 
   useEffect(() => {
@@ -121,7 +122,7 @@ export default function ShiftStatusBar() {
               <>
                 <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-700/60 bg-emerald-950/50 px-3 py-1 text-xs font-semibold text-emerald-200">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-                  Shift Open
+                  {isShopAdmin ? "Operations Shift Open" : "Shift Open"}
                 </span>
                 <label className="inline-flex items-center gap-2 text-sm text-slate-300">
                   <span className="whitespace-nowrap">Business date</span>
@@ -145,36 +146,48 @@ export default function ShiftStatusBar() {
                 {dateError ? (
                   <span className="max-w-md text-xs text-rose-300">{dateError}</span>
                 ) : null}
+                {canOpenOtherDates ? (
+                  <span className="text-xs text-slate-500">
+                    Staff follow the shop operations shift separately.
+                  </span>
+                ) : null}
               </>
             ) : (
               <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-600 bg-slate-800/80 px-3 py-1 text-xs font-semibold text-slate-300">
                 <span className="h-1.5 w-1.5 rounded-full bg-rose-400/80" />
-                Shift Closed
+                {canOpenOtherDates
+                  ? "No shift selected"
+                  : "Shift Closed"}
               </span>
             )}
           </div>
 
-          {shiftOpen ? (
-            <button
-              type="button"
-              onClick={() => {
-                setError("");
-                setCloseModalOpen(true);
-              }}
-              className="rounded-lg border border-rose-800/70 bg-rose-950/40 px-3 py-1.5 text-sm font-semibold text-rose-100 transition-colors hover:bg-rose-900/50"
-            >
-              Close Shift
-            </button>
-          ) : (
-            <button
-              type="button"
-              disabled={loadingShift}
-              onClick={() => setOpenModalOpen(true)}
-              className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
-            >
-              Open New Shift
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {shiftOpen ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setError("");
+                  setCloseModalOpen(true);
+                }}
+                className="rounded-lg border border-rose-800/70 bg-rose-950/40 px-3 py-1.5 text-sm font-semibold text-rose-100 transition-colors hover:bg-rose-900/50"
+              >
+                Close Shift
+              </button>
+            ) : null}
+            {!shiftOpen || canOpenOtherDates ? (
+              <button
+                type="button"
+                disabled={loadingShift || (isShopAdmin && shiftOpen)}
+                onClick={() => setOpenModalOpen(true)}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+              >
+                {shiftOpen && canOpenOtherDates
+                  ? "Open / Switch Date"
+                  : "Open New Shift"}
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
 

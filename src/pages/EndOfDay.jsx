@@ -99,7 +99,8 @@ export default function EndOfDay() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
 
-  const canManage = role === "admin" || role === "super_admin";
+  const canManage =
+    role === "admin" || role === "shop_admin" || role === "super_admin";
 
   useEffect(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl)) return;

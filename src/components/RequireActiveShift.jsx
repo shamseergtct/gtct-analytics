@@ -1,7 +1,9 @@
 import { Clock3 } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
 import { useShift } from "../context/shift-context";
 
 export default function RequireActiveShift({ children }) {
+  const { isStaff, canManageShopOps } = useAuth();
   const { activeShift, loadingShift, shiftError } = useShift();
 
   if (loadingShift) {
@@ -27,19 +29,23 @@ export default function RequireActiveShift({ children }) {
   }
 
   if (!activeShift || activeShift.status !== "OPEN") {
+    const title = isStaff
+      ? "Waiting for shop admin shift"
+      : "No active shift found";
+    const message = isStaff
+      ? "Staff inventory follows the shop admin operations shift. Ask a shop admin to open a shift for this shop, then refresh."
+      : canManageShopOps
+        ? "Open or select a shift from the status bar above to proceed. Operational entries are locked to that shift business date."
+        : "An open operations shift is required before you can continue.";
+
     return (
       <div className="mx-auto flex min-h-[50vh] max-w-lg items-center p-6">
         <div className="w-full rounded-2xl border border-slate-800 bg-slate-900/60 p-8 text-center shadow-xl">
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-full border border-amber-800/50 bg-amber-950/40 text-amber-300">
             <Clock3 size={26} />
           </div>
-          <h2 className="mt-5 text-xl font-semibold text-white">
-            No active shift found
-          </h2>
-          <p className="mt-2 text-sm leading-relaxed text-slate-400">
-            Please open a shift from the status bar above to proceed. Operational
-            entries are locked to the open shift business date.
-          </p>
+          <h2 className="mt-5 text-xl font-semibold text-white">{title}</h2>
+          <p className="mt-2 text-sm leading-relaxed text-slate-400">{message}</p>
         </div>
       </div>
     );

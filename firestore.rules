@@ -36,11 +36,14 @@ service cloud.firestore {
       return isSuperAdmin() || assignedTo(clientId);
     }
 
+    function isShopAdmin() {
+      return activeUser() && profile().role == 'shop_admin';
+    }
+
     function canManageClient(clientId) {
       return isSuperAdmin()
         || (
-          activeUser()
-          && profile().role == 'admin'
+          (profile().role == 'admin' || isShopAdmin())
           && assignedTo(clientId)
         );
     }
@@ -323,7 +326,7 @@ service cloud.firestore {
       allow create: if isSuperAdmin()
         || (
           activeUser()
-          && profile().role == 'admin'
+          && (profile().role == 'admin' || profile().role == 'shop_admin')
           && request.resource.data.role == 'delivery_boy'
           && request.resource.data.uid == uid
           && request.resource.data.email is string
@@ -338,7 +341,7 @@ service cloud.firestore {
       allow update: if isSuperAdmin()
         || (
           activeUser()
-          && profile().role == 'admin'
+          && (profile().role == 'admin' || profile().role == 'shop_admin')
           && resource.data.role == 'delivery_boy'
           && request.resource.data.role == 'delivery_boy'
           && request.resource.data.uid == resource.data.uid
@@ -1156,15 +1159,44 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
+    match /shift_date_locks/{lockId} {
+      // Allow get of missing docs (resource == null) so open-shift transactions can
+      // probe a lock id before create. Existing docs require shop access.
+      allow get: if activeUser()
+        && (
+          resource == null
+          || canAccessClient(resource.data.clientId)
+        );
+      allow list: if false;
+
+      allow create: if canManageClient(request.resource.data.clientId)
+        && request.resource.data.clientId is string
+        && request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.shiftId is string
+        && request.resource.data.shiftId.size() > 0
+        && lockId == request.resource.data.clientId + '_' + request.resource.data.businessDate
+        && request.resource.data.createdBy == request.auth.uid;
+
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.businessDate == resource.data.businessDate
+        && request.resource.data.shiftId is string
+        && request.resource.data.shiftId.size() > 0
+        && lockId == resource.data.clientId + '_' + resource.data.businessDate;
+
+      allow delete: if resource != null && canManageClient(resource.data.clientId);
+    }
+
     match /shifts/{shiftId} {
       allow read: if canReadTenantResource();
 
-      allow create: if canCreateTenantResource()
+      allow create: if canManageClient(request.resource.data.clientId)
         && request.resource.data.openedBy == request.auth.uid
         && request.resource.data.status == 'OPEN'
         && request.resource.data.zReportId == null;
 
-      allow update: if canUpdateTenantResource()
+      allow update: if canManageClient(resource.data.clientId)
         && request.resource.data.openedBy == resource.data.openedBy
         && (
           (

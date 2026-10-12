@@ -19,7 +19,10 @@ export default function NotificationPanel() {
   const rootRef = useRef(null);
 
   const canSee =
-    role === "admin" || role === "super_admin" || role === "partner";
+    role === "admin" ||
+    role === "shop_admin" ||
+    role === "super_admin" ||
+    role === "partner";
 
   useEffect(() => {
     if (!open) return undefined;

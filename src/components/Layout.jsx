@@ -208,11 +208,13 @@ export default function Layout() {
   const roleLabel =
     role === "super_admin"
       ? "Super Admin"
-      : role === "partner"
-        ? "Partner"
-        : role === "staff"
-          ? "Staff"
-          : "Admin";
+      : role === "shop_admin"
+        ? "Shop Admin"
+        : role === "partner"
+          ? "Partner"
+          : role === "staff"
+            ? "Staff"
+            : "Admin";
 
   return (
     <div className="min-h-dvh min-w-0 bg-slate-950 text-slate-100">

@@ -3,12 +3,9 @@ import {
   collection,
   deleteField,
   doc,
-  limit,
   onSnapshot,
-  query,
   runTransaction,
   serverTimestamp,
-  where,
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useAuth } from "./AuthContext";
@@ -36,6 +33,7 @@ function todayYYYYMMDD() {
 }
 
 const UNSAVED_WORK_KEY = "gtct_unsaved_work";
+const SELECTED_SHIFT_KEY = "gtct_selected_shift";
 
 function readStoredUnsavedWork(clientId) {
   if (!clientId || typeof window === "undefined") return {};
@@ -63,19 +61,75 @@ function writeStoredUnsavedWork(clientId, value) {
   }
 }
 
+function selectedShiftStorageKey(uid, clientId) {
+  return `${SELECTED_SHIFT_KEY}:${uid}:${clientId}`;
+}
+
+function readSelectedShiftId(uid, clientId) {
+  if (!uid || !clientId || typeof window === "undefined") return "";
+  try {
+    return String(
+      window.sessionStorage.getItem(selectedShiftStorageKey(uid, clientId)) || ""
+    ).trim();
+  } catch {
+    return "";
+  }
+}
+
+function writeSelectedShiftId(uid, clientId, shiftId) {
+  if (!uid || !clientId || typeof window === "undefined") return;
+  try {
+    const key = selectedShiftStorageKey(uid, clientId);
+    const clean = String(shiftId || "").trim();
+    if (!clean) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+    window.sessionStorage.setItem(key, clean);
+  } catch {
+    // session persistence is optional
+  }
+}
+
+function shiftDateLockId(clientId, businessDate) {
+  return `${clientId}_${businessDate}`;
+}
+
+function isOpenShiftForClient(snap, clientId) {
+  return (
+    snap?.exists() &&
+    snap.data()?.status === "OPEN" &&
+    snap.data()?.clientId === clientId
+  );
+}
+
 export function ShiftProvider({ children }) {
-  const { user } = useAuth();
+  const { user, role, isStaff, isShopAdmin, canManageShopOps } = useAuth();
   const { activeClientId } = useClient();
   const [activeShift, setActiveShift] = useState(null);
-  const [loadedClientId, setLoadedClientId] = useState("");
+  const [operationsShiftId, setOperationsShiftId] = useState("");
+  const [sessionShiftId, setSessionShiftId] = useState("");
+  const [settingsLoadedForClient, setSettingsLoadedForClient] = useState("");
+  const [shiftDocLoadedFor, setShiftDocLoadedFor] = useState("");
   const [shiftErrorState, setShiftErrorState] = useState(null);
   const [unsavedWork, setUnsavedWorkState] = useState(() =>
     readStoredUnsavedWork(activeClientId)
   );
 
+  const followsOperationsShiftOnly = isStaff;
+  const usesSessionShift = canManageShopOps;
+
   useEffect(() => {
     setUnsavedWorkState(readStoredUnsavedWork(activeClientId));
   }, [activeClientId]);
+
+  useEffect(() => {
+    if (!user?.uid || !activeClientId || !usesSessionShift) {
+      setSessionShiftId("");
+      return;
+    }
+    setSessionShiftId(readSelectedShiftId(user.uid, activeClientId));
+  }, [user?.uid, activeClientId, usesSessionShift]);
 
   const setUnsavedWork = useCallback(
     (moduleId, labelOrNull) => {
@@ -107,26 +161,104 @@ export function ShiftProvider({ children }) {
     [unsavedWork]
   );
 
+  const bindSessionShift = useCallback(
+    (shiftId) => {
+      if (!user?.uid || !activeClientId || !usesSessionShift) return;
+      const clean = String(shiftId || "").trim();
+      writeSelectedShiftId(user.uid, activeClientId, clean);
+      setSessionShiftId(clean);
+    },
+    [user?.uid, activeClientId, usesSessionShift]
+  );
+
+  // Staff / delivery binding: always follow client_settings.operationsShiftId.
+  // Admin / super_admin / shop_admin: also load settings for open/close side effects.
   useEffect(() => {
-    if (!activeClientId) return undefined;
-    const shiftsQuery = query(
-      collection(db, "shifts"),
-      where("clientId", "==", activeClientId),
-      where("status", "==", "OPEN"),
-      limit(1)
+    if (!activeClientId) {
+      setOperationsShiftId("");
+      setSettingsLoadedForClient("");
+      return undefined;
+    }
+    const settingsRef = doc(db, "client_settings", activeClientId);
+    return onSnapshot(
+      settingsRef,
+      (snap) => {
+        const opsId = String(snap.data()?.operationsShiftId || "").trim();
+        setOperationsShiftId(opsId);
+        setSettingsLoadedForClient(activeClientId);
+        setShiftErrorState(null);
+      },
+      (error) => {
+        console.error("Operations shift settings listener failed:", error);
+        setOperationsShiftId("");
+        setSettingsLoadedForClient(activeClientId);
+        setShiftErrorState({
+          clientId: activeClientId,
+          message: error?.message || "Failed to load shift settings.",
+        });
+      }
     );
+  }, [activeClientId]);
+
+  const resolvedShiftId = useMemo(() => {
+    if (!activeClientId) return "";
+    if (followsOperationsShiftOnly) {
+      return operationsShiftId;
+    }
+    if (isShopAdmin) {
+      // Shop admin works the operations shift; session mirrors it after open/attach.
+      return operationsShiftId || sessionShiftId;
+    }
+    // admin / super_admin: session-selected shift only (never first-OPEN query).
+    return sessionShiftId;
+  }, [
+    activeClientId,
+    followsOperationsShiftOnly,
+    isShopAdmin,
+    operationsShiftId,
+    sessionShiftId,
+  ]);
+
+  useEffect(() => {
+    if (!activeClientId) {
+      setActiveShift(null);
+      setShiftDocLoadedFor("");
+      return undefined;
+    }
+    if (settingsLoadedForClient !== activeClientId) {
+      return undefined;
+    }
+
+    const targetId = String(resolvedShiftId || "").trim();
+    if (!targetId) {
+      setActiveShift(null);
+      setShiftDocLoadedFor(activeClientId);
+      return undefined;
+    }
+
     let initialSnapshotPending = true;
     console.time("Shift Operation: Active Listener");
     return onSnapshot(
-      shiftsQuery,
+      doc(db, "shifts", targetId),
       (snap) => {
         if (initialSnapshotPending) {
           console.timeEnd("Shift Operation: Active Listener");
           initialSnapshotPending = false;
         }
-        const item = snap.docs[0];
-        setActiveShift(item ? { id: item.id, ...item.data() } : null);
-        setLoadedClientId(activeClientId);
+        if (
+          snap.exists() &&
+          snap.data()?.clientId === activeClientId &&
+          snap.data()?.status === "OPEN"
+        ) {
+          setActiveShift({ id: snap.id, ...snap.data() });
+        } else {
+          setActiveShift(null);
+          if (usesSessionShift && sessionShiftId === targetId) {
+            writeSelectedShiftId(user?.uid, activeClientId, "");
+            setSessionShiftId("");
+          }
+        }
+        setShiftDocLoadedFor(activeClientId);
         setShiftErrorState(null);
       },
       (error) => {
@@ -135,18 +267,31 @@ export function ShiftProvider({ children }) {
           initialSnapshotPending = false;
         }
         console.error("Shift listener failed:", error);
+        setActiveShift(null);
+        setShiftDocLoadedFor(activeClientId);
         setShiftErrorState({
           clientId: activeClientId,
           message: error?.message || "Failed to load active shift.",
         });
-        setLoadedClientId(activeClientId);
       }
     );
-  }, [activeClientId]);
+  }, [
+    activeClientId,
+    resolvedShiftId,
+    settingsLoadedForClient,
+    usesSessionShift,
+    sessionShiftId,
+    user?.uid,
+  ]);
 
   const currentActiveShift =
-    activeShift?.clientId === activeClientId ? activeShift : null;
-  const loadingShift = Boolean(activeClientId) && loadedClientId !== activeClientId;
+    activeShift?.clientId === activeClientId && activeShift?.status === "OPEN"
+      ? activeShift
+      : null;
+  const loadingShift =
+    Boolean(activeClientId) &&
+    (settingsLoadedForClient !== activeClientId ||
+      shiftDocLoadedFor !== activeClientId);
   const shiftError =
     shiftErrorState?.clientId === activeClientId
       ? shiftErrorState.message
@@ -155,33 +300,143 @@ export function ShiftProvider({ children }) {
   async function openShift({ openingFloat, businessDate = todayYYYYMMDD() }) {
     if (!activeClientId) throw new Error("Select an active shop first.");
     if (!user?.uid) throw new Error("You must be signed in.");
+    if (!canManageShopOps) {
+      throw new Error("You do not have permission to open a shift.");
+    }
     if (num(openingFloat) < 0) throw new Error("Opening float cannot be negative.");
+
+    const cleanDate = String(businessDate || "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+      throw new Error("Select a valid business date.");
+    }
 
     const shiftRef = doc(collection(db, "shifts"));
     const settingsRef = doc(db, "client_settings", activeClientId);
+    const lockRef = doc(
+      db,
+      "shift_date_locks",
+      shiftDateLockId(activeClientId, cleanDate)
+    );
     const openedAtMs = Date.now();
+    let resolvedShiftIdResult = shiftRef.id;
+    let attachedExisting = false;
 
     console.time("Shift Operation: Open");
     let transactionAttempts = 0;
     try {
       await runTransaction(db, async (tx) => {
         transactionAttempts += 1;
-        const settingsSnap = await tx.get(settingsRef);
-        const currentShiftId = settingsSnap.data()?.activeShiftId || "";
-        let currentShiftSnap = null;
-        if (currentShiftId) {
-          currentShiftSnap = await tx.get(doc(db, "shifts", currentShiftId));
+        const [settingsSnap, lockSnap] = await Promise.all([
+          tx.get(settingsRef),
+          tx.get(lockRef),
+        ]);
+
+        const opsId = String(settingsSnap.data()?.operationsShiftId || "").trim();
+        const legacyId = String(settingsSnap.data()?.activeShiftId || "").trim();
+        const opsShiftRef = opsId ? doc(db, "shifts", opsId) : null;
+        const legacyShiftRef =
+          legacyId && legacyId !== opsId ? doc(db, "shifts", legacyId) : null;
+        const opsShiftSnap = opsShiftRef ? await tx.get(opsShiftRef) : null;
+        const legacyShiftSnap = legacyShiftRef
+          ? await tx.get(legacyShiftRef)
+          : null;
+        const opsOpen = isOpenShiftForClient(opsShiftSnap, activeClientId);
+        const legacyOpen = isOpenShiftForClient(legacyShiftSnap, activeClientId);
+        const controllingOpenId = opsOpen
+          ? opsId
+          : legacyOpen
+            ? legacyId
+            : "";
+        const controllingOpen =
+          Boolean(controllingOpenId) && (opsOpen || legacyOpen);
+
+        let lockShiftSnap = null;
+        const lockShiftId = String(lockSnap.data()?.shiftId || "").trim();
+        if (lockSnap.exists() && lockShiftId) {
+          lockShiftSnap = await tx.get(doc(db, "shifts", lockShiftId));
         }
 
-        if (currentShiftSnap?.exists() && currentShiftSnap.data()?.status === "OPEN") {
-          throw new Error("This shop already has an open shift.");
+        const lockPointsToOpen =
+          lockSnap.exists() &&
+          isOpenShiftForClient(lockShiftSnap, activeClientId) &&
+          String(lockShiftSnap.data()?.businessDate || "").trim() === cleanDate;
+
+        // Migrate pre-lock OPEN shift (legacy activeShiftId) for this date.
+        const legacyMatchesDate =
+          legacyOpen &&
+          String(legacyShiftSnap.data()?.businessDate || "").trim() === cleanDate;
+        const opsMatchesDate =
+          opsOpen &&
+          String(opsShiftSnap.data()?.businessDate || "").trim() === cleanDate;
+
+        // Shop admin: at most one OPEN operations/legacy shift at a time.
+        if (
+          isShopAdmin &&
+          controllingOpen &&
+          !(
+            (lockPointsToOpen && lockShiftId === controllingOpenId) ||
+            (legacyMatchesDate && legacyId === controllingOpenId) ||
+            (opsMatchesDate && opsId === controllingOpenId)
+          )
+        ) {
+          throw new Error(
+            "You already have an open shift for this shop. Close it before opening another date."
+          );
+        }
+
+        const attachShiftId = lockPointsToOpen
+          ? lockShiftId
+          : opsMatchesDate
+            ? opsId
+            : legacyMatchesDate
+              ? legacyId
+              : "";
+
+        if (attachShiftId) {
+          // Resolve existing OPEN shift for this shop/date — do not create a duplicate.
+          resolvedShiftIdResult = attachShiftId;
+          attachedExisting = true;
+          if (!lockPointsToOpen || lockShiftId !== attachShiftId) {
+            if (lockSnap.exists() && lockShiftId !== attachShiftId) {
+              tx.delete(lockRef);
+            }
+            tx.set(lockRef, {
+              clientId: activeClientId,
+              businessDate: cleanDate,
+              shiftId: attachShiftId,
+              createdBy: user.uid,
+              createdAtMs: openedAtMs,
+              createdAt: serverTimestamp(),
+            });
+          }
+          const settingsPatch = {
+            clientId: activeClientId,
+            updatedAt: serverTimestamp(),
+          };
+          if (isShopAdmin || !opsOpen) {
+            settingsPatch.operationsShiftId = attachShiftId;
+          }
+          tx.set(settingsRef, settingsPatch, { merge: true });
+          return;
+        }
+
+        if (lockSnap.exists()) {
+          // Stale lock (shift missing/closed) — replace atomically.
+          tx.delete(lockRef);
+        }
+
+        if (isShopAdmin && controllingOpen) {
+          throw new Error(
+            "You already have an open shift for this shop. Close it before opening another date."
+          );
         }
 
         tx.set(shiftRef, {
           clientId: activeClientId,
-          businessDate,
-          businessDateAt: toBusinessDate(businessDate),
+          businessDate: cleanDate,
+          businessDateAt: toBusinessDate(cleanDate),
           openedBy: user.uid,
+          openedByRole: role || "",
           openedAt: serverTimestamp(),
           openedAtMs,
           openingFloat: num(openingFloat),
@@ -192,20 +447,37 @@ export function ShiftProvider({ children }) {
           zReportId: null,
           status: "OPEN",
         });
-        tx.set(
-          settingsRef,
-          {
-            clientId: activeClientId,
-            activeShiftId: shiftRef.id,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
+        tx.set(lockRef, {
+          clientId: activeClientId,
+          businessDate: cleanDate,
+          shiftId: shiftRef.id,
+          createdBy: user.uid,
+          createdAtMs: openedAtMs,
+          createdAt: serverTimestamp(),
+        });
+
+        const settingsPatch = {
+          clientId: activeClientId,
+          updatedAt: serverTimestamp(),
+        };
+        // Shop admin always binds staff/delivery. Admin/super_admin only bootstrap
+        // when no operations shift is currently open.
+        if (isShopAdmin || !opsOpen) {
+          settingsPatch.operationsShiftId = shiftRef.id;
+        }
+        tx.set(settingsRef, settingsPatch, { merge: true });
+        resolvedShiftIdResult = shiftRef.id;
+        attachedExisting = false;
       });
 
-      return shiftRef.id;
+      bindSessionShift(resolvedShiftIdResult);
+      return resolvedShiftIdResult;
     } finally {
-      console.debug("Shift Operation: Open transaction attempts", transactionAttempts);
+      console.debug(
+        "Shift Operation: Open transaction attempts",
+        transactionAttempts,
+        attachedExisting ? "(attached existing)" : "(created)"
+      );
       console.timeEnd("Shift Operation: Open");
     }
   }
@@ -216,7 +488,6 @@ export function ShiftProvider({ children }) {
     if (!currentActiveShift?.id) throw new Error("No open shift exists.");
 
     const shiftRef = doc(db, "shifts", currentActiveShift.id);
-    const settingsRef = doc(db, "client_settings", activeClientId);
     const zReportRef = doc(collection(db, "z_reports"));
     const cashEntries = Array.isArray(zReport?.cashEntries)
       ? zReport.cashEntries
@@ -343,8 +614,7 @@ export function ShiftProvider({ children }) {
         const bankAccountRefs = uniqueBankAccountIds.map((accountId) =>
           doc(db, "bank_accounts", accountId)
         );
-        const [settingsSnap, shiftSnap, ...lookups] = await Promise.all([
-          tx.get(settingsRef),
+        const [shiftSnap, ...lookups] = await Promise.all([
           tx.get(shiftRef),
           ...partyRefs.map((partyRef) => tx.get(partyRef)),
           ...bankAccountRefs.map((bankRef) => tx.get(bankRef)),
@@ -363,12 +633,6 @@ export function ShiftProvider({ children }) {
         }
         if (shiftSnap.data()?.clientId !== activeClientId) {
           throw new Error("Shift belongs to another shop.");
-        }
-        if (
-          settingsSnap.data()?.activeShiftId &&
-          settingsSnap.data()?.activeShiftId !== shiftRef.id
-        ) {
-          throw new Error("A different shift is active for this shop.");
         }
 
         const normalizedCashEntries = cashEntries.map((entry) => {
@@ -523,10 +787,17 @@ export function ShiftProvider({ children }) {
   async function closeShiftWithoutZReport() {
     if (!activeClientId) throw new Error("Select an active shop first.");
     if (!user?.uid) throw new Error("You must be signed in.");
+    if (!canManageShopOps) {
+      throw new Error("You do not have permission to close a shift.");
+    }
     if (!currentActiveShift?.id) throw new Error("No open shift exists.");
 
     const shiftRef = doc(db, "shifts", currentActiveShift.id);
     const settingsRef = doc(db, "client_settings", activeClientId);
+    const businessDate = String(currentActiveShift.businessDate || "").trim();
+    const lockRef = businessDate
+      ? doc(db, "shift_date_locks", shiftDateLockId(activeClientId, businessDate))
+      : null;
     const closedAtMs = Date.now();
 
     console.time("Shift Operation: Close Without Z-Report");
@@ -535,6 +806,8 @@ export function ShiftProvider({ children }) {
       await runTransaction(db, async (tx) => {
         transactionAttempts += 1;
         const shiftSnap = await tx.get(shiftRef);
+        const settingsSnap = await tx.get(settingsRef);
+        const lockSnap = lockRef ? await tx.get(lockRef) : null;
 
         if (
           !shiftSnap.exists() ||
@@ -543,9 +816,6 @@ export function ShiftProvider({ children }) {
         ) {
           throw new Error("The selected shift is no longer open.");
         }
-
-        // Settings write happens after the shift read.
-        await tx.get(settingsRef);
 
         tx.update(shiftRef, {
           closedBy: user.uid,
@@ -559,17 +829,33 @@ export function ShiftProvider({ children }) {
           updatedAt: serverTimestamp(),
         });
 
-        tx.set(
-          settingsRef,
-          {
-            clientId: activeClientId,
-            activeShiftId: null,
-            lastClosedShiftId: shiftRef.id,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
+        if (
+          lockSnap?.exists() &&
+          String(lockSnap.data()?.shiftId || "").trim() === shiftRef.id
+        ) {
+          tx.delete(lockRef);
+        }
+
+        const settingsPatch = {
+          clientId: activeClientId,
+          lastClosedShiftId: shiftRef.id,
+          updatedAt: serverTimestamp(),
+        };
+        const opsId = String(settingsSnap.data()?.operationsShiftId || "").trim();
+        if (opsId === shiftRef.id) {
+          settingsPatch.operationsShiftId = deleteField();
+        }
+        // Clear legacy pointer only when it pointed at this shift.
+        const legacyId = String(settingsSnap.data()?.activeShiftId || "").trim();
+        if (legacyId === shiftRef.id) {
+          settingsPatch.activeShiftId = deleteField();
+        }
+        tx.set(settingsRef, settingsPatch, { merge: true });
       });
+
+      if (sessionShiftId === shiftRef.id) {
+        bindSessionShift("");
+      }
 
       return { shiftId: shiftRef.id };
     } finally {
@@ -941,6 +1227,9 @@ export function ShiftProvider({ children }) {
   async function updateActiveShiftBusinessDate(nextBusinessDate) {
     if (!activeClientId) throw new Error("Select an active shop first.");
     if (!user?.uid) throw new Error("You must be signed in.");
+    if (!canManageShopOps) {
+      throw new Error("You do not have permission to change the shift date.");
+    }
     if (!currentActiveShift?.id) throw new Error("No open shift exists.");
 
     const cleanDate = String(nextBusinessDate || "").trim();
@@ -959,10 +1248,23 @@ export function ShiftProvider({ children }) {
     }
 
     const shiftRef = doc(db, "shifts", currentActiveShift.id);
+    const oldDate = String(currentActiveShift.businessDate || "").trim();
+    const oldLockRef = oldDate
+      ? doc(db, "shift_date_locks", shiftDateLockId(activeClientId, oldDate))
+      : null;
+    const newLockRef = doc(
+      db,
+      "shift_date_locks",
+      shiftDateLockId(activeClientId, cleanDate)
+    );
+
     console.time("Shift Operation: Update Business Date");
     try {
       await runTransaction(db, async (tx) => {
         const shiftSnap = await tx.get(shiftRef);
+        const newLockSnap = await tx.get(newLockRef);
+        const oldLockSnap = oldLockRef ? await tx.get(oldLockRef) : null;
+
         if (
           !shiftSnap.exists() ||
           shiftSnap.data()?.clientId !== activeClientId ||
@@ -970,11 +1272,41 @@ export function ShiftProvider({ children }) {
         ) {
           throw new Error("The active shift is no longer open.");
         }
+
+        if (newLockSnap.exists()) {
+          const otherShiftId = String(newLockSnap.data()?.shiftId || "").trim();
+          if (otherShiftId && otherShiftId !== shiftRef.id) {
+            const otherSnap = await tx.get(doc(db, "shifts", otherShiftId));
+            if (isOpenShiftForClient(otherSnap, activeClientId)) {
+              throw new Error(
+                "Another open shift already exists for that business date."
+              );
+            }
+          }
+          tx.delete(newLockRef);
+        }
+
         tx.update(shiftRef, {
           businessDate: cleanDate,
           businessDateAt: toBusinessDate(cleanDate),
           updatedBy: user.uid,
           updatedAt: serverTimestamp(),
+        });
+
+        if (
+          oldLockSnap?.exists() &&
+          String(oldLockSnap.data()?.shiftId || "").trim() === shiftRef.id
+        ) {
+          tx.delete(oldLockRef);
+        }
+
+        tx.set(newLockRef, {
+          clientId: activeClientId,
+          businessDate: cleanDate,
+          shiftId: shiftRef.id,
+          createdBy: user.uid,
+          createdAtMs: Date.now(),
+          createdAt: serverTimestamp(),
         });
       });
       return shiftRef.id;

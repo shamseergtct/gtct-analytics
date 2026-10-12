@@ -128,9 +128,12 @@ export function AuthProvider({ children }) {
 
   const isSuperAdmin = role === "super_admin";
   const isAdmin = role === "admin";
+  const isShopAdmin = role === "shop_admin";
   const isPartner = role === "partner";
   const isStaff = role === "staff";
   const isDeliveryBoy = role === "delivery_boy";
+  /** Admin, shop_admin, or super_admin — shop ops / shift control roles. */
+  const canManageShopOps = isSuperAdmin || isAdmin || isShopAdmin;
 
   // ✅ nicer display helpers
   const displayName =
@@ -145,9 +148,11 @@ export function AuthProvider({ children }) {
       assignedShops,
       isSuperAdmin,
       isAdmin,
+      isShopAdmin,
       isPartner,
       isStaff,
       isDeliveryBoy,
+      canManageShopOps,
       isDisabled,
       authLoading,
 
@@ -167,9 +172,11 @@ export function AuthProvider({ children }) {
       assignedShops,
       isSuperAdmin,
       isAdmin,
+      isShopAdmin,
       isPartner,
       isStaff,
       isDeliveryBoy,
+      canManageShopOps,
       isDisabled,
       authLoading,
       authError,
