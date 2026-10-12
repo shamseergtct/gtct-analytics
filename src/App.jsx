@@ -18,6 +18,7 @@ import Sales from "./pages/Sales"; // ✅ NEW
 import ExternalSales from "./pages/ExternalSales";
 import ShiftClose from "./pages/ShiftClose";
 import PurchaseExpenseEntry from "./pages/PurchaseExpenseEntry";
+import PurchaseOrders from "./pages/PurchaseOrders";
 import PaymentReceiptEntry from "./pages/PaymentReceiptEntry";
 import InternalTransferEntry from "./pages/InternalTransferEntry";
 import BankAccounts from "./pages/BankAccounts";
@@ -143,6 +144,14 @@ export default function App() {
               <RequireActiveShift>
                 <PurchaseExpenseEntry />
               </RequireActiveShift>
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/purchase-orders"
+          element={
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
+              <PurchaseOrders />
             </RoleRoute>
           }
         />

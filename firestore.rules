@@ -958,6 +958,59 @@ service cloud.firestore {
       allow delete: if isSuperAdmin();
     }
 
+    match /purchase_orders/{poId} {
+      allow read: if canReadTenantResource();
+
+      allow create: if canManageClient(request.resource.data.clientId)
+        && request.resource.data.clientId is string
+        && request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.poNumber is string
+        && request.resource.data.poNumber.size() > 0
+        && request.resource.data.poNumber.size() <= 40
+        && request.resource.data.vendorId is string
+        && request.resource.data.vendorId.size() > 0
+        && request.resource.data.vendorName is string
+        && request.resource.data.vendorName.size() > 0
+        && request.resource.data.vendorPhone is string
+        && request.resource.data.notes is string
+        && request.resource.data.notes.size() <= 500
+        && request.resource.data.lines is list
+        && request.resource.data.lines.size() > 0
+        && request.resource.data.lines.size() <= 200
+        && request.resource.data.lineCount is number
+        && request.resource.data.lineCount == request.resource.data.lines.size()
+        && request.resource.data.status in ['DRAFT', 'SENT', 'COMPLETED', 'CANCELLED']
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.createdAtMs is number
+        && request.resource.data.updatedAtMs is number;
+
+      allow update: if canManageClient(resource.data.clientId)
+        && request.resource.data.clientId == resource.data.clientId
+        && request.resource.data.poNumber == resource.data.poNumber
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.businessDate is string
+        && request.resource.data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && request.resource.data.vendorId is string
+        && request.resource.data.vendorId.size() > 0
+        && request.resource.data.vendorName is string
+        && request.resource.data.vendorName.size() > 0
+        && request.resource.data.vendorPhone is string
+        && request.resource.data.notes is string
+        && request.resource.data.notes.size() <= 500
+        && request.resource.data.lines is list
+        && request.resource.data.lines.size() > 0
+        && request.resource.data.lines.size() <= 200
+        && request.resource.data.lineCount is number
+        && request.resource.data.lineCount == request.resource.data.lines.size()
+        && request.resource.data.status in ['DRAFT', 'SENT', 'COMPLETED', 'CANCELLED']
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.updatedAtMs is number;
+
+      allow delete: if isSuperAdmin();
+    }
+
     match /purchases/{purchaseId} {
       allow read: if canReadTenantResource();
 
