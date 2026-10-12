@@ -1,12 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import ChecklistItemCard from "./ChecklistItemCard.jsx";
 import {
   ATTENTION_STATUS_META,
+  isAttentionStatus,
+  normalizeRequestedQty,
   subscribeDailyReviewLines,
-  upsertDailyReviewLine,
 } from "../../utils/inventoryDailyReview.js";
 import { formatMoney } from "../../utils/money.js";
+import {
+  STAFF_INV_ENTRY_TYPE,
+  enqueueStaffReview,
+  listPendingStaffInvEntries,
+} from "../../utils/staffInventoryQueue.js";
+import { runStaffInventorySync } from "../../utils/staffInventorySync.js";
 
 function emptyDraft() {
   return { attentionStatus: "", requestedQty: "", notes: "" };
@@ -62,10 +69,32 @@ export default function TodayChecklist({
   onMessage,
 }) {
   const [lines, setLines] = useState([]);
+  const [localReviews, setLocalReviews] = useState([]);
   const [loadingLines, setLoadingLines] = useState(true);
   const [drafts, setDrafts] = useState({});
   const [saveStates, setSaveStates] = useState({});
   const [activeItemId, setActiveItemId] = useState("");
+
+  const refreshLocalReviews = useCallback(async () => {
+    if (!clientId || !businessDate) {
+      setLocalReviews([]);
+      return;
+    }
+    try {
+      const rows = await listPendingStaffInvEntries({
+        clientId,
+        businessDate,
+        type: STAFF_INV_ENTRY_TYPE.REVIEW,
+      });
+      setLocalReviews(rows);
+    } catch {
+      setLocalReviews([]);
+    }
+  }, [clientId, businessDate]);
+
+  useEffect(() => {
+    void refreshLocalReviews();
+  }, [refreshLocalReviews]);
 
   useEffect(() => {
     if (!clientId || !businessDate) {
@@ -80,25 +109,46 @@ export default function TodayChecklist({
       (rows) => {
         setLines(rows);
         setLoadingLines(false);
+        void refreshLocalReviews();
       },
       (err) => {
         setLoadingLines(false);
+        // Offline / listener errors: still allow local queue work.
         onError?.(
           err?.message
-            ? `Could not load today's reviews: ${err.message}`
-            : "Could not load today's reviews."
+            ? `Live reviews unavailable (${err.message}). Local saves still work.`
+            : "Live reviews unavailable. Local saves still work."
         );
       }
     );
-  }, [clientId, businessDate, onError]);
+  }, [clientId, businessDate, onError, refreshLocalReviews]);
 
   const lineByItemId = useMemo(() => {
     const map = new Map();
     for (const row of lines) {
       map.set(String(row.itemId || row.id), row);
     }
+    // Pending local reviews overlay server lines so the list feels instant.
+    for (const row of localReviews) {
+      const itemId = String(row.itemId || "");
+      if (!itemId) continue;
+      map.set(itemId, {
+        id: itemId,
+        itemId,
+        attentionStatus: row.attentionStatus,
+        requestedQty:
+          row.requestedQty === "" || row.requestedQty == null
+            ? null
+            : Number(row.requestedQty),
+        notes: row.notes || "",
+        completed: true,
+        pendingSync: true,
+        syncStatus: row.syncStatus,
+        syncError: row.syncError || "",
+      });
+    }
     return map;
-  }, [lines]);
+  }, [lines, localReviews]);
 
   useEffect(() => {
     if (!focusItemId) return;
@@ -186,19 +236,39 @@ export default function TodayChecklist({
     onMessage?.("");
     setSaveStates((prev) => ({ ...prev, [item.id]: "saving" }));
     try {
-      await upsertDailyReviewLine({
+      const status = String(draft.attentionStatus || "").trim().toUpperCase();
+      if (!isAttentionStatus(status)) {
+        throw new Error("Select Enough, Low, Urgent, or Very Urgent.");
+      }
+      let qty = normalizeRequestedQty(draft.requestedQty);
+      if (qty === 0) qty = null;
+      if (status !== "ENOUGH" && (qty == null || qty <= 0)) {
+        throw new Error(
+          "Enter the required quantity for Low, Urgent, or Very Urgent."
+        );
+      }
+
+      await enqueueStaffReview({
         clientId,
         businessDate,
         item,
-        attentionStatus: draft.attentionStatus,
-        requestedQty: draft.requestedQty,
+        attentionStatus: status,
+        requestedQty: qty == null ? "" : String(qty),
         notes: draft.notes,
         userUid,
         userName,
       });
+      await refreshLocalReviews();
       setSaveStates((prev) => ({ ...prev, [item.id]: "saved" }));
-      onMessage?.(`Saved review for ${item.itemName || item.itemCode}.`);
+      const offline =
+        typeof navigator !== "undefined" && navigator.onLine === false;
+      onMessage?.(
+        offline
+          ? `Saved on device: ${item.itemName || item.itemCode}. Will sync when online.`
+          : `Saved: ${item.itemName || item.itemCode}. Syncing…`
+      );
       setActiveItemId("");
+      void runStaffInventorySync({ clientId, userUid });
     } catch (err) {
       setSaveStates((prev) => ({ ...prev, [item.id]: "error" }));
       onError?.(err?.message || "Failed to save review.");

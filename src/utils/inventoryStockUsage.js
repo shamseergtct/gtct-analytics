@@ -34,8 +34,9 @@ export function isUsageReason(value) {
 }
 
 /**
- * Deduct stock for daily usage. Online transaction only.
- * Writes inventory.currentStock + inventory_movements (STOCK_USAGE).
+ * Deduct stock for daily usage.
+ * When entryLocalId is provided, movement id is deterministic so retries
+ * never double-deduct (offline queue sync safety).
  */
 export async function recordInventoryStockUsage({
   clientId,
@@ -47,6 +48,7 @@ export async function recordInventoryStockUsage({
   userUid,
   userName = "",
   shiftId = "",
+  entryLocalId = "",
 }) {
   const shop = String(clientId || "").trim();
   const date = String(businessDate || "").trim();
@@ -57,6 +59,7 @@ export async function recordInventoryStockUsage({
     .toUpperCase();
   const qtyNum = numMoney(qty);
   const noteText = String(notes || "").trim().slice(0, 500);
+  const localId = String(entryLocalId || "").trim();
 
   if (!shop) throw new Error("Select an active shop first.");
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
@@ -72,11 +75,23 @@ export async function recordInventoryStockUsage({
   }
 
   const itemRef = doc(db, "inventory", itemId);
-  const movementRef = doc(collection(db, "inventory_movements"));
+  const movementRef = localId
+    ? doc(db, "inventory_movements", localId)
+    : doc(collection(db, "inventory_movements"));
   const nowMs = Date.now();
+  let alreadyApplied = false;
 
   await runTransaction(db, async (tx) => {
-    const itemSnap = await tx.get(itemRef);
+    const reads = [tx.get(itemRef)];
+    if (localId) reads.push(tx.get(movementRef));
+    const [itemSnap, movementSnap] = await Promise.all(reads);
+
+    if (localId && movementSnap?.exists()) {
+      // Idempotent retry — movement already written for this local entry.
+      alreadyApplied = true;
+      return;
+    }
+
     if (!itemSnap.exists()) {
       throw new Error("Item was not found.");
     }
@@ -118,6 +133,7 @@ export async function recordInventoryStockUsage({
       usageReason: reason,
       notes: noteText,
       shiftId: String(shiftId || "").trim(),
+      sourceLocalId: localId || "",
       userId: uid,
       userName: String(userName || "").trim(),
       createdBy: uid,
@@ -127,7 +143,7 @@ export async function recordInventoryStockUsage({
     });
   });
 
-  return { movementId: movementRef.id, itemId };
+  return { movementId: movementRef.id, itemId, alreadyApplied };
 }
 
 export function subscribeTodayStockUsage(

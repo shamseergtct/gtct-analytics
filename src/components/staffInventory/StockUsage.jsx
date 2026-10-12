@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
-import { formatMoney } from "../../utils/money.js";
+import { formatMoney, numMoney } from "../../utils/money.js";
 import {
   USAGE_REASONS,
   USAGE_REASON_META,
-  recordInventoryStockUsage,
   subscribeTodayStockUsage,
 } from "../../utils/inventoryStockUsage.js";
+import {
+  STAFF_INV_ENTRY_TYPE,
+  STAFF_INV_SYNC_STATUS,
+  enqueueStaffUsage,
+  listPendingStaffInvEntries,
+} from "../../utils/staffInventoryQueue.js";
+import { runStaffInventorySync } from "../../utils/staffInventorySync.js";
 
 function matchesQuery(item, rawQuery) {
   const q = String(rawQuery || "")
@@ -30,6 +36,7 @@ export default function StockUsage({
   userName,
   onError,
   onMessage,
+  onQueued,
 }) {
   const [query, setQuery] = useState("");
   const [activeItemId, setActiveItemId] = useState("");
@@ -38,6 +45,28 @@ export default function StockUsage({
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
   const [todayRows, setTodayRows] = useState([]);
+  const [localUsage, setLocalUsage] = useState([]);
+
+  const refreshLocalUsage = useCallback(async () => {
+    if (!clientId || !businessDate) {
+      setLocalUsage([]);
+      return;
+    }
+    try {
+      const rows = await listPendingStaffInvEntries({
+        clientId,
+        businessDate,
+        type: STAFF_INV_ENTRY_TYPE.USAGE,
+      });
+      setLocalUsage(rows);
+    } catch {
+      setLocalUsage([]);
+    }
+  }, [clientId, businessDate]);
+
+  useEffect(() => {
+    void refreshLocalUsage();
+  }, [refreshLocalUsage]);
 
   useEffect(() => {
     if (!clientId || !businessDate) {
@@ -47,16 +76,19 @@ export default function StockUsage({
     return subscribeTodayStockUsage(
       clientId,
       businessDate,
-      setTodayRows,
+      (rows) => {
+        setTodayRows(rows);
+        void refreshLocalUsage();
+      },
       (err) => {
         onError?.(
           err?.message
-            ? `Could not load today's usage: ${err.message}`
-            : "Could not load today's usage."
+            ? `Live usage list unavailable (${err.message}). Local saves still work.`
+            : "Live usage list unavailable. Local saves still work."
         );
       }
     );
-  }, [clientId, businessDate, onError]);
+  }, [clientId, businessDate, onError, refreshLocalUsage]);
 
   const filtered = useMemo(() => {
     return items
@@ -70,6 +102,28 @@ export default function StockUsage({
     () => items.find((row) => row.id === activeItemId) || null,
     [items, activeItemId]
   );
+
+  const mergedTodayRows = useMemo(() => {
+    const server = todayRows.map((row) => ({
+      ...row,
+      pendingSync: false,
+    }));
+    const local = localUsage.map((row) => ({
+      id: row.entryLocalId,
+      itemName: row.itemName,
+      itemCode: row.itemCode,
+      qty: numMoney(row.qty),
+      usageReason: row.usageReason,
+      notes: row.notes,
+      pendingSync: true,
+      syncStatus: row.syncStatus,
+      syncError: row.syncError || "",
+      dateMs: row.createdAtMs,
+    }));
+    return [...local, ...server].sort(
+      (a, b) => numMoney(b.dateMs) - numMoney(a.dateMs)
+    );
+  }, [todayRows, localUsage]);
 
   function openItem(item) {
     setActiveItemId(item.id);
@@ -86,23 +140,44 @@ export default function StockUsage({
     onMessage?.("");
     setSaving(true);
     try {
-      await recordInventoryStockUsage({
+      const qtyNum = numMoney(qty);
+      if (!(qtyNum > 0)) {
+        throw new Error("Enter a usage quantity greater than zero.");
+      }
+      const onHand = numMoney(activeItem.currentStock);
+      // Soft local guard — server still enforces on sync.
+      if (qtyNum > onHand) {
+        throw new Error(
+          `Not enough stock. On hand is ${onHand}, usage is ${qtyNum}.`
+        );
+      }
+
+      await enqueueStaffUsage({
         clientId,
         businessDate,
         item: activeItem,
-        qty,
+        qty: qtyNum,
         usageReason,
         notes,
         userUid,
         userName,
         shiftId,
       });
+
+      await refreshLocalUsage();
+      onQueued?.();
+
+      const offline =
+        typeof navigator !== "undefined" && navigator.onLine === false;
       onMessage?.(
-        `Recorded usage for ${activeItem.itemName || activeItem.itemCode}.`
+        offline
+          ? `Saved on device: ${activeItem.itemName || activeItem.itemCode}. Will sync when online.`
+          : `Saved: ${activeItem.itemName || activeItem.itemCode}. Syncing…`
       );
       setActiveItemId("");
       setQty("");
       setNotes("");
+      void runStaffInventorySync({ clientId, userUid });
     } catch (err) {
       onError?.(err?.message || "Failed to save usage.");
     } finally {
@@ -219,8 +294,7 @@ export default function StockUsage({
             {saving ? "Saving…" : "Save usage"}
           </button>
           <p className="mt-2 text-xs text-slate-500">
-            This reduces on-hand stock immediately. Requires an online
-            connection.
+            Saves on this device instantly, then syncs stock when online.
           </p>
         </article>
       </div>
@@ -290,21 +364,36 @@ export default function StockUsage({
 
       <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
         <div className="border-b border-slate-800 px-3 py-2.5 text-sm font-semibold text-white">
-          Today&apos;s usage ({todayRows.length})
+          Today&apos;s usage ({mergedTodayRows.length})
         </div>
-        {!todayRows.length ? (
+        {!mergedTodayRows.length ? (
           <div className="px-3 py-6 text-center text-sm text-slate-500">
             No usage recorded for this date yet.
           </div>
         ) : (
           <ul>
-            {todayRows.map((row) => (
+            {mergedTodayRows.map((row) => (
               <li
                 key={row.id}
                 className="border-b border-slate-800/80 px-3 py-3 last:border-b-0"
               >
-                <div className="font-medium text-white">
-                  {row.itemName || "—"}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="font-medium text-white">
+                    {row.itemName || "—"}
+                  </div>
+                  {row.pendingSync ? (
+                    <span
+                      className={`shrink-0 text-[10px] font-semibold uppercase tracking-wide ${
+                        row.syncStatus === STAFF_INV_SYNC_STATUS.FAILED
+                          ? "text-rose-300"
+                          : "text-amber-300"
+                      }`}
+                    >
+                      {row.syncStatus === STAFF_INV_SYNC_STATUS.FAILED
+                        ? "Failed"
+                        : "Pending sync"}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-0.5 text-xs text-slate-400">
                   <span className="tabular-nums text-rose-300">
@@ -316,6 +405,9 @@ export default function StockUsage({
                     "Usage"}
                   {row.notes ? ` · ${row.notes}` : ""}
                 </div>
+                {row.syncError ? (
+                  <div className="mt-1 text-xs text-rose-300">{row.syncError}</div>
+                ) : null}
               </li>
             ))}
           </ul>
