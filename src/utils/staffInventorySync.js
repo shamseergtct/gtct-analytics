@@ -2,7 +2,10 @@
  * Sync engine: push Staff Inventory IndexedDB queue to Firestore.
  */
 import { upsertDailyReviewLine } from "./inventoryDailyReview.js";
-import { recordInventoryStockUsage } from "./inventoryStockUsage.js";
+import {
+  fetchTodayStockUsage,
+  recordInventoryStockUsage,
+} from "./inventoryStockUsage.js";
 import {
   STAFF_INV_ENTRY_TYPE,
   STAFF_INV_SYNC_STATUS,
@@ -13,6 +16,7 @@ import {
 } from "./staffInventoryQueue.js";
 
 let syncRunning = false;
+let syncQueued = false;
 let syncListeners = new Set();
 let lastSyncState = {
   online: typeof navigator !== "undefined" ? navigator.onLine : true,
@@ -21,6 +25,10 @@ let lastSyncState = {
   failed: 0,
   message: "",
   lastError: "",
+  /** Bumps when usage rows may have changed on the server. */
+  usageRefreshToken: 0,
+  lastUsageClientId: "",
+  lastUsageBusinessDate: "",
 };
 
 function emit(partial = {}) {
@@ -96,7 +104,7 @@ async function syncOneEntry(record) {
       userName: record.userName,
     });
     await deleteStaffInvEntry(record.entryLocalId);
-    return { ok: true };
+    return { ok: true, kind: "REVIEW" };
   }
 
   if (record.type === STAFF_INV_ENTRY_TYPE.USAGE) {
@@ -117,7 +125,7 @@ async function syncOneEntry(record) {
       entryLocalId: record.entryLocalId,
     });
     await deleteStaffInvEntry(record.entryLocalId);
-    return { ok: true };
+    return { ok: true, kind: "USAGE" };
   }
 
   throw new Error(`Unknown queue entry type: ${record.type}`);
@@ -125,13 +133,15 @@ async function syncOneEntry(record) {
 
 /**
  * Push pending/failed Staff Inventory entries for a shop (FIFO).
+ * Coalesces overlapping calls so saves stay instant while sync drains the queue.
  */
 export async function runStaffInventorySync({
   clientId = "",
   userUid = "",
 } = {}) {
   if (syncRunning) {
-    return { skipped: true, ...lastSyncState };
+    syncQueued = true;
+    return { skipped: true, queued: true, ...lastSyncState };
   }
   if (!isOnline()) {
     emit({
@@ -156,36 +166,70 @@ export async function runStaffInventorySync({
 
   let synced = 0;
   let failed = 0;
+  let usageSynced = 0;
+  let lastUsageBusinessDate = "";
 
   try {
-    const queue = await listPendingStaffInvEntries({ clientId });
-    for (const record of queue) {
-      if (!isOnline()) {
-        emit({
-          online: false,
-          message: "Went offline — remaining entries stay on device.",
-        });
-        break;
-      }
-      try {
-        await syncOneEntry(record);
-        synced += 1;
-      } catch (error) {
-        failed += 1;
-        const message = error?.message || String(error) || "Sync failed.";
-        const permanent = isPermanentFailure(error);
-        await updateStaffInvEntry(record.entryLocalId, {
-          syncStatus: STAFF_INV_SYNC_STATUS.FAILED,
-          syncError: message,
-        });
-        emit({ lastError: message });
-        // Permanent item failures: continue with other entries.
-        // Transient: still continue so one bad network blip doesn't stall the queue forever;
-        // FAILED rows can be retried on next sync.
-        if (!permanent && /unavailable|network|offline|deadline/i.test(message)) {
+    do {
+      syncQueued = false;
+      const queue = await listPendingStaffInvEntries({ clientId });
+      const total = queue.length;
+      let index = 0;
+      for (const record of queue) {
+        if (!isOnline()) {
+          emit({
+            online: false,
+            message: "Went offline — remaining entries stay on device.",
+          });
           break;
         }
+        index += 1;
+        emit({
+          message: `Syncing ${index}/${total}…`,
+        });
+        try {
+          const result = await syncOneEntry(record);
+          synced += 1;
+          if (result.kind === "USAGE") {
+            usageSynced += 1;
+            lastUsageBusinessDate = String(record.businessDate || "").trim();
+            // Refresh Today's usage as soon as each usage lands.
+            emit({
+              usageRefreshToken: (lastSyncState.usageRefreshToken || 0) + 1,
+              lastUsageClientId: clientId,
+              lastUsageBusinessDate,
+            });
+          }
+          // Drop pending count live so the bar feels responsive.
+          await refreshStaffInvSyncCounts(clientId);
+        } catch (error) {
+          failed += 1;
+          const message = error?.message || String(error) || "Sync failed.";
+          const permanent = isPermanentFailure(error);
+          await updateStaffInvEntry(record.entryLocalId, {
+            syncStatus: STAFF_INV_SYNC_STATUS.FAILED,
+            syncError: message,
+          });
+          emit({ lastError: message });
+          await refreshStaffInvSyncCounts(clientId);
+          if (!permanent && /unavailable|network|offline|deadline/i.test(message)) {
+            break;
+          }
+        }
       }
+    } while (syncQueued && isOnline());
+
+    if (usageSynced > 0 && lastUsageBusinessDate) {
+      try {
+        await fetchTodayStockUsage(clientId, lastUsageBusinessDate);
+      } catch {
+        // StockUsage still refreshes via usageRefreshToken.
+      }
+      emit({
+        usageRefreshToken: (lastSyncState.usageRefreshToken || 0) + 1,
+        lastUsageClientId: clientId,
+        lastUsageBusinessDate,
+      });
     }
 
     const summary = await refreshStaffInvSyncCounts(clientId);
@@ -206,10 +250,14 @@ export async function runStaffInventorySync({
       pending: summary.pending,
       failed: summary.failed,
     });
-    return { synced, failed, ...lastSyncState };
+    return { synced, failed, usageSynced, ...lastSyncState };
   } finally {
     syncRunning = false;
     emit({ syncing: false });
+    if (syncQueued) {
+      syncQueued = false;
+      void runStaffInventorySync({ clientId, userUid });
+    }
   }
 }
 

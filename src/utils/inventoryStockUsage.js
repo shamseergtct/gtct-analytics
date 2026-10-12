@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDocs,
   onSnapshot,
   query,
   runTransaction,
@@ -146,6 +147,30 @@ export async function recordInventoryStockUsage({
   return { movementId: movementRef.id, itemId, alreadyApplied };
 }
 
+function todayStockUsageQuery(clientId, businessDate) {
+  return query(
+    collection(db, "inventory_movements"),
+    where("clientId", "==", clientId),
+    where("businessDate", "==", businessDate),
+    where("source", "==", STOCK_USAGE_SOURCE)
+  );
+}
+
+function mapUsageSnap(snap) {
+  return snap.docs
+    .map((d) => ({ id: d.id, ...d.data() }))
+    .sort((a, b) => numMoney(b.dateMs) - numMoney(a.dateMs));
+}
+
+/** One-shot fetch for Today's usage (used after sync + as listener fallback). */
+export async function fetchTodayStockUsage(clientId, businessDate) {
+  const shop = String(clientId || "").trim();
+  const date = String(businessDate || "").trim();
+  if (!shop || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
+  const snap = await getDocs(todayStockUsageQuery(shop, date));
+  return mapUsageSnap(snap);
+}
+
 export function subscribeTodayStockUsage(
   clientId,
   businessDate,
@@ -159,24 +184,26 @@ export function subscribeTodayStockUsage(
     return () => {};
   }
 
-  const q = query(
-    collection(db, "inventory_movements"),
-    where("clientId", "==", shop),
-    where("businessDate", "==", date),
-    where("source", "==", STOCK_USAGE_SOURCE)
-  );
+  const q = todayStockUsageQuery(shop, date);
+
+  // Prefer an immediate get so the list is not empty while waiting on snapshot.
+  void getDocs(q)
+    .then((snap) => onRows(mapUsageSnap(snap)))
+    .catch((err) => {
+      onError?.(err);
+    });
 
   return onSnapshot(
     q,
     (snap) => {
-      const rows = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => numMoney(b.dateMs) - numMoney(a.dateMs));
-      onRows(rows);
+      onRows(mapUsageSnap(snap));
     },
     (err) => {
       onError?.(err);
-      onRows([]);
+      // Do not wipe existing rows on listener errors — keep last good list.
+      void getDocs(q)
+        .then((snap) => onRows(mapUsageSnap(snap)))
+        .catch(() => {});
     }
   );
 }

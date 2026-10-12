@@ -626,19 +626,32 @@ service cloud.firestore {
     }
 
     match /inventory_movements/{movementId} {
-      allow get: if canReadTenantResource()
+      // resource == null: allow transactional probe for idempotent offline usage sync
+      // (movement id = entryLocalId before the doc is created).
+      allow get: if activeUser()
         && (
-          !isStaff()
+          resource == null
           || (
-            resource.data.source == 'STOCK_USAGE'
-            && canReviewInventoryDaily(resource.data.clientId)
+            canAccessClient(resource.data.clientId)
+            && (
+              !isStaff()
+              || (
+                resource.data.source == 'STOCK_USAGE'
+                && canReviewInventoryDaily(resource.data.clientId)
+              )
+            )
           )
         );
-      allow list: if canReadTenantResource()
+      // Staff may only list STOCK_USAGE rows for their shop (Today's usage query).
+      allow list: if activeUser()
         && (
-          !isStaff()
+          (
+            !isStaff()
+            && canAccessClient(resource.data.clientId)
+          )
           || (
-            resource.data.source == 'STOCK_USAGE'
+            isStaff()
+            && resource.data.source == 'STOCK_USAGE'
             && canReviewInventoryDaily(resource.data.clientId)
           )
         );

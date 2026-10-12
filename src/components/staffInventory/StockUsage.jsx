@@ -4,6 +4,7 @@ import { formatMoney, numMoney } from "../../utils/money.js";
 import {
   USAGE_REASONS,
   USAGE_REASON_META,
+  fetchTodayStockUsage,
   subscribeTodayStockUsage,
 } from "../../utils/inventoryStockUsage.js";
 import {
@@ -12,7 +13,10 @@ import {
   enqueueStaffUsage,
   listPendingStaffInvEntries,
 } from "../../utils/staffInventoryQueue.js";
-import { runStaffInventorySync } from "../../utils/staffInventorySync.js";
+import {
+  runStaffInventorySync,
+  subscribeStaffInvSync,
+} from "../../utils/staffInventorySync.js";
 
 function matchesQuery(item, rawQuery) {
   const q = String(rawQuery || "")
@@ -89,6 +93,28 @@ export default function StockUsage({
       }
     );
   }, [clientId, businessDate, onError, refreshLocalUsage]);
+
+  // After each successful usage sync, force-refresh Today's usage list.
+  useEffect(() => {
+    return subscribeStaffInvSync((state) => {
+      if (!clientId || !businessDate) return;
+      if (!state?.usageRefreshToken) return;
+      if (
+        state.lastUsageClientId &&
+        state.lastUsageClientId !== clientId
+      ) {
+        return;
+      }
+      void fetchTodayStockUsage(clientId, businessDate)
+        .then((rows) => {
+          setTodayRows(rows);
+          void refreshLocalUsage();
+        })
+        .catch(() => {
+          void refreshLocalUsage();
+        });
+    });
+  }, [clientId, businessDate, refreshLocalUsage]);
 
   const filtered = useMemo(() => {
     return items
