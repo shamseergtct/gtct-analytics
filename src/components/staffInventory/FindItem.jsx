@@ -1,7 +1,10 @@
 import { useMemo, useState } from "react";
 import { Search } from "lucide-react";
-import { formatMoney } from "../../utils/money.js";
 import { ATTENTION_STATUS_META } from "../../utils/inventoryDailyReview.js";
+import { resolveAttentionStatus } from "../../utils/inventoryAttention.js";
+import { formatPackHint, formatStockDisplay } from "../../utils/inventoryPack.js";
+import ListPagination from "../ListPagination.jsx";
+import { usePagination } from "../../hooks/usePagination.js";
 
 function matchesQuery(item, rawQuery) {
   const q = String(rawQuery || "")
@@ -31,6 +34,11 @@ export default function FindItem({
       );
   }, [items, query]);
 
+  const page = usePagination(filtered, {
+    pageSize: 25,
+    resetKey: query.trim().toLowerCase(),
+  });
+
   return (
     <div className="space-y-4">
       <label className="relative block">
@@ -59,54 +67,72 @@ export default function FindItem({
           {query.trim() ? "No items match that search." : "No inventory items."}
         </div>
       ) : (
-        <ul className="space-y-2.5">
-          {filtered.map((item) => {
-            const line = lineByItemId?.get(item.id);
-            const statusMeta = line?.attentionStatus
-              ? ATTENTION_STATUS_META[line.attentionStatus]
-              : null;
-            return (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpenReview?.(item)}
-                  className="flex w-full items-start justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/50 p-3.5 text-left transition hover:border-sky-700"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-semibold text-white">
-                      {item.itemName || "—"}
-                    </div>
-                    <div className="mt-0.5 text-xs tabular-nums text-slate-400">
-                      {item.itemCode || "—"}
-                      {item.barcode
-                        ? ` · ${item.barcode}`
-                        : ""}
-                    </div>
-                    {statusMeta ? (
-                      <div
-                        className={`mt-1 text-xs font-medium ${statusMeta.textClass}`}
-                      >
-                        Today: {statusMeta.label}
+        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+          <ul className="divide-y divide-slate-800/80">
+            {page.pageItems.map((item) => {
+              const line = lineByItemId?.get(item.id);
+              const resolved = resolveAttentionStatus(item, line);
+              const statusMeta = resolved.status
+                ? ATTENTION_STATUS_META[resolved.status]
+                : null;
+              return (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    onClick={() => onOpenReview?.(item)}
+                    className="flex w-full items-start justify-between gap-3 px-3 py-3.5 text-left transition hover:bg-slate-800/50"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-white">
+                        {item.itemName || "—"}
                       </div>
-                    ) : (
-                      <div className="mt-1 text-xs text-slate-500">
-                        Not reviewed today
+                      <div className="mt-0.5 text-xs tabular-nums text-slate-400">
+                        {item.itemCode || "—"}
+                        {item.barcode ? ` · ${item.barcode}` : ""}
                       </div>
-                    )}
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <div className="text-[10px] uppercase tracking-wide text-slate-500">
-                      On hand
+                      {statusMeta ? (
+                        <div
+                          className={`mt-1 text-xs font-medium ${statusMeta.textClass}`}
+                        >
+                          {resolved.source === "staff" ? "Staff" : "Auto"}:{" "}
+                          {statusMeta.label}
+                        </div>
+                      ) : (
+                        <div className="mt-1 text-xs text-slate-500">
+                          Not reviewed today
+                        </div>
+                      )}
                     </div>
-                    <div className="text-base font-semibold tabular-nums text-sky-200">
-                      {formatMoney(item.currentStock, currencyDecimals)}
+                    <div className="shrink-0 text-right">
+                      <div className="text-[10px] uppercase tracking-wide text-slate-500">
+                        On hand
+                      </div>
+                      <div className="text-base font-semibold tabular-nums text-sky-200">
+                        {formatStockDisplay(item, currencyDecimals).label}
+                      </div>
+                      {formatPackHint(item) ? (
+                        <div className="mt-0.5 text-[10px] font-medium text-sky-300/90">
+                          {formatPackHint(item)}
+                        </div>
+                      ) : null}
                     </div>
-                  </div>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+          <ListPagination
+            page={page.page}
+            pageCount={page.pageCount}
+            total={page.total}
+            from={page.from}
+            to={page.to}
+            hasPrev={page.hasPrev}
+            hasNext={page.hasNext}
+            onPrev={page.goPrev}
+            onNext={page.goNext}
+          />
+        </div>
       )}
     </div>
   );

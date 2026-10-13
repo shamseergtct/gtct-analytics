@@ -11,6 +11,8 @@ import {
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
 import DateInput from "../components/DateInput.jsx";
+import ListPagination from "../components/ListPagination.jsx";
+import { usePagination } from "../hooks/usePagination.js";
 import { formatDateValue } from "../utils/dateFormat.js";
 
 import { generatePartyPDF } from "../utils/partyPdfGenerator";
@@ -482,7 +484,10 @@ const report = useMemo(() => {
   };
 }, [rows, type]);
 
-
+  const reportPage = usePagination(report.rows, {
+    pageSize: 25,
+    resetKey: `${selectedParty?.id || ""}|${fromDate}|${toDate}|${type}`,
+  });
 
   const canLoad = Boolean(activeClientId && selectedParty?.name && fromDate && toDate);
   const canDownload = Boolean(canLoad && report?.rows?.length);
@@ -760,7 +765,7 @@ const report = useMemo(() => {
             <div className="px-4 py-6 text-slate-400">No records found.</div>
           ) : (
             <>
-              {report.rows.map((t) => (
+              {reportPage.pageItems.map((t) => (
                 <div
                   key={t.id}
                   className="grid grid-cols-12 gap-2 px-4 py-3 border-b border-slate-900 hover:bg-slate-900/40"
@@ -779,6 +784,17 @@ const report = useMemo(() => {
                   </div>
                 </div>
               ))}
+              <ListPagination
+                page={reportPage.page}
+                pageCount={reportPage.pageCount}
+                total={reportPage.total}
+                from={reportPage.from}
+                to={reportPage.to}
+                hasPrev={reportPage.hasPrev}
+                hasNext={reportPage.hasNext}
+                onPrev={reportPage.goPrev}
+                onNext={reportPage.goNext}
+              />
             </>
           )}
         </div>

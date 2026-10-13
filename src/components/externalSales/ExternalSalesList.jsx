@@ -30,6 +30,8 @@ import {
   summarizeDeliveryBoysForCollection,
   summarizeExternalBills,
 } from "../../utils/externalSales.js";
+import ListPagination from "../ListPagination.jsx";
+import { usePagination } from "../../hooks/usePagination.js";
 import {
   BTN_PRIMARY,
   BTN_SECONDARY,
@@ -192,6 +194,113 @@ function StandingBalanceCard({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function TerminalBillsPanel({
+  panelId,
+  bills,
+  currencyPrefix,
+  currencyDecimals,
+  filterResetKey,
+  onVoid,
+}) {
+  const billsPage = usePagination(bills, {
+    pageSize: 25,
+    resetKey: filterResetKey,
+  });
+
+  return (
+    <div id={panelId} className="border-t border-slate-800">
+      <div className="overflow-x-auto overscroll-x-contain">
+        <table className="min-w-[900px] w-full text-left text-sm text-slate-300">
+          <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
+            <tr>
+              <th className="px-4 py-3">Bill No.</th>
+              <th className="px-4 py-3">Type</th>
+              <th className="px-4 py-3">Payment</th>
+              <th className="px-4 py-3">Amount</th>
+              <th className="px-4 py-3">Customer</th>
+              <th className="px-4 py-3">Location</th>
+              <th className="px-4 py-3">Delivery Boy</th>
+              <th className="px-4 py-3">Delivery Charge</th>
+              <th className="px-4 py-3">Commission</th>
+              <th className="px-4 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {billsPage.pageItems.map((bill) => (
+              <tr
+                key={bill.id}
+                className={`border-t border-slate-800/80 hover:bg-slate-950/40 ${
+                  bill.voided ? "opacity-60" : ""
+                }`}
+              >
+                <td className="px-4 py-3 font-medium tabular-nums text-white">
+                  {bill.billNumber}
+                  {bill.voided ? (
+                    <span className="ml-2 text-xs text-amber-300">
+                      Voided
+                    </span>
+                  ) : null}
+                </td>
+                <td className="px-4 py-3">
+                  {externalSaleTypeLabel(bill.saleType)}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {externalPaymentModeLabel(bill)}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {currencyPrefix}
+                  {formatMoney(bill.billAmount, currencyDecimals)}
+                </td>
+                <td className="px-4 py-3">
+                  {bill.customerName || "—"}
+                </td>
+                <td className="px-4 py-3">
+                  {bill.customerLocation || "—"}
+                </td>
+                <td className="px-4 py-3">
+                  {bill.deliveryBoyNameSnapshot || "—"}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {currencyPrefix}
+                  {formatMoney(bill.deliveryCharge, currencyDecimals)}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  {currencyPrefix}
+                  {formatMoney(bill.commissionAmount, currencyDecimals)}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  {bill.voided ? (
+                    <span className="text-xs text-slate-500">—</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => onVoid(bill)}
+                      className={BTN_SECONDARY}
+                    >
+                      Void
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <ListPagination
+        page={billsPage.page}
+        pageCount={billsPage.pageCount}
+        total={billsPage.total}
+        from={billsPage.from}
+        to={billsPage.to}
+        hasPrev={billsPage.hasPrev}
+        hasNext={billsPage.hasNext}
+        onPrev={billsPage.goPrev}
+        onNext={billsPage.goNext}
+      />
     </div>
   );
 }
@@ -514,6 +623,16 @@ export default function ExternalSalesList({
     () => groupBillsByTerminal(filtered, terminals),
     [filtered, terminals]
   );
+
+  const billListResetKey = [
+    filterDate,
+    search.trim().toLowerCase(),
+    terminalFilter,
+    saleTypeFilter,
+    paymentModeFiltersSelected.join(","),
+    boyFilter,
+    showVoided ? "1" : "0",
+  ].join("|");
 
   const summary = useMemo(
     () => summarizeExternalBills(dayBills),
@@ -1098,97 +1217,14 @@ export default function ExternalSalesList({
                   </button>
 
                   {isOpen ? (
-                    <div
-                      id={panelId}
-                      className="overflow-x-auto overscroll-x-contain border-t border-slate-800"
-                    >
-                      <table className="min-w-[900px] w-full text-left text-sm text-slate-300">
-                        <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
-                          <tr>
-                            <th className="px-4 py-3">Bill No.</th>
-                            <th className="px-4 py-3">Type</th>
-                            <th className="px-4 py-3">Payment</th>
-                            <th className="px-4 py-3">Amount</th>
-                            <th className="px-4 py-3">Customer</th>
-                            <th className="px-4 py-3">Location</th>
-                            <th className="px-4 py-3">Delivery Boy</th>
-                            <th className="px-4 py-3">Delivery Charge</th>
-                            <th className="px-4 py-3">Commission</th>
-                            <th className="px-4 py-3 text-right">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {group.bills.map((bill) => (
-                            <tr
-                              key={bill.id}
-                              className={`border-t border-slate-800/80 hover:bg-slate-950/40 ${
-                                bill.voided ? "opacity-60" : ""
-                              }`}
-                            >
-                              <td className="px-4 py-3 font-medium tabular-nums text-white">
-                                {bill.billNumber}
-                                {bill.voided ? (
-                                  <span className="ml-2 text-xs text-amber-300">
-                                    Voided
-                                  </span>
-                                ) : null}
-                              </td>
-                              <td className="px-4 py-3">
-                                {externalSaleTypeLabel(bill.saleType)}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                {externalPaymentModeLabel(bill)}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                {currencyPrefix}
-                                {formatMoney(
-                                  bill.billAmount,
-                                  currencyDecimals
-                                )}
-                              </td>
-                              <td className="px-4 py-3">
-                                {bill.customerName || "—"}
-                              </td>
-                              <td className="px-4 py-3">
-                                {bill.customerLocation || "—"}
-                              </td>
-                              <td className="px-4 py-3">
-                                {bill.deliveryBoyNameSnapshot || "—"}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                {currencyPrefix}
-                                {formatMoney(
-                                  bill.deliveryCharge,
-                                  currencyDecimals
-                                )}
-                              </td>
-                              <td className="px-4 py-3 whitespace-nowrap">
-                                {currencyPrefix}
-                                {formatMoney(
-                                  bill.commissionAmount,
-                                  currencyDecimals
-                                )}
-                              </td>
-                              <td className="px-4 py-3 text-right">
-                                {bill.voided ? (
-                                  <span className="text-xs text-slate-500">
-                                    —
-                                  </span>
-                                ) : (
-                                  <button
-                                    type="button"
-                                    onClick={() => voidBill(bill)}
-                                    className={BTN_SECONDARY}
-                                  >
-                                    Void
-                                  </button>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <TerminalBillsPanel
+                      panelId={panelId}
+                      bills={group.bills}
+                      currencyPrefix={currencyPrefix}
+                      currencyDecimals={currencyDecimals}
+                      filterResetKey={`${billListResetKey}|${groupKey}`}
+                      onVoid={voidBill}
+                    />
                   ) : null}
                 </div>
               );

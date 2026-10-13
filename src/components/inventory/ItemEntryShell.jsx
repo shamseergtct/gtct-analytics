@@ -1,5 +1,18 @@
 import { ImageIcon, Upload, X } from "lucide-react";
-import { LABEL_CLASS, FIELD_CLASS, INVENTORY_CATEGORIES } from "./inventoryStyles.js";
+import {
+  LABEL_CLASS,
+  FIELD_CLASS,
+  INVENTORY_CATEGORIES,
+  CAFE_UNITS,
+} from "./inventoryStyles.js";
+import {
+  PURCHASE_UNITS,
+  convertStockQtyForPackToggle,
+  formatPackHint,
+  hasPackConversion,
+  purchaseQtyToBaseStock,
+} from "../../utils/inventoryPack.js";
+import { formatMoney, numMoney } from "../../utils/money.js";
 
 /** Shared chrome for item-entry layouts (header actions + image + footer). */
 export default function ItemEntryShell({
@@ -34,7 +47,9 @@ export default function ItemEntryShell({
             </div>
           ) : null}
           <h2 className="font-semibold text-slate-100">{title}</h2>
-          <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+          {subtitle ? (
+            <p className="mt-1 text-sm text-slate-400">{subtitle}</p>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button
@@ -93,10 +108,11 @@ export default function ItemEntryShell({
                   className="sr-only"
                 />
               </label>
-              <p className="mt-2 truncate text-xs text-slate-400">{imageStatus}</p>
-              <p className="mt-1 text-xs text-slate-600">
-                JPG, PNG or WebP up to 5 MB.
-              </p>
+              {imageStatus && imageStatus !== "No image selected" ? (
+                <p className="mt-2 truncate text-xs text-slate-400">
+                  {imageStatus}
+                </p>
+              ) : null}
             </div>
           </div>
         </div>
@@ -131,6 +147,9 @@ export function CoreItemFields({
   category,
   setCategory,
   categories = INVENTORY_CATEGORIES,
+  subCategory = "",
+  setSubCategory,
+  subCategorySuggestions = [],
   itemCode,
   setItemCode,
   itemName,
@@ -141,32 +160,91 @@ export function CoreItemFields({
   setSellingPrice,
   stockQty = "",
   setStockQty,
+  baseUnit = "pcs",
+  setBaseUnit,
+  purchaseUnit = "",
+  setPurchaseUnit,
+  subQty = "",
+  setSubQty,
   isEditing = false,
-  directSale = true,
+  directSale = false,
   setDirectSale,
+  attentionLowQty = "",
+  setAttentionLowQty,
+  attentionUrgentQty = "",
+  setAttentionUrgentQty,
+  attentionVeryUrgentQty = "",
+  setAttentionVeryUrgentQty,
   itemCodeLabel = "Item Code",
-  itemCodePlaceholder = "e.g. ITM-001",
+  itemCodePlaceholder = "Code",
   sellingLabel = "Selling Price",
 }) {
+  const packItem = {
+    purchaseUnit,
+    subQty,
+    baseUnit: baseUnit || "pcs",
+  };
+  const packPreview = formatPackHint(packItem);
+  const packActive = hasPackConversion(packItem);
+  const enteredQty = numMoney(stockQty);
+  const convertedStock = packActive
+    ? purchaseQtyToBaseStock(enteredQty, packItem)
+    : enteredQty;
+  const suggestionId = "inventory-subcategory-suggestions";
+
+  function changePurchaseUnit(nextUnit) {
+    const next = String(nextUnit || "").trim();
+    const wasActive = hasPackConversion(packItem);
+    const nextActive = hasPackConversion({
+      purchaseUnit: next,
+      subQty,
+    });
+    if (setStockQty && stockQty !== "") {
+      setStockQty(
+        convertStockQtyForPackToggle({
+          qty: stockQty,
+          wasPackActive: wasActive,
+          nextPackActive: nextActive,
+          fromSubQty: subQty,
+          toSubQty: subQty,
+        })
+      );
+    }
+    setPurchaseUnit?.(next);
+    if (!next) setSubQty?.("");
+  }
+
+  function changeSubQty(nextSubQty) {
+    const wasActive = hasPackConversion(packItem);
+    const nextActive = hasPackConversion({
+      purchaseUnit,
+      subQty: nextSubQty,
+    });
+    if (setStockQty && stockQty !== "") {
+      setStockQty(
+        convertStockQtyForPackToggle({
+          qty: stockQty,
+          wasPackActive: wasActive,
+          nextPackActive: nextActive,
+          fromSubQty: subQty,
+          toSubQty: nextSubQty,
+        })
+      );
+    }
+    setSubQty?.(nextSubQty);
+  }
+
   return (
     <>
       <div className="md:col-span-2">
-        <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3">
+        <label className="flex cursor-pointer items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3">
           <input
             type="checkbox"
             checked={Boolean(directSale)}
             onChange={(event) => setDirectSale?.(event.target.checked)}
-            className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
+            className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
           />
-          <span className="min-w-0">
-            <span className="block text-sm font-medium text-slate-100">
-              Direct sale
-            </span>
-            <span className="mt-0.5 block text-xs text-slate-400">
-              Checked: appears in Sales and reduces stock on billing. Unchecked:
-              ingredient / prep only — not sold at POS.
-            </span>
-          </span>
+          <span className="text-sm font-medium text-slate-100">Direct sale</span>
         </label>
       </div>
       <div className="min-w-0">
@@ -190,6 +268,22 @@ export function CoreItemFields({
           placeholder={itemCodePlaceholder}
           required
         />
+      </div>
+      <div className="min-w-0 md:col-span-2">
+        <label className={LABEL_CLASS}>Sub category</label>
+        <input
+          value={subCategory}
+          onChange={(event) => setSubCategory?.(event.target.value)}
+          className={FIELD_CLASS}
+          placeholder="Sub category"
+          list={suggestionId}
+          maxLength={60}
+        />
+        <datalist id={suggestionId}>
+          {subCategorySuggestions.map((option) => (
+            <option key={option} value={option} />
+          ))}
+        </datalist>
       </div>
       <div className="md:col-span-2">
         <label className={LABEL_CLASS}>Name</label>
@@ -229,9 +323,66 @@ export function CoreItemFields({
           required
         />
       </div>
+      <div className="md:col-span-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3">
+        <div className="text-sm font-medium text-slate-100">Purchase pack</div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="min-w-0">
+            <label className={LABEL_CLASS}>Purchase unit</label>
+            <select
+              value={purchaseUnit || ""}
+              onChange={(event) => changePurchaseUnit(event.target.value)}
+              className={FIELD_CLASS}
+            >
+              <option value="">None</option>
+              {PURCHASE_UNITS.map((unit) => (
+                <option key={unit} value={unit}>
+                  {unit}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-0">
+            <label className={LABEL_CLASS}>Sub qty</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={subQty}
+              onChange={(event) => changeSubQty(event.target.value)}
+              className={`${FIELD_CLASS} text-right`}
+              placeholder="0"
+              disabled={!purchaseUnit}
+            />
+          </div>
+          <div className="min-w-0">
+            <label className={LABEL_CLASS}>Stock unit</label>
+            <select
+              value={baseUnit || "pcs"}
+              onChange={(event) => setBaseUnit?.(event.target.value)}
+              className={FIELD_CLASS}
+            >
+              {CAFE_UNITS.map((unit) => (
+                <option key={unit} value={unit}>
+                  {unit}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {packPreview ? (
+          <p className="mt-2 text-xs font-medium text-sky-300">{packPreview}</p>
+        ) : null}
+      </div>
+
       <div className="min-w-0 md:col-span-2">
         <label className={LABEL_CLASS}>
           {isEditing ? "Current qty" : "Opening qty"}
+          {packActive
+            ? ` (${purchaseUnit})`
+            : baseUnit
+              ? ` (${baseUnit})`
+              : ""}
         </label>
         <input
           type="number"
@@ -243,11 +394,61 @@ export function CoreItemFields({
           className={`${FIELD_CLASS} text-right`}
           placeholder="0"
         />
-        <p className="mt-1 text-xs text-slate-500">
-          {isEditing
-            ? "Editing qty updates on-hand stock and records a stock adjustment."
-            : "Optional. Sets opening stock when you save a new item."}
-        </p>
+        {packActive && stockQty !== "" && Number.isFinite(enteredQty) ? (
+          <p className="mt-1 text-xs font-medium text-sky-300">
+            {formatMoney(enteredQty, 3)} {purchaseUnit} ={" "}
+            {formatMoney(convertedStock, 3)} {baseUnit || "pcs"}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="md:col-span-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-3">
+        <div className="text-sm font-medium text-slate-100">
+          Stock status thresholds
+        </div>
+        <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div className="min-w-0">
+            <label className={LABEL_CLASS}>Low at qty</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={attentionLowQty}
+              onChange={(event) => setAttentionLowQty?.(event.target.value)}
+              className={`${FIELD_CLASS} text-right`}
+              placeholder="0"
+            />
+          </div>
+          <div className="min-w-0">
+            <label className={LABEL_CLASS}>Urgent at qty</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={attentionUrgentQty}
+              onChange={(event) => setAttentionUrgentQty?.(event.target.value)}
+              className={`${FIELD_CLASS} text-right`}
+              placeholder="0"
+            />
+          </div>
+          <div className="min-w-0">
+            <label className={LABEL_CLASS}>Very urgent at qty</label>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="any"
+              value={attentionVeryUrgentQty}
+              onChange={(event) =>
+                setAttentionVeryUrgentQty?.(event.target.value)
+              }
+              className={`${FIELD_CLASS} text-right`}
+              placeholder="0"
+            />
+          </div>
+        </div>
       </div>
     </>
   );

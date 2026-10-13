@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, Bell, ChevronRight, X } from "lucide-react";
+import { AlertTriangle, Bell, ChevronRight, Package, X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
+import { useShift } from "../context/shift-context.js";
 import { useReopenedEodReports } from "../hooks/useReopenedEodReports.js";
+import { useUrgentStockNotifications } from "../hooks/useUrgentStockNotifications.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
+import { ATTENTION_STATUS_META } from "../utils/inventoryDailyReview.js";
 
 function eodPathForDate(date) {
   const clean = String(date || "").slice(0, 10);
@@ -14,7 +17,13 @@ function eodPathForDate(date) {
 export default function NotificationPanel() {
   const { role } = useAuth();
   const { activeClientId } = useClient();
-  const { reports, count } = useReopenedEodReports(activeClientId);
+  const { activeShift } = useShift();
+  const businessDate = String(activeShift?.businessDate || "").trim();
+
+  const { reports, count: eodCount } = useReopenedEodReports(activeClientId);
+  const { alerts: urgentAlerts, count: urgentCount } =
+    useUrgentStockNotifications(activeClientId, businessDate);
+
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
 
@@ -23,6 +32,12 @@ export default function NotificationPanel() {
     role === "shop_admin" ||
     role === "super_admin" ||
     role === "partner";
+
+  const canManagePo =
+    role === "admin" || role === "shop_admin" || role === "super_admin";
+
+  const stockAlerts = canManagePo ? urgentAlerts : [];
+  const count = eodCount + stockAlerts.length;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -98,6 +113,38 @@ export default function NotificationPanel() {
               </p>
             ) : (
               <ul className="divide-y divide-slate-800">
+                {stockAlerts.map((alert) => {
+                  const meta = ATTENTION_STATUS_META[alert.status];
+                  return (
+                    <li key={alert.id}>
+                      <Link
+                        to={alert.href}
+                        onClick={() => setOpen(false)}
+                        className="group flex w-full cursor-pointer items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-800/80"
+                      >
+                        <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-rose-700/50 bg-rose-950/50 text-rose-300">
+                          <Package size={14} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-semibold text-rose-100 group-hover:text-rose-50">
+                            {alert.itemName}
+                          </span>
+                          <span className="mt-0.5 block text-xs text-slate-400 group-hover:text-slate-300">
+                            <span className={meta?.textClass || "text-rose-300"}>
+                              {alert.statusLabel}
+                            </span>
+                            {alert.itemCode ? ` · ${alert.itemCode}` : ""}
+                            {" — open Purchase Orders to add"}
+                          </span>
+                        </span>
+                        <ChevronRight
+                          size={16}
+                          className="mt-1 shrink-0 text-slate-500 group-hover:text-slate-300"
+                        />
+                      </Link>
+                    </li>
+                  );
+                })}
                 {reports.map((report) => {
                   const date = String(report.date || "").slice(0, 10);
                   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;

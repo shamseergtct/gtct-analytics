@@ -11,7 +11,9 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext";
+import ListPagination from "../components/ListPagination.jsx";
 import MasterEntryForm from "../components/MasterEntryForm";
+import { usePagination } from "../hooks/usePagination.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
@@ -87,6 +89,11 @@ export default function Transactions() {
   const [err, setErr] = useState("");
 
   const [editingTxn, setEditingTxn] = useState(null);
+
+  const txnsPage = usePagination(txns, {
+    pageSize: 25,
+    resetKey: selectedDate,
+  });
 
   // ✅ prevent overwriting saved date during client switching
   const didHydrateRef = useRef(false);
@@ -254,7 +261,8 @@ export default function Transactions() {
           {txns.length === 0 ? (
             <div className="px-4 py-6 text-slate-400">No transactions found.</div>
           ) : (
-            txns.map((t) => {
+            <>
+            {txnsPage.pageItems.map((t) => {
               const disc = discountInfo(t);
               const isEditingThis = editingTxn?.id === t.id;
 
@@ -343,7 +351,19 @@ export default function Transactions() {
                   </div>
                 </div>
               );
-            })
+            })}
+            <ListPagination
+              page={txnsPage.page}
+              pageCount={txnsPage.pageCount}
+              total={txnsPage.total}
+              from={txnsPage.from}
+              to={txnsPage.to}
+              hasPrev={txnsPage.hasPrev}
+              hasNext={txnsPage.hasNext}
+              onPrev={txnsPage.goPrev}
+              onNext={txnsPage.goNext}
+            />
+            </>
           )}
         </div>
       </div>

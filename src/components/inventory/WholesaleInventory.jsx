@@ -15,13 +15,12 @@ export default function WholesaleInventory(props) {
     <ItemEntryShell
       {...props}
       onSubmit={saveItem}
-      badge={<span className="text-violet-400/80">Wholesale / retail hybrid</span>}
+      badge={<span className="text-violet-400/80">Wholesale / retail</span>}
       title="Item Entry"
-      subtitle="Piece & carton conversion with retail and wholesale price tiers."
     >
       <CoreItemFields
         {...props}
-        itemCodePlaceholder="e.g. WH-001"
+        itemCodePlaceholder="Code"
         sellingLabel="Retail Price"
       />
 
@@ -40,7 +39,7 @@ export default function WholesaleInventory(props) {
       </div>
 
       <div className="min-w-0">
-        <label className={LABEL_CLASS}>Wholesale Price (per piece)</label>
+        <label className={LABEL_CLASS}>Wholesale Price</label>
         <input
           type="number"
           inputMode="decimal"
@@ -51,11 +50,6 @@ export default function WholesaleInventory(props) {
           className={`${FIELD_CLASS} text-right`}
           placeholder="0.00"
         />
-      </div>
-
-      <div className="md:col-span-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-xs text-slate-400">
-        Stock is tracked in <span className="text-slate-200">pieces</span>. Sales
-        carton mode multiplies by pieces-per-carton and can use the wholesale tier.
       </div>
     </ItemEntryShell>
   );

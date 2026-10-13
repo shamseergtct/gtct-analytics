@@ -6,6 +6,8 @@ import { useClient } from "../context/ClientContext.jsx";
 import { fetchTxnRange } from "../utils/txnReportsApi.js";
 import { generateTxnRangePDF } from "../utils/txnRangePdf.js";
 import DateInput from "../components/DateInput.jsx";
+import ListPagination from "../components/ListPagination.jsx";
+import { usePagination } from "../hooks/usePagination.js";
 import { formatIsoRange } from "../utils/dateFormat.js";
 import { formatMoney, formatMoneyLocale } from "../utils/money.js";
 
@@ -242,6 +244,16 @@ export default function PayablesReceivables() {
     [receivableRows]
   );
 
+  const rangeResetKey = `${fromDate}|${toDate}|${partyId}`;
+  const payablePage = usePagination(payableRows, {
+    pageSize: 25,
+    resetKey: rangeResetKey,
+  });
+  const receivablePage = usePagination(receivableRows, {
+    pageSize: 25,
+    resetKey: rangeResetKey,
+  });
+
   function onDownloadPDF() {
     const rText = rangeText(fromDate, toDate);
 
@@ -432,7 +444,7 @@ export default function PayablesReceivables() {
                     </td>
                   </tr>
                 ) : (
-                  payableRows.map((r) => (
+                  payablePage.pageItems.map((r) => (
                     <tr key={r.id} className="border-t border-slate-800 text-slate-100">
                       <td className="px-4 py-3">{r.partyName}</td>
                       <td className="px-4 py-3 text-right">{money(r.amount)}</td>
@@ -442,6 +454,19 @@ export default function PayablesReceivables() {
               </tbody>
             </table>
           </div>
+          {payableRows.length > 0 ? (
+            <ListPagination
+              page={payablePage.page}
+              pageCount={payablePage.pageCount}
+              total={payablePage.total}
+              from={payablePage.from}
+              to={payablePage.to}
+              hasPrev={payablePage.hasPrev}
+              hasNext={payablePage.hasNext}
+              onPrev={payablePage.goPrev}
+              onNext={payablePage.goNext}
+            />
+          ) : null}
         </div>
       )}
 
@@ -469,7 +494,7 @@ export default function PayablesReceivables() {
                     </td>
                   </tr>
                 ) : (
-                  receivableRows.map((r) => (
+                  receivablePage.pageItems.map((r) => (
                     <tr key={r.id} className="border-t border-slate-800 text-slate-100">
                       <td className="px-4 py-3">{r.partyName}</td>
                       <td className="px-4 py-3 text-right">{money(r.amount)}</td>
@@ -479,6 +504,19 @@ export default function PayablesReceivables() {
               </tbody>
             </table>
           </div>
+          {receivableRows.length > 0 ? (
+            <ListPagination
+              page={receivablePage.page}
+              pageCount={receivablePage.pageCount}
+              total={receivablePage.total}
+              from={receivablePage.from}
+              to={receivablePage.to}
+              hasPrev={receivablePage.hasPrev}
+              hasNext={receivablePage.hasNext}
+              onPrev={receivablePage.goPrev}
+              onNext={receivablePage.goNext}
+            />
+          ) : null}
         </div>
       )}
     </div>

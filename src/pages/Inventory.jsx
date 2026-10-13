@@ -42,9 +42,20 @@ import {
   exportInventoryCsv,
   parseInventoryCsv,
 } from "../utils/inventoryBulk.js";
+import {
+  listItemSubCategories,
+  normalizeSubCategory,
+} from "../utils/inventorySubCategory.js";
+import {
+  baseStockToPurchaseQty,
+  hasPackConversion,
+  purchaseQtyToBaseStock,
+} from "../utils/inventoryPack.js";
 import { getInventoryLayout } from "../components/inventory/index.js";
 import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
 import { formatMoney, formatMoneyLocale } from "../utils/money.js";
+import ListPagination from "../components/ListPagination.jsx";
+import { usePagination } from "../hooks/usePagination.js";
 
 const CATEGORIES = ["COMMODITY", "CONSUMABLES", "ASSET"];
 const FAST_WINDOW_DAYS = 30;
@@ -220,6 +231,7 @@ export default function Inventory() {
   const [error, setError] = useState("");
 
   const [category, setCategory] = useState(CATEGORIES[0]);
+  const [subCategory, setSubCategory] = useState("");
   const [itemCode, setItemCode] = useState("");
   const [itemName, setItemName] = useState("");
   const [cost, setCost] = useState("");
@@ -230,12 +242,17 @@ export default function Inventory() {
   const [batchNo, setBatchNo] = useState("");
   const [expiryDate, setExpiryDate] = useState("");
   const [baseUnit, setBaseUnit] = useState("pcs");
+  const [purchaseUnit, setPurchaseUnit] = useState("");
+  const [subQty, setSubQty] = useState("");
   const [recipeNotes, setRecipeNotes] = useState("");
   const [unitsPerCarton, setUnitsPerCarton] = useState("12");
   const [wholesalePrice, setWholesalePrice] = useState("");
   const [stockQty, setStockQty] = useState("");
   const [originalStockQty, setOriginalStockQty] = useState(null);
-  const [directSale, setDirectSale] = useState(true);
+  const [directSale, setDirectSale] = useState(false);
+  const [attentionLowQty, setAttentionLowQty] = useState("");
+  const [attentionUrgentQty, setAttentionUrgentQty] = useState("");
+  const [attentionVeryUrgentQty, setAttentionVeryUrgentQty] = useState("");
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState("");
   const [imageStatus, setImageStatus] = useState("No image selected");
@@ -425,10 +442,15 @@ export default function Inventory() {
     const q = catalogSearch.trim().toLowerCase();
     if (!q) return items;
     return items.filter((item) => {
-      const hay = `${item.itemCode || ""} ${item.itemName || ""} ${item.barcode || ""} ${item.category || ""}`.toLowerCase();
+      const hay = `${item.itemCode || ""} ${item.itemName || ""} ${item.barcode || ""} ${item.category || ""} ${item.subCategory || ""}`.toLowerCase();
       return hay.includes(q);
     });
   }, [items, catalogSearch]);
+
+  const catalogPage = usePagination(catalogItems, {
+    pageSize: 25,
+    resetKey: catalogSearch.trim().toLowerCase(),
+  });
 
   const auditMetrics = useMemo(
     () =>
@@ -471,6 +493,11 @@ export default function Inventory() {
     });
   }, [auditMovements, auditTypeFilter, auditFromDate, auditToDate]);
 
+  const auditPage = usePagination(filteredAuditMovements, {
+    pageSize: 25,
+    resetKey: `${auditItemId}:${auditTypeFilter}:${auditFromDate}:${auditToDate}`,
+  });
+
   function clearItemForm() {
     setEditingItemId("");
     setExistingImage({
@@ -480,6 +507,7 @@ export default function Inventory() {
       imageStatus: "NONE",
     });
     setCategory(CATEGORIES[0]);
+    setSubCategory("");
     setItemCode("");
     setItemName("");
     setCost("");
@@ -489,12 +517,17 @@ export default function Inventory() {
     setBatchNo("");
     setExpiryDate("");
     setBaseUnit("pcs");
+    setPurchaseUnit("");
+    setSubQty("");
     setRecipeNotes("");
     setUnitsPerCarton("12");
     setWholesalePrice("");
     setStockQty("");
     setOriginalStockQty(null);
-    setDirectSale(true);
+    setDirectSale(false);
+    setAttentionLowQty("");
+    setAttentionUrgentQty("");
+    setAttentionVeryUrgentQty("");
     setImageFile(null);
     setImagePreview("");
     setImageStatus("No image selected");
@@ -507,6 +540,7 @@ export default function Inventory() {
     setCategory(
       CATEGORIES.includes(item.category) ? item.category : CATEGORIES[0]
     );
+    setSubCategory(normalizeSubCategory(item.subCategory));
     setItemCode(String(item.itemCode || ""));
     setItemName(String(item.itemName || ""));
     setCost(String(num(item.cost)));
@@ -516,6 +550,12 @@ export default function Inventory() {
     setBatchNo(String(item.batchNo || ""));
     setExpiryDate(String(item.expiryDate || ""));
     setBaseUnit(String(item.baseUnit || "pcs"));
+    setPurchaseUnit(String(item.purchaseUnit || "").trim());
+    setSubQty(
+      item.subQty == null || item.subQty === "" || !(num(item.subQty) > 0)
+        ? ""
+        : String(num(item.subQty))
+    );
     setRecipeNotes(String(item.recipeNotes || ""));
     setUnitsPerCarton(String(Math.max(1, num(item.unitsPerCarton) || 12)));
     setWholesalePrice(
@@ -523,9 +563,33 @@ export default function Inventory() {
         ? ""
         : String(num(item.wholesalePrice))
     );
-    setStockQty(String(num(item.currentStock)));
-    setOriginalStockQty(num(item.currentStock));
+    {
+      const onHand = num(item.currentStock);
+      setOriginalStockQty(onHand);
+      // Entry form uses purchase units when pack is configured (saved as base stock).
+      if (hasPackConversion(item)) {
+        setStockQty(String(baseStockToPurchaseQty(onHand, item)));
+      } else {
+        setStockQty(String(onHand));
+      }
+    }
+    // Legacy items without the field were treated as direct-sale; keep that on edit.
     setDirectSale(item.directSale !== false);
+    setAttentionLowQty(
+      item.attentionLowQty == null || item.attentionLowQty === ""
+        ? ""
+        : String(num(item.attentionLowQty))
+    );
+    setAttentionUrgentQty(
+      item.attentionUrgentQty == null || item.attentionUrgentQty === ""
+        ? ""
+        : String(num(item.attentionUrgentQty))
+    );
+    setAttentionVeryUrgentQty(
+      item.attentionVeryUrgentQty == null || item.attentionVeryUrgentQty === ""
+        ? ""
+        : String(num(item.attentionVeryUrgentQty))
+    );
     setImageFile(null);
     const url = String(item.imageUrl || "");
     setExistingImage({
@@ -659,15 +723,30 @@ export default function Inventory() {
         batch.set(itemRef, {
           clientId: activeClientId,
           category: row.category,
+          subCategory: normalizeSubCategory(row.subCategory),
           itemCode: row.itemCode,
           itemName: row.itemName,
           cost: row.cost,
           sellingPrice: row.sellingPrice,
-          directSale: true,
+          barcode: String(row.barcode || "").trim(),
+          minStock: Math.max(0, num(row.minStock)),
+          batchNo: String(row.batchNo || "").trim(),
+          expiryDate: String(row.expiryDate || "").trim(),
+          baseUnit: String(row.baseUnit || "pcs").trim() || "pcs",
+          purchaseUnit: String(row.purchaseUnit || "").trim(),
+          subQty: Math.max(0, num(row.subQty)),
+          recipeNotes: String(row.recipeNotes || "").trim(),
+          unitsPerCarton: Math.max(1, num(row.unitsPerCarton) || 12),
+          wholesalePrice: Math.max(0, num(row.wholesalePrice)),
+          directSale: Boolean(row.directSale),
+          attentionLowQty: Math.max(0, num(row.attentionLowQty)),
+          attentionUrgentQty: Math.max(0, num(row.attentionUrgentQty)),
+          attentionVeryUrgentQty: Math.max(0, num(row.attentionVeryUrgentQty)),
           imageUrl: "",
           imagePath: "",
           imageName: "",
           imageStatus: "NONE",
+          // Firestore create rule requires opening stock 0; CSV stock is ignored.
           currentStock: 0,
           createdAt: serverTimestamp(),
           createdAtMs: nowMs,
@@ -751,13 +830,19 @@ export default function Inventory() {
     if (sellingPrice === "" || sellingValue < 0) {
       return setEntryMessage("Enter a valid non-negative Selling Price.");
     }
-    const stockQtyValue = num(stockQty);
+    const stockQtyEntered = num(stockQty);
     if (
       stockQty !== "" &&
-      (!Number.isFinite(stockQtyValue) || stockQtyValue < 0)
+      (!Number.isFinite(stockQtyEntered) || stockQtyEntered < 0)
     ) {
       return setEntryMessage("Qty must be a non-negative number.");
     }
+    const packActive =
+      String(purchaseUnit || "").trim() && num(subQty) > 0;
+    // Pack items: form qty is in purchase units; on-hand stock is always base units.
+    const stockQtyValue = packActive
+      ? purchaseQtyToBaseStock(stockQtyEntered, subQty)
+      : stockQtyEntered;
     const duplicateCode = items.some(
       (item) =>
         item.id !== editingItemId &&
@@ -792,6 +877,7 @@ export default function Inventory() {
 
       const sharedFields = {
         category,
+        subCategory: normalizeSubCategory(subCategory),
         itemCode: cleanCode,
         itemName: cleanName,
         cost: costValue,
@@ -801,10 +887,15 @@ export default function Inventory() {
         batchNo: String(batchNo || "").trim(),
         expiryDate: String(expiryDate || "").trim(),
         baseUnit: String(baseUnit || "pcs").trim() || "pcs",
+        purchaseUnit: String(purchaseUnit || "").trim(),
+        subQty: Math.max(0, num(subQty)),
         recipeNotes: String(recipeNotes || "").trim(),
         unitsPerCarton: Math.max(1, num(unitsPerCarton) || 12),
         wholesalePrice: Math.max(0, num(wholesalePrice)),
         directSale: Boolean(directSale),
+        attentionLowQty: Math.max(0, num(attentionLowQty)),
+        attentionUrgentQty: Math.max(0, num(attentionUrgentQty)),
+        attentionVeryUrgentQty: Math.max(0, num(attentionVeryUrgentQty)),
         imageUrl,
         imagePath,
         imageName,
@@ -858,7 +949,9 @@ export default function Inventory() {
             });
           });
           setEntryMessage(
-            `Item updated. Qty set to ${money(stockQtyValue)}.`
+            packActive
+              ? `Item updated. ${money(stockQtyEntered)} ${String(purchaseUnit).trim()} = ${money(stockQtyValue)} ${String(baseUnit || "pcs").trim()} on hand.`
+              : `Item updated. Qty set to ${money(stockQtyValue)}.`
           );
         } else {
           await updateDoc(itemRef, sharedFields);
@@ -908,7 +1001,9 @@ export default function Inventory() {
             });
           });
           setEntryMessage(
-            `Item saved with opening qty ${money(stockQtyValue)}.`
+            packActive
+              ? `Item saved. ${money(stockQtyEntered)} ${String(purchaseUnit).trim()} = ${money(stockQtyValue)} ${String(baseUnit || "pcs").trim()} on hand.`
+              : `Item saved with opening qty ${money(stockQtyValue)}.`
           );
         } else {
           setEntryMessage("Item saved successfully.");
@@ -1129,6 +1224,11 @@ export default function Inventory() {
     setAuditToDate("");
   }
 
+  const subCategorySuggestions = useMemo(
+    () => listItemSubCategories(items),
+    [items]
+  );
+
   if (!activeClientId) {
     return (
       <div className="p-6">
@@ -1146,6 +1246,9 @@ export default function Inventory() {
     categories: CATEGORIES,
     category,
     setCategory,
+    subCategory,
+    setSubCategory,
+    subCategorySuggestions,
     itemCode,
     setItemCode,
     itemName,
@@ -1164,6 +1267,10 @@ export default function Inventory() {
     setExpiryDate,
     baseUnit,
     setBaseUnit,
+    purchaseUnit,
+    setPurchaseUnit,
+    subQty,
+    setSubQty,
     recipeNotes,
     setRecipeNotes,
     unitsPerCarton,
@@ -1174,6 +1281,12 @@ export default function Inventory() {
     setStockQty,
     directSale,
     setDirectSale,
+    attentionLowQty,
+    setAttentionLowQty,
+    attentionUrgentQty,
+    setAttentionUrgentQty,
+    attentionVeryUrgentQty,
+    setAttentionVeryUrgentQty,
     isEditing: Boolean(editingItemId),
     imagePreview,
     imageStatus,
@@ -1249,7 +1362,7 @@ export default function Inventory() {
               : "No inventory items yet. Save an item on Item Entry to start the catalog."}
           </li>
         ) : (
-          catalogItems.map((item) => {
+          catalogPage.pageItems.map((item) => {
             const low = num(item.currentStock) <= num(item.minStock || 0);
             const inStockList = stockRows.some((row) => row.itemId === item.id);
             const isSelected =
@@ -1288,6 +1401,7 @@ export default function Inventory() {
                       <p className="mt-0.5 font-mono text-xs text-slate-500">
                         {item.itemCode || "No code"}
                         {item.category ? ` · ${item.category}` : ""}
+                        {item.subCategory ? ` / ${item.subCategory}` : ""}
                       </p>
                     </div>
                     <span
@@ -1331,6 +1445,22 @@ export default function Inventory() {
           })
         )}
       </ul>
+      {catalogItems.length > 0 ? (
+        <div className="mt-2 md:hidden">
+          <ListPagination
+            page={catalogPage.page}
+            pageCount={catalogPage.pageCount}
+            total={catalogPage.total}
+            from={catalogPage.from}
+            to={catalogPage.to}
+            hasPrev={catalogPage.hasPrev}
+            hasNext={catalogPage.hasNext}
+            onPrev={catalogPage.goPrev}
+            onNext={catalogPage.goNext}
+            className="rounded-xl border border-slate-800 bg-slate-900/40"
+          />
+        </div>
+      ) : null}
 
       <div className="hidden overflow-x-auto rounded-xl border border-slate-800 md:block">
         <table className="min-w-[820px] w-full text-sm">
@@ -1361,7 +1491,7 @@ export default function Inventory() {
                 </td>
               </tr>
             ) : (
-              catalogItems.map((item) => {
+              catalogPage.pageItems.map((item) => {
                 const low = num(item.currentStock) <= num(item.minStock || 0);
                 const inStockList = stockRows.some((row) => row.itemId === item.id);
                 const isSelected =
@@ -1405,7 +1535,15 @@ export default function Inventory() {
                         {item.itemCode || "No code"}
                       </p>
                     </td>
-                    <td className="p-3 text-slate-300">{item.category || "—"}</td>
+                    <td className="p-3 text-slate-300">
+                      {item.category || "—"}
+                      {item.subCategory ? (
+                        <span className="text-slate-500">
+                          {" "}
+                          / {item.subCategory}
+                        </span>
+                      ) : null}
+                    </td>
                     <td className="p-3 font-mono text-xs text-slate-400">
                       {item.barcode || "—"}
                     </td>
@@ -1446,6 +1584,19 @@ export default function Inventory() {
             )}
           </tbody>
         </table>
+        {catalogItems.length > 0 ? (
+          <ListPagination
+            page={catalogPage.page}
+            pageCount={catalogPage.pageCount}
+            total={catalogPage.total}
+            from={catalogPage.from}
+            to={catalogPage.to}
+            hasPrev={catalogPage.hasPrev}
+            hasNext={catalogPage.hasNext}
+            onPrev={catalogPage.goPrev}
+            onNext={catalogPage.goNext}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -1901,7 +2052,7 @@ export default function Inventory() {
                         </td>
                       </tr>
                     ) : (
-                      filteredAuditMovements.map((movement) => {
+                      auditPage.pageItems.map((movement) => {
                         const storedType = String(
                           movement.type || ""
                         ).toUpperCase();
@@ -1948,6 +2099,19 @@ export default function Inventory() {
                     )}
                   </tbody>
                 </table>
+                {filteredAuditMovements.length > 0 ? (
+                  <ListPagination
+                    page={auditPage.page}
+                    pageCount={auditPage.pageCount}
+                    total={auditPage.total}
+                    from={auditPage.from}
+                    to={auditPage.to}
+                    hasPrev={auditPage.hasPrev}
+                    hasNext={auditPage.hasNext}
+                    onPrev={auditPage.goPrev}
+                    onNext={auditPage.goNext}
+                  />
+                ) : null}
               </div>
             </div>
           ) : loading ? (
@@ -1988,12 +2152,11 @@ export default function Inventory() {
 
             <div className="space-y-4 px-5 py-4">
               <p className="text-sm text-slate-400">
-                Columns:{" "}
-                <span className="text-slate-200">
-                  Category, Item Code, Name, Cost, Selling Price
-                </span>
-                . Categories: {CATEGORIES.join(", ")}. Imported items start with zero
-                stock (no images). Only the active shop is updated.
+                Uses the full export columns (units, pack, thresholds, barcode,
+                etc.). Categories: {CATEGORIES.join(", ")}. Download the
+                template for the latest headers. Older short CSVs still work.
+                New items start at zero stock (no images). Only the active shop
+                is updated.
               </p>
 
               <button

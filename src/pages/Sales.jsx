@@ -23,8 +23,10 @@ import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useShift, useUnsavedWork } from "../context/shift-context.js";
+import ListPagination from "../components/ListPagination.jsx";
 import ModuleExitButton from "../components/ModuleExitButton.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
+import { usePagination } from "../hooks/usePagination.js";
 import { formatDateValue } from "../utils/dateFormat.js";
 import {
   buildTransactionPayload,
@@ -705,6 +707,11 @@ export default function Sales() {
       return s.includes(q);
     });
   }, [invoices, invSearch]);
+
+  const historyPage = usePagination(historyFiltered, {
+    pageSize: 25,
+    resetKey: invSearch.trim().toLowerCase(),
+  });
 
   /**
    * =========================
@@ -2159,7 +2166,7 @@ export default function Sales() {
             <>
               {/* Mobile history cards */}
               <ul className="mt-3 space-y-2 md:hidden">
-                {historyFiltered.map((inv) => {
+                {historyPage.pageItems.map((inv) => {
                   const cancelled = inv.status === "CANCELLED";
                   return (
                     <li
@@ -2256,7 +2263,7 @@ export default function Sales() {
                   </thead>
 
                   <tbody>
-                    {historyFiltered.map((inv) => {
+                    {historyPage.pageItems.map((inv) => {
                       const cancelled = inv.status === "CANCELLED";
                       return (
                         <tr key={inv.id} className="border-b border-slate-900">
@@ -2339,6 +2346,19 @@ export default function Sales() {
                   </tbody>
                 </table>
               </div>
+
+              <ListPagination
+                page={historyPage.page}
+                pageCount={historyPage.pageCount}
+                total={historyPage.total}
+                from={historyPage.from}
+                to={historyPage.to}
+                hasPrev={historyPage.hasPrev}
+                hasNext={historyPage.hasNext}
+                onPrev={historyPage.goPrev}
+                onNext={historyPage.goNext}
+                className="mt-3 rounded-xl border border-slate-800"
+              />
             </>
           )}
         </div>

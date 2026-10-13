@@ -1,8 +1,11 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { AuthProvider } from "../context/AuthContext.jsx";
+import { installDisableNumberInputWheel } from "../utils/disableNumberInputWheel.js";
 import "../index.css";
 import DeliveryApp from "./DeliveryApp.jsx";
+
+installDisableNumberInputWheel();
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

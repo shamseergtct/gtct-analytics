@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import ChecklistItemCard from "./ChecklistItemCard.jsx";
+import SubCategoryFilter from "./SubCategoryFilter.jsx";
+import ListPagination from "../ListPagination.jsx";
+import { usePagination } from "../../hooks/usePagination.js";
 import {
   ATTENTION_STATUS_META,
   isAttentionStatus,
   normalizeRequestedQty,
   subscribeDailyReviewLines,
 } from "../../utils/inventoryDailyReview.js";
-import { formatMoney } from "../../utils/money.js";
+import { itemMatchesSubCategory } from "../../utils/inventorySubCategory.js";
+import { resolveAttentionStatus } from "../../utils/inventoryAttention.js";
+import { formatPackHint, formatStockDisplay } from "../../utils/inventoryPack.js";
 import {
   STAFF_INV_ENTRY_TYPE,
   enqueueStaffReview,
@@ -20,8 +25,9 @@ function emptyDraft() {
 }
 
 function ItemListRow({ item, line, currencyDecimals, onOpen }) {
-  const statusMeta = line?.attentionStatus
-    ? ATTENTION_STATUS_META[line.attentionStatus]
+  const resolved = resolveAttentionStatus(item, line);
+  const statusMeta = resolved.status
+    ? ATTENTION_STATUS_META[resolved.status]
     : null;
 
   return (
@@ -38,13 +44,22 @@ function ItemListRow({ item, line, currencyDecimals, onOpen }) {
           <span className="tabular-nums">{item.itemCode || "—"}</span>
           <span className="text-slate-600">·</span>
           <span className="tabular-nums text-sky-200/90">
-            {formatMoney(item.currentStock, currencyDecimals)}
+            {formatStockDisplay(item, currencyDecimals).label}
           </span>
+          {formatPackHint(item) ? (
+            <>
+              <span className="text-slate-600">·</span>
+              <span className="font-medium text-sky-300/90">
+                {formatPackHint(item)}
+              </span>
+            </>
+          ) : null}
           {statusMeta ? (
             <>
               <span className="text-slate-600">·</span>
               <span className={`font-medium ${statusMeta.textClass}`}>
                 {statusMeta.short}
+                {resolved.source === "staff" ? "" : " · auto"}
               </span>
             </>
           ) : null}
@@ -74,6 +89,7 @@ export default function TodayChecklist({
   const [drafts, setDrafts] = useState({});
   const [saveStates, setSaveStates] = useState({});
   const [activeItemId, setActiveItemId] = useState("");
+  const [subCategoryFilter, setSubCategoryFilter] = useState("all");
 
   const refreshLocalReviews = useCallback(async () => {
     if (!clientId || !businessDate) {
@@ -190,10 +206,16 @@ export default function TodayChecklist({
     });
   }, [items, lineByItemId, saveStates]);
 
+  const filteredItems = useMemo(
+    () =>
+      items.filter((item) => itemMatchesSubCategory(item, subCategoryFilter)),
+    [items, subCategoryFilter]
+  );
+
   const { pendingItems, completedItems } = useMemo(() => {
     const pending = [];
     const completed = [];
-    for (const item of items) {
+    for (const item of filteredItems) {
       const line = lineByItemId.get(item.id);
       if (line?.completed) completed.push(item);
       else pending.push(item);
@@ -205,13 +227,22 @@ export default function TodayChecklist({
       String(a.itemName || "").localeCompare(String(b.itemName || ""))
     );
     return { pendingItems: pending, completedItems: completed };
-  }, [items, lineByItemId]);
+  }, [filteredItems, lineByItemId]);
 
   const reviewedCount = completedItems.length;
-  const totalCount = items.length;
+  const totalCount = filteredItems.length;
   const progressPct = totalCount
     ? Math.round((reviewedCount / totalCount) * 100)
     : 0;
+
+  const pendingPage = usePagination(pendingItems, {
+    pageSize: 25,
+    resetKey: `pending:${subCategoryFilter}`,
+  });
+  const completedPage = usePagination(completedItems, {
+    pageSize: 25,
+    resetKey: `done:${subCategoryFilter}`,
+  });
 
   const activeItem = useMemo(
     () => items.find((row) => row.id === activeItemId) || null,
@@ -378,9 +409,19 @@ export default function TodayChecklist({
         </p>
       </section>
 
-      {!totalCount ? (
+      <SubCategoryFilter
+        items={items}
+        value={subCategoryFilter}
+        onChange={setSubCategoryFilter}
+      />
+
+      {!items.length ? (
         <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-10 text-center text-sm text-slate-500">
           No inventory items for this shop yet.
+        </div>
+      ) : !totalCount ? (
+        <div className="rounded-2xl border border-dashed border-slate-800 px-4 py-10 text-center text-sm text-slate-500">
+          No items in this sub category.
         </div>
       ) : (
         <>
@@ -389,17 +430,30 @@ export default function TodayChecklist({
               Needs review ({pendingItems.length})
             </div>
             {pendingItems.length ? (
-              <div>
-                {pendingItems.map((item) => (
-                  <ItemListRow
-                    key={item.id}
-                    item={item}
-                    line={lineByItemId.get(item.id)}
-                    currencyDecimals={currencyDecimals}
-                    onOpen={() => setActiveItemId(item.id)}
-                  />
-                ))}
-              </div>
+              <>
+                <div>
+                  {pendingPage.pageItems.map((item) => (
+                    <ItemListRow
+                      key={item.id}
+                      item={item}
+                      line={lineByItemId.get(item.id)}
+                      currencyDecimals={currencyDecimals}
+                      onOpen={() => setActiveItemId(item.id)}
+                    />
+                  ))}
+                </div>
+                <ListPagination
+                  page={pendingPage.page}
+                  pageCount={pendingPage.pageCount}
+                  total={pendingPage.total}
+                  from={pendingPage.from}
+                  to={pendingPage.to}
+                  hasPrev={pendingPage.hasPrev}
+                  hasNext={pendingPage.hasNext}
+                  onPrev={pendingPage.goPrev}
+                  onNext={pendingPage.goNext}
+                />
+              </>
             ) : (
               <div className="px-3 py-6 text-center text-sm text-emerald-200">
                 All items reviewed for today.
@@ -412,17 +466,30 @@ export default function TodayChecklist({
               Completed ({completedItems.length})
             </div>
             {completedItems.length ? (
-              <div>
-                {completedItems.map((item) => (
-                  <ItemListRow
-                    key={item.id}
-                    item={item}
-                    line={lineByItemId.get(item.id)}
-                    currencyDecimals={currencyDecimals}
-                    onOpen={() => setActiveItemId(item.id)}
-                  />
-                ))}
-              </div>
+              <>
+                <div>
+                  {completedPage.pageItems.map((item) => (
+                    <ItemListRow
+                      key={item.id}
+                      item={item}
+                      line={lineByItemId.get(item.id)}
+                      currencyDecimals={currencyDecimals}
+                      onOpen={() => setActiveItemId(item.id)}
+                    />
+                  ))}
+                </div>
+                <ListPagination
+                  page={completedPage.page}
+                  pageCount={completedPage.pageCount}
+                  total={completedPage.total}
+                  from={completedPage.from}
+                  to={completedPage.to}
+                  hasPrev={completedPage.hasPrev}
+                  hasNext={completedPage.hasNext}
+                  onPrev={completedPage.goPrev}
+                  onNext={completedPage.goNext}
+                />
+              </>
             ) : (
               <div className="px-3 py-6 text-center text-sm text-slate-500">
                 Reviewed items appear here.

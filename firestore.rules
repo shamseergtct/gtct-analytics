@@ -460,15 +460,21 @@ service cloud.firestore {
           'updatedAt',
           'updatedBy',
           // Optional vertical extensions (retail / cafe / wholesale)
+          'subCategory',
           'barcode',
           'minStock',
           'batchNo',
           'expiryDate',
           'baseUnit',
+          'purchaseUnit',
+          'subQty',
           'recipeNotes',
           'unitsPerCarton',
           'wholesalePrice',
-          'directSale'
+          'directSale',
+          'attentionLowQty',
+          'attentionUrgentQty',
+          'attentionVeryUrgentQty'
         ])
         && request.resource.data.category in [
           'COMMODITY',
@@ -485,6 +491,34 @@ service cloud.firestore {
         && request.resource.data.sellingPrice >= 0
         && request.resource.data.currentStock == 0
         && request.resource.data.imageStatus in ['NONE', 'UPLOADED']
+        && (
+          !('subCategory' in request.resource.data)
+          || (
+            request.resource.data.subCategory is string
+            && request.resource.data.subCategory.size() <= 60
+          )
+        )
+        && (
+          !('attentionLowQty' in request.resource.data)
+          || (
+            request.resource.data.attentionLowQty is number
+            && request.resource.data.attentionLowQty >= 0
+          )
+        )
+        && (
+          !('attentionUrgentQty' in request.resource.data)
+          || (
+            request.resource.data.attentionUrgentQty is number
+            && request.resource.data.attentionUrgentQty >= 0
+          )
+        )
+        && (
+          !('attentionVeryUrgentQty' in request.resource.data)
+          || (
+            request.resource.data.attentionVeryUrgentQty is number
+            && request.resource.data.attentionVeryUrgentQty >= 0
+          )
+        )
         && (
           !('barcode' in request.resource.data)
           || request.resource.data.barcode is string
@@ -507,6 +541,20 @@ service cloud.firestore {
         && (
           !('baseUnit' in request.resource.data)
           || request.resource.data.baseUnit is string
+        )
+        && (
+          !('purchaseUnit' in request.resource.data)
+          || (
+            request.resource.data.purchaseUnit is string
+            && request.resource.data.purchaseUnit.size() <= 40
+          )
+        )
+        && (
+          !('subQty' in request.resource.data)
+          || (
+            request.resource.data.subQty is number
+            && request.resource.data.subQty >= 0
+          )
         )
         && (
           !('recipeNotes' in request.resource.data)
@@ -605,7 +653,7 @@ service cloud.firestore {
           'OTHER'
         ]
         && request.resource.data.qty is number
-        && request.resource.data.qty > 0
+        && request.resource.data.qty >= 0
         && request.resource.data.qty <= 1000000
         && request.resource.data.unitCost is number
         && request.resource.data.unitCost >= 0
@@ -980,7 +1028,7 @@ service cloud.firestore {
         && request.resource.data.lines.size() <= 200
         && request.resource.data.lineCount is number
         && request.resource.data.lineCount == request.resource.data.lines.size()
-        && request.resource.data.status in ['DRAFT', 'SENT', 'COMPLETED', 'CANCELLED']
+        && request.resource.data.status in ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED', 'COMPLETED', 'CANCELLED']
         && request.resource.data.createdBy == request.auth.uid
         && request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.createdAtMs is number
@@ -1004,7 +1052,7 @@ service cloud.firestore {
         && request.resource.data.lines.size() <= 200
         && request.resource.data.lineCount is number
         && request.resource.data.lineCount == request.resource.data.lines.size()
-        && request.resource.data.status in ['DRAFT', 'SENT', 'COMPLETED', 'CANCELLED']
+        && request.resource.data.status in ['DRAFT', 'SENT', 'PARTIALLY_RECEIVED', 'COMPLETED', 'CANCELLED']
         && request.resource.data.updatedBy == request.auth.uid
         && request.resource.data.updatedAtMs is number;
 

@@ -68,8 +68,9 @@ export async function recordInventoryStockUsage({
   }
   if (!uid) throw new Error("You must be signed in.");
   if (!itemId) throw new Error("Item is required.");
-  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-    throw new Error("Enter a usage quantity greater than zero.");
+  // 0 = nil / not used today (marks the day without deducting stock).
+  if (!Number.isFinite(qtyNum) || qtyNum < 0) {
+    throw new Error("Enter a usage quantity of zero or more.");
   }
   if (!isUsageReason(reason)) {
     throw new Error("Select a usage reason.");
@@ -111,11 +112,14 @@ export async function recordInventoryStockUsage({
     const unitCost = Math.max(0, numMoney(data.cost));
     const amount = numMoney(qtyNum * unitCost);
 
-    tx.update(itemRef, {
-      currentStock: totalStock,
-      updatedAt: serverTimestamp(),
-      updatedBy: uid,
-    });
+    // Nil (0) only writes a usage marker — do not touch currentStock.
+    if (qtyNum > 0) {
+      tx.update(itemRef, {
+        currentStock: totalStock,
+        updatedAt: serverTimestamp(),
+        updatedBy: uid,
+      });
+    }
 
     tx.set(movementRef, {
       clientId: shop,

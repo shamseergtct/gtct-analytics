@@ -32,6 +32,8 @@ import { formatMoney } from "../utils/money.js";
 import { useMoney } from "../hooks/useMoney.js";
 import DateInput from "../components/DateInput.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
+import ListPagination from "../components/ListPagination.jsx";
+import { usePagination } from "../hooks/usePagination.js";
 
 const PARTY_TYPES = PARTY_BULK_TYPES;
 const FIRESTORE_BATCH_LIMIT = 450;
@@ -141,6 +143,11 @@ export default function Parties() {
       return s.includes(q);
     });
   }, [parties, search]);
+
+  const partiesPage = usePagination(filtered, {
+    pageSize: 25,
+    resetKey: search.trim().toLowerCase(),
+  });
 
   function resetForm() {
     setEditingId(null);
@@ -536,7 +543,8 @@ export default function Parties() {
         ) : filtered.length === 0 ? (
           <div className="px-4 py-6 text-slate-400">No parties found.</div>
         ) : (
-          filtered.map((p) => (
+          <>
+          {partiesPage.pageItems.map((p) => (
             <div
               key={p.id}
               className="border-b border-slate-900 px-4 py-3 hover:bg-slate-900/40 md:grid md:grid-cols-12 md:gap-2"
@@ -590,7 +598,19 @@ export default function Parties() {
                 </button>
               </div>
             </div>
-          ))
+          ))}
+          <ListPagination
+            page={partiesPage.page}
+            pageCount={partiesPage.pageCount}
+            total={partiesPage.total}
+            from={partiesPage.from}
+            to={partiesPage.to}
+            hasPrev={partiesPage.hasPrev}
+            hasNext={partiesPage.hasNext}
+            onPrev={partiesPage.goPrev}
+            onNext={partiesPage.goNext}
+          />
+          </>
         )}
       </div>
 

@@ -8,6 +8,8 @@ import {
 import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 import { useShift } from "../context/shift-context.js";
+import ListPagination from "../components/ListPagination.jsx";
+import { usePagination } from "../hooks/usePagination.js";
 import {
   formatMoney,
   resolveCurrencyDecimals,
@@ -132,6 +134,11 @@ export default function InventoryDailyExpense() {
       return name.includes(q) || code.includes(q);
     });
   }, [rows, search]);
+
+  const rowsPage = usePagination(filteredRows, {
+    pageSize: 25,
+    resetKey: `${businessDate}|${search.trim().toLowerCase()}`,
+  });
 
   const selectedRows = useMemo(
     () => rows.filter((row) => selectedIds.has(row.itemId)),
@@ -274,8 +281,9 @@ export default function InventoryDailyExpense() {
               : "No usage recorded for this date."}
           </div>
         ) : (
+          <>
           <ul className="divide-y divide-slate-800/80">
-            {filteredRows.map((row) => {
+            {rowsPage.pageItems.map((row) => {
               const checked = selectedIds.has(row.itemId);
               return (
                 <li key={row.itemId}>
@@ -331,6 +339,18 @@ export default function InventoryDailyExpense() {
               );
             })}
           </ul>
+          <ListPagination
+            page={rowsPage.page}
+            pageCount={rowsPage.pageCount}
+            total={rowsPage.total}
+            from={rowsPage.from}
+            to={rowsPage.to}
+            hasPrev={rowsPage.hasPrev}
+            hasNext={rowsPage.hasNext}
+            onPrev={rowsPage.goPrev}
+            onNext={rowsPage.goNext}
+          />
+          </>
         )}
       </section>
 

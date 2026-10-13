@@ -14,6 +14,8 @@ import {
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
+import ListPagination from "../ListPagination.jsx";
+import { usePagination } from "../../hooks/usePagination.js";
 import {
   formatMoney,
   moneyInputStep,
@@ -1492,6 +1494,11 @@ export default function ExternalSalesForm({
       .sort((a, b) => billSortMs(b) - billSortMs(a));
   }, [bills]);
 
+  const recentBillsPage = usePagination(recentBills, {
+    pageSize: 25,
+    resetKey: businessDate,
+  });
+
   const currencyPrefix = currency ? `${currency} ` : "";
 
   useEffect(() => {
@@ -1782,8 +1789,9 @@ export default function ExternalSalesForm({
         {loadingBills ? (
           <p className="py-4 text-center text-sm text-slate-500">Loading bills…</p>
         ) : recentBills.length ? (
+          <>
           <ul className="max-h-64 space-y-1.5 overflow-y-auto overscroll-y-contain">
-            {recentBills.map((bill) => {
+            {recentBillsPage.pageItems.map((bill) => {
               const { name: terminalName, theme } = terminalDisplayForBill(
                 bill,
                 terminals
@@ -1836,6 +1844,18 @@ export default function ExternalSalesForm({
               );
             })}
           </ul>
+          <ListPagination
+            page={recentBillsPage.page}
+            pageCount={recentBillsPage.pageCount}
+            total={recentBillsPage.total}
+            from={recentBillsPage.from}
+            to={recentBillsPage.to}
+            hasPrev={recentBillsPage.hasPrev}
+            hasNext={recentBillsPage.hasNext}
+            onPrev={recentBillsPage.goPrev}
+            onNext={recentBillsPage.goNext}
+          />
+          </>
         ) : (
           <p className="py-4 text-center text-sm text-slate-500">
             No bills saved for this business date yet.

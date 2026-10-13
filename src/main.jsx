@@ -8,6 +8,9 @@ import "./index.css";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import { ClientProvider } from "./context/ClientContext.jsx";
 import { ShiftProvider } from "./context/ShiftContext.jsx";
+import { installDisableNumberInputWheel } from "./utils/disableNumberInputWheel.js";
+
+installDisableNumberInputWheel();
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>

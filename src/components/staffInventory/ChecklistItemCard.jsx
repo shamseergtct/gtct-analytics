@@ -1,5 +1,5 @@
 import { ATTENTION_STATUSES, ATTENTION_STATUS_META } from "../../utils/inventoryDailyReview.js";
-import { formatMoney } from "../../utils/money.js";
+import { formatPackHint, formatStockDisplay } from "../../utils/inventoryPack.js";
 
 const STATUS_BTN = {
   ENOUGH:
@@ -49,8 +49,13 @@ export default function ChecklistItemCard({
             On hand (info)
           </div>
           <div className="text-lg font-semibold tabular-nums text-sky-200">
-            {formatMoney(item.currentStock, currencyDecimals)}
+            {formatStockDisplay(item, currencyDecimals).label}
           </div>
+          {formatPackHint(item) ? (
+            <div className="mt-0.5 text-[10px] font-medium text-sky-300/90">
+              {formatPackHint(item)}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -75,6 +80,7 @@ export default function ChecklistItemCard({
       <div className="mt-3 grid gap-2">
         <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
           Needed qty
+          {item.baseUnit ? ` (${item.baseUnit})` : ""}
           {status && status !== "ENOUGH" ? (
             <span className="text-rose-300"> (required)</span>
           ) : (

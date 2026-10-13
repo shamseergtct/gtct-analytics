@@ -19,14 +19,13 @@ export default function RetailInventory(props) {
     <ItemEntryShell
       {...props}
       onSubmit={saveItem}
-      badge={<span className="text-sky-400/80">Retail inventory</span>}
+      badge={<span className="text-sky-400/80">Retail</span>}
       title="Item Entry"
-      subtitle="Barcode-ready catalog with reorder level and batch / expiry tracking."
     >
       <CoreItemFields
         {...props}
         itemCodeLabel="Item Code / SKU"
-        itemCodePlaceholder="e.g. ITM-001"
+        itemCodePlaceholder="Code"
       />
 
       <div className="min-w-0">
@@ -35,12 +34,12 @@ export default function RetailInventory(props) {
           value={barcode || ""}
           onChange={(e) => setBarcode(e.target.value)}
           className={`${FIELD_CLASS} font-mono`}
-          placeholder="Scan or type barcode"
+          placeholder="Barcode"
         />
       </div>
 
       <div className="min-w-0">
-        <label className={LABEL_CLASS}>Min Stock / Reorder Level</label>
+        <label className={LABEL_CLASS}>Min Stock</label>
         <input
           type="number"
           inputMode="decimal"
@@ -54,17 +53,17 @@ export default function RetailInventory(props) {
       </div>
 
       <div className="min-w-0">
-        <label className={LABEL_CLASS}>Batch No (optional)</label>
+        <label className={LABEL_CLASS}>Batch No</label>
         <input
           value={batchNo || ""}
           onChange={(e) => setBatchNo(e.target.value)}
           className={FIELD_CLASS}
-          placeholder="Batch / lot"
+          placeholder="Batch"
         />
       </div>
 
       <div className="min-w-0">
-        <label className={LABEL_CLASS}>Expiry Date (optional)</label>
+        <label className={LABEL_CLASS}>Expiry Date</label>
         <input
           type="date"
           value={expiryDate || ""}
