@@ -474,13 +474,22 @@ service cloud.firestore {
           'directSale',
           'attentionLowQty',
           'attentionUrgentQty',
-          'attentionVeryUrgentQty'
+          'attentionVeryUrgentQty',
+          // Shop-scoped numeric Item ID for CSV bulk edit
+          'itemNo'
         ])
         && request.resource.data.category in [
           'COMMODITY',
           'CONSUMABLES',
           'ASSET'
         ]
+        && (
+          !('itemNo' in request.resource.data)
+          || (
+            request.resource.data.itemNo is int
+            && request.resource.data.itemNo >= 1
+          )
+        )
         && request.resource.data.itemCode is string
         && request.resource.data.itemCode.size() > 0
         && request.resource.data.itemName is string

@@ -40,7 +40,10 @@ import { useShift, useUnsavedWork } from "../context/shift-context.js";
 import {
   downloadInventoryImportTemplate,
   exportInventoryCsv,
+  inventoryFieldsFromCsvRow,
+  nextItemNo,
   parseInventoryCsv,
+  resolveItemNo,
 } from "../utils/inventoryBulk.js";
 import {
   listItemSubCategories,
@@ -622,21 +625,65 @@ export default function Inventory() {
     navigate("/dashboard");
   }
 
-  function handleExportItems() {
+  async function ensureNumericItemNos(sourceItems) {
+    const list = Array.isArray(sourceItems) ? sourceItems : [];
+    const missing = list.filter((item) => resolveItemNo(item) == null && item?.id);
+    if (!missing.length) return list;
+
+    let nextNo = nextItemNo(list);
+    let batch = writeBatch(db);
+    let ops = 0;
+    const assigned = new Map();
+
+    async function flush() {
+      if (ops === 0) return;
+      await batch.commit();
+      batch = writeBatch(db);
+      ops = 0;
+    }
+
+    for (const item of missing) {
+      assigned.set(item.id, nextNo);
+      batch.update(doc(db, "inventory", item.id), {
+        itemNo: nextNo,
+        updatedAt: serverTimestamp(),
+        updatedBy: user?.uid || null,
+      });
+      nextNo += 1;
+      ops += 1;
+      if (ops >= FIRESTORE_BATCH_LIMIT) await flush();
+    }
+    await flush();
+
+    return list.map((item) => {
+      const itemNo = assigned.get(item.id);
+      return itemNo != null ? { ...item, itemNo } : item;
+    });
+  }
+
+  async function handleExportItems() {
     if (!activeClientId) {
       setError("Please select a client first.");
       return;
     }
     setError("");
-    exportInventoryCsv({
-      items,
-      shopName: activeClientData?.name || "shop",
-    });
-    setEntryMessage(
-      `Exported ${items.length} item${items.length === 1 ? "" : "s"} for ${
-        activeClientData?.name || "this shop"
-      }.`
-    );
+    try {
+      const exportItems = await ensureNumericItemNos(items);
+      exportInventoryCsv({
+        items: exportItems,
+        shopName: activeClientData?.name || "shop",
+      });
+      setEntryMessage(
+        `Exported ${exportItems.length} item${
+          exportItems.length === 1 ? "" : "s"
+        } with numeric Item ID for bulk edit (${
+          activeClientData?.name || "this shop"
+        }).`
+      );
+    } catch (err) {
+      console.error("❌ Export inventory error:", err);
+      setError(err?.message || "Failed to export items.");
+    }
   }
 
   function openImportItems() {
@@ -691,16 +738,29 @@ export default function Inventory() {
     setEntryMessage("");
 
     try {
-      const existingCodes = new Set(
-        items.map((item) =>
-          String(item.itemCode || "")
-            .trim()
-            .toLowerCase()
-        )
+      const numberedItems = await ensureNumericItemNos(items);
+      const itemsById = new Map(
+        numberedItems.map((item) => [String(item.id || "").trim(), item])
       );
+      const itemsByNo = new Map();
+      for (const item of numberedItems) {
+        const no = resolveItemNo(item);
+        if (no != null) itemsByNo.set(no, item);
+      }
+      const codeOwner = new Map();
+      for (const item of numberedItems) {
+        const codeKey = String(item.itemCode || "")
+          .trim()
+          .toLowerCase();
+        if (!codeKey) continue;
+        codeOwner.set(codeKey, String(item.id || "").trim());
+      }
 
       let created = 0;
+      let updated = 0;
       let skipped = 0;
+      let nextNo = nextItemNo(numberedItems);
+      const rowErrors = [];
       let batch = writeBatch(db);
       let opsInBatch = 0;
       const nowMs = Date.now();
@@ -713,50 +773,92 @@ export default function Inventory() {
       }
 
       for (const row of rows) {
-        const codeKey = row.itemCode.toLowerCase();
-        if (skipDuplicateCodes && existingCodes.has(codeKey)) {
-          skipped += 1;
-          continue;
-        }
-
-        const itemRef = doc(collection(db, "inventory"));
-        batch.set(itemRef, {
-          clientId: activeClientId,
-          category: row.category,
+        const fields = inventoryFieldsFromCsvRow({
+          ...row,
           subCategory: normalizeSubCategory(row.subCategory),
-          itemCode: row.itemCode,
-          itemName: row.itemName,
-          cost: row.cost,
-          sellingPrice: row.sellingPrice,
-          barcode: String(row.barcode || "").trim(),
-          minStock: Math.max(0, num(row.minStock)),
-          batchNo: String(row.batchNo || "").trim(),
-          expiryDate: String(row.expiryDate || "").trim(),
-          baseUnit: String(row.baseUnit || "pcs").trim() || "pcs",
-          purchaseUnit: String(row.purchaseUnit || "").trim(),
-          subQty: Math.max(0, num(row.subQty)),
-          recipeNotes: String(row.recipeNotes || "").trim(),
-          unitsPerCarton: Math.max(1, num(row.unitsPerCarton) || 12),
-          wholesalePrice: Math.max(0, num(row.wholesalePrice)),
-          directSale: Boolean(row.directSale),
-          attentionLowQty: Math.max(0, num(row.attentionLowQty)),
-          attentionUrgentQty: Math.max(0, num(row.attentionUrgentQty)),
-          attentionVeryUrgentQty: Math.max(0, num(row.attentionVeryUrgentQty)),
-          imageUrl: "",
-          imagePath: "",
-          imageName: "",
-          imageStatus: "NONE",
-          // Firestore create rule requires opening stock 0; CSV stock is ignored.
-          currentStock: 0,
-          createdAt: serverTimestamp(),
-          createdAtMs: nowMs,
-          createdBy: user?.uid || null,
-          updatedAt: serverTimestamp(),
-          updatedBy: user?.uid || null,
         });
-        existingCodes.add(codeKey);
-        created += 1;
-        opsInBatch += 1;
+        const codeKey = fields.itemCode.toLowerCase();
+        const rowItemNo = resolveItemNo(row);
+        const firestoreId = String(row.itemId || "").trim();
+        const existing =
+          (rowItemNo != null ? itemsByNo.get(rowItemNo) : null) ||
+          (firestoreId ? itemsById.get(firestoreId) : null);
+
+        if (rowItemNo != null || firestoreId) {
+          if (!existing) {
+            rowErrors.push(
+              `Line ${row.line}: Item ID "${
+                rowItemNo ?? firestoreId
+              }" not found in this shop.`
+            );
+            skipped += 1;
+            continue;
+          }
+          if (String(existing.clientId || "") !== activeClientId) {
+            rowErrors.push(
+              `Line ${row.line}: Item ID "${
+                rowItemNo ?? firestoreId
+              }" belongs to another shop.`
+            );
+            skipped += 1;
+            continue;
+          }
+          const ownerId = codeOwner.get(codeKey);
+          if (ownerId && ownerId !== existing.id) {
+            rowErrors.push(
+              `Line ${row.line}: Item Code "${fields.itemCode}" already used by another item.`
+            );
+            skipped += 1;
+            continue;
+          }
+
+          const itemRef = doc(db, "inventory", existing.id);
+          const updatePayload = {
+            ...fields,
+            updatedAt: serverTimestamp(),
+            updatedBy: user?.uid || null,
+          };
+          const existingNo = resolveItemNo(existing);
+          if (existingNo == null) {
+            updatePayload.itemNo = rowItemNo != null ? rowItemNo : nextNo++;
+          }
+          batch.update(itemRef, updatePayload);
+          const prevCode = String(existing.itemCode || "")
+            .trim()
+            .toLowerCase();
+          if (prevCode && prevCode !== codeKey) codeOwner.delete(prevCode);
+          codeOwner.set(codeKey, existing.id);
+          updated += 1;
+          opsInBatch += 1;
+        } else {
+          if (skipDuplicateCodes && codeOwner.has(codeKey)) {
+            skipped += 1;
+            continue;
+          }
+
+          const itemRef = doc(collection(db, "inventory"));
+          const assignedNo = nextNo;
+          nextNo += 1;
+          batch.set(itemRef, {
+            clientId: activeClientId,
+            ...fields,
+            itemNo: assignedNo,
+            imageUrl: "",
+            imagePath: "",
+            imageName: "",
+            imageStatus: "NONE",
+            // Firestore create rule requires opening stock 0; CSV stock is ignored.
+            currentStock: 0,
+            createdAt: serverTimestamp(),
+            createdAtMs: nowMs,
+            createdBy: user?.uid || null,
+            updatedAt: serverTimestamp(),
+            updatedBy: user?.uid || null,
+          });
+          codeOwner.set(codeKey, itemRef.id);
+          created += 1;
+          opsInBatch += 1;
+        }
 
         if (opsInBatch >= FIRESTORE_BATCH_LIMIT) {
           await flushBatch();
@@ -765,15 +867,32 @@ export default function Inventory() {
 
       await flushBatch();
       closeImportItems();
+      const parts = [];
+      if (updated) {
+        parts.push(
+          `updated ${updated} item${updated === 1 ? "" : "s"}`
+        );
+      }
+      if (created) {
+        parts.push(
+          `created ${created} item${created === 1 ? "" : "s"}`
+        );
+      }
+      if (!parts.length) {
+        parts.push("no changes");
+      }
       setEntryMessage(
-        `Imported ${created} item${created === 1 ? "" : "s"} into ${
+        `Bulk import ${parts.join(", ")} for ${
           activeClientData?.name || "this shop"
         }${
           skipped
-            ? ` (${skipped} duplicate code${skipped === 1 ? "" : "s"} skipped)`
+            ? ` (${skipped} row${skipped === 1 ? "" : "s"} skipped)`
             : ""
         }.`
       );
+      if (rowErrors.length) {
+        console.warn("Inventory CSV row issues:", rowErrors.slice(0, 20));
+      }
     } catch (err) {
       console.error("❌ Import inventory error:", err);
       setImportError(err?.message || "Failed to import items.");
@@ -954,13 +1073,19 @@ export default function Inventory() {
               : `Item updated. Qty set to ${money(stockQtyValue)}.`
           );
         } else {
-          await updateDoc(itemRef, sharedFields);
+          const editPatch = { ...sharedFields };
+          const editingItem = items.find((row) => row.id === editingItemId);
+          if (editingItem && resolveItemNo(editingItem) == null) {
+            editPatch.itemNo = nextItemNo(items);
+          }
+          await updateDoc(itemRef, editPatch);
           setEntryMessage("Item updated successfully.");
         }
       } else {
         await setDoc(itemRef, {
           clientId: activeClientId,
           ...sharedFields,
+          itemNo: nextItemNo(items),
           currentStock: 0,
           createdAt: serverTimestamp(),
           createdAtMs: Date.now(),
@@ -1293,7 +1418,6 @@ export default function Inventory() {
     handleImageChange,
     entryMessage,
     savingItem,
-    isEditing: Boolean(editingItemId),
     cancelItemEntry,
     handleExportItems,
     openImportItems,
@@ -2133,9 +2257,11 @@ export default function Inventory() {
           <div className="relative w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-950 shadow-xl">
             <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
               <div>
-                <div className="font-semibold text-slate-100">Import Items (CSV)</div>
+                <div className="font-semibold text-slate-100">
+                  Bulk edit / import (CSV)
+                </div>
                 <div className="mt-0.5 text-xs text-slate-400">
-                  Into shop:{" "}
+                  Shop:{" "}
                   <span className="text-slate-200">
                     {activeClientData?.name || "No client selected"}
                   </span>
@@ -2152,11 +2278,10 @@ export default function Inventory() {
 
             <div className="space-y-4 px-5 py-4">
               <p className="text-sm text-slate-400">
-                Uses the full export columns (units, pack, thresholds, barcode,
-                etc.). Categories: {CATEGORIES.join(", ")}. Download the
-                template for the latest headers. Older short CSVs still work.
-                New items start at zero stock (no images). Only the active shop
-                is updated.
+                Export CSV first (Item ID is a number like 1, 2, 3…), edit in
+                Excel, then upload here. Rows with Item ID update existing
+                items; blank Item ID creates new ones. Stock and images are not
+                changed by import. Categories: {CATEGORIES.join(", ")}.
               </p>
 
               <button
@@ -2199,6 +2324,28 @@ export default function Inventory() {
                   <div>
                     Valid rows:{" "}
                     <span className="text-emerald-300">{importPreview.rows.length}</span>
+                    {" · "}
+                    Updates:{" "}
+                    <span className="text-sky-300">
+                      {
+                        importPreview.rows.filter(
+                          (row) =>
+                            resolveItemNo(row) != null ||
+                            String(row.itemId || "").trim()
+                        ).length
+                      }
+                    </span>
+                    {" · "}
+                    New:{" "}
+                    <span className="text-emerald-300">
+                      {
+                        importPreview.rows.filter(
+                          (row) =>
+                            resolveItemNo(row) == null &&
+                            !String(row.itemId || "").trim()
+                        ).length
+                      }
+                    </span>
                   </div>
                   {importPreview.errors.length > 0 ? (
                     <div className="text-amber-200">

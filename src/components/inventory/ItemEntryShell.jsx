@@ -65,6 +65,7 @@ export default function ItemEntryShell({
             onClick={openImportItems}
             disabled={!activeClientId}
             className="rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 disabled:opacity-60"
+            title="Upload edited CSV to bulk update by Item ID"
           >
             Import CSV
           </button>

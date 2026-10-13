@@ -3,6 +3,7 @@ import { formatMoney, numMoney } from "./money.js";
 /** Inventory item CSV bulk import/export helpers (scoped to one shop/client). */
 
 export const INVENTORY_CSV_HEADERS = [
+  "Item ID",
   "Category",
   "Sub Category",
   "Item Code",
@@ -98,6 +99,12 @@ function normalizeHeader(value) {
 }
 
 const HEADER_ALIASES = {
+  itemid: "itemId",
+  itemno: "itemId",
+  itemnumber: "itemId",
+  id: "itemId",
+  docid: "itemId",
+  firestoreid: "itemId",
   category: "category",
   subcategory: "subCategory",
   subcat: "subCategory",
@@ -187,8 +194,43 @@ function cell(cells, indexMap, key) {
   return cells[i] ?? "";
 }
 
+/** Shop-scoped numeric Item ID (1, 2, 3…). */
+export function resolveItemNo(item) {
+  const raw = item?.itemNo;
+  if (raw == null || raw === "") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return null;
+  const asInt = Math.floor(n);
+  return asInt === n ? asInt : null;
+}
+
+/** Next free numeric Item ID for this shop’s catalog. */
+export function nextItemNo(items = []) {
+  let max = 0;
+  for (const item of items) {
+    const n = resolveItemNo(item);
+    if (n != null && n > max) max = n;
+  }
+  return max + 1;
+}
+
+/**
+ * Parse CSV Item ID cell: digits → itemNo; otherwise legacy Firestore doc id.
+ */
+export function parseCsvItemIdCell(raw) {
+  const text = safeText(raw);
+  if (!text) return { itemNo: null, firestoreId: "" };
+  if (/^\d+$/.test(text)) {
+    const itemNo = Number(text);
+    return { itemNo: itemNo >= 1 ? itemNo : null, firestoreId: "" };
+  }
+  return { itemNo: null, firestoreId: text };
+}
+
 function exportRow(item) {
+  const itemNo = resolveItemNo(item);
   return [
+    itemNo != null ? String(itemNo) : "",
     item.category || "COMMODITY",
     item.subCategory || "",
     item.itemCode || "",
@@ -215,8 +257,8 @@ function exportRow(item) {
 
 /**
  * Download CSV of inventory items for one shop.
- * Images are not included. Current Stock is exported for reference;
- * import does not overwrite on-hand stock (Firestore create requires 0).
+ * Item ID is a numeric shop number (itemNo). Images are not included.
+ * Current Stock is exported for reference; import does not overwrite stock.
  */
 export function exportInventoryCsv({ items = [], shopName = "" } = {}) {
   const lines = [INVENTORY_CSV_HEADERS.map(csvEscape).join(",")];
@@ -240,6 +282,7 @@ export function downloadInventoryImportTemplate(shopName = "") {
   exportInventoryCsv({
     items: [
       {
+        itemNo: 1,
         category: "COMMODITY",
         subCategory: "Beef",
         itemCode: "ITM-001",
@@ -268,8 +311,9 @@ export function downloadInventoryImportTemplate(shopName = "") {
 }
 
 /**
- * Parse inventory CSV into create-ready rows.
+ * Parse inventory CSV into create/update-ready rows.
  * Returns { rows, errors }.
+ * Item ID (when present) is used for bulk edit updates.
  * Older short CSVs (Category…Selling Price) remain supported.
  */
 export function parseInventoryCsv(text) {
@@ -282,6 +326,7 @@ export function parseInventoryCsv(text) {
 
   const headerCells = parseCsvLine(lines[0]).map(normalizeHeader);
   const index = {
+    itemId: -1,
     category: -1,
     subCategory: -1,
     itemCode: -1,
@@ -335,11 +380,17 @@ export function parseInventoryCsv(text) {
   const rows = [];
   const errors = [];
   const seenCodes = new Set();
+  const seenIds = new Set();
 
   for (let i = dataStart; i < lines.length; i += 1) {
     const lineNo = i + 1;
     const cells = parseCsvLine(lines[i]);
 
+    const idCell = parseCsvItemIdCell(cell(cells, index, "itemId"));
+    const itemNo = idCell.itemNo;
+    const firestoreId = idCell.firestoreId;
+    const itemIdKey =
+      itemNo != null ? `n:${itemNo}` : firestoreId ? `f:${firestoreId}` : "";
     const itemCode = safeText(cell(cells, index, "itemCode"));
     const itemName = safeText(cell(cells, index, "itemName"));
     if (!itemCode) {
@@ -349,6 +400,16 @@ export function parseInventoryCsv(text) {
     if (!itemName) {
       errors.push(`Line ${lineNo}: Name is required.`);
       continue;
+    }
+
+    if (itemIdKey) {
+      if (seenIds.has(itemIdKey)) {
+        errors.push(
+          `Line ${lineNo}: duplicate Item ID "${itemNo ?? firestoreId}" in file.`
+        );
+        continue;
+      }
+      seenIds.add(itemIdKey);
     }
 
     const codeKey = itemCode.toLowerCase();
@@ -439,6 +500,8 @@ export function parseInventoryCsv(text) {
 
     seenCodes.add(codeKey);
     rows.push({
+      itemNo,
+      itemId: firestoreId,
       category,
       subCategory: safeText(cell(cells, index, "subCategory")).slice(0, 60),
       itemCode,
@@ -459,11 +522,42 @@ export function parseInventoryCsv(text) {
       attentionLowQty: Math.max(0, attentionLowQty),
       attentionUrgentQty: Math.max(0, attentionUrgentQty),
       attentionVeryUrgentQty: Math.max(0, attentionVeryUrgentQty),
-      // Exported for reference; create always starts at 0 in Firestore.
+      // Exported for reference; import never overwrites on-hand stock.
       currentStock: Math.max(0, currentStock),
       line: lineNo,
     });
   }
 
   return { rows, errors };
+}
+
+/** Shared field patch for CSV create/update (excludes stock and images). */
+export function inventoryFieldsFromCsvRow(row, { includeItemNo = false } = {}) {
+  const fields = {
+    category: row.category,
+    subCategory: String(row.subCategory || "").trim().slice(0, 60),
+    itemCode: String(row.itemCode || "").trim(),
+    itemName: String(row.itemName || "").trim(),
+    cost: Math.max(0, numMoney(row.cost)),
+    sellingPrice: Math.max(0, numMoney(row.sellingPrice)),
+    barcode: String(row.barcode || "").trim(),
+    minStock: Math.max(0, numMoney(row.minStock)),
+    batchNo: String(row.batchNo || "").trim(),
+    expiryDate: String(row.expiryDate || "").trim(),
+    baseUnit: String(row.baseUnit || "pcs").trim() || "pcs",
+    purchaseUnit: String(row.purchaseUnit || "").trim().slice(0, 40),
+    subQty: Math.max(0, numMoney(row.subQty)),
+    recipeNotes: String(row.recipeNotes || "").trim(),
+    unitsPerCarton: Math.max(1, numMoney(row.unitsPerCarton) || 12),
+    wholesalePrice: Math.max(0, numMoney(row.wholesalePrice)),
+    directSale: Boolean(row.directSale),
+    attentionLowQty: Math.max(0, numMoney(row.attentionLowQty)),
+    attentionUrgentQty: Math.max(0, numMoney(row.attentionUrgentQty)),
+    attentionVeryUrgentQty: Math.max(0, numMoney(row.attentionVeryUrgentQty)),
+  };
+  if (includeItemNo) {
+    const itemNo = resolveItemNo(row);
+    if (itemNo != null) fields.itemNo = itemNo;
+  }
+  return fields;
 }
