@@ -1638,10 +1638,15 @@ service cloud.firestore {
     match /external_sales_bills/{billId} {
       // Shop staff: any bill for assigned shops.
       // Delivery boys: only bills entered/approved in their name (shop or Delivery Entry).
-      allow get: if canReadTenantResource()
-        || (
-          isDeliveryBoyForClient(resource.data.clientId)
-          && resource.data.deliveryBoyId == profile().deliveryBoyId
+      // resource == null: bill save runs tx.get on the deterministic id before create.
+      allow get: if activeUser()
+        && (
+          resource == null
+          || canReadTenantResource()
+          || (
+            isDeliveryBoyForClient(resource.data.clientId)
+            && resource.data.deliveryBoyId == profile().deliveryBoyId
+          )
         );
       allow list: if resource != null
         && (
