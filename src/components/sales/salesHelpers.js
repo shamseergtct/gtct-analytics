@@ -196,6 +196,11 @@ export function isDirectSaleItem(item) {
   return item?.directSale !== false;
 }
 
+/** Missing isActive is treated as active (backward compatible). */
+export function isInventoryItemActive(item) {
+  return item?.isActive !== false;
+}
+
 /** Case-insensitive exact match for scanner Enter (item code or inventory barcode). */
 export function itemMatchesScanCode(item, code) {
   const q = String(code || "").trim().toLowerCase();

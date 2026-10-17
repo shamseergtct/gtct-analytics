@@ -15,6 +15,8 @@ import ReportsHub from "./pages/ReportsHub";
 import PartyReports from "./pages/PartyReports";
 import SuperAdmin from "./pages/SuperAdmin";
 import Sales from "./pages/Sales"; // ✅ NEW
+import RestaurantSales from "./pages/RestaurantSales";
+import RestaurantMenuSetup from "./pages/RestaurantMenuSetup";
 import ExternalSales from "./pages/ExternalSales";
 import ShiftClose from "./pages/ShiftClose";
 import PurchaseExpenseEntry from "./pages/PurchaseExpenseEntry";
@@ -112,6 +114,26 @@ export default function App() {
               <RequireActiveShift>
                 <Sales />
               </RequireActiveShift>
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/restaurant-sales"
+          element={
+            <RoleRoute
+              allow={["admin", "shop_admin", "super_admin", "staff"]}
+            >
+              <RequireActiveShift>
+                <RestaurantSales />
+              </RequireActiveShift>
+            </RoleRoute>
+          }
+        />
+        <Route
+          path="/restaurant-menu"
+          element={
+            <RoleRoute allow={["admin", "shop_admin", "super_admin"]}>
+              <RestaurantMenuSetup />
             </RoleRoute>
           }
         />

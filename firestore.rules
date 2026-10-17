@@ -270,7 +270,7 @@ service cloud.firestore {
     function canCreateTenantResource() {
       return request.resource.data.clientId is string
         && canAccessClient(request.resource.data.clientId)
-        // Staff may only write inventory_daily_reviews (separate rules).
+        // Staff may only write inventory_daily_reviews + restaurant_sales POS (separate rules).
         && !isStaff();
     }
 
@@ -278,6 +278,119 @@ service cloud.firestore {
       return canAccessClient(resource.data.clientId)
         && request.resource.data.clientId == resource.data.clientId
         && !isStaff();
+    }
+
+    /** Café / restaurant shop_type on the clients master doc. */
+    function isCafeOrRestaurantClient(clientId) {
+      return exists(/databases/$(database)/documents/clients/$(clientId))
+        && get(/databases/$(database)/documents/clients/$(clientId)).data.shop_type in [
+          'cafe',
+          'restaurant'
+        ];
+    }
+
+    /** Staff POS must use the shop's OPEN operations shift. */
+    function staffRestaurantShiftOk(clientId, shiftId) {
+      return shiftId is string
+        && shiftId.size() > 0
+        && hasOpenOperationsShift(clientId)
+        && get(clientSettingsPath(clientId)).data.operationsShiftId == shiftId
+        && exists(shiftDocPath(shiftId))
+        && get(shiftDocPath(shiftId)).data.clientId == clientId
+        && get(shiftDocPath(shiftId)).data.status == 'OPEN';
+    }
+
+    /**
+     * Staff create of a Restaurant Sales invoice (immediate bill).
+     * Cash/bank only — no credit (avoids parties writes).
+     */
+    function isStaffRestaurantSalesInvoiceCreate() {
+      return isStaff()
+        && isStaffForClient(request.resource.data.clientId)
+        && isCafeOrRestaurantClient(request.resource.data.clientId)
+        && request.resource.data.entrySource == 'restaurant_sales'
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.updatedBy == request.auth.uid
+        && request.resource.data.status == 'ACTIVE'
+        && request.resource.data.stockPosted == true
+        && request.resource.data.amountCredit is number
+        && request.resource.data.amountCredit == 0
+        && request.resource.data.balanceDue is number
+        && request.resource.data.balanceDue == 0
+        && request.resource.data.grandTotal is number
+        && request.resource.data.grandTotal >= 0
+        && request.resource.data.invoiceNo is string
+        && request.resource.data.invoiceNo.size() > 0
+        && staffRestaurantShiftOk(
+          request.resource.data.clientId,
+          request.resource.data.shiftId
+        );
+    }
+
+    function staffRestaurantInvoiceRefOk(invoiceId, clientId) {
+      // getAfter sees the invoice written in the same batch (exists() would be false).
+      return getAfter(
+          /databases/$(database)/documents/sales_invoices/$(invoiceId)
+        ).data.clientId == clientId
+        && getAfter(
+          /databases/$(database)/documents/sales_invoices/$(invoiceId)
+        ).data.entrySource == 'restaurant_sales'
+        && getAfter(
+          /databases/$(database)/documents/sales_invoices/$(invoiceId)
+        ).data.createdBy == request.auth.uid;
+    }
+
+    function isStaffRestaurantSalesItemCreate(invoiceId) {
+      return isStaff()
+        && request.resource.data.clientId is string
+        && isStaffForClient(request.resource.data.clientId)
+        && request.resource.data.invoiceId == invoiceId
+        && request.resource.data.createdBy == request.auth.uid
+        && staffRestaurantInvoiceRefOk(
+          invoiceId,
+          request.resource.data.clientId
+        );
+    }
+
+    function isStaffRestaurantSalesTxnCreate() {
+      return isStaff()
+        && isStaffForClient(request.resource.data.clientId)
+        && request.resource.data.type == 'sales'
+        && request.resource.data.source == 'pos'
+        && request.resource.data.refType == 'sales_invoice'
+        && request.resource.data.refId is string
+        && request.resource.data.refId.size() > 0
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.mode in ['cash', 'bank_transfer', 'card', 'qr']
+        && staffRestaurantInvoiceRefOk(
+          request.resource.data.refId,
+          request.resource.data.clientId
+        )
+        && staffRestaurantShiftOk(
+          request.resource.data.clientId,
+          request.resource.data.shiftId
+        );
+    }
+
+    function isStaffRestaurantSaleMovementCreate() {
+      return isStaff()
+        && isStaffForClient(request.resource.data.clientId)
+        && request.resource.data.type == 'OUT'
+        && request.resource.data.reason == 'SALE'
+        && request.resource.data.refType == 'sales_invoice'
+        && request.resource.data.refId is string
+        && request.resource.data.refId.size() > 0
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.qty is number
+        && request.resource.data.qty > 0
+        && staffRestaurantInvoiceRefOk(
+          request.resource.data.refId,
+          request.resource.data.clientId
+        )
+        && staffRestaurantShiftOk(
+          request.resource.data.clientId,
+          request.resource.data.shiftId
+        );
     }
 
     function validDailyReviewAttentionStatus(status) {
@@ -633,8 +746,15 @@ service cloud.firestore {
     }
 
     match /transactions/{transactionId} {
-      allow read: if canReadTenantResource();
-      allow create: if canCreateTenantResource();
+      // Probe missing tender docs during POS create (resource == null).
+      allow get: if activeUser()
+        && (
+          resource == null
+          || canAccessClient(resource.data.clientId)
+        );
+      allow list: if canReadTenantResource();
+      allow create: if canCreateTenantResource()
+        || isStaffRestaurantSalesTxnCreate();
       allow update: if canUpdateTenantResource();
       allow delete: if canReadTenantResource();
     }
@@ -691,6 +811,8 @@ service cloud.firestore {
           'unitsPerCarton',
           'wholesalePrice',
           'directSale',
+          'isActive',
+          'menuSortOrder',
           'attentionLowQty',
           'attentionUrgentQty',
           'attentionVeryUrgentQty',
@@ -805,6 +927,17 @@ service cloud.firestore {
         && (
           !('directSale' in request.resource.data)
           || request.resource.data.directSale is bool
+        )
+        && (
+          !('isActive' in request.resource.data)
+          || request.resource.data.isActive is bool
+        )
+        && (
+          !('menuSortOrder' in request.resource.data)
+          || (
+            request.resource.data.menuSortOrder is number
+            && request.resource.data.menuSortOrder >= 0
+          )
         );
       allow update: if (
           canManageClient(resource.data.clientId)
@@ -935,7 +1068,8 @@ service cloud.firestore {
         || (
           canReviewInventoryDaily(request.resource.data.clientId)
           && validStockUsageMovementCreate()
-        );
+        )
+        || isStaffRestaurantSaleMovementCreate();
       allow update: if canManageClient(resource.data.clientId)
         && request.resource.data.clientId == resource.data.clientId;
       allow delete: if isSuperAdmin();
@@ -1489,18 +1623,33 @@ service cloud.firestore {
     }
 
     match /sales_invoices/{invoiceId} {
-      allow read: if canReadTenantResource();
-      allow create: if canCreateTenantResource();
+      allow get: if activeUser()
+        && (
+          resource == null
+          || canAccessClient(resource.data.clientId)
+        );
+      allow list: if canReadTenantResource();
+      allow create: if canCreateTenantResource()
+        || isStaffRestaurantSalesInvoiceCreate();
+      // Staff restaurant invoices are create-only (no edit/cancel via this role).
       allow update: if canUpdateTenantResource();
       allow delete: if isSuperAdmin();
 
       match /items/{itemId} {
-        allow read: if canReadTenantResource();
-        allow create: if canCreateTenantResource()
-          && request.resource.data.invoiceId == invoiceId;
+        allow get: if activeUser()
+          && (
+            resource == null
+            || canAccessClient(resource.data.clientId)
+          );
+        allow list: if canReadTenantResource();
+        allow create: if (
+            canCreateTenantResource()
+            && request.resource.data.invoiceId == invoiceId
+          )
+          || isStaffRestaurantSalesItemCreate(invoiceId);
         allow update: if canUpdateTenantResource()
           && request.resource.data.invoiceId == invoiceId;
-        allow delete: if canReadTenantResource();
+        allow delete: if canReadTenantResource() && !isStaff();
       }
     }
 

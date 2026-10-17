@@ -253,6 +253,7 @@ export default function Inventory() {
   const [stockQty, setStockQty] = useState("");
   const [originalStockQty, setOriginalStockQty] = useState(null);
   const [directSale, setDirectSale] = useState(false);
+  const [isActive, setIsActive] = useState(true);
   const [attentionLowQty, setAttentionLowQty] = useState("");
   const [attentionUrgentQty, setAttentionUrgentQty] = useState("");
   const [attentionVeryUrgentQty, setAttentionVeryUrgentQty] = useState("");
@@ -528,6 +529,7 @@ export default function Inventory() {
     setStockQty("");
     setOriginalStockQty(null);
     setDirectSale(false);
+    setIsActive(true);
     setAttentionLowQty("");
     setAttentionUrgentQty("");
     setAttentionVeryUrgentQty("");
@@ -578,6 +580,7 @@ export default function Inventory() {
     }
     // Legacy items without the field were treated as direct-sale; keep that on edit.
     setDirectSale(item.directSale !== false);
+    setIsActive(item.isActive !== false);
     setAttentionLowQty(
       item.attentionLowQty == null || item.attentionLowQty === ""
         ? ""
@@ -1012,6 +1015,7 @@ export default function Inventory() {
         unitsPerCarton: Math.max(1, num(unitsPerCarton) || 12),
         wholesalePrice: Math.max(0, num(wholesalePrice)),
         directSale: Boolean(directSale),
+        isActive: isActive !== false,
         attentionLowQty: Math.max(0, num(attentionLowQty)),
         attentionUrgentQty: Math.max(0, num(attentionUrgentQty)),
         attentionVeryUrgentQty: Math.max(0, num(attentionVeryUrgentQty)),
@@ -1406,6 +1410,8 @@ export default function Inventory() {
     setStockQty,
     directSale,
     setDirectSale,
+    isActive,
+    setIsActive,
     attentionLowQty,
     setAttentionLowQty,
     attentionUrgentQty,

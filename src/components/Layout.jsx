@@ -142,6 +142,8 @@ export default function Layout() {
       { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
       { to: "/clients", label: "Clients", icon: Users },
       { to: "/sales", label: "Sales", icon: ShoppingCart },
+      { to: "/restaurant-sales", label: "Restaurant Sales", icon: ShoppingCart },
+      { to: "/restaurant-menu", label: "Menu Setup", icon: Package },
       { to: "/external-sales", label: "External Sales", icon: ClipboardList },
       { to: "/shift-close", label: "Z-Report", icon: Clock3 },
       { to: "/purchases", label: "Purchases & Expenses", icon: ReceiptText },
@@ -176,6 +178,7 @@ export default function Layout() {
 
     if (isStaff) {
       return [
+        { to: "/restaurant-sales", label: "Restaurant Sales", icon: ShoppingCart },
         { to: "/staff-inventory", label: "Staff Inventory", icon: Package },
         { to: "/help", label: "Help", icon: CircleHelp },
       ];

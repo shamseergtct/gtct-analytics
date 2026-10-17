@@ -170,6 +170,8 @@ export function CoreItemFields({
   isEditing = false,
   directSale = false,
   setDirectSale,
+  isActive = true,
+  setIsActive,
   attentionLowQty = "",
   setAttentionLowQty,
   attentionUrgentQty = "",
@@ -246,6 +248,15 @@ export function CoreItemFields({
             className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
           />
           <span className="text-sm font-medium text-slate-100">Direct sale</span>
+        </label>
+        <label className="inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/50 px-3 py-2">
+          <input
+            type="checkbox"
+            checked={isActive !== false}
+            onChange={(event) => setIsActive?.(event.target.checked)}
+            className="h-4 w-4 shrink-0 rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
+          />
+          <span className="text-sm font-medium text-slate-100">Active</span>
         </label>
       </div>
       <div className="min-w-0">

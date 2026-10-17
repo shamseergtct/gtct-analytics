@@ -10,12 +10,14 @@ service firebase.storage {
 
     function canAccessClient(clientId) {
       return request.auth != null
+        && userProfile() != null
         && userProfile().isActive != false
         && (
           userProfile().role == 'super_admin'
           || (
-            userProfile().assignedShops is list
-            && clientId in userProfile().assignedShops
+            userProfile().keys().hasAny(['assignedShops'])
+            && userProfile().assignedShops is list
+            && userProfile().assignedShops.hasAny([clientId])
           )
         );
     }
