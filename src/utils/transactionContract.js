@@ -24,6 +24,28 @@ export function normalizeTransactionType(value) {
   return type;
 }
 
+/** Z-report ledger rows (credit receivables, etc.) — not Sales-module POS invoices. */
+export function isZReportSalesSource(source) {
+  const key = text(source).toLowerCase();
+  return key === "z_report_credit" || key.startsWith("z_report");
+}
+
+/**
+ * True for Sales / Billing (POS) invoice postings only.
+ * Requires source "pos" or refType "sales_invoice" — Z-report credit and other
+ * type=sales ledgers are not Sales-module invoices.
+ */
+export function isPosModuleSalesTransaction(transaction) {
+  if (!transaction || transaction.internalTransfer === true) return false;
+  if (normalizeTransactionType(transaction?.type) !== "sales") return false;
+  const source = text(transaction?.source).toLowerCase();
+  const refType = text(transaction?.refType).toLowerCase();
+  const status = text(transaction?.status || "POSTED").toUpperCase();
+  if (status === "CANCELLED" || status === "REVERSED") return false;
+  if (source === "pos_cancel" || isZReportSalesSource(source)) return false;
+  return source === "pos" || refType === "sales_invoice";
+}
+
 export function normalizeTransactionMode(value) {
   const mode = text(value).toLowerCase();
   if (mode.startsWith("cas")) return "cash";

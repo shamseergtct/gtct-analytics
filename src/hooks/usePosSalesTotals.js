@@ -7,8 +7,8 @@ import {
 } from "firebase/firestore";
 import { db } from "../firebase";
 import {
+  isPosModuleSalesTransaction,
   normalizeTransactionMode,
-  normalizeTransactionType,
 } from "../utils/transactionContract.js";
 import { roundMoney } from "../utils/money.js";
 
@@ -92,17 +92,7 @@ export function usePosSalesTotals({ clientId, businessDate, shiftId }) {
   return useMemo(() => {
     const shiftKey = String(shiftId || "").trim();
     const sales = transactions.filter((transaction) => {
-      if (normalizeTransactionType(transaction?.type) !== "sales") return false;
-      if (transaction?.internalTransfer === true) return false;
-      if (String(transaction?.status || "POSTED").toUpperCase() === "CANCELLED") {
-        return false;
-      }
-      if (String(transaction?.status || "").toUpperCase() === "REVERSED") {
-        return false;
-      }
-      if (String(transaction?.source || "").toLowerCase() === "pos_cancel") {
-        return false;
-      }
+      if (!isPosModuleSalesTransaction(transaction)) return false;
       if (
         shiftKey &&
         String(transaction?.shiftId || "").trim() &&
@@ -123,6 +113,9 @@ export function usePosSalesTotals({ clientId, businessDate, shiftId }) {
         else if (mode === "credit") tender = "Credit";
         else if (isBankMode(rawMode)) tender = "Bank";
 
+        const source = String(transaction?.source || "").trim();
+        const refType = String(transaction?.refType || "").trim();
+        const refId = String(transaction?.refId || "").trim();
         return {
           id: transaction.id,
           invoiceNo:
@@ -131,6 +124,7 @@ export function usePosSalesTotals({ clientId, businessDate, shiftId }) {
               .replace(/^Sales invoice\s+/i, "")
               .trim() ||
             "—",
+          description: String(transaction?.description || "").trim(),
           partyName: (() => {
             const name = String(transaction?.partyName || "").trim();
             const key = name.toLowerCase();
@@ -147,6 +141,9 @@ export function usePosSalesTotals({ clientId, businessDate, shiftId }) {
             return name;
           })(),
           tender,
+          source,
+          refType,
+          refId,
           amount,
           createdAtMs: num(transaction?.createdAtMs) || num(transaction?.dateMs),
         };

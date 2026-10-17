@@ -175,21 +175,33 @@ export default function ExternalSales() {
         </div>
       </div>
 
-      {pageError ? (
-        <div className="rounded-xl border border-red-900 bg-red-950/30 p-3 text-sm text-red-200">
-          {pageError}
-        </div>
-      ) : null}
-      {message ? (
-        <div className="rounded-xl border border-emerald-900 bg-emerald-950/30 p-3 text-sm text-emerald-200">
-          {message}
-        </div>
-      ) : null}
-
       <div
         data-external-sales-sticky
         className="sticky top-16 z-30 -mx-1 border-b border-slate-800/80 bg-slate-950/90 py-3 backdrop-blur-md supports-[backdrop-filter]:bg-slate-950/75"
       >
+        {(pageError || message) && (
+          <div className="mb-3 space-y-2 px-1">
+            {pageError ? (
+              <div className="flex items-start justify-between gap-3 rounded-xl border border-red-900 bg-red-950/40 px-3 py-2.5 text-sm text-red-100 shadow-lg shadow-red-950/30">
+                <span className="min-w-0 flex-1">{pageError}</span>
+                <button
+                  type="button"
+                  onClick={() => setPageError("")}
+                  className="shrink-0 rounded-md px-1.5 py-0.5 text-xs font-semibold text-red-200/80 hover:bg-red-900/50 hover:text-red-50"
+                  aria-label="Dismiss error"
+                >
+                  Dismiss
+                </button>
+              </div>
+            ) : null}
+            {message ? (
+              <div className="rounded-xl border border-emerald-900 bg-emerald-950/40 px-3 py-2.5 text-sm text-emerald-100 shadow-lg shadow-emerald-950/20">
+                {message}
+              </div>
+            ) : null}
+          </div>
+        )}
+
         <div className="flex flex-col gap-3 px-1 sm:flex-row sm:items-end sm:justify-between sm:gap-4">
           <div className="flex min-w-0 flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
             <div className="min-w-0 overflow-x-auto overscroll-x-contain">

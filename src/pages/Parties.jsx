@@ -22,7 +22,11 @@ import {
   exportPartiesCsv,
   parsePartiesCsv,
 } from "../utils/partyBulk.js";
-import { getPartyCode, nextPartyCode } from "../utils/partyCode.js";
+import {
+  findDuplicateCustomerName,
+  getPartyCode,
+  nextPartyCode,
+} from "../utils/partyCode.js";
 import {
   defaultOpeningBalanceSide,
   deletePartyOpeningBalanceTxn,
@@ -218,6 +222,20 @@ export default function Parties() {
     if (!PARTY_TYPES.includes(type)) {
       setModalError("Invalid party type.");
       return;
+    }
+
+    if (type === "Customer" || type === "Both") {
+      const duplicate = findDuplicateCustomerName(parties, name.trim(), {
+        excludeId: editingId || "",
+      });
+      if (duplicate) {
+        setModalError(
+          `Customer name “${duplicate.name}” already exists${
+            getPartyCode(duplicate) ? ` (${getPartyCode(duplicate)})` : ""
+          }. Use a different name.`
+        );
+        return;
+      }
     }
 
     const openingAmount = Number(openingBalance);

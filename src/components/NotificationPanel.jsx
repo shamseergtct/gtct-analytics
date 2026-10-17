@@ -1,10 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AlertTriangle, Bell, ChevronRight, Package, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  CalendarX2,
+  ChevronRight,
+  Package,
+  X,
+} from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
 import { useShift } from "../context/shift-context.js";
 import { useReopenedEodReports } from "../hooks/useReopenedEodReports.js";
+import { useUnclosedBusinessDays } from "../hooks/useUnclosedBusinessDays.js";
 import { useUrgentStockNotifications } from "../hooks/useUrgentStockNotifications.js";
 import { formatIsoDate } from "../utils/dateFormat.js";
 import { ATTENTION_STATUS_META } from "../utils/inventoryDailyReview.js";
@@ -21,8 +29,14 @@ export default function NotificationPanel() {
   const businessDate = String(activeShift?.businessDate || "").trim();
 
   const { reports, count: eodCount } = useReopenedEodReports(activeClientId);
-  const { alerts: urgentAlerts, count: urgentCount } =
-    useUrgentStockNotifications(activeClientId, businessDate);
+  const { alerts: urgentAlerts } = useUrgentStockNotifications(
+    activeClientId,
+    businessDate
+  );
+  const canSeeUnclosed = role === "admin" || role === "super_admin";
+  const { days: unclosedDays, count: unclosedCount } = useUnclosedBusinessDays(
+    canSeeUnclosed ? activeClientId : ""
+  );
 
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
@@ -37,7 +51,8 @@ export default function NotificationPanel() {
     role === "admin" || role === "shop_admin" || role === "super_admin";
 
   const stockAlerts = canManagePo ? urgentAlerts : [];
-  const count = eodCount + stockAlerts.length;
+  const count =
+    eodCount + stockAlerts.length + (canSeeUnclosed ? unclosedCount : 0);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -113,6 +128,38 @@ export default function NotificationPanel() {
               </p>
             ) : (
               <ul className="divide-y divide-slate-800">
+                {canSeeUnclosed
+                  ? unclosedDays.map((day) => {
+                      const date = String(day.date || "").slice(0, 10);
+                      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+                      return (
+                        <li key={day.id}>
+                          <Link
+                            to={day.href || eodPathForDate(date)}
+                            onClick={() => setOpen(false)}
+                            className="group flex w-full cursor-pointer items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-slate-800/80"
+                          >
+                            <span className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-sky-700/50 bg-sky-950/50 text-sky-300">
+                              <CalendarX2 size={14} />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-sm font-semibold text-sky-100 group-hover:text-sky-50">
+                                Day not closed
+                              </span>
+                              <span className="mt-0.5 block text-xs text-slate-400 group-hover:text-slate-300">
+                                {formatIsoDate(date) || date} — had activity but
+                                End of Day was not closed. Tap to close.
+                              </span>
+                            </span>
+                            <ChevronRight
+                              size={16}
+                              className="mt-1 shrink-0 text-slate-500 group-hover:text-slate-300"
+                            />
+                          </Link>
+                        </li>
+                      );
+                    })
+                  : null}
                 {stockAlerts.map((alert) => {
                   const meta = ATTENTION_STATUS_META[alert.status];
                   return (

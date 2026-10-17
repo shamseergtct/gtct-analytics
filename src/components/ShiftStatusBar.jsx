@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { X } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
@@ -6,6 +7,14 @@ import { useShift } from "../context/shift-context";
 import { useEstimatedLiquidity } from "../hooks/useEstimatedBankBalance.js";
 import DateInput from "./DateInput.jsx";
 import { formatIsoDate } from "../utils/dateFormat.js";
+
+const UNSAVED_MODULE_ROUTES = {
+  inventory: "/inventory",
+  sales: "/sales",
+  purchases: "/purchases",
+  payments: "/payments-receipts",
+  "internal-transfers": "/internal-transfers",
+};
 
 function todayYYYYMMDD() {
   const date = new Date();
@@ -23,6 +32,9 @@ export default function ShiftStatusBar() {
     openShift,
     closeShiftWithoutZReport,
     updateActiveShiftBusinessDate,
+    unsavedWork,
+    isOnOperationsShift,
+    shopAdminOpsBlock,
   } = useShift();
 
   const [openModalOpen, setOpenModalOpen] = useState(false);
@@ -31,6 +43,7 @@ export default function ShiftStatusBar() {
   const [saving, setSaving] = useState(false);
   const [updatingDate, setUpdatingDate] = useState(false);
   const [dateError, setDateError] = useState("");
+  const [pendingModules, setPendingModules] = useState([]);
   const [error, setError] = useState("");
 
   const { floatingCash, loading: loadingPreviousCash } = useEstimatedLiquidity(
@@ -42,13 +55,35 @@ export default function ShiftStatusBar() {
   const canOpenOtherDates = isAdmin || isSuperAdmin;
   const shiftOpen = activeShift?.status === "OPEN";
 
+  const pendingUnsavedModules = useMemo(
+    () =>
+      Object.entries(unsavedWork || {})
+        .filter(([, label]) => Boolean(label))
+        .map(([moduleId, label]) => ({
+          moduleId,
+          label: String(label),
+          path: UNSAVED_MODULE_ROUTES[moduleId] || null,
+        })),
+    [unsavedWork]
+  );
+
   useEffect(() => {
     if (!openModalOpen) return;
     setBusinessDate(todayYYYYMMDD());
     setError("");
   }, [openModalOpen]);
 
-  if (!canManageShift || !activeClientId) return null;
+  useEffect(() => {
+    if (!pendingModules.length) return;
+    if (!pendingUnsavedModules.length) {
+      setPendingModules([]);
+      setDateError("");
+    } else {
+      setPendingModules(pendingUnsavedModules);
+    }
+  }, [pendingUnsavedModules, pendingModules.length]);
+
+  if (!canManageShift || !activeClientId || shopAdminOpsBlock) return null;
 
   async function handleOpenShift(event) {
     event.preventDefault();
@@ -99,11 +134,25 @@ export default function ShiftStatusBar() {
     if (!cleanDate || cleanDate === activeShift?.businessDate) return;
 
     setDateError("");
+    setPendingModules([]);
+    if (pendingUnsavedModules.length) {
+      setPendingModules(pendingUnsavedModules);
+      setDateError("Save or clear unsaved work before changing the shift date.");
+      return;
+    }
+
     setUpdatingDate(true);
     try {
       await updateActiveShiftBusinessDate(cleanDate);
     } catch (reason) {
-      setDateError(reason?.message || "Failed to update business date.");
+      if (pendingUnsavedModules.length) {
+        setPendingModules(pendingUnsavedModules);
+        setDateError(
+          "Save or clear unsaved work before changing the shift date."
+        );
+      } else {
+        setDateError(reason?.message || "Failed to update business date.");
+      }
     } finally {
       setUpdatingDate(false);
     }
@@ -126,19 +175,29 @@ export default function ShiftStatusBar() {
                 </span>
                 <label className="inline-flex items-center gap-2 text-sm text-slate-300">
                   <span className="whitespace-nowrap">Business date</span>
-                  <DateInput
-                    value={activeShift.businessDate || ""}
-                    disabled={updatingDate}
-                    onChange={(event) =>
-                      handleBusinessDateChange(event.target.value)
-                    }
-                    aria-label="Change shift business date"
-                    title={
-                      formatIsoDate(activeShift.businessDate) ||
-                      activeShift.businessDate
-                    }
-                    className="h-8 w-[138px] rounded-lg border border-slate-700 bg-slate-950 px-2 text-sm font-semibold text-white disabled:opacity-60"
-                  />
+                  {isShopAdmin ? (
+                    <span
+                      className="inline-flex h-8 items-center rounded-lg border border-slate-700 bg-slate-950 px-2 text-sm font-semibold text-white"
+                      title="Shop admin operations date is fixed until the shift is closed"
+                    >
+                      {formatIsoDate(activeShift.businessDate) ||
+                        activeShift.businessDate}
+                    </span>
+                  ) : (
+                    <DateInput
+                      value={activeShift.businessDate || ""}
+                      disabled={updatingDate}
+                      onChange={(event) =>
+                        handleBusinessDateChange(event.target.value)
+                      }
+                      aria-label="Change shift business date"
+                      title={
+                        formatIsoDate(activeShift.businessDate) ||
+                        activeShift.businessDate
+                      }
+                      className="h-8 w-[138px] rounded-lg border border-slate-700 bg-slate-950 px-2 text-sm font-semibold text-white disabled:opacity-60"
+                    />
+                  )}
                 </label>
                 {updatingDate ? (
                   <span className="text-xs text-slate-400">Updating…</span>
@@ -146,9 +205,38 @@ export default function ShiftStatusBar() {
                 {dateError ? (
                   <span className="max-w-md text-xs text-rose-300">{dateError}</span>
                 ) : null}
+                {pendingModules.length ? (
+                  <span className="flex max-w-xl flex-wrap items-center gap-1.5 text-xs text-rose-200">
+                    {pendingModules.map((item) =>
+                      item.path ? (
+                        <Link
+                          key={item.moduleId}
+                          to={item.path}
+                          className="rounded border border-rose-700/60 bg-rose-950/40 px-2 py-0.5 font-semibold text-rose-100 hover:bg-rose-900/50"
+                        >
+                          {item.label}
+                        </Link>
+                      ) : (
+                        <span
+                          key={item.moduleId}
+                          className="rounded border border-rose-700/60 bg-rose-950/40 px-2 py-0.5 font-semibold"
+                        >
+                          {item.label}
+                        </span>
+                      )
+                    )}
+                  </span>
+                ) : null}
+                {isShopAdmin ? (
+                  <span className="text-xs text-slate-500">
+                    Date locked for this operations shift.
+                  </span>
+                ) : null}
                 {canOpenOtherDates ? (
                   <span className="text-xs text-slate-500">
-                    Staff follow the shop operations shift separately.
+                    {isOnOperationsShift
+                      ? "On operations shift — switching date keeps the shop admin date unchanged."
+                      : "Private session date — staff follow the shop operations shift."}
                   </span>
                 ) : null}
               </>

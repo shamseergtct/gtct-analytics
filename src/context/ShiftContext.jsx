@@ -103,14 +103,59 @@ function isOpenShiftForClient(snap, clientId) {
   );
 }
 
+/** Shop-admin binding on an OPEN ops shift (supports legacy openedByRole). */
+function shopAdminOpsBinding(shiftData) {
+  if (!shiftData || shiftData.status !== "OPEN") return null;
+  const boundUid = String(
+    shiftData.operationsBoundBy || shiftData.openedBy || ""
+  ).trim();
+  const boundRole = String(
+    shiftData.operationsBoundByRole || shiftData.openedByRole || ""
+  ).trim();
+  if (!boundUid || boundRole !== "shop_admin") return null;
+  return {
+    uid: boundUid,
+    role: boundRole,
+    name: String(
+      shiftData.operationsBoundByName ||
+        shiftData.openedByName ||
+        ""
+    ).trim(),
+    email: String(
+      shiftData.operationsBoundByEmail ||
+        shiftData.openedByEmail ||
+        ""
+    ).trim(),
+    businessDate: String(shiftData.businessDate || "").trim(),
+  };
+}
+
+function contactLabelFromBinding(binding) {
+  if (!binding) return "another shop admin";
+  const name = binding.name || "Shop admin";
+  const email = binding.email;
+  return email ? `${name} (${email})` : name;
+}
+
 export function ShiftProvider({ children }) {
-  const { user, role, isStaff, isShopAdmin, canManageShopOps } = useAuth();
+  const {
+    user,
+    role,
+    isStaff,
+    isShopAdmin,
+    isAdmin,
+    isSuperAdmin,
+    canManageShopOps,
+    displayName,
+  } = useAuth();
   const { activeClientId } = useClient();
   const [activeShift, setActiveShift] = useState(null);
   const [operationsShiftId, setOperationsShiftId] = useState("");
+  const [operationsShift, setOperationsShift] = useState(null);
   const [sessionShiftId, setSessionShiftId] = useState("");
   const [settingsLoadedForClient, setSettingsLoadedForClient] = useState("");
   const [shiftDocLoadedFor, setShiftDocLoadedFor] = useState("");
+  const [opsShiftDocLoadedFor, setOpsShiftDocLoadedFor] = useState("");
   const [shiftErrorState, setShiftErrorState] = useState(null);
   const [unsavedWork, setUnsavedWorkState] = useState(() =>
     readStoredUnsavedWork(activeClientId)
@@ -118,6 +163,13 @@ export function ShiftProvider({ children }) {
 
   const followsOperationsShiftOnly = isStaff;
   const usesSessionShift = canManageShopOps;
+  const openerContact = useMemo(
+    () => ({
+      name: String(displayName || "").trim(),
+      email: String(user?.email || "").trim().toLowerCase(),
+    }),
+    [displayName, user?.email]
+  );
 
   useEffect(() => {
     setUnsavedWorkState(readStoredUnsavedWork(activeClientId));
@@ -171,12 +223,14 @@ export function ShiftProvider({ children }) {
     [user?.uid, activeClientId, usesSessionShift]
   );
 
-  // Staff / delivery binding: always follow client_settings.operationsShiftId.
+  // Staff always follow client_settings.operationsShiftId (delivery app does too).
   // Admin / super_admin / shop_admin: also load settings for open/close side effects.
   useEffect(() => {
     if (!activeClientId) {
       setOperationsShiftId("");
+      setOperationsShift(null);
       setSettingsLoadedForClient("");
+      setOpsShiftDocLoadedFor("");
       return undefined;
     }
     const settingsRef = doc(db, "client_settings", activeClientId);
@@ -200,6 +254,44 @@ export function ShiftProvider({ children }) {
     );
   }, [activeClientId]);
 
+  // Keep a dedicated listener on the operations shift (staff binding + shop-admin gate).
+  useEffect(() => {
+    if (!activeClientId) {
+      setOperationsShift(null);
+      setOpsShiftDocLoadedFor("");
+      return undefined;
+    }
+    if (settingsLoadedForClient !== activeClientId) {
+      return undefined;
+    }
+    const opsId = String(operationsShiftId || "").trim();
+    if (!opsId) {
+      setOperationsShift(null);
+      setOpsShiftDocLoadedFor(activeClientId);
+      return undefined;
+    }
+    return onSnapshot(
+      doc(db, "shifts", opsId),
+      (snap) => {
+        if (
+          snap.exists() &&
+          snap.data()?.clientId === activeClientId &&
+          snap.data()?.status === "OPEN"
+        ) {
+          setOperationsShift({ id: snap.id, ...snap.data() });
+        } else {
+          setOperationsShift(null);
+        }
+        setOpsShiftDocLoadedFor(activeClientId);
+      },
+      (error) => {
+        console.error("Operations shift listener failed:", error);
+        setOperationsShift(null);
+        setOpsShiftDocLoadedFor(activeClientId);
+      }
+    );
+  }, [activeClientId, operationsShiftId, settingsLoadedForClient]);
+
   const resolvedShiftId = useMemo(() => {
     if (!activeClientId) return "";
     if (followsOperationsShiftOnly) {
@@ -209,7 +301,7 @@ export function ShiftProvider({ children }) {
       // Shop admin works the operations shift; session mirrors it after open/attach.
       return operationsShiftId || sessionShiftId;
     }
-    // admin / super_admin: session-selected shift only (never first-OPEN query).
+    // admin / super_admin: session-selected shift only — never rebinds staff/delivery.
     return sessionShiftId;
   }, [
     activeClientId,
@@ -217,6 +309,34 @@ export function ShiftProvider({ children }) {
     isShopAdmin,
     operationsShiftId,
     sessionShiftId,
+  ]);
+
+  const shopAdminOpsBlock = useMemo(() => {
+    if (!isShopAdmin || !activeClientId || !user?.uid) return null;
+    if (
+      settingsLoadedForClient !== activeClientId ||
+      opsShiftDocLoadedFor !== activeClientId
+    ) {
+      return null;
+    }
+    const binding = shopAdminOpsBinding(operationsShift);
+    if (!binding || binding.uid === user.uid) return null;
+    return {
+      ownerName: binding.name || "Shop admin",
+      ownerEmail: binding.email || "",
+      businessDate: binding.businessDate || "",
+      shiftId: operationsShift?.id || "",
+      message: `A shift is open for this shop by ${contactLabelFromBinding(
+        binding
+      )}. Ask them to close it before you can use this shop.`,
+    };
+  }, [
+    isShopAdmin,
+    activeClientId,
+    user?.uid,
+    settingsLoadedForClient,
+    opsShiftDocLoadedFor,
+    operationsShift,
   ]);
 
   useEffect(() => {
@@ -291,7 +411,8 @@ export function ShiftProvider({ children }) {
   const loadingShift =
     Boolean(activeClientId) &&
     (settingsLoadedForClient !== activeClientId ||
-      shiftDocLoadedFor !== activeClientId);
+      shiftDocLoadedFor !== activeClientId ||
+      (isShopAdmin && opsShiftDocLoadedFor !== activeClientId));
   const shiftError =
     shiftErrorState?.clientId === activeClientId
       ? shiftErrorState.message
@@ -342,13 +463,21 @@ export function ShiftProvider({ children }) {
           : null;
         const opsOpen = isOpenShiftForClient(opsShiftSnap, activeClientId);
         const legacyOpen = isOpenShiftForClient(legacyShiftSnap, activeClientId);
-        const controllingOpenId = opsOpen
-          ? opsId
-          : legacyOpen
-            ? legacyId
-            : "";
-        const controllingOpen =
-          Boolean(controllingOpenId) && (opsOpen || legacyOpen);
+        const opsBinding = opsOpen
+          ? shopAdminOpsBinding(opsShiftSnap.data())
+          : null;
+        const opsOwnedByOtherShopAdmin =
+          Boolean(opsBinding) && opsBinding.uid !== user.uid;
+        const opsOwnedBySelfShopAdmin =
+          isShopAdmin && Boolean(opsBinding) && opsBinding.uid === user.uid;
+
+        if (isShopAdmin && opsOwnedByOtherShopAdmin) {
+          throw new Error(
+            `A shift is open for this shop by ${contactLabelFromBinding(
+              opsBinding
+            )}. Ask them to close it before you can open a shift.`
+          );
+        }
 
         let lockShiftSnap = null;
         const lockShiftId = String(lockSnap.data()?.shiftId || "").trim();
@@ -361,7 +490,6 @@ export function ShiftProvider({ children }) {
           isOpenShiftForClient(lockShiftSnap, activeClientId) &&
           String(lockShiftSnap.data()?.businessDate || "").trim() === cleanDate;
 
-        // Migrate pre-lock OPEN shift (legacy activeShiftId) for this date.
         const legacyMatchesDate =
           legacyOpen &&
           String(legacyShiftSnap.data()?.businessDate || "").trim() === cleanDate;
@@ -369,18 +497,16 @@ export function ShiftProvider({ children }) {
           opsOpen &&
           String(opsShiftSnap.data()?.businessDate || "").trim() === cleanDate;
 
-        // Shop admin: at most one OPEN operations/legacy shift at a time.
+        // Shop admin stays on their bound ops date (cannot open another date).
         if (
-          isShopAdmin &&
-          controllingOpen &&
-          !(
-            (lockPointsToOpen && lockShiftId === controllingOpenId) ||
-            (legacyMatchesDate && legacyId === controllingOpenId) ||
-            (opsMatchesDate && opsId === controllingOpenId)
-          )
+          opsOwnedBySelfShopAdmin &&
+          opsBinding.businessDate &&
+          opsBinding.businessDate !== cleanDate &&
+          !lockPointsToOpen &&
+          !opsMatchesDate
         ) {
           throw new Error(
-            "You already have an open shift for this shop. Close it before opening another date."
+            `Your operations shift stays on ${opsBinding.businessDate}. Close it before opening another date.`
           );
         }
 
@@ -392,8 +518,36 @@ export function ShiftProvider({ children }) {
               ? legacyId
               : "";
 
+        const claimOpsAsShopAdmin = (targetShiftId) => {
+          if (!isShopAdmin || !targetShiftId) return;
+          const targetRef = doc(db, "shifts", targetShiftId);
+          tx.set(
+            targetRef,
+            {
+              operationsBoundBy: user.uid,
+              operationsBoundByRole: "shop_admin",
+              operationsBoundByName: openerContact.name || "",
+              operationsBoundByEmail: openerContact.email || "",
+              operationsBoundAtMs: openedAtMs,
+              updatedBy: user.uid,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        };
+
+        // Admin/super_admin may set ops only when none is open (bootstrap).
+        // Shop admin always establishes/reclaims ops. Never promote a private
+        // admin date-shift to ops while a shop-admin ops shift already exists.
+        const shouldBindOperationsShift = (targetShiftId) => {
+          if (!targetShiftId) return false;
+          if (isShopAdmin) return true;
+          if (!opsOpen) return true;
+          return opsId === targetShiftId;
+        };
+
         if (attachShiftId) {
-          // Resolve existing OPEN shift for this shop/date — do not create a duplicate.
+          // Reuse existing OPEN shift for this shop/date — no duplicate.
           resolvedShiftIdResult = attachShiftId;
           attachedExisting = true;
           if (!lockPointsToOpen || lockShiftId !== attachShiftId) {
@@ -409,11 +563,12 @@ export function ShiftProvider({ children }) {
               createdAt: serverTimestamp(),
             });
           }
+          claimOpsAsShopAdmin(attachShiftId);
           const settingsPatch = {
             clientId: activeClientId,
             updatedAt: serverTimestamp(),
           };
-          if (isShopAdmin || !opsOpen) {
+          if (shouldBindOperationsShift(attachShiftId)) {
             settingsPatch.operationsShiftId = attachShiftId;
           }
           tx.set(settingsRef, settingsPatch, { merge: true });
@@ -425,18 +580,24 @@ export function ShiftProvider({ children }) {
           tx.delete(lockRef);
         }
 
-        if (isShopAdmin && controllingOpen) {
+        // Shop admin may create a new ops date even if an admin private/bootstrap
+        // shift is open on another date. Only self-owned shop-admin ops blocks.
+        if (opsOwnedBySelfShopAdmin) {
           throw new Error(
-            "You already have an open shift for this shop. Close it before opening another date."
+            `Your operations shift stays on ${
+              opsBinding.businessDate || "the current date"
+            }. Close it before opening another date.`
           );
         }
 
-        tx.set(shiftRef, {
+        const newShiftPayload = {
           clientId: activeClientId,
           businessDate: cleanDate,
           businessDateAt: toBusinessDate(cleanDate),
           openedBy: user.uid,
           openedByRole: role || "",
+          openedByName: openerContact.name || "",
+          openedByEmail: openerContact.email || "",
           openedAt: serverTimestamp(),
           openedAtMs,
           openingFloat: num(openingFloat),
@@ -446,7 +607,16 @@ export function ShiftProvider({ children }) {
           closingCashCounted: null,
           zReportId: null,
           status: "OPEN",
-        });
+        };
+        if (isShopAdmin) {
+          newShiftPayload.operationsBoundBy = user.uid;
+          newShiftPayload.operationsBoundByRole = "shop_admin";
+          newShiftPayload.operationsBoundByName = openerContact.name || "";
+          newShiftPayload.operationsBoundByEmail = openerContact.email || "";
+          newShiftPayload.operationsBoundAtMs = openedAtMs;
+        }
+
+        tx.set(shiftRef, newShiftPayload);
         tx.set(lockRef, {
           clientId: activeClientId,
           businessDate: cleanDate,
@@ -460,9 +630,7 @@ export function ShiftProvider({ children }) {
           clientId: activeClientId,
           updatedAt: serverTimestamp(),
         };
-        // Shop admin always binds staff/delivery. Admin/super_admin only bootstrap
-        // when no operations shift is currently open.
-        if (isShopAdmin || !opsOpen) {
+        if (shouldBindOperationsShift(shiftRef.id)) {
           settingsPatch.operationsShiftId = shiftRef.id;
         }
         tx.set(settingsRef, settingsPatch, { merge: true });
@@ -1239,12 +1407,33 @@ export function ShiftProvider({ children }) {
     if (cleanDate === currentActiveShift.businessDate) {
       return currentActiveShift.id;
     }
+    if (isShopAdmin) {
+      throw new Error(
+        "Shop admin operations shift stays on its opened date. Close the shift to work on another date."
+      );
+    }
+    if (!isAdmin && !isSuperAdmin) {
+      throw new Error("You do not have permission to change the shift date.");
+    }
     if (unsavedWorkLabels.length) {
       throw new Error(
         `Save or clear unsaved work before changing the shift date: ${unsavedWorkLabels.join(
           ", "
         )}.`
       );
+    }
+
+    const isOnOperationsShift =
+      Boolean(operationsShiftId) &&
+      currentActiveShift.id === operationsShiftId;
+
+    // Leaving the operations shift (or any shared date): bind a private session
+    // shift for the target date without mutating the ops shift document.
+    if (isOnOperationsShift) {
+      return openShift({
+        openingFloat: num(currentActiveShift.openingFloat),
+        businessDate: cleanDate,
+      });
     }
 
     const shiftRef = doc(db, "shifts", currentActiveShift.id);
@@ -1260,10 +1449,19 @@ export function ShiftProvider({ children }) {
 
     console.time("Shift Operation: Update Business Date");
     try {
+      // If target date already has an OPEN shift, attach session to it instead
+      // of moving this private shift (avoids duplicate OPEN per shop/date).
+      let attachedId = "";
       await runTransaction(db, async (tx) => {
         const shiftSnap = await tx.get(shiftRef);
         const newLockSnap = await tx.get(newLockRef);
         const oldLockSnap = oldLockRef ? await tx.get(oldLockRef) : null;
+        const settingsSnap = await tx.get(
+          doc(db, "client_settings", activeClientId)
+        );
+        const opsId = String(
+          settingsSnap.data()?.operationsShiftId || ""
+        ).trim();
 
         if (
           !shiftSnap.exists() ||
@@ -1273,14 +1471,20 @@ export function ShiftProvider({ children }) {
           throw new Error("The active shift is no longer open.");
         }
 
+        // Never move the operations shift date via this path.
+        if (opsId && opsId === shiftRef.id) {
+          throw new Error(
+            "Cannot change the operations shift date. Switch your session date instead."
+          );
+        }
+
         if (newLockSnap.exists()) {
           const otherShiftId = String(newLockSnap.data()?.shiftId || "").trim();
           if (otherShiftId && otherShiftId !== shiftRef.id) {
             const otherSnap = await tx.get(doc(db, "shifts", otherShiftId));
             if (isOpenShiftForClient(otherSnap, activeClientId)) {
-              throw new Error(
-                "Another open shift already exists for that business date."
-              );
+              attachedId = otherShiftId;
+              return;
             }
           }
           tx.delete(newLockRef);
@@ -1309,16 +1513,31 @@ export function ShiftProvider({ children }) {
           createdAt: serverTimestamp(),
         });
       });
+
+      if (attachedId) {
+        bindSessionShift(attachedId);
+        return attachedId;
+      }
       return shiftRef.id;
     } finally {
       console.timeEnd("Shift Operation: Update Business Date");
     }
   }
 
+  const isOnOperationsShift = Boolean(
+    currentActiveShift?.id &&
+      operationsShiftId &&
+      currentActiveShift.id === operationsShiftId
+  );
+
   return (
     <ShiftContext.Provider
       value={{
         activeShift: currentActiveShift,
+        operationsShiftId,
+        operationsShift,
+        isOnOperationsShift,
+        shopAdminOpsBlock,
         loadingShift,
         shiftError,
         unsavedWork,

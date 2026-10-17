@@ -14,6 +14,11 @@ import { db } from "../firebase";
 import { useClient } from "../context/ClientContext.jsx";
 import ModuleHelpButton from "../components/ModuleHelpButton.jsx";
 import {
+  formatMoney,
+  moneyInputStep,
+  parseMoneyInput,
+} from "../utils/money.js";
+import {
   BANK_ACCOUNT_TYPE_OPERATIONAL,
   BANK_ACCOUNT_TYPES,
   bankAccountTypeLabel,
@@ -28,12 +33,15 @@ const EMPTY_FORM = {
   accountName: "",
   bankName: "",
   accountNumber: "",
+  openingBalance: "",
   accountType: BANK_ACCOUNT_TYPE_OPERATIONAL,
   isActive: true,
 };
 
 export default function BankAccounts() {
-  const { activeClientId, activeClientData } = useClient();
+  const { activeClientId, activeClientData, currency, currencyDecimals } =
+    useClient();
+  const currencyPrefix = currency ? `${currency} ` : "";
 
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -109,10 +117,14 @@ export default function BankAccounts() {
 
   function openEdit(account) {
     setEditingId(account.id);
+    const opening = Number(account.openingBalance);
     setForm({
       accountName: account.accountName || "",
       bankName: account.bankName || "",
       accountNumber: account.accountNumber || "",
+      openingBalance: Number.isFinite(opening)
+        ? formatMoney(opening, currencyDecimals)
+        : "",
       accountType: normalizeBankAccountType(account.accountType),
       isActive: account.isActive !== false,
     });
@@ -139,6 +151,10 @@ export default function BankAccounts() {
     const bankName = String(form.bankName || "").trim();
     const accountNumber = String(form.accountNumber || "").trim();
     const accountType = normalizeBankAccountType(form.accountType);
+    const openingRaw = String(form.openingBalance || "").trim();
+    const openingBalance = openingRaw
+      ? parseMoneyInput(openingRaw, currencyDecimals)
+      : 0;
 
     if (!accountName) {
       setModalError("Account name is required.");
@@ -146,6 +162,10 @@ export default function BankAccounts() {
     }
     if (!bankName) {
       setModalError("Bank name is required.");
+      return;
+    }
+    if (openingRaw && (!Number.isFinite(openingBalance) || openingBalance < 0)) {
+      setModalError("Opening balance must be a non-negative number.");
       return;
     }
 
@@ -156,6 +176,7 @@ export default function BankAccounts() {
         accountName,
         bankName,
         accountNumber,
+        openingBalance,
         accountType,
         isActive: Boolean(form.isActive),
       };
@@ -279,6 +300,7 @@ export default function BankAccounts() {
                 <th className="px-4 py-3">Account Name</th>
                 <th className="px-4 py-3">Bank</th>
                 <th className="px-4 py-3">Account No.</th>
+                <th className="px-4 py-3 text-right">Opening Balance</th>
                 <th className="px-4 py-3">Account Type</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Actions</th>
@@ -287,7 +309,7 @@ export default function BankAccounts() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                     Loading…
                   </td>
                 </tr>
@@ -305,6 +327,13 @@ export default function BankAccounts() {
                     <td className="px-4 py-3">{account.bankName || "—"}</td>
                     <td className="px-4 py-3">
                       {account.accountNumber || "—"}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-white">
+                      {currencyPrefix}
+                      {formatMoney(
+                        Number(account.openingBalance) || 0,
+                        currencyDecimals
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <span
@@ -352,7 +381,7 @@ export default function BankAccounts() {
                 })
               ) : (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
                     No bank accounts yet. Add Salary, Main, or Maintenance accounts
                     to use them in payment modes.
                   </td>
@@ -430,6 +459,29 @@ export default function BankAccounts() {
                   className={FIELD_CLASS}
                   placeholder="XXXX1234"
                 />
+              </label>
+
+              <label className={LABEL_CLASS}>
+                Opening Balance{currency ? ` (${currency})` : ""}
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min="0"
+                  step={moneyInputStep(currencyDecimals)}
+                  value={form.openingBalance}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      openingBalance: event.target.value,
+                    }))
+                  }
+                  className={FIELD_CLASS}
+                  placeholder={formatMoney(0, currencyDecimals)}
+                />
+                <span className="mt-1 block text-xs font-normal text-slate-500">
+                  Starting balance before recorded transactions. Used when no
+                  prior day-close split exists for this account.
+                </span>
               </label>
 
               <fieldset className="space-y-2">

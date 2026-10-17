@@ -5,6 +5,7 @@ import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
 
 import ShiftStatusBar from "./ShiftStatusBar";
+import ShopAdminOpsGate from "./ShopAdminOpsGate";
 import UnsavedDraftGuard from "./UnsavedDraftGuard";
 import NotificationPanel from "./NotificationPanel";
 import {
@@ -490,11 +491,13 @@ export default function Layout() {
           sidebarOpen ? "lg:pl-72" : "lg:pl-0"
         }`}
       >
-        <ShiftStatusBar />
-        <UnsavedDraftGuard />
-        <div className="mx-auto w-full min-w-0 max-w-[1600px] p-3 sm:p-4 md:p-6">
-          <Outlet />
-        </div>
+        <ShopAdminOpsGate>
+          <ShiftStatusBar />
+          <UnsavedDraftGuard />
+          <div className="mx-auto w-full min-w-0 max-w-[1600px] p-3 sm:p-4 md:p-6">
+            <Outlet />
+          </div>
+        </ShopAdminOpsGate>
       </main>
     </div>
   );

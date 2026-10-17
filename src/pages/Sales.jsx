@@ -50,7 +50,11 @@ import {
   saleTenderTxnId,
   tenderTotals,
 } from "../components/sales/salesHelpers.js";
-import { getPartyCode, nextPartyCode } from "../utils/partyCode.js";
+import {
+  findDuplicateCustomerName,
+  getPartyCode,
+  nextPartyCode,
+} from "../utils/partyCode.js";
 import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
 import { useMoney } from "../hooks/useMoney.js";
 import { useFormDraft } from "../hooks/useFormDraft.js";
@@ -354,7 +358,12 @@ export default function Sales() {
   const draft = initialDraft || {};
 
   // Tabs
-  const [tab, setTab] = useState(() => draft.tab ?? "new"); // new | history
+  const [tab, setTab] = useState(() => {
+    const saved = draft.tab ?? "new";
+    // Migrate legacy draft tab id "history" → "invoices"
+    if (saved === "history") return "invoices";
+    return saved;
+  }); // new | invoices
 
   // Inventory for item search
   const [items, setItems] = useState([]);
@@ -364,7 +373,7 @@ export default function Sales() {
   const [customers, setCustomers] = useState([]);
   const [loadingCustomers, setLoadingCustomers] = useState(false);
 
-  // Invoice History
+  // Invoices list
   const [invoices, setInvoices] = useState([]);
   const [loadingInv, setLoadingInv] = useState(false);
   const [invSearch, setInvSearch] = useState("");
@@ -456,7 +465,7 @@ export default function Sales() {
     }
     if (!keyChanged) return;
     const d = readDraft() || {};
-    setTab(d.tab ?? "new");
+    setTab(d.tab === "history" ? "invoices" : d.tab ?? "new");
     setEditingInvoice(d.editingInvoice ?? null);
     setPrintMode(d.printMode ?? "A4");
     setSaleDate(d.saleDate || todayYYYYMMDD());
@@ -625,7 +634,7 @@ export default function Sales() {
 
   /**
    * =========================
-   * Load invoice history (when tab = history)
+   * Load invoices (when tab = invoices)
    * =========================
    */
   useEffect(() => {
@@ -633,9 +642,10 @@ export default function Sales() {
       setInvoices([]);
       return;
     }
-    if (tab !== "history") return;
+    if (tab !== "invoices") return;
 
     setLoadingInv(true);
+    setErr("");
 
     const qy = query(
       collection(db, "sales_invoices"),
@@ -651,9 +661,14 @@ export default function Sales() {
         setLoadingInv(false);
       },
       (e) => {
-        console.error("History error:", e);
+        console.error("Invoices load error:", e);
         setInvoices([]);
         setLoadingInv(false);
+        setErr(
+          e?.message
+            ? `Could not load invoices: ${e.message}`
+            : "Could not load invoices for this shop."
+        );
       }
     );
 
@@ -1073,12 +1088,32 @@ export default function Sales() {
       }
     }
 
+    // Reuse existing customer with the same name (no duplicate names).
+    const createName = name || phone || "Customer";
+    const duplicate = findDuplicateCustomerName(customers, createName);
+    if (duplicate?.id) {
+      const patch = {
+        name: createName || duplicate.name || "",
+        phone: phone || duplicate.phone || "",
+        address1: a1 || duplicate.address1 || "",
+        address2: a2 || duplicate.address2 || "",
+        address3: a3 || duplicate.address3 || "",
+        updatedAt: serverTimestamp(),
+        lastSaleAtMs: chosenMs,
+      };
+      if (!getPartyCode(duplicate)) {
+        patch.partyCode = nextPartyCode(customers, "C");
+      }
+      await updateDoc(doc(db, "parties", duplicate.id), patch);
+      return duplicate.id;
+    }
+
     // Create new with simple auto ID (C001, C002, …)
     const ref = await addDoc(collection(db, "parties"), {
       clientId: activeClientId,
       type: "Customer",
       partyCode: nextPartyCode(customers, "C"),
-      name: name || phone || "Customer",
+      name: createName,
       phone,
       address1: a1 || "",
       address2: a2 || "",
@@ -1604,7 +1639,7 @@ export default function Sales() {
 
   /**
    * =========================
-   * History actions
+   * Invoice list actions
    * =========================
    */
   async function viewInvoice(inv) {
@@ -2109,14 +2144,14 @@ export default function Sales() {
               New Order
             </button>
             <button
-              onClick={() => setTab("history")}
+              onClick={() => setTab("invoices")}
               className={`px-4 py-2 rounded-lg text-sm border ${
-                tab === "history"
+                tab === "invoices"
                   ? "bg-slate-100 text-slate-900 border-slate-200"
                   : "bg-slate-950/40 text-slate-200 border-slate-800"
               }`}
             >
-              History
+              Invoices
             </button>
             <ModuleExitButton ariaLabel="Close sales module" />
           </div>
@@ -2139,12 +2174,12 @@ export default function Sales() {
         </div>
       ) : null}
 
-      {/* ================= HISTORY ================= */}
-      {tab === "history" ? (
+      {/* ================= INVOICES ================= */}
+      {tab === "invoices" ? (
         <div className="mt-6 rounded-2xl border border-slate-800 bg-slate-950/40 p-4">
           <div className="flex items-center justify-between gap-3 flex-wrap">
             <div>
-              <h2 className="text-slate-100 font-semibold">Sales History</h2>
+              <h2 className="text-slate-100 font-semibold">Invoices</h2>
               <p className="text-slate-400 text-sm">
                 Search by invoice / customer / phone / payment / order / status
               </p>
@@ -2161,7 +2196,20 @@ export default function Sales() {
           {loadingInv ? (
             <div className="mt-4 text-slate-400 text-sm">Loading invoices...</div>
           ) : historyFiltered.length === 0 ? (
-            <div className="mt-4 text-slate-400 text-sm">No invoices found.</div>
+            <div className="mt-4 space-y-1 text-sm text-slate-400">
+              <p>
+                {invSearch.trim()
+                  ? "No invoices match your search."
+                  : "No Sales / Billing invoices for this shop yet."}
+              </p>
+              {!invSearch.trim() ? (
+                <p className="text-xs text-slate-500">
+                  This list only shows orders saved from{" "}
+                  <span className="font-medium text-slate-400">New Order</span>.
+                  External Sales bills and Z-report credit are not listed here.
+                </p>
+              ) : null}
+            </div>
           ) : (
             <>
               {/* Mobile history cards */}

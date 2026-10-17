@@ -120,6 +120,14 @@
       ]
     },
     {
+      "collectionGroup": "external_sales_bills",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "businessDate", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "z_reports",
       "queryScope": "COLLECTION",
       "fields": [

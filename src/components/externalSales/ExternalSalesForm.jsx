@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
+  addDoc,
   collection,
   doc,
   getDoc,
@@ -11,11 +12,16 @@ import {
   updateDoc,
   where,
 } from "firebase/firestore";
+import { Plus, X } from "lucide-react";
 import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
 import ListPagination from "../ListPagination.jsx";
 import { usePagination } from "../../hooks/usePagination.js";
+import {
+  findDuplicateCustomerName,
+  nextPartyCode,
+} from "../../utils/partyCode.js";
 import {
   formatMoney,
   moneyInputStep,
@@ -66,6 +72,7 @@ import {
   LABEL_CLASS,
 } from "./externalSalesUi.js";
 import PaymentModeSearchSelect from "./PaymentModeSearchSelect.jsx";
+import CustomerSearchSelect from "./CustomerSearchSelect.jsx";
 
 const THEMED_FIELD_CLASS =
   "mt-1.5 h-11 w-full min-w-0 scroll-mt-52 rounded-xl border border-slate-700 bg-slate-950 px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-600 focus:border-[var(--term-accent)] focus:ring-2 focus:ring-[var(--term-ring)] disabled:cursor-not-allowed disabled:opacity-50";
@@ -135,6 +142,12 @@ function TerminalBillForm({
   const [deliveryBoyId, setDeliveryBoyId] = useState("");
   const [deliveryCharge, setDeliveryCharge] = useState("");
   const [notes, setNotes] = useState("");
+  const [addCustomerOpen, setAddCustomerOpen] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [newCustomerLocation, setNewCustomerLocation] = useState("");
+  const [savingCustomer, setSavingCustomer] = useState(false);
+  const [addCustomerError, setAddCustomerError] = useState("");
   const [saving, setSaving] = useState(false);
   const [lookingUp, setLookingUp] = useState(false);
   const [editMode, setEditMode] = useState(false);
@@ -381,6 +394,88 @@ function TerminalBillForm({
     onEditingBillIdChange?.(null);
     if (!keepDeliveryBoy) setDeliveryBoyId("");
     window.setTimeout(() => billNumberRef.current?.focus(), 0);
+  }
+
+  function openAddCustomer() {
+    setAddCustomerError("");
+    setNewCustomerName(String(customerLocation || "").trim());
+    setNewCustomerPhone("");
+    setNewCustomerLocation("");
+    setAddCustomerOpen(true);
+  }
+
+  function closeAddCustomer() {
+    if (savingCustomer) return;
+    setAddCustomerOpen(false);
+    setAddCustomerError("");
+    setNewCustomerName("");
+    setNewCustomerPhone("");
+    setNewCustomerLocation("");
+  }
+
+  async function handleAddCustomer(event) {
+    event.preventDefault();
+    if (savingCustomer) return;
+    const name = String(newCustomerName || "").trim();
+    const phone = String(newCustomerPhone || "").trim();
+    const location = String(newCustomerLocation || "").trim();
+    if (!clientId) {
+      setAddCustomerError("Select a shop first.");
+      return;
+    }
+    if (!name) {
+      setAddCustomerError("Customer name is required.");
+      return;
+    }
+    const duplicate = findDuplicateCustomerName(customers, name);
+    if (duplicate) {
+      setAddCustomerError(
+        `Customer “${duplicate.name}” already exists${
+          duplicate.partyCode || duplicate.code
+            ? ` (${duplicate.partyCode || duplicate.code})`
+            : ""
+        }.`
+      );
+      return;
+    }
+    setSavingCustomer(true);
+    setAddCustomerError("");
+    try {
+      const ref = await addDoc(collection(db, "parties"), {
+        clientId,
+        name,
+        type: "Customer",
+        partyCode: nextPartyCode(customers, "C"),
+        contact: phone,
+        phone,
+        houseOrBuilding: location,
+        landmark: location,
+        taxNumber: "",
+        flat: "",
+        roadOrPost: "",
+        blockOrPin: "",
+        openingBalance: 0,
+        openingBalanceSide: "",
+        openingBalanceDate: "",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: user?.uid || null,
+      });
+      setCustomerId(ref.id);
+      setCustomerLocation(
+        location ? `${name} · ${location}` : name
+      );
+      setLocalMessage(`Customer “${name}” added.`);
+      setAddCustomerOpen(false);
+      setNewCustomerName("");
+      setNewCustomerPhone("");
+      setNewCustomerLocation("");
+    } catch (err) {
+      console.error("❌ Add customer error:", err);
+      setAddCustomerError(err?.message || "Could not add customer.");
+    } finally {
+      setSavingCustomer(false);
+    }
   }
 
   function formHasClearableEntry() {
@@ -1153,36 +1248,82 @@ function TerminalBillForm({
         </div>
 
         {isCredit ? (
-          <label className={`${LABEL_CLASS} sm:col-span-2`}>
-            Customer Name
-            <select
-              required
+          <div className={`${LABEL_CLASS} sm:col-span-2`}>
+            <div className="flex items-center justify-between gap-2">
+              <span>Customer Name</span>
+              <button
+                type="button"
+                onClick={openAddCustomer}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--term-accent)] hover:bg-slate-900"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add customer
+              </button>
+            </div>
+            <CustomerSearchSelect
+              customers={customers}
               value={customerId}
-              onChange={(event) => setCustomerId(event.target.value)}
-              className={fieldClass}
-            >
-              <option value="">Select customer…</option>
-              {customers.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {row.name}
-                  {row.phone || row.mobile ? ` · ${row.phone || row.mobile}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
+              required
+              onChange={setCustomerId}
+              onSelectCustomer={(customer) => {
+                if (!customer) return;
+                const phone = String(
+                  customer.phone || customer.mobile || customer.contact || ""
+                ).trim();
+                const place = String(
+                  customer.landmark || customer.houseOrBuilding || ""
+                ).trim();
+                if (!deliveryMode) return;
+                setCustomerLocation(
+                  [customer.name, phone || place].filter(Boolean).join(" · ")
+                );
+              }}
+              inputClassName={fieldClass}
+              placeholder="Search name or mobile…"
+            />
+          </div>
         ) : null}
 
         {deliveryMode ? (
           <>
-            <label className={`${LABEL_CLASS} sm:col-span-2`}>
-              Customer
-              <input
-                value={customerLocation}
-                onChange={(event) => setCustomerLocation(event.target.value)}
-                className={fieldClass}
-                placeholder="Customer name or location"
+            <div className={`${LABEL_CLASS} sm:col-span-2`}>
+              <div className="flex items-center justify-between gap-2">
+                <span>Customer</span>
+                <button
+                  type="button"
+                  onClick={openAddCustomer}
+                  className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-[var(--term-accent)] hover:bg-slate-900"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add customer
+                </button>
+              </div>
+              <CustomerSearchSelect
+                customers={customers}
+                value={isCredit ? "" : customerId}
+                allowFreeText
+                freeTextValue={customerLocation}
+                onFreeTextChange={setCustomerLocation}
+                onChange={(id) => {
+                  if (!isCredit) setCustomerId(id);
+                }}
+                onSelectCustomer={(customer) => {
+                  if (!customer) return;
+                  const phone = String(
+                    customer.phone || customer.mobile || customer.contact || ""
+                  ).trim();
+                  const place = String(
+                    customer.landmark || customer.houseOrBuilding || ""
+                  ).trim();
+                  setCustomerLocation(
+                    [customer.name, phone || place].filter(Boolean).join(" · ")
+                  );
+                  if (!isCredit) setCustomerId(customer.id);
+                }}
+                inputClassName={fieldClass}
+                placeholder="Search name, mobile, or type location…"
               />
-            </label>
+            </div>
             <label className={LABEL_CLASS}>
               Delivery Boy
               <select
@@ -1270,9 +1411,138 @@ function TerminalBillForm({
 
       {isCredit && !customers.length ? (
         <div className="rounded-xl border border-amber-900/50 bg-amber-950/20 p-2.5 text-xs text-amber-100">
-          No customers found. Add a Customer party first to use Credit.
+          No customers found.{" "}
+          <button
+            type="button"
+            onClick={openAddCustomer}
+            className="font-semibold underline underline-offset-2"
+          >
+            Add a customer
+          </button>{" "}
+          to use Credit.
         </div>
       ) : null}
+
+      {addCustomerOpen
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[80] flex items-end justify-center bg-black/60 p-3 sm:items-center"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="add-customer-title"
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget && !savingCustomer) {
+                  closeAddCustomer();
+                }
+              }}
+            >
+              <div
+                className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-950 shadow-xl"
+                onMouseDown={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                  <div>
+                    <h3
+                      id="add-customer-title"
+                      className="text-sm font-semibold text-white"
+                    >
+                      Add customer
+                    </h3>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Saves to Parties as a Customer for this shop.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={savingCustomer}
+                    onClick={closeAddCustomer}
+                    className={`${BTN_SECONDARY} min-h-9 px-2`}
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="space-y-3 px-4 py-4">
+                  <label className={LABEL_CLASS}>
+                    Name
+                    <input
+                      autoFocus
+                      value={newCustomerName}
+                      onChange={(e) => setNewCustomerName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleAddCustomer(e);
+                        }
+                      }}
+                      className={FIELD_CLASS}
+                      placeholder="Customer name"
+                      disabled={savingCustomer}
+                    />
+                  </label>
+                  <label className={LABEL_CLASS}>
+                    Phone
+                    <input
+                      value={newCustomerPhone}
+                      onChange={(e) => setNewCustomerPhone(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.preventDefault();
+                      }}
+                      className={FIELD_CLASS}
+                      placeholder="Optional"
+                      inputMode="tel"
+                      disabled={savingCustomer}
+                    />
+                  </label>
+                  <label className={LABEL_CLASS}>
+                    Location
+                    <input
+                      value={newCustomerLocation}
+                      onChange={(e) => setNewCustomerLocation(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          void handleAddCustomer(e);
+                        }
+                      }}
+                      className={FIELD_CLASS}
+                      placeholder="Optional address / area"
+                      disabled={savingCustomer}
+                    />
+                  </label>
+                  {addCustomerError ? (
+                    <div className="rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-xs text-red-200">
+                      {addCustomerError}
+                    </div>
+                  ) : null}
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={savingCustomer}
+                      onClick={closeAddCustomer}
+                      className={`${BTN_SECONDARY} min-h-11 flex-1`}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        savingCustomer ||
+                        !String(newCustomerName || "").trim()
+                      }
+                      onClick={(e) => void handleAddCustomer(e)}
+                      className={`${BTN_PRIMARY} min-h-11 flex-1`}
+                    >
+                      <Plus className="h-4 w-4" />
+                      {savingCustomer ? "Saving…" : "Save customer"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )
+        : null}
 
       <div className="mt-auto flex flex-col gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-3">
         <button

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   collection,
   doc,
@@ -18,6 +18,7 @@ import {
   Building2,
   CheckCircle2,
   FileDown,
+  FileText,
   Flame,
   ImageDown,
   Lock,
@@ -678,7 +679,18 @@ export default function EndOfDay() {
 
         {error ? (
           <div className="mt-5 rounded-xl border border-rose-900/60 bg-rose-950/25 px-4 py-3 text-sm text-rose-200">
-            {error}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <span>{error}</span>
+              {/z-report/i.test(error) && canManage ? (
+                <Link
+                  to={`/shift-close?date=${encodeURIComponent(selectedDate)}`}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-rose-700/60 bg-rose-950/40 px-3 py-1.5 text-xs font-semibold text-rose-100 hover:bg-rose-900/50"
+                >
+                  <FileText size={14} />
+                  Open Z-Report
+                </Link>
+              ) : null}
+            </div>
           </div>
         ) : null}
         {message ? (
@@ -735,7 +747,16 @@ export default function EndOfDay() {
                 <span>
                   {displayed?.actualCash == null &&
                   !(displayed?.zReportCount > 0)
-                    ? "Awaiting Z-report"
+                    ? canManage ? (
+                        <Link
+                          to={`/shift-close?date=${encodeURIComponent(selectedDate)}`}
+                          className="underline decoration-blue-400/60 underline-offset-2 hover:text-blue-200"
+                        >
+                          Awaiting Z-report
+                        </Link>
+                      ) : (
+                        "Awaiting Z-report"
+                      )
                     : money(displayed?.actualCash)}
                 </span>
               </div>
@@ -743,6 +764,15 @@ export default function EndOfDay() {
 
             {canManage ? (
               <div className="mt-5 flex flex-wrap justify-end gap-2">
+                {!(displayed?.zReportCount > 0) ? (
+                  <Link
+                    to={`/shift-close?date=${encodeURIComponent(selectedDate)}`}
+                    className="inline-flex items-center gap-2 rounded-lg border border-blue-700/60 bg-blue-950/30 px-4 py-2.5 font-medium text-blue-200 hover:bg-blue-950/50"
+                  >
+                    <FileText size={16} />
+                    Open Z-Report
+                  </Link>
+                ) : null}
                 {reportStatus === "closed" ? (
                   <button
                     type="button"

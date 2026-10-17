@@ -23,6 +23,7 @@ import {
   summarizeDeliveryBoyCollections,
   summarizeExternalBillTenders,
 } from "./externalSales.js";
+import { isPosModuleSalesTransaction } from "./transactionContract.js";
 
 function num(value) {
   const parsed = Number(value);
@@ -1452,6 +1453,9 @@ export async function fetchDetailedLedger({
       }
 
       if (type === "sales") {
+        // Z-report credit ledgers are not Sales-module POS; they must not
+        // suppress Z gap-fill or inflate POS cash/bank sales.
+        if (!isPosModuleSalesTransaction(row)) return;
         const date =
           typeof row.date === "string"
             ? row.date.slice(0, 10)

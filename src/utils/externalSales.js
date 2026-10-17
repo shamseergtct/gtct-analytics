@@ -856,6 +856,53 @@ export function summarizeDeliveryBoyCollections(collections = []) {
   };
 }
 
+/**
+ * Delivery commission paid via Collect (expense from cash/bank).
+ * For Day Summary tally: treat paid commission as collected into the same
+ * tender it was paid from (cash or selected bank), matching Net Sale.
+ */
+export function summarizePaidDeliveryCommissions(collections = []) {
+  let cashTotal = 0;
+  let bankTotal = 0;
+  let paidTotal = 0;
+  const bankByAccount = {};
+
+  for (const row of collections) {
+    if (row?.commissionPaid !== true) continue;
+    const amount = Math.max(0, numMoney(row.commissionPaidAmount));
+    if (amount <= 0) continue;
+    paidTotal += amount;
+    const mode = String(row.commissionPaidMode || "CASH")
+      .trim()
+      .toUpperCase();
+    if (mode === "BANK" || mode.startsWith("BANK")) {
+      bankTotal += amount;
+      const accountId =
+        String(row.commissionPaidBankAccountId || "").trim() || "_unassigned";
+      if (!bankByAccount[accountId]) {
+        bankByAccount[accountId] = {
+          bankAccountId: accountId === "_unassigned" ? "" : accountId,
+          bankAccountName: row.commissionPaidBankAccountName || "Bank",
+          amount: 0,
+        };
+      }
+      bankByAccount[accountId].amount += amount;
+    } else {
+      cashTotal += amount;
+    }
+  }
+
+  return {
+    cashTotal: roundMoney(cashTotal),
+    bankTotal: roundMoney(bankTotal),
+    paidTotal: roundMoney(paidTotal),
+    bankByAccount: Object.values(bankByAccount).map((row) => ({
+      ...row,
+      amount: roundMoney(row.amount),
+    })),
+  };
+}
+
 export function summarizeExternalBills(bills = []) {
   const summary = {
     totalBills: 0,

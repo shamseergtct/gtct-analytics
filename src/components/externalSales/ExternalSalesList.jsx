@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
+  limit,
   onSnapshot,
   query,
   serverTimestamp,
@@ -13,7 +14,7 @@ import { db } from "../../firebase";
 import { useAuth } from "../../context/AuthContext";
 import { useBankAccounts } from "../../hooks/useBankAccounts.js";
 import { useEstimatedLiquidity } from "../../hooks/useEstimatedBankBalance.js";
-import { formatMoney } from "../../utils/money.js";
+import { formatMoney, numMoney, roundMoney } from "../../utils/money.js";
 import {
   isDaySummarySessionUnlocked,
   setDaySummarySessionUnlocked,
@@ -27,8 +28,11 @@ import {
   isDeliveryBoyAccountPayment,
   listExternalCreditBills,
   parseBillSequence,
+  summarizeDeliveryBoyCollections,
   summarizeDeliveryBoysForCollection,
+  summarizeExternalBillTenders,
   summarizeExternalBills,
+  summarizePaidDeliveryCommissions,
 } from "../../utils/externalSales.js";
 import ListPagination from "../ListPagination.jsx";
 import { usePagination } from "../../hooks/usePagination.js";
@@ -162,6 +166,18 @@ function SummaryCard({ label, value }) {
       </div>
     </div>
   );
+}
+
+function expensePaymentModeLabel(entry) {
+  const mode = String(entry?.paymentMode || "")
+    .trim()
+    .toUpperCase();
+  if (mode === "BANK" || mode === "BANK_TRANSFER") {
+    const account = String(entry?.bankAccountName || "").trim();
+    return account ? `Bank: ${account}` : "Bank";
+  }
+  if (!mode) return "—";
+  return mode.replaceAll("_", " ");
 }
 
 function StandingBalanceCard({
@@ -340,6 +356,7 @@ export default function ExternalSalesList({
   const [showVoided, setShowVoided] = useState(false);
   const [openTerminalLists, setOpenTerminalLists] = useState({});
   const [dayCollections, setDayCollections] = useState([]);
+  const [dayPurchaseEntries, setDayPurchaseEntries] = useState([]);
   const [balanceAccountKey, setBalanceAccountKey] = useState("cash");
   const [summaryPasswordHash, setSummaryPasswordHash] = useState("");
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -435,6 +452,35 @@ export default function ExternalSalesList({
         );
       },
       () => setDayCollections([])
+    );
+  }, [clientId, filterDate]);
+
+  useEffect(() => {
+    if (!clientId || !filterDate) {
+      setDayPurchaseEntries([]);
+      return undefined;
+    }
+    const purchasesQuery = query(
+      collection(db, "purchases"),
+      where("clientId", "==", clientId),
+      where("businessDate", "==", filterDate),
+      limit(500)
+    );
+    return onSnapshot(
+      purchasesQuery,
+      (snapshot) => {
+        const rows = snapshot.docs
+          .map((item) => ({ id: item.id, ...item.data() }))
+          .filter((entry) => {
+            const status = String(entry.status || "POSTED").toUpperCase();
+            return status !== "CANCELLED" && status !== "VOID";
+          })
+          .sort(
+            (a, b) => Number(b.createdAtMs || 0) - Number(a.createdAtMs || 0)
+          );
+        setDayPurchaseEntries(rows);
+      },
+      () => setDayPurchaseEntries([])
     );
   }, [clientId, filterDate]);
 
@@ -587,6 +633,108 @@ export default function ExternalSalesList({
     if (!stillValid) setBalanceAccountKey(standingBalanceOptions[0].key);
   }, [standingBalanceOptions, balanceAccountKey]);
 
+  /** Today's External cash/bank sales for the selected standing-balance account. */
+  const todayAccountSales = useMemo(() => {
+    const billTenders = summarizeExternalBillTenders(dayBills);
+    const collectTenders = summarizeDeliveryBoyCollections(dayCollections);
+    // Paid delivery commission is an expense from cash/bank, but for Net Sale
+    // tally it counts as collected into the same tender it was paid from.
+    const commissionPaid = summarizePaidDeliveryCommissions(dayCollections);
+    const dayCommissionTotal = roundMoney(
+      summarizeExternalBills(dayBills).totalCommission
+    );
+    const unpaidCommission = roundMoney(
+      Math.max(0, dayCommissionTotal - commissionPaid.paidTotal)
+    );
+    const option = selectedBalanceOption;
+    const dayCashSale = roundMoney(
+      billTenders.cashTotal +
+        collectTenders.cashTotal +
+        commissionPaid.cashTotal
+    );
+
+    const bankAmountFor = (accountId) => {
+      const fromBills =
+        billTenders.bankByAccount.find(
+          (row) => String(row.bankAccountId || "") === accountId
+        )?.amount || 0;
+      const fromCollect =
+        collectTenders.bankByAccount.find(
+          (row) => String(row.bankAccountId || "") === accountId
+        )?.amount || 0;
+      const fromCommission =
+        commissionPaid.bankByAccount.find(
+          (row) => String(row.bankAccountId || "") === accountId
+        )?.amount || 0;
+      return roundMoney(
+        numMoney(fromBills) + numMoney(fromCollect) + numMoney(fromCommission)
+      );
+    };
+
+    const allBankSale = roundMoney(
+      billTenders.bankTotal +
+        collectTenders.bankTotal +
+        commissionPaid.bankTotal
+    );
+
+    const hint =
+      unpaidCommission > 0
+        ? `Pay delivery commission (${unpaidCommission}) via Collect — Cash or Bank — so Net Sale tallies.`
+        : commissionPaid.paidTotal > 0
+          ? `Includes paid delivery commission ${commissionPaid.paidTotal} (expense; counted as collected in pay-from tender).`
+          : "";
+
+    if (!option || option.kind === "cash") {
+      return {
+        cashSale: dayCashSale,
+        bankSale: allBankSale,
+        cashLabel: "Today's Cash Sale",
+        bankLabel: "Today's Bank Sale (all)",
+        showCash: true,
+        showBank: true,
+        hint,
+        unpaidCommission,
+        commissionPaidTotal: commissionPaid.paidTotal,
+      };
+    }
+
+    if (option.kind === "bank") {
+      const accountId = String(option.key.replace(/^bank:/, "")).trim();
+      return {
+        cashSale: dayCashSale,
+        bankSale: bankAmountFor(accountId),
+        cashLabel: "Today's Cash Sale",
+        bankLabel: `Today's Bank Sale (${option.label})`,
+        showCash: true,
+        showBank: true,
+        hint,
+        unpaidCommission,
+        commissionPaidTotal: commissionPaid.paidTotal,
+      };
+    }
+
+    // Delivery boy: show day cash/bank overall + this boy's delivery-account sales.
+    const boyId = String(option.key.replace(/^boy:/, "")).trim();
+    let boyDeliverySales = 0;
+    for (const bill of dayBills) {
+      if (bill?.voided === true) continue;
+      if (!isDeliveryBoyAccountPayment(bill)) continue;
+      if (String(bill.deliveryBoyId || "").trim() !== boyId) continue;
+      boyDeliverySales += numMoney(bill.billAmount);
+    }
+    return {
+      cashSale: dayCashSale,
+      bankSale: roundMoney(boyDeliverySales),
+      cashLabel: "Today's Cash Sale",
+      bankLabel: `Today's Delivery Acct (${option.label})`,
+      showCash: true,
+      showBank: true,
+      hint,
+      unpaidCommission,
+      commissionPaidTotal: commissionPaid.paidTotal,
+    };
+  }, [dayBills, dayCollections, selectedBalanceOption]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return bills.filter((bill) => {
@@ -657,6 +805,46 @@ export default function ExternalSalesList({
         0
       ),
     [creditBills]
+  );
+  const dayPurchases = useMemo(
+    () =>
+      dayPurchaseEntries.filter(
+        (entry) => String(entry.entryType || "").toLowerCase() === "purchase"
+      ),
+    [dayPurchaseEntries]
+  );
+  const dayExpenses = useMemo(
+    () =>
+      dayPurchaseEntries.filter(
+        (entry) => String(entry.entryType || "").toLowerCase() === "expense"
+      ),
+    [dayPurchaseEntries]
+  );
+  const purchaseTotal = useMemo(
+    () =>
+      roundMoney(
+        dayPurchases.reduce(
+          (total, entry) => total + numMoney(entry.amount),
+          0
+        ),
+        currencyDecimals
+      ),
+    [dayPurchases, currencyDecimals]
+  );
+  const expenseTotal = useMemo(
+    () =>
+      roundMoney(
+        dayExpenses.reduce(
+          (total, entry) => total + numMoney(entry.amount),
+          0
+        ),
+        currencyDecimals
+      ),
+    [dayExpenses, currencyDecimals]
+  );
+  const purchaseAndExpenseTotal = useMemo(
+    () => roundMoney(purchaseTotal + expenseTotal, currencyDecimals),
+    [purchaseTotal, expenseTotal, currencyDecimals]
   );
 
   async function voidBill(bill) {
@@ -741,7 +929,7 @@ export default function ExternalSalesList({
           </div>
         ) : (
           <>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-9">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 2xl:grid-cols-10">
               <SummaryCard label="Total Bills" value={summary.totalBills} />
               <SummaryCard
                 label="Net Sale"
@@ -750,6 +938,13 @@ export default function ExternalSalesList({
               <SummaryCard
                 label="Credit Sale"
                 value={`${currencyPrefix}${formatMoney(summary.creditSales, currencyDecimals)}`}
+              />
+              <SummaryCard
+                label="Purchases + Exp."
+                value={`${currencyPrefix}${formatMoney(
+                  purchaseAndExpenseTotal,
+                  currencyDecimals
+                )}`}
               />
               <SummaryCard
                 label="Gross Sale"
@@ -774,10 +969,11 @@ export default function ExternalSalesList({
                   Standing balances
                 </h4>
                 <span className="text-[11px] text-slate-500">
-                  Select cash, bank, or delivery boy with outstanding
+                  Select cash, bank, or delivery boy — today&apos;s sales update
+                  next to balance
                 </span>
               </div>
-              <div className="max-w-md">
+              <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3">
                 <StandingBalanceCard
                   icon={selectedBalanceOption?.icon || Wallet}
                   label="Balance"
@@ -815,7 +1011,42 @@ export default function ExternalSalesList({
                     </select>
                   }
                 />
+                {todayAccountSales.showCash ? (
+                  <StandingBalanceCard
+                    icon={Wallet}
+                    label={todayAccountSales.cashLabel}
+                    value={`${currencyPrefix}${formatMoney(
+                      todayAccountSales.cashSale,
+                      currencyDecimals
+                    )}`}
+                    accentClass="border-emerald-800/40"
+                    iconClass="bg-emerald-950/70 text-emerald-300"
+                  />
+                ) : null}
+                {todayAccountSales.showBank ? (
+                  <StandingBalanceCard
+                    icon={Landmark}
+                    label={todayAccountSales.bankLabel}
+                    value={`${currencyPrefix}${formatMoney(
+                      todayAccountSales.bankSale,
+                      currencyDecimals
+                    )}`}
+                    accentClass="border-sky-800/40"
+                    iconClass="bg-sky-950/70 text-sky-300"
+                  />
+                ) : null}
               </div>
+              {todayAccountSales.hint ? (
+                <p
+                  className={`mt-2 text-[11px] ${
+                    todayAccountSales.unpaidCommission > 0
+                      ? "text-amber-300/90"
+                      : "text-slate-500"
+                  }`}
+                >
+                  {todayAccountSales.hint}
+                </p>
+              ) : null}
             </div>
           </>
         )}
@@ -1011,6 +1242,118 @@ export default function ExternalSalesList({
                     className="px-4 py-6 text-center text-slate-500"
                   >
                     No credit bills for this date.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+          <h3 className="text-sm font-semibold text-white">Purchase Report</h3>
+          <div className="text-xs tabular-nums text-slate-400">
+            {dayPurchases.length} · {currencyPrefix}
+            {formatMoney(purchaseTotal, currencyDecimals)}
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-[720px] w-full text-left text-sm text-slate-300">
+            <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-2">Category</th>
+                <th className="px-4 py-2">Party</th>
+                <th className="px-4 py-2">Mode</th>
+                <th className="px-4 py-2">Note</th>
+                <th className="px-4 py-2 text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dayPurchases.length ? (
+                dayPurchases.map((entry) => (
+                  <tr key={entry.id} className="border-t border-slate-800/80">
+                    <td className="px-4 py-2.5 text-white">
+                      {entry.category || "—"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {entry.vendorName || "—"}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      {expensePaymentModeLabel(entry)}
+                    </td>
+                    <td className="max-w-[16rem] truncate px-4 py-2.5">
+                      {entry.receiptNote || "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">
+                      {currencyPrefix}
+                      {formatMoney(entry.amount, currencyDecimals)}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-6 text-center text-slate-500"
+                  >
+                    No purchases for this date.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 px-4 py-3">
+          <h3 className="text-sm font-semibold text-white">Expenses Report</h3>
+          <div className="text-xs tabular-nums text-slate-400">
+            {dayExpenses.length} · {currencyPrefix}
+            {formatMoney(expenseTotal, currencyDecimals)}
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="min-w-[720px] w-full text-left text-sm text-slate-300">
+            <thead className="bg-slate-950/80 text-xs uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-2">Category</th>
+                <th className="px-4 py-2">Party</th>
+                <th className="px-4 py-2">Mode</th>
+                <th className="px-4 py-2">Note</th>
+                <th className="px-4 py-2 text-right">Amount</th>
+              </tr>
+            </thead>
+            <tbody>
+              {dayExpenses.length ? (
+                dayExpenses.map((entry) => (
+                  <tr key={entry.id} className="border-t border-slate-800/80">
+                    <td className="px-4 py-2.5 text-white">
+                      {entry.category || "—"}
+                    </td>
+                    <td className="px-4 py-2.5">
+                      {entry.vendorName || "—"}
+                    </td>
+                    <td className="px-4 py-2.5 whitespace-nowrap">
+                      {expensePaymentModeLabel(entry)}
+                    </td>
+                    <td className="max-w-[16rem] truncate px-4 py-2.5">
+                      {entry.receiptNote || "—"}
+                    </td>
+                    <td className="px-4 py-2.5 text-right tabular-nums">
+                      {currencyPrefix}
+                      {formatMoney(entry.amount, currencyDecimals)}
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td
+                    colSpan={5}
+                    className="px-4 py-6 text-center text-slate-500"
+                  >
+                    No expenses for this date.
                   </td>
                 </tr>
               )}

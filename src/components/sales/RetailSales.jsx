@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, History, Plus, X } from "lucide-react";
+import { ChevronDown, FileText, Plus, X } from "lucide-react";
 import DateInput from "../DateInput.jsx";
 import ModuleHelpButton from "../ModuleHelpButton.jsx";
 import { itemMatchesScanCode, num } from "./salesHelpers.js";
@@ -224,12 +224,12 @@ export default function RetailSales(props) {
           </button>
           <button
             type="button"
-            onClick={() => setTab?.("history")}
+            onClick={() => setTab?.("invoices")}
             disabled={saving}
             className="inline-flex h-9 items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-950 px-2.5 text-sm font-medium text-slate-200 hover:bg-slate-900 disabled:opacity-50 sm:px-3"
           >
-            <History size={15} />
-            History
+            <FileText size={15} />
+            Invoices
           </button>
           <button
             type="button"

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   collection,
   doc,
@@ -34,6 +35,14 @@ import {
   roundMoney,
   toMinorUnits,
 } from "../utils/money.js";
+
+const UNSAVED_MODULE_ROUTES = {
+  inventory: "/inventory",
+  sales: "/sales",
+  purchases: "/purchases",
+  payments: "/payments-receipts",
+  "internal-transfers": "/internal-transfers",
+};
 
 function todayYYYYMMDD() {
   const date = new Date();
@@ -681,6 +690,40 @@ function DaySalesModule({
               creditTotal={pos.creditTotal}
               loading={pos.loading}
             />
+            {!pos.loading && pos.items?.length ? (
+              <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-[11px] text-slate-300">
+                {pos.items.map((row) => (
+                  <li
+                    key={row.id}
+                    className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 rounded-lg border border-sky-900/30 bg-slate-950/40 px-2 py-1.5"
+                  >
+                    <span className="min-w-0">
+                      <span className="font-medium text-slate-100">
+                        {row.invoiceNo}
+                      </span>
+                      <span className="text-slate-500"> · </span>
+                      <span>{row.partyName}</span>
+                      <span className="text-slate-500"> · </span>
+                      <span>{row.tender}</span>
+                      {row.refType === "sales_invoice" && row.refId ? (
+                        <span className="ml-1 text-sky-300/80">
+                          (open in Sales → Invoices)
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="tabular-nums font-semibold text-slate-100">
+                      {moneyHint(row.amount)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {!pos.loading && !pos.items?.length ? (
+              <p className="mt-2 text-[11px] text-slate-500">
+                No Sales / Billing invoices for this date. Credit from Z-report
+                or External is listed in those sections below — not here.
+              </p>
+            ) : null}
           </div>
 
           <div className="rounded-xl border border-violet-900/50 bg-violet-950/20 p-3">
@@ -746,7 +789,25 @@ export default function ShiftClose() {
     shiftError,
     saveZReport,
     updateClosedZReport,
+    updateActiveShiftBusinessDate,
+    unsavedWork,
   } = useShift();
+  const [searchParams] = useSearchParams();
+  const dateFromUrl = String(searchParams.get("date") || "").slice(0, 10);
+  const requestedBusinessDate = /^\d{4}-\d{2}-\d{2}$/.test(dateFromUrl)
+    ? dateFromUrl
+    : "";
+  const pendingUnsavedModules = useMemo(
+    () =>
+      Object.entries(unsavedWork || {})
+        .filter(([, label]) => Boolean(label))
+        .map(([moduleId, label]) => ({
+          moduleId,
+          label: String(label),
+          path: UNSAVED_MODULE_ROUTES[moduleId] || null,
+        })),
+    [unsavedWork]
+  );
   const { accounts: bankAccounts } = useBankAccounts(activeClientId);
   const [closeOpeningFloat, setCloseOpeningFloat] = useState("0");
   const [closingCashCounted, setClosingCashCounted] = useState("0");
@@ -770,7 +831,9 @@ export default function ShiftClose() {
   const [recentZReports, setRecentZReports] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [showRecentReports, setShowRecentReports] = useState(true);
-  const [zReportDateFilter, setZReportDateFilter] = useState("");
+  const [zReportDateFilter, setZReportDateFilter] = useState(
+    () => requestedBusinessDate
+  );
   const [editingReport, setEditingReport] = useState(null);
   const [editZReport, setEditZReport] = useState(null);
   const [editOpeningFloat, setEditOpeningFloat] = useState("0");
@@ -780,6 +843,7 @@ export default function ShiftClose() {
   const [editBankEntries, setEditBankEntries] = useState([]);
   const [savingEdit, setSavingEdit] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [switchingDate, setSwitchingDate] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [dayZReports, setDayZReports] = useState([]);
@@ -787,6 +851,11 @@ export default function ShiftClose() {
 
   const currentBusinessDate =
     activeShift?.businessDate || zReport.businessDate || todayYYYYMMDD();
+  const needsShiftDateSwitch = Boolean(
+    requestedBusinessDate &&
+      activeShift?.businessDate &&
+      activeShift.businessDate !== requestedBusinessDate
+  );
 
   const existingReportForDate = useMemo(() => {
     if (!currentBusinessDate) return null;
@@ -800,12 +869,38 @@ export default function ShiftClose() {
   }, [currentBusinessDate, dayZReports]);
 
   useEffect(() => {
+    if (!requestedBusinessDate) return;
+    setZReportDateFilter(requestedBusinessDate);
+    setShowRecentReports(true);
+  }, [requestedBusinessDate]);
+
+  useEffect(() => {
     if (!activeShift?.id) return;
     setZReport((current) => ({
       ...current,
       businessDate: activeShift.businessDate || current.businessDate,
     }));
   }, [activeShift?.id, activeShift?.businessDate]);
+
+  async function handleSwitchToRequestedDate() {
+    if (!requestedBusinessDate) return;
+    if (pendingUnsavedModules.length) return;
+    setError("");
+    setMessage("");
+    setSwitchingDate(true);
+    try {
+      await updateActiveShiftBusinessDate(requestedBusinessDate);
+      setMessage(
+        `Shift business date switched to ${
+          formatIsoDate(requestedBusinessDate) || requestedBusinessDate
+        }. Enter the Z-report below.`
+      );
+    } catch (reason) {
+      setError(reason?.message || "Failed to switch shift business date.");
+    } finally {
+      setSwitchingDate(false);
+    }
+  }
 
   useEffect(() => {
     if (floatingCash == null) return;
@@ -1433,6 +1528,60 @@ export default function ShiftClose() {
         </div>
       ) : null}
 
+      {needsShiftDateSwitch ? (
+        <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-4 text-sm text-amber-100">
+          <p>
+            Z-report for{" "}
+            <span className="font-semibold text-white">
+              {formatIsoDate(requestedBusinessDate) || requestedBusinessDate}
+            </span>{" "}
+            requires the shift on that business date. Current shift is{" "}
+            <span className="font-semibold text-white">
+              {formatIsoDate(activeShift.businessDate) ||
+                activeShift.businessDate}
+            </span>
+            .
+          </p>
+          {pendingUnsavedModules.length ? (
+            <div className="mt-3 rounded-lg border border-rose-800/50 bg-rose-950/35 px-3 py-2.5 text-rose-100">
+              <p className="font-semibold text-rose-50">
+                Save or clear unsaved work first
+              </p>
+              <ul className="mt-2 space-y-1.5">
+                {pendingUnsavedModules.map((item) => (
+                  <li
+                    key={item.moduleId}
+                    className="flex flex-wrap items-center gap-2"
+                  >
+                    <span className="font-medium text-white">{item.label}</span>
+                    {item.path ? (
+                      <Link
+                        to={item.path}
+                        className="rounded border border-rose-700/60 px-2 py-0.5 text-xs font-semibold text-rose-100 hover:bg-rose-900/40"
+                      >
+                        Open module
+                      </Link>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={handleSwitchToRequestedDate}
+            disabled={switchingDate || pendingUnsavedModules.length > 0}
+            className="mt-3 rounded-lg bg-amber-600 px-4 py-2 font-semibold text-white hover:bg-amber-500 disabled:opacity-50"
+          >
+            {switchingDate
+              ? "Switching…"
+              : `Switch shift to ${
+                  formatIsoDate(requestedBusinessDate) || requestedBusinessDate
+                }`}
+          </button>
+        </div>
+      ) : null}
+
       {existingReportForDate && !editingReport ? (
         <div className="rounded-xl border border-amber-800/60 bg-amber-950/30 p-3 text-sm text-amber-100">
           A Z-report already exists for{" "}
@@ -1453,7 +1602,7 @@ export default function ShiftClose() {
 
       {loadingShift ? (
         <div className="text-slate-300">Loading active shift…</div>
-      ) : existingReportForDate ? (
+      ) : needsShiftDateSwitch ? null : existingReportForDate ? (
         <div className="rounded-2xl border border-slate-800 bg-slate-900/40 p-5 text-sm text-slate-300">
           <p>
             Business date{" "}

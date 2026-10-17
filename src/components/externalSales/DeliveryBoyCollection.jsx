@@ -395,6 +395,19 @@ export default function DeliveryBoyCollection({
     Boolean(deliveryBoyId) &&
     (displayCommission > 0 || commissionPayAmountNum > 0 || payCommission);
 
+  function formatFetchedCommissionAmount(amount = displayCommission) {
+    return formatMoney(numMoney(amount), currencyDecimals);
+  }
+
+  function applyFetchedCommissionAmount(amount = displayCommission) {
+    const fetched = numMoney(amount);
+    if (fetched > 0) {
+      setCommissionPaidAmount(formatFetchedCommissionAmount(fetched));
+      return fetched;
+    }
+    return 0;
+  }
+
   useEffect(() => {
     if (!deliveryBoyId || editingId) return;
     setPayableAmount(
@@ -405,7 +418,7 @@ export default function DeliveryBoyCollection({
     setBankSelection("");
     setPayCommission(false);
     setCommissionPaidAmount(
-      formatMoney(suggested.totalCommissionAmount, currencyDecimals)
+      formatFetchedCommissionAmount(suggested.totalCommissionAmount)
     );
     setCommissionPayMode("CASH");
     setCommissionBankSelection("");
@@ -482,7 +495,6 @@ export default function DeliveryBoyCollection({
     setPaidBank("");
     setBankSelection("");
     setPayCommission(false);
-    setCommissionPaidAmount("");
     setCommissionPayMode("CASH");
     setCommissionBankSelection("");
     setExistingCommissionExpense(null);
@@ -490,12 +502,13 @@ export default function DeliveryBoyCollection({
     if (!keepBoy) {
       setDeliveryBoyId("");
       setPayableAmount("");
+      setCommissionPaidAmount("");
     } else {
       setPayableAmount(
         formatMoney(suggested.remainingPayable, currencyDecimals)
       );
       setCommissionPaidAmount(
-        formatMoney(suggested.totalCommissionAmount, currencyDecimals)
+        formatFetchedCommissionAmount(suggested.totalCommissionAmount)
       );
     }
   }
@@ -738,8 +751,10 @@ export default function DeliveryBoyCollection({
       onError?.("Pay by bank must be a non-negative number.");
       return;
     }
-    if (!editingId && settledNum <= 0) {
-      onError?.("Enter an amount in Pay by Cash and/or Pay by Bank.");
+    if (!editingId && settledNum <= 0 && !payCommission) {
+      onError?.(
+        "Enter an amount in Pay by Cash and/or Pay by Bank, or enable Pay commission."
+      );
       return;
     }
     if (editingId && settledNum <= 0 && !payCommission) {
@@ -784,16 +799,29 @@ export default function DeliveryBoyCollection({
     let commissionExpenseMode = "CASH";
     let commissionExpenseBankAccountId = "";
     let commissionExpenseBankAccountName = "";
+    let resolvedCommissionPayAmount = commissionPayAmountNum;
+    if (
+      payCommission &&
+      resolvedCommissionPayAmount <= 0 &&
+      displayCommission > 0
+    ) {
+      resolvedCommissionPayAmount = displayCommission;
+      setCommissionPaidAmount(
+        formatFetchedCommissionAmount(displayCommission)
+      );
+    }
     const willPayCommission =
-      payCommission && roundMoney(commissionPayAmountNum, currencyDecimals) > 0;
+      payCommission &&
+      roundMoney(resolvedCommissionPayAmount, currencyDecimals) > 0;
 
     if (payCommission) {
       if (
-        commissionPaidAmount === "" ||
-        !Number.isFinite(Number(commissionPaidAmount)) ||
-        commissionPayAmountNum <= 0
+        !Number.isFinite(resolvedCommissionPayAmount) ||
+        resolvedCommissionPayAmount <= 0
       ) {
-        onError?.("Enter a commission amount greater than zero.");
+        onError?.(
+          "No commission amount to pay for this delivery boy. Enter an amount greater than zero."
+        );
         return;
       }
       if (commissionPayMode === "BANK") {
@@ -843,7 +871,7 @@ export default function DeliveryBoyCollection({
 
       const fundsIssue = getInsufficientFundsError({
         mode: commissionExpenseMode,
-        amount: commissionPayAmountNum,
+        amount: resolvedCommissionPayAmount,
         cashBalance,
         bankBalance,
       });
@@ -867,7 +895,7 @@ export default function DeliveryBoyCollection({
       currencyDecimals
     );
     const commissionPaidRounded = willPayCommission
-      ? roundMoney(commissionPayAmountNum, currencyDecimals)
+      ? roundMoney(resolvedCommissionPayAmount, currencyDecimals)
       : 0;
 
     const payload = {
@@ -926,10 +954,21 @@ export default function DeliveryBoyCollection({
       ).trim();
 
       if (willPayCommission) {
-        const purchaseRef = previousPurchaseId
+        // Reuse only a complete prior expense pair; otherwise create a fresh pair
+        // (partial ids break purchase rules that lock transactionId on update).
+        const reuseExpensePair = Boolean(previousPurchaseId && previousTxnId);
+        if (!reuseExpensePair) {
+          if (previousTxnId) {
+            batch.delete(doc(db, "transactions", previousTxnId));
+          }
+          if (previousPurchaseId) {
+            batch.delete(doc(db, "purchases", previousPurchaseId));
+          }
+        }
+        const purchaseRef = reuseExpensePair
           ? doc(db, "purchases", previousPurchaseId)
           : doc(collection(db, "purchases"));
-        const transactionRef = previousTxnId
+        const transactionRef = reuseExpensePair
           ? doc(db, "transactions", previousTxnId)
           : doc(collection(db, "transactions"));
         nextExpensePurchaseId = purchaseRef.id;
@@ -942,7 +981,6 @@ export default function DeliveryBoyCollection({
             ? activeShift.id
             : "";
         const description = `Delivery commission — ${boy.name || "Delivery boy"}`;
-        const isNewExpense = !previousPurchaseId && !previousTxnId;
 
         batch.set(
           purchaseRef,
@@ -970,17 +1008,19 @@ export default function DeliveryBoyCollection({
             updatedAt: serverTimestamp(),
             updatedAtMs: nowMs,
             updatedBy: user.uid,
-            ...(isNewExpense
-              ? {
+            ...(reuseExpensePair
+              ? {}
+              : {
                   createdBy: user.uid,
                   createdAt: serverTimestamp(),
                   createdAtMs: nowMs,
-                }
-              : {}),
+                }),
           },
           { merge: true }
         );
 
+        // Ledger link matches normal purchase/expense (refType purchase + purchase id).
+        // Collection linkage stays on the purchase doc (refType/refId above).
         batch.set(
           transactionRef,
           {
@@ -1002,18 +1042,19 @@ export default function DeliveryBoyCollection({
               amountOut: commissionPaidRounded,
               status: "POSTED",
               source: "delivery_boy_commission",
-              refType: "delivery_boy_collection",
-              refId: collectionRef.id,
+              refType: "purchase",
+              refId: purchaseRef.id,
               shiftId,
             }),
+            liabilityType: "",
             updatedAt: serverTimestamp(),
             updatedBy: user.uid,
-            ...(isNewExpense
-              ? {
+            ...(reuseExpensePair
+              ? {}
+              : {
                   createdBy: user.uid,
                   createdAt: serverTimestamp(),
-                }
-              : {}),
+                }),
           },
           { merge: true }
         );
@@ -1597,16 +1638,22 @@ export default function DeliveryBoyCollection({
                   onChange={(event) => {
                     const checked = event.target.checked;
                     setPayCommission(checked);
-                    if (checked && !commissionPaidAmount) {
-                      setCommissionPaidAmount(
-                        formatMoney(displayCommission, currencyDecimals)
-                      );
+                    if (checked) {
+                      applyFetchedCommissionAmount(displayCommission);
                     }
                   }}
                   className="rounded border-slate-600 bg-slate-950 text-sky-500 focus:ring-sky-500/40"
                 />
                 Pay commission (records expense &amp; deducts cash/bank)
               </label>
+              {payCommission && displayCommission > 0 ? (
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Auto-filled from bill commission (
+                  {currency ? `${currency} ` : ""}
+                  {formatMoney(displayCommission, currencyDecimals)}). Edit if
+                  needed.
+                </p>
+              ) : null}
             </div>
           ) : null}
 
@@ -1614,17 +1661,31 @@ export default function DeliveryBoyCollection({
             <>
               <label className={LABEL_CLASS}>
                 Commission Paid {currency ? `(${currency})` : ""}
-                <input
-                  type="number"
-                  min="0"
-                  step={moneyInputStep(currencyDecimals)}
-                  value={commissionPaidAmount}
-                  onChange={(event) =>
-                    setCommissionPaidAmount(event.target.value)
-                  }
-                  className={FIELD_NUMBER_CLASS}
-                  placeholder={formatMoney(0, currencyDecimals)}
-                />
+                <div className="mt-1 flex gap-2">
+                  <input
+                    type="number"
+                    min="0"
+                    step={moneyInputStep(currencyDecimals)}
+                    value={commissionPaidAmount}
+                    onChange={(event) =>
+                      setCommissionPaidAmount(event.target.value)
+                    }
+                    className={`${FIELD_NUMBER_CLASS} mt-0`}
+                    placeholder={formatMoney(0, currencyDecimals)}
+                  />
+                  {displayCommission > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        applyFetchedCommissionAmount(displayCommission)
+                      }
+                      className="shrink-0 rounded-lg border border-slate-700 px-2.5 text-xs font-semibold text-slate-300 hover:bg-slate-800"
+                      title="Reload calculated commission"
+                    >
+                      Reset
+                    </button>
+                  ) : null}
+                </div>
               </label>
               <label className={LABEL_CLASS}>
                 Commission Pay From
@@ -1767,8 +1828,10 @@ export default function DeliveryBoyCollection({
               saving ||
               !boyOptions.length ||
               overpaid ||
-              (fullyCollected && !editingId) ||
-              (!editingId && suggested.remainingPayable <= 0)
+              ((fullyCollected ||
+                (!editingId && suggested.remainingPayable <= 0)) &&
+                !payCommission &&
+                !editingId)
             }
             className={BTN_PRIMARY}
           >

@@ -1,5 +1,6 @@
 import {
   normalizeTransactionMode,
+  isPosModuleSalesTransaction,
   normalizeTransactionType,
 } from "./transactionContract.js";
 import {
@@ -195,6 +196,30 @@ export function readPreviousBankBalancesByAccount(previousReport) {
   return toBankBalanceMap(previousReport?.closingBankBalancesByAccount);
 }
 
+/** Sum of master openingBalance on bank account docs. */
+export function sumBankAccountOpeningBalances(bankAccounts = []) {
+  let total = 0;
+  for (const account of bankAccounts || []) {
+    total += num(account?.openingBalance);
+  }
+  return total;
+}
+
+/**
+ * Seed reconstructed / empty prior maps with each account's master openingBalance.
+ * Not applied when a prior day-close already stored per-account closings.
+ */
+function seedBankAccountOpeningBalances(balances, bankAccounts = []) {
+  for (const account of bankAccounts || []) {
+    const id = String(account?.id || "").trim();
+    if (!id) continue;
+    const opening = num(account?.openingBalance);
+    if (opening === 0) continue;
+    balances.set(id, num(balances.get(id)) + opening);
+  }
+  return balances;
+}
+
 /**
  * Opening balances per bank account as of last closed day.
  * Prefer stored closings; otherwise use reconstructed history; else single-account fallback.
@@ -229,7 +254,10 @@ export function resolvePriorBankBalancesByAccount({
   const operationalAccounts = (bankAccounts || []).filter((account) =>
     isOperationalBankAccount(account)
   );
-  const balances = toBankBalanceMap(priorBankBalancesByAccount);
+  const balances = seedBankAccountOpeningBalances(
+    toBankBalanceMap(priorBankBalancesByAccount),
+    bankAccounts
+  );
 
   if (balances.size === 0 && operationalAccounts.length === 1) {
     balances.set(
@@ -303,12 +331,12 @@ export function calculateEodSnapshot({
     externalShopSales + externalTenders.deliveryAccountTotal;
   const externalSalesForSystem = externalSalesTotal;
 
-  // Sales exclude internals and never include loans/transfers.
+  // Sales-module POS only — never Z-report credit ledgers (those live on Z).
   const salesTransactions = dayTransactions.filter(
     (transaction) =>
       !isInternal(transaction) &&
       !isLoanTransaction(transaction) &&
-      normalizeTransactionType(transaction?.type) === "sales"
+      isPosModuleSalesTransaction(transaction)
   );
 
   function salesAmount(transaction) {
@@ -317,12 +345,19 @@ export function calculateEodSnapshot({
     return num(transaction?.totalAmount) || num(transaction?.amount);
   }
 
+  function zReportGrossSales(report) {
+    if (report?.grossSales === undefined || report?.grossSales === null) {
+      return num(report?.netSales) + num(report?.creditSalesTotal);
+    }
+    return num(report.grossSales);
+  }
+
   const posSales = salesTransactions.reduce(
     (total, transaction) => total + salesAmount(transaction),
     0
   );
   const systemSales = posSales + externalSalesForSystem;
-  // Shifts that already have Sales-module (POS) invoices — Z-report sales for
+  // Shifts that already have Sales-module (POS) invoices — Z cash/bank for
   // those shifts are reconciliation only and must not double-count revenue.
   const shiftsWithSystemSales = new Set(
     salesTransactions
@@ -332,13 +367,10 @@ export function calculateEodSnapshot({
   // POS days: Z fills gaps for shifts with no POS invoices.
   // External bills are additive (date-scoped) and do not suppress Z — shops often
   // keep terminal Z plus External Bill Entry side by side.
-  const zReportSales = selectedZReports.reduce((total, report) => {
-    const grossSales =
-      report?.grossSales === undefined || report?.grossSales === null
-        ? num(report?.netSales) + num(report?.creditSalesTotal)
-        : num(report.grossSales);
-    return total + grossSales;
-  }, 0);
+  const zReportSales = selectedZReports.reduce(
+    (total, report) => total + zReportGrossSales(report),
+    0
+  );
   const uncoveredZReportSales = selectedZReports
     .filter((report) => {
       const shiftId = String(report?.shiftId || "");
@@ -346,15 +378,19 @@ export function calculateEodSnapshot({
       if (!shiftId) return posSales <= 0;
       return !shiftsWithSystemSales.has(shiftId);
     })
-    .reduce((total, report) => {
-      const grossSales =
-        report?.grossSales === undefined || report?.grossSales === null
-          ? num(report?.netSales) + num(report?.creditSalesTotal)
-          : num(report.grossSales);
-      return total + grossSales;
-    }, 0);
-  // POS + External + Z gaps (Z is omitted for shifts that already have POS).
-  const totalSales = systemSales + uncoveredZReportSales;
+    .reduce((total, report) => total + zReportGrossSales(report), 0);
+  // When a shift already has POS, still count Z credit (receivables) from the
+  // saved Z-report — cash/bank on that Z stay reconciliation-only.
+  const zCreditOnPosShifts = selectedZReports
+    .filter((report) => {
+      const shiftId = String(report?.shiftId || "");
+      if (!shiftId) return posSales > 0;
+      return shiftsWithSystemSales.has(shiftId);
+    })
+    .reduce((total, report) => total + num(report?.creditSalesTotal), 0);
+  // POS + External + Z gaps + Z credit on POS days.
+  const totalSales =
+    systemSales + uncoveredZReportSales + zCreditOnPosShifts;
 
   // Expenses are operational purchase/expense only — never loans or transfers.
   const totalExpenses = dayTransactions
@@ -548,9 +584,9 @@ export function calculateEodSnapshot({
     todayNetBankFromTransfers +
     externalBankForSystem +
     collectionTenders.bankTotal;
-  const previousBankBalance = num(
-    previousReport?.closingBankBalance ?? previousReport?.totalBank
-  );
+  const previousBankBalance = previousReport
+    ? num(previousReport?.closingBankBalance ?? previousReport?.totalBank)
+    : sumBankAccountOpeningBalances(bankAccounts);
   const closingBankBalance = previousBankBalance + todayNetBankDelta;
 
   // Split display only — aggregate closingBankBalance formula above is unchanged.

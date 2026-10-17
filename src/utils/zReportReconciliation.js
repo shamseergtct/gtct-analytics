@@ -1,6 +1,6 @@
 import {
+  isPosModuleSalesTransaction,
   normalizeTransactionMode,
-  normalizeTransactionType,
 } from "./transactionContract.js";
 
 function num(value) {
@@ -27,8 +27,7 @@ export function reconcileZReport(transactions = [], zReport = null) {
   const shiftId = String(zReport.shiftId || "").trim();
   const sales = transactions.filter(
     (transaction) =>
-      normalizeTransactionType(transaction?.type) === "sales" &&
-      transaction?.internalTransfer !== true &&
+      isPosModuleSalesTransaction(transaction) &&
       (!shiftId || String(transaction?.shiftId || "").trim() === shiftId)
   );
 
