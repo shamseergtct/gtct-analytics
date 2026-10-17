@@ -587,13 +587,13 @@ function DaySalesModule({
   const dayLoading = pos.loading || external.loading;
   const dayCashSale = roundMoney(
     (Number(pos.cashTotal) || 0) +
-      (Number(external.cashTotal) || 0) +
+      (Number(external.shopCashTotal) || 0) +
       (Number(zTotals.cashTotal) || 0),
     decimals
   );
   const dayBankSale = roundMoney(
     (Number(pos.bankTotal) || 0) +
-      (Number(external.bankTotal) || 0) +
+      (Number(external.shopBankTotal) || 0) +
       (Number(zTotals.bankTotal) || 0),
     decimals
   );
@@ -738,19 +738,20 @@ function DaySalesModule({
               </p>
             </div>
             <TenderTotalCards
-              cashTotal={external.cashTotal}
-              bankTotal={external.bankTotal}
-              creditTotal={external.creditTotal}
+              cashTotal={external.shopCashTotal}
+              bankTotal={external.shopBankTotal}
+              creditTotal={external.shopCreditTotal}
               loading={external.loading}
             />
             {!external.loading &&
             (external.collectionCash > 0 || external.collectionBank > 0) ? (
               <p className="mt-2 text-[11px] text-violet-200/80">
-                Delivery collect (counts as sale): Cash{" "}
+                Of which saved Collect: Cash{" "}
                 {moneyHint(external.collectionCash)}
                 {external.collectionBank > 0
                   ? ` · Bank ${moneyHint(external.collectionBank)}`
                   : ""}
+                {" (rest is bill cash/bank)"}
               </p>
             ) : null}
             {!external.loading && external.deliveryOutstanding > 0 ? (
@@ -827,6 +828,9 @@ export default function ShiftClose() {
   const [cashEntries, setCashEntries] = useState([createCashEntry()]);
   const [creditEntries, setCreditEntries] = useState([createCreditEntry()]);
   const [bankEntries, setBankEntries] = useState([createBankEntry()]);
+  /** Optional Z line items — usually unused when Sales/External already cover the day. */
+  const [showZSalesBreakdown, setShowZSalesBreakdown] = useState(false);
+  const [showEditZSalesBreakdown, setShowEditZSalesBreakdown] = useState(false);
   const [customerParties, setCustomerParties] = useState([]);
   const [recentZReports, setRecentZReports] = useState([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -1226,6 +1230,14 @@ export default function ShiftClose() {
       setEditBankEntries(
         savedBankEntries.length ? savedBankEntries : [createBankEntry()]
       );
+      const hasBreakdown =
+        savedCashEntries.some((entry) => Number(entry.amount) > 0) ||
+        savedBankEntries.some((entry) => Number(entry.amount) > 0) ||
+        savedEntries.some((entry) => Number(entry.amount) > 0) ||
+        Number(report.cashTotal) > 0 ||
+        zReportBankTotalFromDoc(report) > 0 ||
+        Number(report.creditSalesTotal) > 0;
+      setShowEditZSalesBreakdown(hasBreakdown);
     } catch (reason) {
       setError(reason?.message || "Failed to open Z-report.");
     }
@@ -1239,6 +1251,7 @@ export default function ShiftClose() {
     setEditCashEntries([]);
     setEditCreditEntries([]);
     setEditBankEntries([]);
+    setShowEditZSalesBreakdown(false);
     setError("");
     if (existingReportForDate?.id) {
       autoEditOpenedForRef.current = existingReportForDate.id;
@@ -1367,6 +1380,7 @@ export default function ShiftClose() {
       setEditCashEntries([]);
       setEditCreditEntries([]);
       setEditBankEntries([]);
+      setShowEditZSalesBreakdown(false);
       setError("");
       setMessage(
         "Z-report saved. Re-open Update Z-Report to review or edit again."
@@ -1687,114 +1701,147 @@ export default function ShiftClose() {
             creditTotal={liveCreditTotal}
           />
 
-          <section className="mt-5 border-t border-slate-800 pt-5">
-            <h3 className="font-semibold text-white">Cash Sales Breakdown</h3>
-
-            <div className="mt-3 space-y-3">
-              {cashEntries.map((entry) => (
-                <CreditEntryRow
-                  key={entry.rowId}
-                  entry={entry}
-                  parties={customerParties}
-                  onChange={(nextEntry) =>
-                    updateCashEntry(entry.rowId, nextEntry)
-                  }
-                  onRemove={() =>
-                    setCashEntries((current) =>
-                      current.filter((item) => item.rowId !== entry.rowId)
-                    )
-                  }
-                  onQuickAddCustomer={quickAddCustomer}
-                />
-              ))}
-            </div>
-
+          <section className="mt-5 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
             <button
               type="button"
-              onClick={() =>
-                setCashEntries((current) => [...current, createCashEntry()])
-              }
-              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+              onClick={() => setShowZSalesBreakdown((value) => !value)}
+              className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-slate-900/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/50"
+              aria-expanded={showZSalesBreakdown}
+              aria-controls="z-sales-breakdown-panel"
             >
-              <Plus className="h-4 w-4" />
-              Add Cash Entry
-            </button>
-          </section>
-
-          <section className="mt-5 border-t border-slate-800 pt-5">
-            <h3 className="font-semibold text-white">Bank Sales Breakdown</h3>
-
-            <div className="mt-3 space-y-3">
-              {bankEntries.map((entry) => (
-                <BankEntryRow
-                  key={entry.rowId}
-                  entry={entry}
-                  accounts={bankAccounts}
-                  onChange={(nextEntry) =>
-                    updateBankEntry(entry.rowId, nextEntry)
-                  }
-                  onRemove={() =>
-                    setBankEntries((current) =>
-                      current.filter((item) => item.rowId !== entry.rowId)
-                    )
-                  }
-                />
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={() =>
-                setBankEntries((current) => [...current, createBankEntry()])
-              }
-              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-            >
-              <Plus className="h-4 w-4" />
-              Add Bank Entry
-            </button>
-          </section>
-
-          <section className="mt-5 border-t border-slate-800 pt-5">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h3 className="font-semibold text-white">
-                  Credit Sales Breakdown
-                </h3>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-semibold text-white">
+                  Z sales breakdown
+                </div>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Optional cash / bank / credit line items — skip when Day Sales
+                  already covers Sales module + External.
+                </p>
               </div>
-            </div>
-
-            <div className="mt-3 space-y-3">
-              {creditEntries.map((entry) => (
-                <CreditEntryRow
-                  key={entry.rowId}
-                  entry={entry}
-                  parties={customerParties}
-                  onChange={(nextEntry) =>
-                    updateCreditEntry(entry.rowId, nextEntry)
-                  }
-                  onRemove={() =>
-                    setCreditEntries((current) =>
-                      current.filter((item) => item.rowId !== entry.rowId)
-                    )
-                  }
-                  onQuickAddCustomer={quickAddCustomer}
-                />
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={() =>
-                setCreditEntries((current) => [
-                  ...current,
-                  createCreditEntry(),
-                ])
-              }
-              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-            >
-              <Plus className="h-4 w-4" />
-              Add Credit Entry
+              <ChevronDown
+                className={`h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${
+                  showZSalesBreakdown ? "rotate-180" : ""
+                }`}
+                aria-hidden="true"
+              />
             </button>
+
+            {showZSalesBreakdown ? (
+              <div
+                id="z-sales-breakdown-panel"
+                className="space-y-5 border-t border-slate-800 px-4 py-4"
+              >
+                <div>
+                  <h3 className="font-semibold text-white">
+                    Cash Sales Breakdown
+                  </h3>
+                  <div className="mt-3 space-y-3">
+                    {cashEntries.map((entry) => (
+                      <CreditEntryRow
+                        key={entry.rowId}
+                        entry={entry}
+                        parties={customerParties}
+                        onChange={(nextEntry) =>
+                          updateCashEntry(entry.rowId, nextEntry)
+                        }
+                        onRemove={() =>
+                          setCashEntries((current) =>
+                            current.filter((item) => item.rowId !== entry.rowId)
+                          )
+                        }
+                        onQuickAddCustomer={quickAddCustomer}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCashEntries((current) => [
+                        ...current,
+                        createCashEntry(),
+                      ])
+                    }
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add Cash Entry
+                  </button>
+                </div>
+
+                <div className="border-t border-slate-800 pt-5">
+                  <h3 className="font-semibold text-white">
+                    Bank Sales Breakdown
+                  </h3>
+                  <div className="mt-3 space-y-3">
+                    {bankEntries.map((entry) => (
+                      <BankEntryRow
+                        key={entry.rowId}
+                        entry={entry}
+                        accounts={bankAccounts}
+                        onChange={(nextEntry) =>
+                          updateBankEntry(entry.rowId, nextEntry)
+                        }
+                        onRemove={() =>
+                          setBankEntries((current) =>
+                            current.filter((item) => item.rowId !== entry.rowId)
+                          )
+                        }
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setBankEntries((current) => [
+                        ...current,
+                        createBankEntry(),
+                      ])
+                    }
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add Bank Entry
+                  </button>
+                </div>
+
+                <div className="border-t border-slate-800 pt-5">
+                  <h3 className="font-semibold text-white">
+                    Credit Sales Breakdown
+                  </h3>
+                  <div className="mt-3 space-y-3">
+                    {creditEntries.map((entry) => (
+                      <CreditEntryRow
+                        key={entry.rowId}
+                        entry={entry}
+                        parties={customerParties}
+                        onChange={(nextEntry) =>
+                          updateCreditEntry(entry.rowId, nextEntry)
+                        }
+                        onRemove={() =>
+                          setCreditEntries((current) =>
+                            current.filter((item) => item.rowId !== entry.rowId)
+                          )
+                        }
+                        onQuickAddCustomer={quickAddCustomer}
+                      />
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCreditEntries((current) => [
+                        ...current,
+                        createCreditEntry(),
+                      ])
+                    }
+                    className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add Credit Entry
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </section>
 
           <div className="mt-5 flex flex-wrap items-center gap-3">
@@ -1998,122 +2045,165 @@ export default function ShiftClose() {
               creditTotal={editLiveCreditTotal}
             />
 
-            <section className="mt-5 border-t border-slate-800 pt-5">
-              <h3 className="font-semibold text-white">Cash Sales Breakdown</h3>
-              <div className="mt-3 space-y-3">
-                {editCashEntries.map((entry) => (
-                  <CreditEntryRow
-                    key={entry.rowId}
-                    entry={entry}
-                    parties={customerParties}
-                    onChange={(nextEntry) =>
-                      setEditCashEntries((current) =>
-                        current.map((item) =>
-                          item.rowId === entry.rowId ? nextEntry : item
-                        )
-                      )
-                    }
-                    onRemove={() =>
-                      setEditCashEntries((current) =>
-                        current.filter((item) => item.rowId !== entry.rowId)
-                      )
-                    }
-                    onQuickAddCustomer={quickAddCustomer}
-                  />
-                ))}
-              </div>
+            <section className="mt-5 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/40">
               <button
                 type="button"
-                onClick={() =>
-                  setEditCashEntries((current) => [
-                    ...current,
-                    createCashEntry(),
-                  ])
-                }
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                onClick={() => setShowEditZSalesBreakdown((value) => !value)}
+                className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-slate-900/70 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500/50"
+                aria-expanded={showEditZSalesBreakdown}
+                aria-controls="edit-z-sales-breakdown-panel"
               >
-                <Plus className="h-4 w-4" />
-                Add Cash Entry
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-white">
+                    Z sales breakdown
+                  </div>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    Optional cash / bank / credit line items — skip when Day
+                    Sales already covers Sales module + External.
+                  </p>
+                </div>
+                <ChevronDown
+                  className={`h-5 w-5 shrink-0 text-slate-400 transition-transform duration-200 ${
+                    showEditZSalesBreakdown ? "rotate-180" : ""
+                  }`}
+                  aria-hidden="true"
+                />
               </button>
-            </section>
 
-            <section className="mt-5 border-t border-slate-800 pt-5">
-              <h3 className="font-semibold text-white">Bank Sales Breakdown</h3>
-              <div className="mt-3 space-y-3">
-                {editBankEntries.map((entry) => (
-                  <BankEntryRow
-                    key={entry.rowId}
-                    entry={entry}
-                    accounts={bankAccounts}
-                    onChange={(nextEntry) =>
-                      setEditBankEntries((current) =>
-                        current.map((item) =>
-                          item.rowId === entry.rowId ? nextEntry : item
-                        )
-                      )
-                    }
-                    onRemove={() =>
-                      setEditBankEntries((current) =>
-                        current.filter((item) => item.rowId !== entry.rowId)
-                      )
-                    }
-                  />
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setEditBankEntries((current) => [
-                    ...current,
-                    createBankEntry(),
-                  ])
-                }
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-              >
-                <Plus className="h-4 w-4" />
-                Add Bank Entry
-              </button>
-            </section>
+              {showEditZSalesBreakdown ? (
+                <div
+                  id="edit-z-sales-breakdown-panel"
+                  className="space-y-5 border-t border-slate-800 px-4 py-4"
+                >
+                  <div>
+                    <h3 className="font-semibold text-white">
+                      Cash Sales Breakdown
+                    </h3>
+                    <div className="mt-3 space-y-3">
+                      {editCashEntries.map((entry) => (
+                        <CreditEntryRow
+                          key={entry.rowId}
+                          entry={entry}
+                          parties={customerParties}
+                          onChange={(nextEntry) =>
+                            setEditCashEntries((current) =>
+                              current.map((item) =>
+                                item.rowId === entry.rowId ? nextEntry : item
+                              )
+                            )
+                          }
+                          onRemove={() =>
+                            setEditCashEntries((current) =>
+                              current.filter(
+                                (item) => item.rowId !== entry.rowId
+                              )
+                            )
+                          }
+                          onQuickAddCustomer={quickAddCustomer}
+                        />
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditCashEntries((current) => [
+                          ...current,
+                          createCashEntry(),
+                        ])
+                      }
+                      className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add Cash Entry
+                    </button>
+                  </div>
 
-            <section className="mt-5 border-t border-slate-800 pt-5">
-              <h3 className="font-semibold text-white">
-                Credit Sales Breakdown
-              </h3>
-              <div className="mt-3 space-y-3">
-                {editCreditEntries.map((entry) => (
-                  <CreditEntryRow
-                    key={entry.rowId}
-                    entry={entry}
-                    parties={customerParties}
-                    onChange={(nextEntry) =>
-                      setEditCreditEntries((current) =>
-                        current.map((item) =>
-                          item.rowId === entry.rowId ? nextEntry : item
-                        )
-                      )
-                    }
-                    onRemove={() =>
-                      setEditCreditEntries((current) =>
-                        current.filter((item) => item.rowId !== entry.rowId)
-                      )
-                    }
-                    onQuickAddCustomer={quickAddCustomer}
-                  />
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() =>
-                  setEditCreditEntries((current) => [
-                    ...current,
-                    createCreditEntry(),
-                  ])
-                }
-                className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
-              >
-                <Plus className="h-4 w-4" />
-                Add Credit Entry
-              </button>
+                  <div className="border-t border-slate-800 pt-5">
+                    <h3 className="font-semibold text-white">
+                      Bank Sales Breakdown
+                    </h3>
+                    <div className="mt-3 space-y-3">
+                      {editBankEntries.map((entry) => (
+                        <BankEntryRow
+                          key={entry.rowId}
+                          entry={entry}
+                          accounts={bankAccounts}
+                          onChange={(nextEntry) =>
+                            setEditBankEntries((current) =>
+                              current.map((item) =>
+                                item.rowId === entry.rowId ? nextEntry : item
+                              )
+                            )
+                          }
+                          onRemove={() =>
+                            setEditBankEntries((current) =>
+                              current.filter(
+                                (item) => item.rowId !== entry.rowId
+                              )
+                            )
+                          }
+                        />
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditBankEntries((current) => [
+                          ...current,
+                          createBankEntry(),
+                        ])
+                      }
+                      className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add Bank Entry
+                    </button>
+                  </div>
+
+                  <div className="border-t border-slate-800 pt-5">
+                    <h3 className="font-semibold text-white">
+                      Credit Sales Breakdown
+                    </h3>
+                    <div className="mt-3 space-y-3">
+                      {editCreditEntries.map((entry) => (
+                        <CreditEntryRow
+                          key={entry.rowId}
+                          entry={entry}
+                          parties={customerParties}
+                          onChange={(nextEntry) =>
+                            setEditCreditEntries((current) =>
+                              current.map((item) =>
+                                item.rowId === entry.rowId ? nextEntry : item
+                              )
+                            )
+                          }
+                          onRemove={() =>
+                            setEditCreditEntries((current) =>
+                              current.filter(
+                                (item) => item.rowId !== entry.rowId
+                              )
+                            )
+                          }
+                          onQuickAddCustomer={quickAddCustomer}
+                        />
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setEditCreditEntries((current) => [
+                          ...current,
+                          createCreditEntry(),
+                        ])
+                      }
+                      className="mt-3 inline-flex items-center gap-2 rounded-lg border border-slate-700 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-slate-800"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add Credit Entry
+                    </button>
+                  </div>
+                </div>
+              ) : null}
             </section>
 
             <div className="mt-5 flex justify-end gap-3">
