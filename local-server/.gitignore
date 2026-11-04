@@ -1,0 +1,12 @@
+node_modules/
+data/
+*.sqlite
+*.sqlite-*
+.env
+.env.*
+*.pem
+*.key
+*.crt
+npm-debug.log*
+yarn-error.log*
+.DS_Store

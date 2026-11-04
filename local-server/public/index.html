@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>GTCT Restaurant</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="sales-app">
+    <div id="app">
+      <!-- Login -->
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-card">
+          <p class="brand">GTCT</p>
+          <h1>GTCT Restaurant</h1>
+          <p class="banner">TEST MODE — NO REAL SALES OR PAYMENTS</p>
+          <p class="hint">Sign in with your administrator username and password.</p>
+          <div id="login-form" class="login-form">
+            <div class="field">
+              <label for="login-username">Username</label>
+              <input
+                id="login-username"
+                name="username"
+                type="text"
+                autocomplete="username"
+                spellcheck="false"
+                autocapitalize="off"
+              />
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <div class="password-row">
+                <input
+                  id="login-password"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                />
+                <button
+                  type="button"
+                  id="toggle-password-btn"
+                  class="btn ghost password-toggle"
+                  aria-pressed="false"
+                  aria-controls="login-password"
+                >
+                  Show
+                </button>
+              </div>
+            </div>
+            <button type="button" id="login-btn" class="btn primary">Sign in</button>
+            <p id="login-error" class="error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Main POS -->
+      <section id="main-view" class="view main-view" hidden>
+        <header class="topbar">
+          <div class="topbar-brand">
+            <p class="brand-inline">GTCT</p>
+            <h1>Restaurant Sales</h1>
+          </div>
+          <div class="topbar-actions">
+            <button type="button" id="pending-payments-btn" class="pending-payments-btn" hidden aria-controls="pending-payments-drawer" aria-expanded="false">
+              Unpaid <span id="pending-payments-count" hidden>0</span>
+            </button>
+            <button type="button" id="print-jobs-btn" class="print-jobs-btn" aria-controls="print-jobs-drawer" aria-expanded="false" aria-label="Print jobs">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M6 9V3h12v6h2a2 2 0 0 1 2 2v6h-4v4H6v-4H2v-6a2 2 0 0 1 2-2h2zm2-4v4h8V5H8zm8 14v-4H8v4h8zM6 13h2v2H6v-2z"/>
+              </svg>
+              <span id="print-jobs-count" class="print-jobs-count" hidden>0</span>
+            </button>
+            <span class="banner compact test-badge">TEST</span>
+            <span id="session-role" class="pill"></span>
+            <button
+              type="button"
+              id="nav-menu-btn"
+              class="nav-menu-btn"
+              aria-expanded="false"
+              aria-controls="app-nav"
+              aria-label="Open navigation menu"
+            >
+              <span class="nav-menu-icon" aria-hidden="true"></span>
+            </button>
+            <nav id="app-nav" class="app-nav" aria-label="Main">
+              <a class="nav-link" href="/" aria-current="page">Sales</a>
+              <a id="orders-link" class="nav-link" href="/orders.html" hidden>Orders</a>
+              <a id="prep-link" class="nav-link" href="/prep.html" hidden>Preparation</a>
+              <a id="menu-setup-link" class="nav-link" href="/menu.html" hidden>Menu Setup</a>
+              <a id="shop-settings-link" class="nav-link" href="/shop-settings.html" hidden>Shop Settings</a>
+              <a id="settings-link" class="nav-link" href="/settings.html" hidden>Printer Settings</a>
+              <a id="users-link" class="nav-link" href="/users.html" hidden>User Management</a>
+              <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
+            </nav>
+          </div>
+        </header>
+        <div id="nav-menu-backdrop" class="nav-menu-backdrop" hidden></div>
+
+        <div class="workspace">
+          <aside class="menu-pane" id="menu-pane">
+            <div class="pane-toolbar sticky-tools">
+              <input id="menu-search" type="search" placeholder="Search menu…" enterkeyhint="search" aria-label="Search menu" />
+              <div id="category-filters" class="chips chip-scroll" role="tablist" aria-label="Categories"></div>
+              <div id="subcategory-filters" class="chips chip-scroll subchips" hidden role="tablist" aria-label="Subcategories"></div>
+            </div>
+            <div id="menu-grid" class="menu-grid"></div>
+          </aside>
+
+          <section class="cart-pane" id="cart-pane">
+            <div class="cart-pane-inner">
+              <div class="cart-pane-head">
+                <h2>Cart</h2>
+                <button type="button" id="hold-cart-btn" class="btn ghost small" hidden>Hold</button>
+                <button type="button" id="new-order-btn" class="btn ghost small">New #</button>
+                <button type="button" id="close-cart-drawer" class="btn ghost small cart-drawer-close" hidden aria-label="Close cart">✕</button>
+              </div>
+              <div id="held-cart-panel" class="held-cart-panel" hidden>
+                <div class="held-cart-panel-head">
+                  <strong>Held carts</strong>
+                  <span id="held-cart-count" class="muted"></span>
+                </div>
+                <div id="held-cart-list" class="held-cart-list"></div>
+              </div>
+              <div class="order-meta compact-meta">
+                <label class="field">
+                  <span id="order-number-label">Draft #</span>
+                  <input id="order-number" type="text" readonly title="" />
+                </label>
+                <label class="field">
+                  <span>Type</span>
+                  <select id="order-type"></select>
+                </label>
+                <div id="fulfillment-fields" class="fulfillment-fields"></div>
+              </div>
+              <div id="split-bar" class="split-bar" hidden></div>
+              <div id="cart-lines" class="cart-lines"></div>
+              <div class="cart-footer sticky-cart-footer">
+                <div id="cart-tax-summary" class="cart-tax-summary" aria-live="polite"></div>
+                <p id="send-status" class="status-line" hidden></p>
+                <div class="cart-actions">
+                  <button type="button" id="clear-cart-btn" class="btn ghost">Clear</button>
+                  <button type="button" id="review-btn" class="btn primary">Review &amp; Send</button>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <button type="button" id="mobile-cart-bar" class="mobile-cart-bar" hidden>
+          <span class="mobile-cart-left"><strong id="mobile-cart-count">0</strong> items</span>
+          <span id="mobile-cart-total" class="mobile-cart-mid">—</span>
+          <span class="mobile-cart-cta">View cart</span>
+        </button>
+        <div id="cart-drawer-backdrop" class="cart-drawer-backdrop" hidden></div>
+
+        <div id="pending-backdrop" class="print-jobs-backdrop" hidden></div>
+        <aside id="pending-payments-drawer" class="print-jobs-drawer" hidden aria-labelledby="pending-payments-title">
+          <div class="print-jobs-head">
+            <h2 id="pending-payments-title">Unpaid orders</h2>
+            <button type="button" id="pending-payments-close" class="btn ghost small" aria-label="Close unpaid orders">✕</button>
+          </div>
+          <p class="muted print-jobs-hint">Accepted test orders that are still unpaid. Sending an order to the kitchen does not mark it paid.</p>
+          <input id="pending-search" type="search" placeholder="Order number, customer, or phone" aria-label="Find an unpaid order" enterkeyhint="search" />
+          <div id="pending-payments-list" class="pending-payments-list"></div>
+        </aside>
+        <div id="print-notices" class="print-notices" aria-live="polite"></div>
+        <div id="print-jobs-backdrop" class="print-jobs-backdrop" hidden></div>
+        <aside id="print-jobs-drawer" class="print-jobs-drawer" hidden aria-labelledby="print-jobs-title">
+          <div class="print-jobs-head">
+            <h2 id="print-jobs-title">Print jobs</h2>
+            <button type="button" id="refresh-jobs-btn" class="btn ghost small">Refresh</button>
+            <button type="button" id="print-jobs-close" class="btn ghost small" aria-label="Close print jobs">✕</button>
+          </div>
+          <p class="muted print-jobs-hint">A mock ticket is a test file. It is not a physical print. Closing a notice does not change the job.</p>
+          <div id="printer-status" class="printer-status"></div>
+          <div id="ticket-cards" class="ticket-cards"></div>
+        </aside>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" hidden role="status" aria-live="polite"></div>
+
+    <dialog id="customer-dialog" class="customer-dialog" aria-labelledby="customer-dialog-title">
+      <div class="hold-form">
+        <h3 id="customer-dialog-title">Add customer</h3>
+        <p id="cust-hint" class="muted hold-hint">Contact number is unique in this shop.</p>
+        <div id="cust-profile-fields">
+          <label class="field">
+            <span>Customer name</span>
+            <input id="cust-name" type="text" maxlength="80" autocomplete="name" />
+          </label>
+          <label class="field">
+            <span>Contact number</span>
+            <input id="cust-phone" type="tel" inputmode="tel" maxlength="30" autocomplete="tel" />
+          </label>
+        </div>
+        <div id="cust-address-fields">
+          <label class="field">
+            <span>Address label</span>
+            <input id="cust-label" type="text" maxlength="40" autocomplete="off" placeholder="Home" />
+          </label>
+          <div class="fee-row">
+            <label class="field">
+              <span>Building</span>
+              <input id="cust-building" type="text" maxlength="20" autocomplete="off" placeholder="Optional" />
+            </label>
+            <label class="field">
+              <span>Road</span>
+              <input id="cust-road" type="text" maxlength="20" autocomplete="off" placeholder="Optional" />
+            </label>
+          </div>
+          <label class="field">
+            <span>Block number</span>
+            <input id="cust-block" type="text" maxlength="20" autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Address / landmark</span>
+            <input id="cust-note" type="text" maxlength="120" autocomplete="off" placeholder="Optional" />
+          </label>
+        </div>
+        <p id="cust-error" class="error" hidden></p>
+        <div id="cust-dup" class="cust-dup" hidden>
+          <p id="cust-dup-text">Customer already exists. Select existing customer.</p>
+          <button type="button" id="cust-use-existing" class="btn ghost small">Select existing customer</button>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="cust-cancel" class="btn ghost">Cancel</button>
+          <button type="button" id="cust-save-another" class="btn ghost">Save &amp; add another address</button>
+          <button type="button" id="cust-save" class="btn primary">Save customer</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="address-picker-dialog" class="customer-dialog picker-mode-address" aria-labelledby="address-picker-title">
+      <div class="hold-form">
+        <h3 id="address-picker-title">Change address</h3>
+        <p id="picker-current" class="muted hold-hint"></p>
+        <div id="picker-address-section">
+          <p class="muted picker-address-label">Saved addresses</p>
+          <div id="address-picker-list" class="address-picker-list"></div>
+          <div class="dialog-actions picker-address-actions">
+            <button type="button" id="address-picker-add" class="btn ghost">+ Add new address</button>
+            <button type="button" id="address-picker-adjust" class="btn ghost">For this order</button>
+          </div>
+        </div>
+        <div id="picker-customer-section" class="picker-search">
+          <label class="field">
+            <span>Search customer</span>
+            <input id="picker-cust-search" type="search" placeholder="Search customer name or phone" autocomplete="off" enterkeyhint="search" />
+          </label>
+          <div id="picker-cust-results" class="cust-results" hidden></div>
+          <div class="dialog-actions">
+            <button type="button" id="address-picker-clear" class="btn ghost">Remove customer</button>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="address-picker-cancel" class="btn ghost">Cancel</button>
+          <button type="button" id="picker-show-customer" class="btn ghost">Change customer</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="address-dialog" class="customer-dialog" aria-labelledby="address-dialog-title">
+      <div class="hold-form">
+        <h3 id="address-dialog-title">Add address</h3>
+        <p class="muted hold-hint">Saves this address on the customer.</p>
+        <label class="field">
+          <span>Address label</span>
+          <input id="addr-label" type="text" maxlength="40" autocomplete="off" placeholder="Home" />
+        </label>
+        <div class="fee-row">
+          <label class="field">
+            <span>Building</span>
+            <input id="addr-building" type="text" maxlength="20" autocomplete="off" placeholder="Optional" />
+          </label>
+          <label class="field">
+            <span>Road</span>
+            <input id="addr-road" type="text" maxlength="20" autocomplete="off" placeholder="Optional" />
+          </label>
+        </div>
+        <label class="field">
+          <span>Block number</span>
+          <input id="addr-block" type="text" maxlength="20" autocomplete="off" />
+        </label>
+        <label class="field">
+          <span>Address / landmark</span>
+          <input id="addr-note" type="text" maxlength="120" autocomplete="off" placeholder="Optional" />
+        </label>
+        <label class="check-line">
+          <input id="addr-default" type="checkbox" />
+          <span>Default address</span>
+        </label>
+        <p id="addr-error" class="error" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="addr-cancel" class="btn ghost">Cancel</button>
+          <button type="button" id="addr-save" class="btn primary">Save address</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="order-address-dialog" class="customer-dialog" aria-labelledby="order-address-title">
+      <div class="hold-form">
+        <h3 id="order-address-title">This order only</h3>
+        <p class="muted hold-hint">Does not change the saved customer address. Block and delivery charge stay on the cart.</p>
+        <div class="fee-row">
+          <label class="field">
+            <span>Building</span>
+            <input id="order-addr-building" type="text" maxlength="20" autocomplete="off" placeholder="Optional" />
+          </label>
+          <label class="field">
+            <span>Road</span>
+            <input id="order-addr-road" type="text" maxlength="20" autocomplete="off" placeholder="Optional" />
+          </label>
+        </div>
+        <label class="field">
+          <span>Address / landmark</span>
+          <input id="order-addr-note" type="text" maxlength="120" autocomplete="off" placeholder="Optional" />
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="order-addr-cancel" class="btn ghost">Cancel</button>
+          <button type="button" id="order-addr-apply" class="btn primary">Use for this order</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="hold-dialog" class="hold-dialog">
+      <form method="dialog" id="hold-form" class="hold-form">
+        <h3>Hold cart</h3>
+        <p class="muted hold-hint">Give this hold a name or number so you can find it later.</p>
+        <label class="field">
+          <span>Hold name / number</span>
+          <input
+            id="hold-label-input"
+            type="text"
+            maxlength="40"
+            autocomplete="off"
+            placeholder="e.g. Table 4, Counter 2, Hold 1"
+          />
+        </label>
+        <p id="hold-dialog-error" class="error" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="hold-cancel-btn" class="btn ghost">Cancel</button>
+          <button type="button" id="hold-confirm-btn" class="btn primary">Hold cart</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Variant selector -->
+    <dialog id="variant-dialog" class="variant-dialog">
+      <div class="variant-dialog-inner">
+        <header class="variant-dialog-head">
+          <div>
+            <h3 id="variant-item-name">Select size</h3>
+            <p class="muted" id="variant-item-hint">Tap a size to add it to the cart</p>
+          </div>
+          <button type="button" id="variant-close-btn" class="btn ghost small" aria-label="Close">Close</button>
+        </header>
+        <div id="variant-options" class="variant-options" role="listbox" aria-label="Variants"></div>
+      </div>
+    </dialog>
+
+    <!-- Product Knowledge (staff info) -->
+    <dialog id="pk-dialog" class="pk-dialog" aria-labelledby="pk-item-name">
+      <div class="pk-dialog-inner">
+        <header class="pk-dialog-head">
+          <div class="pk-dialog-hero">
+            <div class="pk-dialog-media" id="pk-item-media" aria-hidden="true"></div>
+            <div class="pk-dialog-titles">
+              <h3 id="pk-item-name">Product information</h3>
+              <p class="muted" id="pk-item-category" hidden></p>
+            </div>
+          </div>
+          <button type="button" id="pk-close-btn" class="btn ghost small" aria-label="Close product information">Close</button>
+        </header>
+        <nav class="pk-tabs" role="tablist" aria-label="Product information sections">
+          <button type="button" class="pk-tab active" role="tab" aria-selected="true" data-pk-tab="about" id="pk-tab-about">About</button>
+          <button type="button" class="pk-tab" role="tab" aria-selected="false" data-pk-tab="ingredients" id="pk-tab-ingredients">Ingredients</button>
+          <button type="button" class="pk-tab" role="tab" aria-selected="false" data-pk-tab="service" id="pk-tab-service">Service</button>
+        </nav>
+        <div class="pk-dialog-body" id="pk-dialog-body">
+          <p class="pk-empty">Product information has not been added yet.</p>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Customize modal -->
+    <dialog id="instr-dialog" class="customize-dialog">
+      <form method="dialog" id="instr-form" class="instr-form customize-form">
+        <div class="customize-scroll">
+          <header class="customize-hero">
+            <div class="customize-hero-media" id="customize-item-media" aria-hidden="true"></div>
+            <div class="customize-hero-body">
+              <h3 id="instr-item-name">Customize item</h3>
+              <p id="customize-variant-label" class="customize-variant muted" hidden></p>
+              <div class="customize-hero-controls">
+                <div class="qty-controls customize-qty-row" aria-label="Quantity">
+                  <button type="button" id="customize-qty-dec" aria-label="Decrease quantity">−</button>
+                  <input
+                    id="customize-qty"
+                    type="text"
+                    inputmode="numeric"
+                    pattern="[0-9]*"
+                    autocomplete="off"
+                    aria-label="Quantity"
+                  />
+                  <button type="button" id="customize-qty-inc" aria-label="Increase quantity">+</button>
+                </div>
+                <div class="customize-price-block">
+                  <p id="customize-configured-price" class="customize-configured muted"></p>
+                  <label class="field customize-price-field" for="customize-unit-price">
+                    <span id="customize-price-label">Custom price</span>
+                    <div class="customize-price-input-row">
+                      <span id="customize-price-currency" class="currency-prefix" aria-hidden="true"></span>
+                      <input
+                        id="customize-unit-price"
+                        type="text"
+                        inputmode="decimal"
+                        autocomplete="off"
+                        placeholder="0.000"
+                        aria-label="Custom unit selling price"
+                      />
+                    </div>
+                  </label>
+                  <div class="customize-price-meta">
+                    <span id="customize-price-adjusted" class="price-adjusted-badge" hidden>Custom</span>
+                    <button type="button" id="customize-price-reset" class="btn ghost small" hidden>
+                      Reset
+                    </button>
+                  </div>
+                  <p id="customize-line-total" class="customize-line-total muted"></p>
+                  <p id="customize-price-locked" class="muted customize-price-locked" hidden>
+                    You do not have permission to change this price.
+                  </p>
+                </div>
+              </div>
+              <p id="customize-price-error" class="error" hidden></p>
+            </div>
+          </header>
+
+          <nav class="customize-tabs" role="tablist" aria-label="Customization sections">
+            <button type="button" class="customize-tab active" role="tab" aria-selected="true" data-tab="notes" id="tab-notes">
+              Kitchen notes
+            </button>
+            <button type="button" class="customize-tab" role="tab" aria-selected="false" data-tab="extras" id="tab-extras">
+              Extras
+            </button>
+          </nav>
+
+          <section id="panel-notes" class="customize-panel" role="tabpanel" aria-labelledby="tab-notes">
+            <div id="kitchen-step-1" class="kitchen-step">
+              <p class="step-label" id="kitchen-step-label">What change?</p>
+              <div id="mod-chips" class="chips kitchen-choice-chips" role="group" aria-label="Modifiers"></div>
+              <div id="standalone-chips" class="chips kitchen-choice-chips" style="margin-top:0.5rem"></div>
+            </div>
+            <div id="kitchen-step-2" class="kitchen-step" hidden>
+              <div class="kitchen-step-back-row">
+                <button type="button" id="kitchen-step-back" class="btn ghost small">Back</button>
+                <p class="step-label" id="kitchen-target-label">Which ingredients?</p>
+              </div>
+              <div id="target-chips" class="chips kitchen-choice-chips" role="group" aria-label="Ingredients"></div>
+              <div class="kitchen-target-ok">
+                <button type="button" id="kitchen-targets-ok" class="btn primary" disabled>OK</button>
+              </div>
+            </div>
+            <p id="instr-preview" class="instr-feedback" role="status" aria-live="polite" hidden></p>
+            <section class="customize-section selected-instr-section">
+              <p class="step-label">Selected</p>
+              <div id="instr-chip-list" class="selected-instr-chips"></div>
+            </section>
+            <label class="field">
+              <span>Additional order note (optional)</span>
+              <input id="custom-note" type="text" maxlength="80" placeholder="e.g. cut in half" />
+            </label>
+          </section>
+
+          <section id="panel-extras" class="customize-panel" role="tabpanel" aria-labelledby="tab-extras" hidden>
+            <div id="addon-pick-list" class="addon-pick-list"></div>
+            <p id="addon-price-hint" class="muted" style="margin-top:0.5rem;font-size:0.8rem" hidden></p>
+            <p id="addon-price-error" class="error" hidden></p>
+          </section>
+
+          <section class="customize-section" id="price-summary-card">
+            <dl id="price-summary" class="price-summary price-summary-compact"></dl>
+            <button type="button" id="price-breakdown-toggle" class="btn ghost small price-breakdown-toggle">
+              View price breakdown
+            </button>
+            <dl id="price-summary-detail" class="price-summary" hidden></dl>
+          </section>
+        </div>
+        <div class="customize-footer">
+          <button type="button" id="customize-cancel-btn" class="btn ghost">Cancel</button>
+          <button type="button" id="customize-apply-btn" class="btn primary">Apply Customization</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="review-dialog" class="review-dialog">
+      <div class="review-dialog-inner">
+        <header class="review-dialog-head">
+          <div class="review-dialog-title">
+            <h3>Review Order</h3>
+            <span class="banner compact test-badge">TEST</span>
+          </div>
+          <p id="review-meta" class="review-meta"></p>
+        </header>
+        <div id="review-body" class="review-body"></div>
+        <div class="dialog-actions review-footer">
+          <button type="button" id="review-cancel" class="btn ghost">Back</button>
+          <button type="button" id="review-confirm" class="btn primary">Confirm &amp; Send</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="payment-offer-dialog" class="review-dialog" aria-labelledby="payment-offer-title">
+      <div class="review-dialog-inner">
+        <header class="review-dialog-head">
+          <div class="review-dialog-title">
+            <h3 id="payment-offer-title">Order accepted</h3>
+            <span class="banner compact test-badge">TEST</span>
+          </div>
+          <p id="payment-offer-text" class="review-meta">Checking payment status…</p>
+        </header>
+        <div class="dialog-actions review-footer">
+          <button type="button" id="payment-offer-later" class="btn ghost">Continue selling</button>
+          <button type="button" id="payment-offer-take" class="btn primary" hidden>Take Payment</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="payment-dialog" class="review-dialog" aria-labelledby="payment-dialog-title">
+      <div class="review-dialog-inner">
+        <header class="review-dialog-head">
+          <div class="review-dialog-title">
+            <h3 id="payment-dialog-title">Take Payment</h3>
+            <span class="banner compact test-badge">TEST</span>
+          </div>
+          <p id="payment-order-number" class="payment-order-number"></p>
+          <p id="payment-customer" class="review-meta"></p>
+        </header>
+        <div class="payment-body">
+          <dl class="payment-facts">
+            <div><dt>Order total</dt><dd id="payment-total">—</dd></div>
+            <div><dt>Already paid</dt><dd id="payment-paid">—</dd></div>
+            <div><dt>Balance due</dt><dd id="payment-due">—</dd></div>
+            <div><dt>Status</dt><dd id="payment-status" class="pay-status">—</dd></div>
+            <div><dt>Method</dt><dd id="payment-method">Cash</dd></div>
+          </dl>
+          <div id="payment-choice" class="payment-choice">
+            <div id="payment-method-picker" class="payment-method-picker" role="radiogroup" aria-label="Payment method">
+              <label class="payment-method-option">
+                <input type="radio" name="pay-method" value="CASH" checked />
+                Cash
+              </label>
+              <label class="payment-method-option">
+                <input type="radio" name="pay-method" value="BANK" />
+                Bank
+              </label>
+            </div>
+            <div id="payment-bank-fields" class="payment-bank-fields" hidden>
+              <label class="payment-bank-label" for="payment-bank-account">Operational account</label>
+              <select id="payment-bank-account" class="payment-bank-select"></select>
+              <p id="payment-bank-empty" class="error" hidden>No active operational bank account is set up. An administrator can add one in Shop Settings.</p>
+            </div>
+          </div>
+          <p id="payment-error" class="error" hidden></p>
+        </div>
+        <div class="dialog-actions review-footer payment-actions">
+          <button type="button" id="payment-edit" class="btn ghost">Edit order</button>
+          <button type="button" id="payment-back" class="btn ghost">Back to Sales</button>
+          <button type="button" id="payment-renew" class="btn ghost" hidden>Prepare a new confirmation</button>
+          <button type="button" id="payment-confirm" class="btn primary payment-confirm">Confirm Payment</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="preview-dialog">
+      <div class="preview-wrap">
+        <h3 id="preview-title">Ticket preview</h3>
+        <pre id="preview-text"></pre>
+        <div class="dialog-actions">
+          <button type="button" id="preview-close" class="btn primary">Close</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

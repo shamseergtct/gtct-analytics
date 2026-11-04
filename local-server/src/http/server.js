@@ -1,0 +1,2081 @@
+import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
+import path from "node:path";
+import { URL } from "node:url";
+import { authenticateRequest, requireRole } from "../auth.js";
+import { authAllows } from "../services/staffAuth.js";
+import {
+  listStaffUsers,
+  createStaffUser,
+  updateStaffUser,
+  resetStaffPassword,
+} from "../services/staffUsers.js";
+import {
+  loginWithToken,
+  loginWithPassword,
+  logoutRequest,
+  readSessionId,
+  isTrustedBrowserOrigin,
+} from "../sessions.js";
+import { listStations, getStation, upsertStation } from "../services/stations.js";
+import {
+  listPrinters,
+  getPrinter,
+  upsertPrinter,
+} from "../services/printers.js";
+import {
+  listMenuItems,
+  getMenuItem,
+  upsertMenuItem,
+  updateMenuItemAvailability,
+  saveMenuItemImage,
+  clearMenuItemImage,
+  resolveMenuImagePath,
+} from "../services/menuMappings.js";
+import {
+  listCategories,
+  upsertCategory,
+  upsertSubcategory,
+} from "../services/categories.js";
+import {
+  getShopSettings,
+  updateShopSettings,
+  applyEnvShopOverrides,
+  shopSettingsAuditDetail,
+} from "../services/shopSettings.js";
+import {
+  saveShopLogo,
+  clearShopLogo,
+  resolveShopLogoPath,
+} from "../services/shopLogo.js";
+import { buildTaxPreviewSamples } from "../services/tax.js";
+import { renderShopReceiptPreview } from "../print/ticketFormat.js";
+import {
+  getKitchenLibrary,
+  upsertModifier,
+  upsertTarget,
+  upsertStandalone,
+  setOptionActive,
+  setItemInstructionConfig,
+  getItemInstructionConfig,
+  legacyKitchenNotesFromLibrary,
+} from "../services/kitchenLibrary.js";
+import {
+  listAddons,
+  getAddon,
+  upsertAddon,
+  listAddonAssignments,
+  getItemAddons,
+  setItemAddons,
+} from "../services/addons.js";
+import {
+  getProductKnowledge,
+  upsertProductKnowledge,
+  knowledgeHasDisplayContent,
+} from "../services/productKnowledge.js";
+import { formatMoneyMinor } from "../util/money.js";
+import {
+  listOrderTypes,
+  upsertOrderType,
+  reorderOrderTypes,
+  listBlockRates,
+  upsertBlockRate,
+} from "../services/orderSetup.js";
+import {
+  searchCustomers,
+  getCustomer,
+  createCustomer,
+  updateCustomerAddress,
+  updateCustomerProfile,
+  addCustomerAddress,
+  updateCustomerAddressById,
+} from "../services/customers.js";
+import {
+  peekNextOrderNumber,
+  createTestOrder,
+  getOrder,
+  loadOrderForEdit,
+  countOrders,
+  clearTestOrders,
+} from "../services/orders.js";
+import { listOrderRegister, getOrderRegisterDetail } from "../services/orderRegister.js";
+import { listPrepBoard, setPrepStatus } from "../services/prepBoard.js";
+import { listPrintJobs, getPrintJob, applyCashierCategories } from "../services/printQueue.js";
+import {
+  processAllPending,
+  confirmJob,
+  requestReprint,
+} from "../print/dispatcher.js";
+import { renderTicketText } from "../print/ticketFormat.js";
+import { runPrinterTest, previewPrinterTicket } from "../services/printerTest.js";
+import { recordAudit, listAuditEvents } from "../services/audit.js";
+import {
+  settleCashPayment,
+  getOrderPayment,
+  listPendingPayments,
+  toPublicSettlementError,
+} from "../services/settlements.js";
+import {
+  listSalesBankAccounts,
+  listManagedBankAccounts,
+  createBankAccount,
+  updateBankAccount,
+  toPublicBankError,
+} from "../services/bankAccounts.js";
+import { tryServeStatic } from "./static.js";
+import { log } from "../util/logger.js";
+
+function sendJson(res, status, body, extraHeaders = {}) {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(payload),
+    "X-Content-Type-Options": "nosniff",
+    ...extraHeaders,
+  });
+  res.end(payload);
+}
+
+function readBody(req, { maxBytes = 1_000_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(Object.assign(new Error("Body too large"), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!chunks.length) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        reject(Object.assign(new Error("Invalid JSON"), { status: 400 }));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function contentTypeForImage(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  return "application/octet-stream";
+}
+
+function cookieMutationBlocked(req, config, method) {
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return false;
+  if (!readSessionId(req)) return false;
+  return !isTrustedBrowserOrigin(req, config);
+}
+
+function sessionPayload(auth) {
+  return {
+    authenticated: true,
+    role: auth.role,
+    deviceId: auth.deviceId,
+    via: auth.via || "session",
+    staff: Boolean(auth.staff),
+    userId: auth.userId || "",
+    username: auth.username || "",
+    fullName: auth.fullName || "",
+    permissions: auth.staff ? auth.permissions || [] : [],
+    canAdjustAddonPrices: authAllows(auth, "sales.addon_price_override"),
+    canAdjustBasePrices: authAllows(auth, "sales.price_override"),
+  };
+}
+
+function printersForRole(printers, auth) {
+  if (auth?.role === "admin") return printers;
+  return printers.map((printer) => {
+    const copy = { ...printer };
+    delete copy.host;
+    delete copy.port;
+    delete copy.windows_queue_name;
+    return copy;
+  });
+}
+
+function forbidUnless(auth, res, code) {
+  if (authAllows(auth, code)) return false;
+  sendJson(res, 403, { error: "You do not have permission for this action." });
+  return true;
+}
+
+function requireStaffAdmin(req, res, config) {
+  const auth = requireAuth(req, res, config, ["admin"]);
+  if (!auth) return null;
+  if (!auth.staff || !authAllows(auth, "staff.manage")) {
+    sendJson(res, 403, { error: "Administrator privileges required" });
+    return null;
+  }
+  return auth;
+}
+
+function requireAuth(req, res, config, roles = ["device", "admin", "cashier"]) {
+  let auth = authenticateRequest(req, config);
+  auth = requireRole(auth, roles);
+  if (!auth.ok) {
+    sendJson(res, auth.status, { error: auth.error });
+    return null;
+  }
+  return auth;
+}
+
+export function createServer(config) {
+  const handler = async (req, res) => {
+    try {
+      const url = new URL(
+        req.url || "/",
+        `http://${req.headers.host || "localhost"}`
+      );
+      const path = url.pathname;
+      const method = req.method || "GET";
+
+      if (method === "GET" && path === "/health") {
+        sendJson(res, 200, {
+          ok: true,
+          service: "gtct-restaurant-local-server",
+          loopback: config.loopback,
+          lanAccessReady: config.lanAccessReady === true,
+          tlsReady: config.tlsReady === true,
+        });
+        return;
+      }
+
+      if (cookieMutationBlocked(req, config, method)) {
+        sendJson(res, 403, {
+          error: "This action was blocked. Refresh the page and try again.",
+        });
+        return;
+      }
+
+      // --- Loopback UI session (no tokens embedded in static assets) ---
+      if (method === "POST" && path === "/v1/session/login") {
+        const body = await readBody(req);
+        const record = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+        const usingPassword =
+          Object.prototype.hasOwnProperty.call(record, "username") ||
+          Object.prototype.hasOwnProperty.call(record, "password");
+        const result = usingPassword
+          ? loginWithPassword(req, config, {
+              username: record.username,
+              password: record.password,
+            })
+          : loginWithToken(req, config, record.token);
+        if (!result.ok) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(
+          res,
+          200,
+          { ok: true, role: result.role, deviceId: result.deviceId },
+          { "Set-Cookie": result.cookie }
+        );
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/session/logout") {
+        const result = logoutRequest(req, config);
+        sendJson(res, 200, { ok: true }, { "Set-Cookie": result.cookie });
+        return;
+      }
+
+      if (path === "/v1/staff-users" || path.startsWith("/v1/staff-users/")) {
+        const auth = requireStaffAdmin(req, res, config);
+        if (!auth) return;
+        const actor = { role: auth.role, userId: auth.userId || "" };
+        try {
+          if (method === "GET" && path === "/v1/staff-users") {
+            sendJson(res, 200, { users: listStaffUsers(config.testTenantId) });
+            return;
+          }
+          if (method === "POST" && path === "/v1/staff-users") {
+            const body = await readBody(req);
+            if (body.shopId && body.shopId !== config.testTenantId) {
+              sendJson(res, 403, { error: "shopId is not allowed for this server instance" });
+              return;
+            }
+            const user = createStaffUser(config.testTenantId, body, actor);
+            sendJson(res, 201, { user });
+            return;
+          }
+          const rest = path.slice("/v1/staff-users/".length);
+          const [rawId, action] = rest.split("/");
+          const userId = decodeURIComponent(rawId || "");
+          if (!userId || rest.split("/").length > 2) {
+            sendJson(res, 404, { error: "Staff member not found." });
+            return;
+          }
+          if (method === "PATCH" && !action) {
+            const body = await readBody(req);
+            if (body.shopId && body.shopId !== config.testTenantId) {
+              sendJson(res, 403, { error: "shopId is not allowed for this server instance" });
+              return;
+            }
+            const user = updateStaffUser(config.testTenantId, userId, body, actor);
+            sendJson(res, 200, { user });
+            return;
+          }
+          if (method === "POST" && action === "password") {
+            const body = await readBody(req);
+            const result = resetStaffPassword(config.testTenantId, userId, body, actor);
+            sendJson(res, 200, result);
+            return;
+          }
+          sendJson(res, 404, { error: "Staff member not found." });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message || "Could not update staff." });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/session/me") {
+        const auth = authenticateRequest(req, config);
+        if (!auth.ok) {
+          sendJson(res, 401, { authenticated: false });
+          return;
+        }
+        sendJson(res, 200, sessionPayload(auth));
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/config") {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        const shop = applyEnvShopOverrides(
+          getShopSettings(config.testTenantId),
+          config
+        );
+        sendJson(res, 200, {
+          testTenantId: config.testTenantId,
+          restaurantDisplayName: shop.displayName || config.restaurantDisplayName,
+          physicalPrintEnabled: config.physicalPrintEnabled,
+          allowTcpProbe: config.allowTcpProbe,
+          lanAccessReady: config.lanAccessReady === true,
+          tlsReady: config.tlsReady === true,
+          canAdjustAddonPrices: authAllows(auth, "sales.addon_price_override"),
+          canAdjustBasePrices: authAllows(auth, "sales.price_override"),
+          loopback: config.loopback,
+          shop: {
+            shopId: shop.shopId,
+            displayName: shop.displayName,
+            currencyCode: shop.currencyCode,
+            currencyLabel: shop.currencyLabel,
+            currencyDecimals: shop.currencyDecimals,
+            taxEnabled: shop.taxEnabled,
+            taxMode: shop.taxMode,
+            taxName: shop.taxName,
+            taxRateBps: shop.taxRateBps,
+            taxRatePercent: shop.taxRatePercent,
+            timezone: shop.timezone,
+            dateFormat: shop.dateFormat,
+          },
+        });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/shop-settings") {
+        if (!requireAuth(req, res, config)) return;
+        const shop = applyEnvShopOverrides(
+          getShopSettings(config.testTenantId),
+          config
+        );
+        const orderCounts = countOrders(config.testTenantId);
+        sendJson(res, 200, {
+          shop,
+          moneyExample: formatMoneyMinor(1500, shop),
+          taxPreviewSamples: buildTaxPreviewSamples(shop),
+          orderCount: orderCounts.total,
+          testOrderCount: orderCounts.testCount,
+          currencyLockedByOrders: orderCounts.total > 0,
+          note:
+            "price_cents are integer minor units. Changing decimals does not rescale stored prices. Currency code/precision changes are blocked while orders exist — clear test orders first (admin).",
+        });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/shop-settings") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const before = getShopSettings(config.testTenantId);
+          const shop = updateShopSettings(config.testTenantId, body, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "shop.settings.update",
+            entityType: "shop_settings",
+            entityId: shop.shopId,
+            detail: shopSettingsAuditDetail(before, shop),
+          });
+          sendJson(res, 200, { shop });
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            code: err.code,
+          });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/shop-settings/receipt-preview") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          // Merge unsaved form values over current shop for preview only — no persist.
+          const live = getShopSettings(config.testTenantId);
+          const draft = { ...live, ...(body.shop || body) };
+          if (body.receipt || draft.receipt) {
+            draft.receipt = { ...live.receipt, ...(body.receipt || draft.receipt) };
+          }
+          if (body.taxEnabled != null) draft.taxEnabled = Boolean(body.taxEnabled);
+          if (body.taxMode) draft.taxMode = body.taxMode;
+          if (body.taxRateBps != null) draft.taxRateBps = Number(body.taxRateBps);
+          if (body.taxRatePercent != null) {
+            draft.taxRatePercent = String(body.taxRatePercent);
+          }
+          const samples = buildTaxPreviewSamples(draft);
+          const mode = String(body.previewMode || "active");
+          const breakdown =
+            mode === "disabled"
+              ? samples.disabled
+              : mode === "exclusive"
+                ? samples.exclusive
+                : mode === "inclusive"
+                  ? samples.inclusive
+                  : samples.active;
+          const text = renderShopReceiptPreview(draft, breakdown);
+          sendJson(res, 200, {
+            text,
+            breakdown,
+            samples,
+            physicalPrintAttempted: false,
+          });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/shop-settings/logo") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req, { maxBytes: 3_500_000 });
+          const shop = saveShopLogo(
+            config.testTenantId,
+            {
+              mimeType: body.mimeType || body.contentType,
+              base64Data: body.base64Data || body.data,
+            },
+            config,
+            { role: auth.role }
+          );
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "shop.logo.upload",
+            entityType: "shop_settings",
+            entityId: shop.shopId,
+            detail: { logoFilename: shop.logoFilename },
+          });
+          sendJson(res, 200, { shop });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "DELETE" && path === "/v1/shop-settings/logo") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const shop = clearShopLogo(config.testTenantId, config, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "shop.logo.clear",
+            entityType: "shop_settings",
+            entityId: shop.shopId,
+            detail: {},
+          });
+          sendJson(res, 200, { shop });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path.startsWith("/v1/shop-logo/")) {
+        if (!requireAuth(req, res, config)) return;
+        const filename = decodeURIComponent(path.slice("/v1/shop-logo/".length));
+        const filePath = resolveShopLogoPath(filename, config);
+        if (!filePath) {
+          sendJson(res, 404, { error: "Logo not found" });
+          return;
+        }
+        const buf = fs.readFileSync(filePath);
+        const ext = path.extname(filePath).toLowerCase();
+        const mime =
+          ext === ".png"
+            ? "image/png"
+            : ext === ".webp"
+              ? "image/webp"
+              : "image/jpeg";
+        res.writeHead(200, {
+          "Content-Type": mime,
+          "Content-Length": buf.length,
+          "Cache-Control": "private, max-age=3600",
+          "X-Content-Type-Options": "nosniff",
+        });
+        res.end(buf);
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/order-types") {
+        if (!requireAuth(req, res, config)) return;
+        sendJson(res, 200, {
+          orderTypes: listOrderTypes(config.testTenantId),
+          deliveryChargeTax: {
+            perBlock: true,
+            reason:
+              "Each block delivery charge can include this shop’s tax. Set it when you add or edit the charge. Item and add-on tax is unchanged.",
+          },
+        });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/order-types/reorder") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const orderTypes = reorderOrderTypes(
+            config.testTenantId,
+            body.orderTypeIds
+          );
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "order_type.reorder",
+            entityType: "shop_order_type",
+            entityId: config.testTenantId,
+            detail: { orderTypeIds: body.orderTypeIds },
+          });
+          sendJson(res, 200, { orderTypes });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/order-types") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const orderType = upsertOrderType(config.testTenantId, body);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "order_type.upsert",
+            entityType: "shop_order_type",
+            entityId: orderType.orderTypeId,
+            detail: {
+              code: orderType.code,
+              name: orderType.name,
+              behavior: orderType.behavior,
+              isActive: orderType.isActive,
+            },
+          });
+          sendJson(res, 200, { orderType });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/block-delivery-rates") {
+        if (!requireAuth(req, res, config)) return;
+        sendJson(res, 200, { rates: listBlockRates(config.testTenantId) });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/block-delivery-rates") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const before = body.rateId
+            ? listBlockRates(config.testTenantId).find((row) => row.rateId === body.rateId) || null
+            : null;
+          const rate = upsertBlockRate(config.testTenantId, body);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "delivery_block.upsert",
+            entityType: "shop_block_delivery_rate",
+            entityId: rate.rateId,
+            detail: {
+              blockNumber: rate.blockNumber,
+              chargeCents: rate.chargeCents,
+              previousChargeCents: before ? before.chargeCents : null,
+              taxApplicable: rate.taxApplicable,
+              isActive: rate.isActive,
+            },
+          });
+          sendJson(res, 200, { rate });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/customers") {
+        if (!requireAuth(req, res, config)) return;
+        const q = url.searchParams.get("q") || "";
+        sendJson(res, 200, { customers: searchCustomers(config.testTenantId, q) });
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/customers") {
+        const auth = requireAuth(req, res, config);
+        if (!auth || forbidUnless(auth, res, "customers.manage")) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res, 403, { error: "shopId is not allowed for this server instance" });
+            return;
+          }
+          const customer = createCustomer(config.testTenantId, body);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "customer.create",
+            entityType: "shop_customer",
+            entityId: customer.customerId,
+            detail: { customerId: customer.customerId },
+          });
+          sendJson(res, 201, { customer });
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+            ...(err.customer ? { customer: err.customer } : {}),
+          });
+        }
+        return;
+      }
+
+      if (path.startsWith("/v1/customers/")) {
+        const parts = path
+          .slice("/v1/customers/".length)
+          .split("/")
+          .filter(Boolean)
+          .map((part) => {
+            try {
+              return decodeURIComponent(part);
+            } catch {
+              return "";
+            }
+          });
+        const customerId = parts[0] || "";
+        const addressId = parts[1] === "addresses" ? parts[2] || "" : "";
+        const isAddress = parts[1] === "addresses" && parts.length <= 3;
+        if (!customerId || parts.length > 3 || (parts[1] && parts[1] !== "addresses")) {
+          sendJson(res, 404, { error: "Customer not found." });
+          return;
+        }
+        if (!isAddress && method === "GET") {
+          if (!requireAuth(req, res, config)) return;
+          const customer = getCustomer(config.testTenantId, customerId);
+          if (!customer) {
+            sendJson(res, 404, { error: "Customer not found." });
+            return;
+          }
+          sendJson(res, 200, { customer });
+          return;
+        }
+        if (!isAddress && method === "PUT") {
+          const auth = requireAuth(req, res, config);
+          if (!auth || forbidUnless(auth, res, "customers.manage")) return;
+          try {
+            const body = await readBody(req);
+            if (body.shopId && body.shopId !== config.testTenantId) {
+              sendJson(res, 403, { error: "shopId is not allowed for this server instance" });
+              return;
+            }
+            const profile = body.name != null || body.phone != null;
+            const customer = profile
+              ? updateCustomerProfile(config.testTenantId, customerId, body)
+              : updateCustomerAddress(config.testTenantId, customerId, body);
+            recordAudit({
+              actorRole: auth.role,
+            actorUserId: auth.userId || "",
+              action: profile ? "customer.update" : "customer.address_update",
+              entityType: "shop_customer",
+              entityId: customer.customerId,
+              detail: { customerId: customer.customerId },
+            });
+            sendJson(res, 200, { customer });
+          } catch (err) {
+            sendJson(res, err.status || 400, {
+              error: err.message,
+              ...(err.code ? { code: err.code } : {}),
+              ...(err.customer ? { customer: err.customer } : {}),
+            });
+          }
+          return;
+        }
+        if (isAddress && method === "POST" && !addressId) {
+          const auth = requireAuth(req, res, config);
+          if (!auth || forbidUnless(auth, res, "customers.manage")) return;
+          try {
+            const body = await readBody(req);
+            if (body.shopId && body.shopId !== config.testTenantId) {
+              sendJson(res, 403, { error: "shopId is not allowed for this server instance" });
+              return;
+            }
+            const customer = addCustomerAddress(config.testTenantId, customerId, body);
+            recordAudit({
+              actorRole: auth.role,
+            actorUserId: auth.userId || "",
+              action: "customer.address_create",
+              entityType: "shop_customer",
+              entityId: customer.customerId,
+              detail: { customerId: customer.customerId },
+            });
+            sendJson(res, 201, { customer });
+          } catch (err) {
+            sendJson(res, err.status || 400, { error: err.message });
+          }
+          return;
+        }
+        if (isAddress && method === "PUT" && addressId) {
+          const auth = requireAuth(req, res, config);
+          if (!auth || forbidUnless(auth, res, "customers.manage")) return;
+          try {
+            const body = await readBody(req);
+            if (body.shopId && body.shopId !== config.testTenantId) {
+              sendJson(res, 403, { error: "shopId is not allowed for this server instance" });
+              return;
+            }
+            const customer = updateCustomerAddressById(
+              config.testTenantId,
+              customerId,
+              addressId,
+              body
+            );
+            recordAudit({
+              actorRole: auth.role,
+            actorUserId: auth.userId || "",
+              action: "customer.address_update",
+              entityType: "shop_customer",
+              entityId: customer.customerId,
+              detail: { customerId: customer.customerId, addressId },
+            });
+            sendJson(res, 200, { customer });
+          } catch (err) {
+            sendJson(res, err.status || 400, { error: err.message });
+          }
+          return;
+        }
+      }
+
+      if (method === "GET" && path === "/v1/kitchen-notes") {
+        if (!requireAuth(req, res, config)) return;
+        const notes = legacyKitchenNotesFromLibrary(config.testTenantId);
+        sendJson(res, 200, notes);
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/kitchen-notes") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const mods = body.modifiers ?? body.instructionModifiers;
+          const tgts = body.targets ?? body.instructionTargets;
+          if (Array.isArray(mods)) {
+            for (const name of mods) {
+              upsertModifier(
+                config.testTenantId,
+                { name: String(name), isActive: true },
+                { role: auth.role }
+              );
+            }
+          }
+          if (Array.isArray(tgts)) {
+            for (const name of tgts) {
+              upsertTarget(
+                config.testTenantId,
+                { name: String(name), isActive: true },
+                { role: auth.role }
+              );
+            }
+          }
+          const notes = legacyKitchenNotesFromLibrary(config.testTenantId);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "kitchen.notes.update",
+            entityType: "shop_settings",
+            entityId: config.testTenantId,
+            detail: notes,
+          });
+          sendJson(res, 200, notes);
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/kitchen-library") {
+        if (!requireAuth(req, res, config)) return;
+        const includeInactive =
+          url.searchParams.get("includeInactive") !== "0";
+        sendJson(res, 200, {
+          library: getKitchenLibrary(config.testTenantId, { includeInactive }),
+        });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/kitchen-modifiers") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const modifier = upsertModifier(config.testTenantId, body, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "kitchen.modifier.upsert",
+            entityType: "kitchen_modifier",
+            entityId: modifier.modifierId,
+            detail: { name: modifier.name, isActive: modifier.isActive },
+          });
+          sendJson(res, 200, { modifier });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/kitchen-targets") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const target = upsertTarget(config.testTenantId, body, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "kitchen.target.upsert",
+            entityType: "kitchen_target",
+            entityId: target.targetId,
+            detail: { name: target.name, isActive: target.isActive },
+          });
+          sendJson(res, 200, { target });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/kitchen-standalone") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const standalone = upsertStandalone(config.testTenantId, body, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "kitchen.standalone.upsert",
+            entityType: "kitchen_standalone",
+            entityId: standalone.standaloneId,
+            detail: { name: standalone.name, isActive: standalone.isActive },
+          });
+          sendJson(res, 200, { standalone });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PATCH" && path.startsWith("/v1/kitchen-modifiers/")) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const id = decodeURIComponent(
+            path.slice("/v1/kitchen-modifiers/".length)
+          );
+          const body = await readBody(req);
+          const row = setOptionActive(
+            "kitchen_modifiers",
+            "modifier_id",
+            id,
+            body.isActive !== false && body.isActive !== 0,
+            { role: auth.role }
+          );
+          sendJson(res, 200, {
+            modifier: {
+              modifierId: row.modifier_id,
+              name: row.name,
+              isActive: Boolean(row.is_active),
+            },
+          });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PATCH" && path.startsWith("/v1/kitchen-targets/")) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const id = decodeURIComponent(
+            path.slice("/v1/kitchen-targets/".length)
+          );
+          const body = await readBody(req);
+          const row = setOptionActive(
+            "kitchen_targets",
+            "target_id",
+            id,
+            body.isActive !== false && body.isActive !== 0,
+            { role: auth.role }
+          );
+          sendJson(res, 200, {
+            target: {
+              targetId: row.target_id,
+              name: row.name,
+              isActive: Boolean(row.is_active),
+            },
+          });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/addons") {
+        if (!requireAuth(req, res, config)) return;
+        const includeInactive =
+          url.searchParams.get("includeInactive") !== "0";
+        const q = url.searchParams.get("q") || "";
+        sendJson(res, 200, {
+          addons: listAddons(config.testTenantId, { includeInactive, q }),
+        });
+        return;
+      }
+
+      if (method === "GET" && path.startsWith("/v1/addons/")) {
+        if (!requireAuth(req, res, config)) return;
+        const id = decodeURIComponent(path.slice("/v1/addons/".length));
+        if (id.endsWith("/assignments")) {
+          const addonId = id.replace(/\/assignments$/, "");
+          const addon = getAddon(addonId);
+          if (!addon) {
+            sendJson(res, 404, { error: "Add-on not found" });
+            return;
+          }
+          sendJson(res, 200, {
+            addon,
+            assignments: listAddonAssignments(addonId),
+          });
+          return;
+        }
+        const addon = getAddon(id);
+        if (!addon) {
+          sendJson(res, 404, { error: "Add-on not found" });
+          return;
+        }
+        sendJson(res, 200, { addon });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/addons") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const prevId = String(body.addonId || body.id || "");
+          const prev = prevId ? getAddon(prevId) : null;
+          const addon = upsertAddon(config.testTenantId, body, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "addon.upsert",
+            entityType: "addon",
+            entityId: addon.addonId,
+            detail: {
+              name: addon.name,
+              priceCents: addon.priceCents,
+              isActive: addon.isActive,
+              taxApplicable: addon.taxApplicable,
+            },
+          });
+          if (
+            prev &&
+            Boolean(prev.taxApplicable) !== Boolean(addon.taxApplicable)
+          ) {
+            recordAudit({
+              actorRole: auth.role,
+            actorUserId: auth.userId || "",
+              action: "addon.tax_applicable",
+              entityType: "addon",
+              entityId: addon.addonId,
+              detail: {
+                oldTaxApplicable: Boolean(prev.taxApplicable),
+                newTaxApplicable: Boolean(addon.taxApplicable),
+              },
+            });
+          }
+          sendJson(res, 200, { addon });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "PUT" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/instructions")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const itemId = decodeURIComponent(
+            path.slice("/v1/menu-items/".length, -"/instructions".length)
+          );
+          const body = await readBody(req);
+          const configInstr = setItemInstructionConfig(itemId, body, {
+            role: auth.role,
+          });
+          sendJson(res, 200, { itemId, instructions: configInstr });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "GET" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/instructions")
+      ) {
+        if (!requireAuth(req, res, config)) return;
+        const itemId = decodeURIComponent(
+          path.slice("/v1/menu-items/".length, -"/instructions".length)
+        );
+        const configInstr = getItemInstructionConfig(itemId);
+        if (!configInstr) {
+          sendJson(res, 404, { error: "Menu item not found" });
+          return;
+        }
+        sendJson(res, 200, { itemId, instructions: configInstr });
+        return;
+      }
+
+      if (
+        method === "PUT" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/addons")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const itemId = decodeURIComponent(
+            path.slice("/v1/menu-items/".length, -"/addons".length)
+          );
+          const body = await readBody(req);
+          const assignments = setItemAddons(
+            itemId,
+            body.assignments || body.addonAssignments || [],
+            { role: auth.role }
+          );
+          sendJson(res, 200, { itemId, addons: assignments });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "GET" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/addons")
+      ) {
+        if (!requireAuth(req, res, config)) return;
+        const itemId = decodeURIComponent(
+          path.slice("/v1/menu-items/".length, -"/addons".length)
+        );
+        if (!getMenuItem(itemId)) {
+          sendJson(res, 404, { error: "Menu item not found" });
+          return;
+        }
+        sendJson(res, 200, {
+          itemId,
+          addons: getItemAddons(itemId, { activeOnly: false }),
+        });
+        return;
+      }
+
+      if (
+        method === "GET" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/product-knowledge")
+      ) {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        const itemId = decodeURIComponent(
+          path.slice("/v1/menu-items/".length, -"/product-knowledge".length)
+        );
+        const item = getMenuItem(itemId);
+        if (!item) {
+          sendJson(res, 404, { error: "Menu item not found" });
+          return;
+        }
+        const knowledge = getProductKnowledge(itemId, { role: auth.role });
+        const shortDescription = item.description || "";
+        sendJson(res, 200, {
+          itemId,
+          menuItem: {
+            itemId: item.item_id,
+            name: item.name,
+            category: item.category || "",
+            subcategory: item.subcategory || "",
+            description: shortDescription,
+            imageUrl: item.image_url || null,
+            image_url: item.image_url || null,
+            prepStationId: item.prepStationId || null,
+            stationIds: item.stationIds || [],
+            hasVariants: Boolean(item.hasVariants),
+          },
+          productKnowledge: knowledge,
+          hasContent: knowledgeHasDisplayContent(knowledge, shortDescription),
+        });
+        return;
+      }
+
+      if (
+        method === "PUT" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/product-knowledge")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const itemId = decodeURIComponent(
+            path.slice("/v1/menu-items/".length, -"/product-knowledge".length)
+          );
+          const body = await readBody(req);
+          const knowledge = upsertProductKnowledge(itemId, body, {
+            role: auth.role,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.product_knowledge",
+            entityType: "menu_item",
+            entityId: itemId,
+            detail: {
+              hasQuickAnswer: Boolean(knowledge.salesmanQuickAnswer),
+              ingredientCount: knowledge.ingredients?.length || 0,
+              allergenVerified: Boolean(knowledge.allergenVerified),
+            },
+          });
+          sendJson(res, 200, { itemId, productKnowledge: knowledge });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/stations") {
+        if (!requireAuth(req, res, config)) return;
+        sendJson(res, 200, { stations: listStations() });
+        return;
+      }
+
+      if (method === "GET" && path.startsWith("/v1/stations/")) {
+        if (!requireAuth(req, res, config)) return;
+        const id = decodeURIComponent(path.slice("/v1/stations/".length));
+        const station = getStation(id);
+        if (!station) {
+          sendJson(res, 404, { error: "Station not found" });
+          return;
+        }
+        sendJson(res, 200, { station });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/stations") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        const body = await readBody(req);
+        const station = upsertStation({
+          stationId: body.stationId,
+          name: body.name,
+          description: body.description || "",
+          isActive: body.isActive !== false,
+          printerId: body.printerId || null,
+        });
+        recordAudit({
+          actorRole: auth.role,
+            actorUserId: auth.userId || "",
+          action: "station.upsert",
+          entityType: "station",
+          entityId: station.station_id,
+          detail: {
+            printerId: station.printer_id,
+            isActive: station.is_active,
+          },
+        });
+        sendJson(res, 200, { station });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/printers") {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        sendJson(res, 200, { printers: printersForRole(listPrinters(), auth) });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/printers") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        const body = await readBody(req);
+        try {
+          const printer = upsertPrinter({
+            printerId: body.printerId,
+            displayName: body.displayName,
+            connectionType: body.connectionType,
+            host: body.host ?? null,
+            port: body.port ?? null,
+            windowsQueueName: body.windowsQueueName ?? null,
+            paperWidthMm: body.paperWidthMm ?? 80,
+            capabilities: body.capabilities || {},
+            isActive: body.isActive !== false,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "printer.upsert",
+            entityType: "printer",
+            entityId: printer.printer_id,
+            detail: {
+              connectionType: printer.connection_type,
+              host: printer.host,
+              port: printer.port,
+              isActive: printer.is_active,
+              physicalDispatchEnabled: Boolean(
+                printer.capabilities?.physicalDispatchEnabled
+              ),
+            },
+          });
+          sendJson(res, 200, { printer });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "POST" &&
+        path.startsWith("/v1/printers/") &&
+        path.endsWith("/preview")
+      ) {
+        if (!requireAuth(req, res, config, ["admin"])) return;
+        const id = decodeURIComponent(
+          path.slice("/v1/printers/".length, -"/preview".length)
+        );
+        const printer = getPrinter(id);
+        if (!printer) {
+          sendJson(res, 404, { error: "Printer not found" });
+          return;
+        }
+        sendJson(res, 200, previewPrinterTicket(printer, config));
+        return;
+      }
+
+      if (
+        method === "POST" &&
+        path.startsWith("/v1/printers/") &&
+        path.endsWith("/test")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        const id = decodeURIComponent(
+          path.slice("/v1/printers/".length, -"/test".length)
+        );
+        const printer = getPrinter(id);
+        if (!printer) {
+          sendJson(res, 404, { error: "Printer not found" });
+          return;
+        }
+        const body = await readBody(req).catch(() => ({}));
+        let mode = String(body.mode || "preview");
+        // Default MOCK printers to mock_file when mode omitted as "test"
+        if (!body.mode && printer.connection_type === "MOCK") {
+          mode = "mock_file";
+        }
+        const result = await runPrinterTest({
+          printer,
+          config,
+          mode,
+          actorRole: auth.role,
+            actorUserId: auth.userId || "",
+        });
+        sendJson(res, result.ok ? 200 : 400, result);
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/audit-events") {
+        if (!requireAuth(req, res, config, ["admin"])) return;
+        const events = listAuditEvents({
+          limit: url.searchParams.get("limit") || 100,
+          entityType: url.searchParams.get("entityType") || undefined,
+        });
+        sendJson(res, 200, { events });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/menu-categories") {
+        if (!requireAuth(req, res, config)) return;
+        const includeInactive =
+          url.searchParams.get("includeInactive") !== "0" &&
+          url.searchParams.get("includeInactive") !== "false";
+        sendJson(res, 200, listCategories({ includeInactive }));
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/menu-categories") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const category = upsertCategory(body);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.category.upsert",
+            entityType: "menu_category",
+            entityId: category.category_id,
+            detail: {
+              name: category.name,
+              isActive: category.is_active,
+            },
+          });
+          sendJson(res, 200, { category });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/menu-subcategories") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const subcategory = upsertSubcategory(body);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.subcategory.upsert",
+            entityType: "menu_subcategory",
+            entityId: subcategory.subcategory_id,
+            detail: {
+              name: subcategory.name,
+              categoryId: subcategory.category_id,
+              isActive: subcategory.is_active,
+            },
+          });
+          sendJson(res, 200, { subcategory });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/menu-items") {
+        if (!requireAuth(req, res, config)) return;
+        const includeInactive =
+          url.searchParams.get("includeInactive") !== "0" &&
+          url.searchParams.get("includeInactive") !== "false";
+        const menuItems = listMenuItems({ includeInactive });
+        sendJson(res, 200, { menuItems });
+        return;
+      }
+
+      if (
+        method === "PATCH" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/availability")
+      ) {
+        // Device may toggle sold-out; only admin may change active/inactive.
+        const auth = requireAuth(req, res, config, ["admin", "device", "cashier"]);
+        if (!auth || forbidUnless(auth, res, "menu.sold_out.update")) return;
+        const id = decodeURIComponent(
+          path.slice("/v1/menu-items/".length, -"/availability".length)
+        );
+        try {
+          const body = await readBody(req);
+          const item = updateMenuItemAvailability(
+            id,
+            {
+              isActive: body.isActive,
+              isSoldOut: body.isSoldOut,
+            },
+            { role: auth.role }
+          );
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.availability",
+            entityType: "menu_item",
+            entityId: id,
+            detail: {
+              isActive: item.is_active,
+              isSoldOut: item.is_sold_out,
+            },
+          });
+          sendJson(res, 200, { menuItem: item });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "GET" &&
+        path.startsWith("/v1/menu-items/") &&
+        !path.endsWith("/image") &&
+        !path.endsWith("/availability") &&
+        !path.endsWith("/instructions") &&
+        !path.endsWith("/addons") &&
+        !path.endsWith("/product-knowledge") &&
+        !path.includes("/image/") &&
+        path.slice("/v1/menu-items/".length).indexOf("/") === -1
+      ) {
+        if (!requireAuth(req, res, config)) return;
+        const id = decodeURIComponent(path.slice("/v1/menu-items/".length));
+        const item = getMenuItem(id);
+        if (!item) {
+          sendJson(res, 404, { error: "Menu item not found" });
+          return;
+        }
+        sendJson(res, 200, { menuItem: item });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/menu-items") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const prevId = String(body.itemId || body.item_id || "");
+          const prev = prevId ? getMenuItem(prevId) : null;
+          const item = upsertMenuItem(body);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.upsert",
+            entityType: "menu_item",
+            entityId: item.item_id,
+            detail: {
+              name: item.name,
+              sku: item.sku,
+              category: item.category,
+              isActive: item.is_active,
+              isSoldOut: item.is_sold_out,
+              taxApplicable: item.taxApplicable,
+              stationIds: item.stationIds,
+            },
+          });
+          if (
+            prev &&
+            Boolean(prev.taxApplicable) !== Boolean(item.taxApplicable)
+          ) {
+            recordAudit({
+              actorRole: auth.role,
+            actorUserId: auth.userId || "",
+              action: "menu.tax_applicable",
+              entityType: "menu_item",
+              entityId: item.item_id,
+              detail: {
+                oldTaxApplicable: Boolean(prev.taxApplicable),
+                newTaxApplicable: Boolean(item.taxApplicable),
+              },
+            });
+          }
+          sendJson(res, 200, { menuItem: item });
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            errors: err.errors,
+          });
+        }
+        return;
+      }
+
+      if (
+        method === "POST" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/image")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        const id = decodeURIComponent(
+          path.slice("/v1/menu-items/".length, -"/image".length)
+        );
+        try {
+          const body = await readBody(req, { maxBytes: 6_000_000 });
+          const item = saveMenuItemImage(
+            id,
+            { mimeType: body.mimeType, base64Data: body.base64Data },
+            config
+          );
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.image.upload",
+            entityType: "menu_item",
+            entityId: id,
+            detail: { imageFilename: item.image_filename },
+          });
+          sendJson(res, 200, { menuItem: item });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "DELETE" &&
+        path.startsWith("/v1/menu-items/") &&
+        path.endsWith("/image")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        const id = decodeURIComponent(
+          path.slice("/v1/menu-items/".length, -"/image".length)
+        );
+        try {
+          const item = clearMenuItemImage(id, config);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.image.clear",
+            entityType: "menu_item",
+            entityId: id,
+            detail: {},
+          });
+          sendJson(res, 200, { menuItem: item });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path.startsWith("/v1/menu-images/")) {
+        // Same-origin session or bearer — images must be shareable across restaurant devices
+        // via the local server, not browser-only storage.
+        if (!requireAuth(req, res, config)) return;
+        const filename = decodeURIComponent(
+          path.slice("/v1/menu-images/".length)
+        );
+        const filePath = resolveMenuImagePath(filename, config);
+        if (!filePath) {
+          sendJson(res, 404, { error: "Image not found" });
+          return;
+        }
+        const body = fs.readFileSync(filePath);
+        res.writeHead(200, {
+          "Content-Type": contentTypeForImage(filePath),
+          "Content-Length": body.length,
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "private, max-age=3600",
+        });
+        res.end(body);
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/order-numbers") {
+        const auth = requireAuth(req, res, config);
+        if (!auth || forbidUnless(auth, res, "sales.order.create")) return;
+        try {
+          const orderNumber = peekNextOrderNumber(config.testTenantId);
+          sendJson(res, 200, { orderNumber });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/test-orders") {
+        const auth = requireAuth(req, res, config);
+        if (!auth || forbidUnless(auth, res, "sales.order.create")) return;
+        try {
+          const body = await readBody(req);
+          if (body.tenantId && body.tenantId !== config.testTenantId) {
+            sendJson(res, 403, {
+              error: "tenantId is not allowed for this server instance",
+            });
+            return;
+          }
+          const result = createTestOrder(body, config, {
+            role: auth.role,
+            deviceId: auth.deviceId || "",
+            userId: auth.userId || "",
+            permissions: auth.staff ? auth.permissions || [] : null,
+          });
+          sendJson(res, result.created ? 201 : 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+            ...(err.configuredChargeCents != null
+              ? { configuredChargeCents: err.configuredChargeCents }
+              : {}),
+            ...(err.blockNumber ? { blockNumber: err.blockNumber } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/test-orders/summary") {
+        if (!requireAuth(req, res, config)) return;
+        const counts = countOrders(config.testTenantId);
+        sendJson(res, 200, {
+          tenantId: config.testTenantId,
+          orderCount: counts.total,
+          testOrderCount: counts.testCount,
+          currencyLockedByOrders: counts.total > 0,
+        });
+        return;
+      }
+
+      if (method === "DELETE" && path === "/v1/test-orders") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const result = clearTestOrders(config.testTenantId, {
+            role: auth.role,
+            confirm: Boolean(body.confirm),
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "orders.test.clear",
+            entityType: "orders",
+            entityId: config.testTenantId,
+            detail: {
+              deleted: result.deleted,
+              remainingOrders: result.remainingOrders,
+            },
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (
+        (path === "/v1/bank-accounts" && (method === "GET" || method === "POST")) ||
+        (method === "PUT" && path.startsWith("/v1/bank-accounts/"))
+      ) {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        const manage = url.searchParams.get("manage") === "1" || method !== "GET";
+        const allowed = manage
+          ? auth.userId && authAllows(auth, "shop.bank_accounts.manage")
+          : auth.userId &&
+            (authAllows(auth, "sales.payment.receive") || authAllows(auth, "shop.bank_accounts.manage"));
+        if (!allowed) {
+          if (method !== "GET") {
+            recordAudit({
+              actorRole: auth.role || "",
+              actorUserId: auth.userId || "",
+              action: "bank_account.reject",
+              entityType: "shop_bank_account",
+              entityId: "",
+              detail: { code: "FORBIDDEN", shopId: config.testTenantId },
+            });
+          }
+          sendJson(res, 403, { error: "You do not have permission for this action." });
+          return;
+        }
+        try {
+          if (method === "GET" && manage) {
+            sendJson(res, 200, { accounts: listManagedBankAccounts(config.testTenantId) });
+            return;
+          }
+          if (method === "GET") {
+            sendJson(res, 200, { accounts: listSalesBankAccounts(config.testTenantId) });
+            return;
+          }
+          const body = await readBody(req);
+          if (method === "POST") {
+            sendJson(res, 201, { account: createBankAccount(config.testTenantId, body, auth) });
+            return;
+          }
+          const accountId = decodeURIComponent(path.slice("/v1/bank-accounts/".length));
+          if (!accountId || accountId.includes("/")) {
+            sendJson(res, 404, { error: "Bank account not found.", code: "BANK_ACCOUNT_NOT_FOUND" });
+            return;
+          }
+          sendJson(res, 200, {
+            account: updateBankAccount(config.testTenantId, accountId, body, auth),
+          });
+        } catch (err) {
+          const safe = toPublicBankError(err);
+          sendJson(res, safe.status || 400, {
+            error: safe.message,
+            ...(safe.code ? { code: safe.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "GET" && (path === "/v1/order-register" || path.startsWith("/v1/order-register/"))) {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth, "sales.orders.view")) {
+          sendJson(res, 403, { error: "You do not have permission for this action." });
+          return;
+        }
+        try {
+          if (path === "/v1/order-register") {
+            sendJson(res, 200, listOrderRegister(config.testTenantId, url.searchParams));
+            return;
+          }
+          const orderId = decodeURIComponent(path.slice("/v1/order-register/".length));
+          if (!orderId || orderId.includes("/")) {
+            sendJson(res, 404, { error: "Order not found." });
+            return;
+          }
+          sendJson(res, 200, { order: getOrderRegisterDetail(config.testTenantId, orderId) });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message || "Could not load orders." });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/prep-board") {
+        const auth = requireAuth(req, res, config);
+        if (!auth || forbidUnless(auth, res, "prep.station.work")) return;
+        try {
+          const url = new URL(req.url, "http://127.0.0.1");
+          sendJson(res, 200, listPrepBoard(config.testTenantId, url.searchParams.get("stationId") || ""));
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (
+        method === "POST" &&
+        (path === "/v1/prep-board/accept" || path === "/v1/prep-board/finish")
+      ) {
+        const auth = requireAuth(req, res, config);
+        if (!auth || forbidUnless(auth, res, "prep.station.work")) return;
+        try {
+          const body = await readBody(req);
+          const result = setPrepStatus(
+            config.testTenantId,
+            body.orderId,
+            body.stationId,
+            path.endsWith("/finish") ? "FINISHED" : "ACCEPTED",
+            auth.userId || ""
+          );
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      const editDraftMatch = path.match(/^\/v1\/orders\/([^/]+)\/edit-draft$/);
+      if (method === "GET" && editDraftMatch) {
+        const auth = requireAuth(req, res, config);
+        if (!auth || forbidUnless(auth, res, "sales.order.create")) return;
+        try {
+          const draft = loadOrderForEdit(
+            config.testTenantId,
+            decodeURIComponent(editDraftMatch[1])
+          );
+          sendJson(res, 200, draft);
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/pending-payments") {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth, "sales.payment.receive")) {
+          sendJson(res, 403, { error: "You do not have permission for this action." });
+          return;
+        }
+        sendJson(res, 200, { orders: listPendingPayments(config.testTenantId) });
+        return;
+      }
+
+      if (
+        (method === "GET" || method === "POST") &&
+        path.startsWith("/v1/orders/") &&
+        path.endsWith("/settlements")
+      ) {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        const orderId = decodeURIComponent(
+          path.slice("/v1/orders/".length, -"/settlements".length)
+        );
+        if (!auth.userId || !authAllows(auth, "sales.payment.receive")) {
+          if (method === "POST") {
+            recordAudit({
+              actorRole: auth.role || "",
+              actorUserId: auth.userId || "",
+              action: "payment.cash.reject",
+              entityType: "order",
+              entityId: orderId,
+              detail: { code: "FORBIDDEN", shopId: config.testTenantId, orderId },
+            });
+          }
+          sendJson(res, 403, { error: "You do not have permission for this action." });
+          return;
+        }
+        if (method === "GET") {
+          try {
+            sendJson(res, 200, getOrderPayment(orderId, config.testTenantId));
+          } catch (err) {
+            const safe = toPublicSettlementError(err);
+            sendJson(res, safe.status || 400, {
+              error: safe.message,
+              ...(safe.code ? { code: safe.code } : {}),
+            });
+          }
+          return;
+        }
+        try {
+          const body = await readBody(req);
+          const result = settleCashPayment(
+            { ...body, orderId },
+            config,
+            { role: auth.role, userId: auth.userId || "" }
+          );
+          sendJson(res, result.created ? 201 : 200, result);
+        } catch (err) {
+          const safe = toPublicSettlementError(err);
+          sendJson(res, safe.status || 400, {
+            error: safe.message,
+            ...(safe.code ? { code: safe.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "GET" && path.startsWith("/v1/orders/")) {
+        if (!requireAuth(req, res, config)) return;
+        const id = decodeURIComponent(path.slice("/v1/orders/".length));
+        const order = getOrder(id);
+        if (!order) {
+          sendJson(res, 404, { error: "Order not found" });
+          return;
+        }
+        if (order.tenant_id !== config.testTenantId) {
+          sendJson(res, 403, { error: "Order tenant mismatch" });
+          return;
+        }
+        sendJson(res, 200, { order });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/print-jobs") {
+        if (!requireAuth(req, res, config)) return;
+        const jobs = listPrintJobs({
+          status: url.searchParams.get("status") || undefined,
+          orderId: url.searchParams.get("orderId") || undefined,
+        }).filter((j) => j.tenant_id === config.testTenantId);
+        sendJson(res, 200, { jobs });
+        return;
+      }
+
+      if (
+        method === "GET" &&
+        path.startsWith("/v1/print-jobs/") &&
+        path.endsWith("/preview")
+      ) {
+        if (!requireAuth(req, res, config)) return;
+        const jobId = decodeURIComponent(
+          path.slice("/v1/print-jobs/".length, -"/preview".length)
+        );
+        const job = getPrintJob(jobId);
+        if (!job || job.tenant_id !== config.testTenantId) {
+          sendJson(res, 404, { error: "Job not found" });
+          return;
+        }
+        const printer = getPrinter(job.printer_id);
+        let payload = {};
+        try {
+          payload = JSON.parse(job.payload_snapshot);
+        } catch {
+          payload = {};
+        }
+        if (job.job_type === "CASHIER") payload = applyCashierCategories(payload);
+        const text = renderTicketText(job.job_type, payload, {
+          paperWidthMm: printer?.paper_width_mm || 80,
+        });
+        sendJson(res, 200, {
+          jobId: job.job_id,
+          jobType: job.job_type,
+          stationId: job.station_id,
+          printerId: job.printer_id,
+          printerName: printer?.display_name || job.printer_id,
+          status: job.status,
+          text,
+          payload,
+        });
+        return;
+      }
+
+      if (method === "GET" && path.startsWith("/v1/print-jobs/")) {
+        if (!requireAuth(req, res, config)) return;
+        const rest = path.slice("/v1/print-jobs/".length);
+        const jobId = decodeURIComponent(rest.split("/")[0]);
+        const job = getPrintJob(jobId);
+        if (!job || job.tenant_id !== config.testTenantId) {
+          sendJson(res, 404, { error: "Job not found" });
+          return;
+        }
+        sendJson(res, 200, { job });
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/dispatch/run") {
+        if (!requireAuth(req, res, config, ["admin"])) return;
+        const results = await processAllPending(config);
+        sendJson(res, 200, { processed: results });
+        return;
+      }
+
+      if (
+        method === "POST" &&
+        path.startsWith("/v1/print-jobs/") &&
+        path.endsWith("/confirm")
+      ) {
+        if (!requireAuth(req, res, config, ["admin"])) return;
+        const jobId = decodeURIComponent(
+          path.slice("/v1/print-jobs/".length, -"/confirm".length)
+        );
+        const body = await readBody(req).catch(() => ({}));
+        try {
+          const existing = getPrintJob(jobId);
+          if (!existing || existing.tenant_id !== config.testTenantId) {
+            sendJson(res, 404, { error: "Job not found" });
+            return;
+          }
+          const job = confirmJob(jobId, body.note);
+          sendJson(res, 200, { job });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        method === "POST" &&
+        path.startsWith("/v1/print-jobs/") &&
+        path.endsWith("/reprint")
+      ) {
+        if (!requireAuth(req, res, config, ["admin"])) return;
+        const jobId = decodeURIComponent(
+          path.slice("/v1/print-jobs/".length, -"/reprint".length)
+        );
+        try {
+          const existing = getPrintJob(jobId);
+          if (!existing || existing.tenant_id !== config.testTenantId) {
+            sendJson(res, 404, { error: "Job not found" });
+            return;
+          }
+          const job = requestReprint(jobId);
+          sendJson(res, 201, { job });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (tryServeStatic(req, res, path)) return;
+
+      sendJson(res, 404, { error: "Not found" });
+    } catch (err) {
+      const status = err.status || 500;
+      if (status >= 500) {
+        log.error("HTTP handler error", { error: err.message, stack: err.stack });
+      }
+      sendJson(res, status, {
+        error: err.message || "Server error",
+      });
+    }
+  };
+
+  if (config.tls) {
+    return https.createServer(
+      {
+        cert: config.tls.cert,
+        key: config.tls.key,
+        passphrase: config.tls.passphrase,
+        minVersion: "TLSv1.2",
+      },
+      handler
+    );
+  }
+  return http.createServer(handler);
+}

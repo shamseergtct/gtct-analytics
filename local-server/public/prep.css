@@ -1,0 +1,158 @@
+.prep-page {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 16px 28px;
+}
+
+#prep-shell[hidden],
+#prep-denied[hidden] { display: none; }
+
+#station-tabs {
+  margin: 8px 0 14px;
+}
+
+#station-tabs .chip {
+  min-height: 44px;
+  padding: 0.45rem 0.9rem;
+  font-size: 1.05rem;
+}
+
+#station-tabs .chip[aria-selected="true"] {
+  background: var(--blue);
+  color: #fff;
+  border-color: var(--blue);
+}
+
+.prep-alerts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.prep-alerts:empty {
+  display: none;
+}
+
+.prep-alert {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 72px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 16px;
+  background: #1d4ed8;
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.prep-alert.updated {
+  background: #b45309;
+}
+
+.prep-alert span {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.prep-alert strong {
+  font-size: 1.7rem;
+  line-height: 1.1;
+}
+
+.prep-board {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.prep-column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.prep-column h2 {
+  margin: 0;
+  font-size: 1rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.prep-card {
+  border: 1px solid var(--line, #d7dce3);
+  border-radius: 16px;
+  background: #fff;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prep-card.updated {
+  border-color: #b45309;
+}
+
+.prep-card-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.prep-card-head strong {
+  font-size: 1.35rem;
+}
+
+.prep-place,
+.prep-time {
+  color: var(--muted, #5c6773);
+}
+
+.prep-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.prep-lines li strong {
+  font-size: 1.15rem;
+}
+
+.prep-note {
+  color: #9a3412;
+  font-weight: 600;
+}
+
+.prep-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.prep-actions .btn {
+  flex: 1;
+  min-height: 52px;
+  font-size: 1.05rem;
+}
+
+.prep-card.finished {
+  opacity: 0.72;
+}
+
+@media (max-width: 900px) {
+  .prep-board {
+    grid-template-columns: 1fr;
+  }
+}

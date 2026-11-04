@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>GTCT Orders</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/orders.css" />
+  </head>
+  <body>
+    <section id="login-view" class="view login-view" hidden>
+      <div class="login-card">
+        <p class="brand">GTCT Restaurant</p>
+        <h1>Orders</h1>
+        <p class="hint">Sign in to view accepted orders.</p>
+        <div class="login-form">
+          <div class="field">
+            <label for="login-username">Username</label>
+            <input id="login-username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" />
+          </div>
+          <button type="button" id="login-btn" class="btn primary">Sign in</button>
+          <p id="login-error" class="error" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="main-view" class="view" hidden>
+      <header class="topbar">
+        <div class="topbar-brand">
+          <p class="brand-inline">GTCT</p>
+          <h1>Orders</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="session-role" class="pill"></span>
+          <button type="button" id="nav-menu-btn" class="nav-menu-btn" aria-expanded="false" aria-controls="app-nav" aria-label="Open navigation menu">
+            <span class="nav-menu-icon" aria-hidden="true"></span>
+          </button>
+          <nav id="app-nav" class="app-nav" aria-label="Main">
+            <a class="nav-link" href="/">Sales</a>
+            <a class="nav-link" href="/orders.html" aria-current="page">Orders</a>
+            <a id="prep-link" class="nav-link" href="/prep.html" hidden>Preparation</a>
+            <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
+          </nav>
+        </div>
+      </header>
+
+      <main class="orders-page">
+        <p id="orders-denied" class="error" hidden>You do not have permission to view orders.</p>
+        <div id="orders-shell">
+          <div id="type-tabs" class="chips chip-scroll" role="tablist" aria-label="Order types"></div>
+          <div class="orders-tools">
+            <input id="order-search" type="search" placeholder="Order, customer, phone, block, road, building" aria-label="Search orders" />
+            <input id="order-date" type="date" aria-label="Order date" />
+            <button type="button" id="clear-filters" class="btn ghost">Clear</button>
+          </div>
+          <div id="delivery-tools" class="orders-tools" hidden>
+            <input id="filter-block" type="text" placeholder="Block" aria-label="Block" />
+            <input id="filter-road" type="text" placeholder="Road" aria-label="Road" />
+            <input id="filter-building" type="text" placeholder="Building" aria-label="Building" />
+            <div id="address-type-tabs" class="chips" role="tablist" aria-label="Address type"></div>
+          </div>
+          <p id="orders-status" class="hint" aria-live="polite">Loading orders…</p>
+          <div id="orders-list"></div>
+          <div class="orders-pager">
+            <button type="button" id="page-prev" class="btn ghost">Previous</button>
+            <span id="page-label"></span>
+            <button type="button" id="page-next" class="btn ghost">Next</button>
+          </div>
+        </div>
+      </main>
+    </section>
+
+    <dialog id="order-detail" class="order-detail">
+      <form method="dialog">
+        <header class="order-detail-head">
+          <h2 id="detail-title">Order</h2>
+          <button type="submit" class="btn ghost">Close</button>
+        </header>
+        <div id="detail-body"></div>
+      </form>
+    </dialog>
+    <script type="module" src="/orders.js"></script>
+  </body>
+</html>

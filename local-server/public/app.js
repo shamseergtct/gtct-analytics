@@ -1,0 +1,5406 @@
+import {
+  createMoneyFormatter,
+  estimateDeliveryFeeTax,
+  estimateOrderTax,
+  formatTaxPercentFromBps,
+} from "./money.js";
+const DEFAULT_MODIFIERS = ["Less", "More", "No", "Extra"];
+const DEFAULT_TARGETS = ["Sugar", "Sauce", "Onion", "Salt", "Ice", "Cheese"];
+
+const state = {
+  role: null,
+  staff: false,
+  userId: "",
+  username: "",
+  fullName: "",
+  permissions: [],
+  payment: { orderId: "", confirming: false, fromPending: false, view: null, attempt: null, accounts: [] },
+  pendingOrders: [],
+  menu: [],
+  stations: [],
+  printers: [],
+  category: "ALL",
+  subcategory: "ALL",
+  categories: [],
+  subcategories: [],
+  search: "",
+  cart: [],
+  activeSplit: 1,
+  orderNumber: "",
+  editingOrderId: null,
+  submissionId: "",
+  selectedMod: null,
+  selectedTargets: [],
+  editingLineId: null,
+  lastOrderId: null,
+  config: null,
+  money: null,
+  canAdjustAddonPrices: false,
+  canAdjustBasePrices: false,
+  orderTypes: [],
+  blockRates: [],
+  fulfillment: {
+    customerId: "",
+    addressId: "",
+    addressLabel: "",
+    customerName: "",
+    customerPhone: "",
+    buildingNumber: "",
+    roadNumber: "",
+    blockNumber: "",
+    addressNote: "",
+    tableNumber: "",
+    vehicleNumber: "",
+    parkingLocation: "",
+    counterLabel: "",
+    deliveryChargeCents: null,
+    deliveryFeeOverride: false,
+    expectedBlockRateCents: null,
+  },
+  sending: false,
+  customizeDraft: null, // { lineId, isNew, quantity, instructions, addons, note, priceText, ... }
+  customizeTab: "notes",
+  kitchenStep: 1,
+  priceBreakdownOpen: false,
+  _customizeTrigger: null,
+  variantPickerItem: null,
+  pkItem: null,
+  pkTab: "about",
+  pkPayload: null,
+  _pkTrigger: null,
+  cartDrawerOpen: false,
+  navMenuOpen: false,
+  addingLock: false,
+  cartFocusLineId: null,
+  cartFollowLatest: false,
+  _cartTrigger: null,
+  _navTrigger: null,
+  _scrollLockY: 0,
+  _cartProgrammaticScroll: false,
+};
+
+const $ = (id) => document.getElementById(id);
+
+async function api(path, options = {}) {
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers: {
+      Accept: "application/json",
+      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(options.headers || {}),
+    },
+    ...options,
+  });
+  let json = null;
+  const text = await res.text();
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { raw: text };
+    }
+  }
+  return { ok: res.ok, status: res.status, json };
+}
+
+function newSubmissionId() {
+  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
+  return `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function fallbackOrderNumber() {
+  const stamp = Date.now().toString(36);
+  const suffix = newSubmissionId().replace(/-/g, "").slice(0, 8);
+  return `TEST-UI-${stamp}-${suffix}`;
+}
+
+function showOrderNumber() {
+  const field = $("order-number");
+  const label = $("order-number-label");
+  if (label) label.textContent = state.editingOrderId ? "Editing #" : "Draft #";
+  if (!field) return;
+  field.value = state.orderNumber || "";
+  field.title = state.editingOrderId
+    ? "This accepted order is open for editing. Review and save to keep the changes."
+    : state.orderNumber
+      ? "Next order number, shared by every screen. It advances by one when an order is accepted."
+      : "";
+}
+
+let draftNumberTimer = null;
+let reviewNumberTimer = null;
+let draftSyncSeq = 0;
+
+function shopSequenceValue(orderNumber) {
+  const match = /^TEST-UI-(\d{6})$/.exec(String(orderNumber || ""));
+  return match ? Number(match[1]) : null;
+}
+
+async function allocateDisplayNumber() {
+  const res = await api("/v1/order-numbers", { method: "POST", body: "{}" });
+  if (res.ok && res.json?.orderNumber) return res.json.orderNumber;
+  return "";
+}
+
+async function syncDraftNumber() {
+  if (state.sending || state.editingOrderId) return;
+  const seq = ++draftSyncSeq;
+  const next = await allocateDisplayNumber();
+  if (seq !== draftSyncSeq || !next || next === state.orderNumber) return;
+  const currentValue = shopSequenceValue(state.orderNumber);
+  const nextValue = shopSequenceValue(next);
+  if (currentValue != null && nextValue != null && nextValue < currentValue) return;
+  state.orderNumber = next;
+  showOrderNumber();
+  if ($("review-dialog")?.open) paintReview();
+  if (cartHasItems()) persistActiveCart();
+}
+
+function draftNumberTick() {
+  if ($("main-view")?.hidden || state.sending) return;
+  void syncDraftNumber();
+}
+
+function startDraftNumberSync() {
+  if (draftNumberTimer) return;
+  draftNumberTimer = setInterval(draftNumberTick, 1000);
+  document.addEventListener("visibilitychange", draftNumberTick);
+  window.addEventListener("focus", draftNumberTick);
+}
+
+function stopDraftNumberSync() {
+  if (draftNumberTimer) {
+    clearInterval(draftNumberTimer);
+    draftNumberTimer = null;
+  }
+  document.removeEventListener("visibilitychange", draftNumberTick);
+  window.removeEventListener("focus", draftNumberTick);
+  if (reviewNumberTimer) {
+    clearInterval(reviewNumberTimer);
+    reviewNumberTimer = null;
+  }
+}
+
+function watchReviewNumber() {
+  if (reviewNumberTimer) return;
+  reviewNumberTimer = setInterval(() => {
+    if (!$("review-dialog")?.open) {
+      clearInterval(reviewNumberTimer);
+      reviewNumberTimer = null;
+      return;
+    }
+    void syncDraftNumber();
+  }, 500);
+}
+
+async function ensureDraftIdentity({ fresh = false } = {}) {
+  if (fresh || !state.submissionId) state.submissionId = newSubmissionId();
+  const next = await allocateDisplayNumber();
+  if (next) state.orderNumber = next;
+  else if (!state.orderNumber) state.orderNumber = fallbackOrderNumber();
+  showOrderNumber();
+}
+
+function showLogin(error = "") {
+  stopDraftNumberSync();
+  closePaymentUi();
+  $("login-view").hidden = false;
+  $("main-view").hidden = true;
+  setLoginError(error);
+}
+
+function applySession(data) {
+  state.role = data?.role || null;
+  state.deviceId = data?.deviceId || "";
+  state.staff = Boolean(data?.staff);
+  state.userId = data?.userId || "";
+  state.username = data?.username || "";
+  state.fullName = data?.fullName || "";
+  state.permissions = Array.isArray(data?.permissions) ? data.permissions : [];
+  if (data && Object.prototype.hasOwnProperty.call(data, "canAdjustAddonPrices")) {
+    state.canAdjustAddonPrices = Boolean(data.canAdjustAddonPrices);
+  }
+  if (data && Object.prototype.hasOwnProperty.call(data, "canAdjustBasePrices")) {
+    state.canAdjustBasePrices = Boolean(data.canAdjustBasePrices);
+  }
+}
+
+function showMain() {
+  $("login-view").hidden = true;
+  $("main-view").hidden = false;
+  $("session-role").textContent = state.fullName || state.role || "";
+  const isAdmin = state.role === "admin";
+  const settingsLink = $("settings-link");
+  const shopSettingsLink = $("shop-settings-link");
+  const menuLink = $("menu-setup-link");
+  const usersLink = $("users-link");
+  const ordersLink = $("orders-link");
+  const prepLink = $("prep-link");
+  if (settingsLink) settingsLink.hidden = !isAdmin;
+  if (shopSettingsLink) shopSettingsLink.hidden = !isAdmin;
+  if (menuLink) menuLink.hidden = !isAdmin;
+  if (usersLink) {
+    usersLink.hidden = !(state.staff && state.permissions.includes("staff.manage"));
+  }
+  if (ordersLink) {
+    ordersLink.hidden = !(state.staff && state.permissions.includes("sales.orders.view"));
+  }
+  if (prepLink) {
+    prepLink.hidden = !(state.role === "admin" || (state.staff && state.permissions.includes("prep.station.work")));
+  }
+  setNavMenu(false);
+  startDraftNumberSync();
+  void refreshPendingCount();
+}
+
+async function ensureSession() {
+  const me = await api("/v1/session/me");
+  if (!me.ok || !me.json?.authenticated) {
+    showLogin();
+    return false;
+  }
+  applySession(me.json);
+  showMain();
+  return true;
+}
+
+function setLoginError(message = "") {
+  const el = $("login-error");
+  el.hidden = !message;
+  el.textContent = message || "";
+}
+
+async function login() {
+  const usernameInput = $("login-username");
+  const passwordInput = $("login-password");
+  const username = String(usernameInput?.value || "").trim();
+  const password = String(passwordInput?.value || "");
+  if (!username || !password) {
+    setLoginError("Enter your username and password.");
+    (username ? passwordInput : usernameInput)?.focus();
+    return;
+  }
+  const btn = $("login-btn");
+  setLoginError("");
+  btn.disabled = true;
+  btn.textContent = "Signing in…";
+  btn.setAttribute("aria-busy", "true");
+  try {
+    const res = await api("/v1/session/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    if (!res.ok) {
+      setLoginError(res.json?.error || "Sign-in failed");
+      return;
+    }
+
+    const me = await api("/v1/session/me");
+    if (!me.ok || !me.json?.authenticated) {
+      setLoginError(
+        "Signed in, but the session cookie was not kept. Use http://127.0.0.1:8787/ (not localhost) and try again."
+      );
+      return;
+    }
+
+    passwordInput.value = "";
+    applySession(me.json);
+    setLoginError("");
+    showMain();
+    await bootstrapData();
+  } catch (err) {
+    setLoginError(err.message || "Sign-in failed");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Sign in";
+    btn.removeAttribute("aria-busy");
+  }
+}
+
+const CART_ACTIVE_KEY = "gtct.sales.activeCart.v1";
+const CART_HELD_KEY_LEGACY = "gtct.sales.heldCart.v1";
+const CART_HELD_LIST_KEY = "gtct.sales.heldCarts.v2";
+
+function cartHasItems() {
+  return Array.isArray(state.cart) && state.cart.length > 0;
+}
+
+function readCartStorage(key) {
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.cart)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function writeCartStorage(key, snapshot) {
+  try {
+    if (!snapshot || !snapshot.cart?.length) {
+      sessionStorage.removeItem(key);
+      return;
+    }
+    sessionStorage.setItem(key, JSON.stringify(snapshot));
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+function clearCartStorage(key) {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
+function readHeldCartList() {
+  try {
+    migrateLegacyHeldCart();
+    const raw = sessionStorage.getItem(CART_HELD_LIST_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data)) return [];
+    return data.filter((h) => h && Array.isArray(h.cart) && h.cart.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+function writeHeldCartList(list) {
+  try {
+    const clean = (Array.isArray(list) ? list : []).filter(
+      (h) => h && Array.isArray(h.cart) && h.cart.length > 0
+    );
+    if (!clean.length) {
+      sessionStorage.removeItem(CART_HELD_LIST_KEY);
+      return;
+    }
+    sessionStorage.setItem(CART_HELD_LIST_KEY, JSON.stringify(clean));
+  } catch {
+    /* ignore */
+  }
+}
+
+function migrateLegacyHeldCart() {
+  try {
+    const legacy = readCartStorage(CART_HELD_KEY_LEGACY);
+    if (!legacy?.cart?.length) return;
+    const existing = (() => {
+      try {
+        const raw = sessionStorage.getItem(CART_HELD_LIST_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    })();
+    const list = Array.isArray(existing) ? existing : [];
+    list.unshift({
+      ...legacy,
+      holdId: `hold_legacy_${legacy.savedAt || Date.now()}`,
+      holdLabel: legacy.holdLabel || legacy.orderNumber || "Held order",
+    });
+    sessionStorage.setItem(CART_HELD_LIST_KEY, JSON.stringify(list));
+    sessionStorage.removeItem(CART_HELD_KEY_LEGACY);
+  } catch {
+    /* ignore */
+  }
+}
+
+function captureCartSnapshot() {
+  return {
+    version: 1,
+    savedAt: Date.now(),
+    orderNumber: state.orderNumber || "",
+    editingOrderId: state.editingOrderId || null,
+    submissionId: state.submissionId || "",
+    orderType: $("order-type")?.value || "",
+    fulfillment: { ...state.fulfillment },
+    lastOrderId: state.lastOrderId || null,
+    activeSplit: lineSplitNo({ splitNo: state.activeSplit }),
+    cart: state.cart.map((line) => ({
+      ...line,
+      instructions: [...(line.instructions || [])],
+      addons: (line.addons || []).map((a) => ({ ...a })),
+      availableAddons: (line.availableAddons || []).map((a) => ({ ...a })),
+      instructionModifiers: [...(line.instructionModifiers || [])],
+      instructionTargets: [...(line.instructionTargets || [])],
+      instructionStandalone: [...(line.instructionStandalone || [])],
+      stationIds: [...(line.stationIds || [])],
+    })),
+  };
+}
+
+function applyCartSnapshot(snapshot) {
+  if (!snapshot) return false;
+  state.cart = (Array.isArray(snapshot.cart) ? snapshot.cart : []).map(
+    (line) => ({
+      ...line,
+      configuredPriceCents:
+        line.configuredPriceCents != null
+          ? Number(line.configuredPriceCents)
+          : Number(line.priceCents || 0),
+      basePriceAdjusted: Boolean(line.basePriceAdjusted),
+      splitNo: lineSplitNo(line),
+    })
+  );
+  const savedSplit = Number(snapshot.activeSplit);
+  state.activeSplit =
+    Number.isInteger(savedSplit) && savedSplit >= 1
+      ? savedSplit
+      : Math.max(1, ...state.cart.map((line) => lineSplitNo(line)));
+  state.orderNumber = snapshot.orderNumber || "";
+  state.editingOrderId = snapshot.editingOrderId || null;
+  state.submissionId = snapshot.submissionId || state.submissionId || "";
+  state.lastOrderId = snapshot.lastOrderId || null;
+  showOrderNumber();
+  if (snapshot.fulfillment && typeof snapshot.fulfillment === "object") {
+    state.fulfillment = { ...blankFulfillment(), ...snapshot.fulfillment };
+  }
+  if ($("order-type") && snapshot.orderType) {
+    const known = (state.orderTypes || []).some((row) => row.orderTypeId === snapshot.orderType);
+    if (known) $("order-type").value = snapshot.orderType;
+    else {
+      const byCode = (state.orderTypes || []).find((row) => row.code === snapshot.orderType);
+      if (byCode) $("order-type").value = byCode.orderTypeId;
+    }
+  }
+  renderFulfillmentFields();
+  focusCartLine(null);
+  return state.cart.length > 0;
+}
+
+function persistActiveCart() {
+  if (!cartHasItems()) {
+    clearCartStorage(CART_ACTIVE_KEY);
+    return;
+  }
+  writeCartStorage(CART_ACTIVE_KEY, captureCartSnapshot());
+}
+
+function restoreActiveCartIfAny() {
+  const snap = readCartStorage(CART_ACTIVE_KEY);
+  if (!snap?.cart?.length) return false;
+  applyCartSnapshot(snap);
+  return true;
+}
+
+function nextDefaultHoldLabel() {
+  const list = readHeldCartList();
+  let n = list.length + 1;
+  const used = new Set(
+    list.map((h) => String(h.holdLabel || "").trim().toLowerCase())
+  );
+  while (used.has(`hold ${n}`)) n += 1;
+  return `Hold ${n}`;
+}
+
+function updateHeldCartUi() {
+  const holdBtn = $("hold-cart-btn");
+  const panel = $("held-cart-panel");
+  const listHost = $("held-cart-list");
+  const countEl = $("held-cart-count");
+  if (holdBtn) holdBtn.hidden = !cartHasItems();
+  const held = readHeldCartList();
+  if (!panel || !listHost) return;
+  if (!held.length) {
+    panel.hidden = true;
+    listHost.innerHTML = "";
+    return;
+  }
+  panel.hidden = false;
+  if (countEl) {
+    countEl.textContent = `${held.length} held`;
+  }
+  listHost.innerHTML = "";
+  for (const entry of held) {
+    const itemCount = entry.cart.reduce(
+      (n, l) => n + Number(l.quantity || 0),
+      0
+    );
+    const row = document.createElement("div");
+    row.className = "held-cart-row";
+    row.innerHTML = `
+      <div class="held-cart-row-info">
+        <strong class="held-cart-name">${escapeHtml(entry.holdLabel || "Held")}</strong>
+        <span class="muted">${escapeHtml(entry.orderNumber || "")} · ${itemCount} item${
+          itemCount === 1 ? "" : "s"
+        }</span>
+      </div>
+      <div class="held-cart-actions">
+        <button type="button" class="btn ghost small" data-act="resume">Resume</button>
+        <button type="button" class="btn ghost small" data-act="discard">Discard</button>
+      </div>
+    `;
+    row.querySelector('[data-act="resume"]').addEventListener("click", () => {
+      resumeHeldCart(entry.holdId);
+    });
+    row.querySelector('[data-act="discard"]').addEventListener("click", () => {
+      discardHeldCart(entry.holdId);
+    });
+    listHost.appendChild(row);
+  }
+}
+
+function confirmLeaveCart(actionLabel = "continue") {
+  if (!cartHasItems()) return true;
+  return window.confirm(
+    `Cart has items. ${actionLabel} will discard the current cart.\n\nUse Hold to keep it, Clear to empty it, or OK to discard and ${actionLabel.toLowerCase()}.`
+  );
+}
+
+function emptyCart({ status = "", clearPersisted = true } = {}) {
+  state.cart = [];
+  state.editingOrderId = null;
+  state.activeSplit = 1;
+  focusCartLine(null);
+  showOrderNumber();
+  if (clearPersisted) clearCartStorage(CART_ACTIVE_KEY);
+  renderCart();
+  if (status) setStatus(status);
+}
+
+function openHoldDialog() {
+  if (!cartHasItems()) {
+    setStatus("Cart is empty — nothing to hold.", false);
+    return;
+  }
+  const input = $("hold-label-input");
+  const err = $("hold-dialog-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  if (input) {
+    input.value = nextDefaultHoldLabel();
+  }
+  const dialog = $("hold-dialog");
+  if (dialog && typeof dialog.showModal === "function") {
+    dialog.showModal();
+    input?.focus();
+    input?.select();
+  }
+}
+
+function closeHoldDialog() {
+  const dialog = $("hold-dialog");
+  if (dialog?.open) dialog.close();
+}
+
+function confirmHoldCart() {
+  if (!cartHasItems()) {
+    closeHoldDialog();
+    return;
+  }
+  const input = $("hold-label-input");
+  const err = $("hold-dialog-error");
+  const label = String(input?.value || "").trim();
+  if (!label) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Enter a hold name or number.";
+    }
+    input?.focus();
+    return;
+  }
+  if (label.length > 40) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Hold name must be 40 characters or fewer.";
+    }
+    return;
+  }
+  const list = readHeldCartList();
+  const dup = list.some(
+    (h) => String(h.holdLabel || "").trim().toLowerCase() === label.toLowerCase()
+  );
+  if (dup) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "That hold name is already in use. Choose another.";
+    }
+    input?.focus();
+    return;
+  }
+  const snap = captureCartSnapshot();
+  list.unshift({
+    ...snap,
+    holdId: `hold_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`,
+    holdLabel: label,
+  });
+  writeHeldCartList(list);
+  closeHoldDialog();
+  state.submissionId = "";
+  state.orderNumber = "";
+  emptyCart({ status: `Held as “${label}”. Safe to refresh or leave Sales.` });
+  void ensureDraftIdentity({ fresh: true });
+  showToast(`Held: ${label}`);
+  updateHeldCartUi();
+}
+
+function holdActiveCart() {
+  openHoldDialog();
+}
+
+function resumeHeldCart(holdId) {
+  const list = readHeldCartList();
+  const held = list.find((h) => h.holdId === holdId);
+  if (!held?.cart?.length) {
+    setStatus("Held cart not found.", false);
+    updateHeldCartUi();
+    return;
+  }
+  if (cartHasItems()) {
+    const ok = window.confirm(
+      `Current cart has items. Replace it with held “${held.holdLabel || "cart"}”?\n\nTip: Hold the current cart first if you still need it.`
+    );
+    if (!ok) return;
+  }
+  applyCartSnapshot(held);
+  writeHeldCartList(list.filter((h) => h.holdId !== holdId));
+  persistActiveCart();
+  renderCart();
+  setStatus(`Resumed “${held.holdLabel || state.orderNumber}”.`);
+  showToast(`Resumed: ${held.holdLabel || "held cart"}`);
+  updateHeldCartUi();
+}
+
+function discardHeldCart(holdId) {
+  const list = readHeldCartList();
+  const held = list.find((h) => h.holdId === holdId);
+  if (!held) return;
+  if (
+    !window.confirm(
+      `Discard held “${held.holdLabel || "cart"}” permanently?`
+    )
+  ) {
+    return;
+  }
+  writeHeldCartList(list.filter((h) => h.holdId !== holdId));
+  updateHeldCartUi();
+  setStatus(`Discarded “${held.holdLabel || "held cart"}”.`);
+}
+
+async function logout() {
+  if (!confirmLeaveCart("Sign out")) return;
+  await api("/v1/session/logout", { method: "POST", body: "{}" });
+  state.role = null;
+  state.cart = [];
+  state.lastOrderId = null;
+  focusCartLine(null);
+  clearCartStorage(CART_ACTIVE_KEY);
+  clearCartStorage(CART_HELD_KEY_LEGACY);
+  clearCartStorage(CART_HELD_LIST_KEY);
+  showLogin();
+}
+
+function categoryForItem(item) {
+  return item.category || "Other";
+}
+
+function menuMetaForLine(line) {
+  const item = (state.menu || []).find((row) => row.item_id === line.itemId) || {};
+  return {
+    category: item.category || "",
+    subcategory: item.subcategory || "",
+    itemSort: Number(item.sort_order || 0),
+  };
+}
+
+function categoryRank(name) {
+  const key = String(name || "").trim().toLowerCase();
+  if (!key) return 100000;
+  const match = (state.categories || []).find(
+    (row) => String(row.name || "").trim().toLowerCase() === key
+  );
+  return match ? Number(match.sort_order || 0) : 50000;
+}
+
+function subcategoryRank(category, subcategory) {
+  const subKey = String(subcategory || "").trim().toLowerCase();
+  if (!subKey) return 0;
+  const cat = (state.categories || []).find(
+    (row) =>
+      String(row.name || "").trim().toLowerCase() ===
+      String(category || "").trim().toLowerCase()
+  );
+  const match = (state.subcategories || []).find(
+    (row) =>
+      String(row.name || "").trim().toLowerCase() === subKey &&
+      (!cat || row.category_id === cat.category_id)
+  );
+  return match ? Number(match.sort_order || 0) : 50000;
+}
+
+function compareBillLines(a, b) {
+  const ma = menuMetaForLine(a);
+  const mb = menuMetaForLine(b);
+  const cat = categoryRank(ma.category) - categoryRank(mb.category);
+  if (cat) return cat;
+  const catName = ma.category.localeCompare(mb.category);
+  if (catName) return catName;
+  const sub =
+    subcategoryRank(ma.category, ma.subcategory) -
+    subcategoryRank(mb.category, mb.subcategory);
+  if (sub) return sub;
+  const subName = ma.subcategory.localeCompare(mb.subcategory);
+  if (subName) return subName;
+  const itemSort = ma.itemSort - mb.itemSort;
+  if (itemSort) return itemSort;
+  const name = String(a.name || "").localeCompare(String(b.name || ""));
+  if (name) return name;
+  return String(a.variantName || "").localeCompare(String(b.variantName || ""));
+}
+
+function linesForBill(lines) {
+  return lines
+    .map((line, index) => ({ line, index }))
+    .sort((a, b) => compareBillLines(a.line, b.line) || a.index - b.index)
+    .map((row) => row.line);
+}
+
+function reviewLinesHtml(lines) {
+  let last = "";
+  return linesForBill(lines)
+    .map((line) => {
+      const category = menuMetaForLine(line).category || "Other";
+      const head =
+        category === last
+          ? ""
+          : `<p class="review-category">${escapeHtml(category)}</p>`;
+      last = category;
+      return head + reviewLineHtml(line);
+    })
+    .join("");
+}
+
+function subcategoryForItem(item) {
+  return item.subcategory || "";
+}
+
+function formatPrice(cents) {
+  if (state.money) return state.money.format(cents);
+  const n = Number(cents || 0) / 100;
+  return `QR ${n.toFixed(2)}`;
+}
+
+function lineUnitCents(line) {
+  const base = Number(line.priceCents || 0);
+  let addons = 0;
+  for (const a of line.addons || []) {
+    const unit = Number(
+      a.unitPriceCents != null ? a.unitPriceCents : a.effectivePriceCents || 0
+    );
+    addons += unit * Number(a.quantity || 1);
+  }
+  return base + addons;
+}
+
+function priceKindLabel(applied, unsetAndUnselected) {
+  if (applied == null) return unsetAndUnselected ? "Price not set" : "Enter price";
+  if (applied < 0) return "Reduction";
+  if (applied === 0) return "Free";
+  return "Charge";
+}
+
+function formatSignedPrice(minor) {
+  const n = Number(minor || 0);
+  if (n === 0) return formatPrice(0);
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${formatPrice(n)}`;
+}
+
+function addonCatalogUnset(addon) {
+  if (!addon) return false;
+  if (addon.priceEnteredAtSale) return true;
+  if (addon.priceUnset === true) return true;
+  return addon.effectivePriceCents == null && addon.priceCents == null;
+}
+
+function addonConfiguredPrice(addon) {
+  if (addonCatalogUnset(addon) && addon.configuredUnitPriceCents == null) {
+    return null;
+  }
+  if (addon.configuredUnitPriceCents != null) {
+    return Number(addon.configuredUnitPriceCents);
+  }
+  if (addon.effectivePriceCents != null) return Number(addon.effectivePriceCents);
+  if (addon.priceCents != null) return Number(addon.priceCents);
+  return 0;
+}
+
+function addonAppliedPrice(addon) {
+  if (addon.unitPriceCents != null) return Number(addon.unitPriceCents);
+  if (addonCatalogUnset(addon)) return null;
+  return addonConfiguredPrice(addon);
+}
+
+function customizationKey(line) {
+  const instr = instructionKey(line.instructions || []);
+  const note = String(line.orderNote || "")
+    .trim()
+    .toLowerCase();
+  const addons = (line.addons || [])
+    .map(
+      (a) =>
+        `${a.addonId}:${a.quantity || 1}:${addonAppliedPrice(a)}:${a.priceAdjusted ? 1 : 0}`
+    )
+    .sort()
+    .join(",");
+  return `${instr}||${note}||${addons}`;
+}
+
+function renderCategories() {
+  const cats = ["ALL", ...new Set(state.menu.map(categoryForItem))];
+  const host = $("category-filters");
+  host.innerHTML = "";
+  for (const cat of cats) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chip${state.category === cat ? " active" : ""}`;
+    btn.textContent = cat;
+    btn.addEventListener("click", () => {
+      state.category = cat;
+      state.subcategory = "ALL";
+      renderCategories();
+      renderSubcategories();
+      renderMenu();
+    });
+    host.appendChild(btn);
+  }
+  renderSubcategories();
+}
+
+function renderSubcategories() {
+  const host = $("subcategory-filters");
+  if (state.category === "ALL") {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const subs = [
+    ...new Set(
+      state.menu
+        .filter((i) => categoryForItem(i) === state.category)
+        .map(subcategoryForItem)
+        .filter(Boolean)
+    ),
+  ];
+  if (!subs.length) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = "";
+  for (const sub of ["ALL", ...subs]) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `chip green${state.subcategory === sub ? " active" : ""}`;
+    btn.textContent = sub === "ALL" ? "All" : sub;
+    btn.addEventListener("click", () => {
+      state.subcategory = sub;
+      renderSubcategories();
+      renderMenu();
+    });
+    host.appendChild(btn);
+  }
+}
+
+function salesVariants(item) {
+  if (!item?.hasVariants) return [];
+  return (item.variants || []).filter((v) => v.isActive && !v.isSoldOut);
+}
+
+function itemDisplayPrice(item) {
+  const vars = salesVariants(item);
+  if (vars.length) {
+    const min = Math.min(...vars.map((v) => Number(v.priceCents || 0)));
+    return {
+      label:
+        vars.length > 1
+          ? `From ${formatPrice(min)}`
+          : formatPrice(min),
+      meta: vars.length > 1 ? `${vars.length} sizes` : vars[0]?.name || "",
+    };
+  }
+  return {
+    label: formatPrice(item.price_cents),
+    meta: "",
+  };
+}
+
+function showToast(message) {
+  const el = $("toast");
+  if (!el) return;
+  el.hidden = false;
+  el.textContent = message;
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => {
+    el.hidden = true;
+  }, 1600);
+}
+
+function renderMenu() {
+  const q = state.search.trim().toLowerCase();
+  const items = state.menu.filter((item) => {
+    if (!item.is_active) return false;
+    if (state.category !== "ALL" && categoryForItem(item) !== state.category) {
+      return false;
+    }
+    if (
+      state.subcategory !== "ALL" &&
+      subcategoryForItem(item) !== state.subcategory
+    ) {
+      return false;
+    }
+    if (q) {
+      const hay = [item.name, item.code, item.sku, item.category, item.subcategory]
+        .join(" ")
+        .toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+  const grid = $("menu-grid");
+  grid.innerHTML = "";
+  if (!items.length) {
+    grid.innerHTML = `<p class="empty">No menu items match.</p>`;
+    return;
+  }
+  for (const item of items) {
+    const soldOut = Boolean(item.is_sold_out);
+    const vars = salesVariants(item);
+    const price = itemDisplayPrice(item);
+    const card = document.createElement("article");
+    card.className = `menu-card${soldOut ? " sold-out" : ""}`;
+
+    const selectBtn = document.createElement("button");
+    selectBtn.type = "button";
+    selectBtn.className = "menu-card-select";
+    selectBtn.disabled = soldOut;
+    selectBtn.setAttribute(
+      "aria-label",
+      soldOut
+        ? `${item.name}, sold out`
+        : vars.length
+          ? `${item.name}, choose size`
+          : `Add ${item.name}`
+    );
+    selectBtn.innerHTML = `
+      <div class="menu-card-media">
+        <div class="menu-card-fallback" aria-hidden="true">
+          <svg class="menu-card-ph" viewBox="0 0 48 48" width="28" height="28" fill="none">
+            <ellipse cx="24" cy="30" rx="16" ry="5" stroke="currentColor" stroke-width="1.75"/>
+            <path d="M10 28c0-8 6.5-14 14-14s14 6 14 14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
+            <circle cx="24" cy="18" r="2.5" fill="currentColor" opacity="0.35"/>
+          </svg>
+        </div>
+      </div>
+      <div class="menu-card-body">
+        <strong class="menu-card-name">${escapeHtml(item.name)}</strong>
+        <span class="menu-card-price">${escapeHtml(price.label)}${
+          soldOut ? " · Sold out" : ""
+        }</span>
+        ${
+          price.meta && !soldOut
+            ? `<span class="menu-card-meta">${escapeHtml(price.meta)}</span>`
+            : ""
+        }
+      </div>
+    `;
+    if (item.image_url) {
+      const media = selectBtn.querySelector(".menu-card-media");
+      const img = document.createElement("img");
+      img.className = "menu-card-img";
+      img.alt = "";
+      img.loading = "lazy";
+      img.src = item.image_url;
+      img.addEventListener("error", () => {
+        img.remove();
+      });
+      img.addEventListener("load", () => {
+        const fallback = media.querySelector(".menu-card-fallback");
+        if (fallback) fallback.remove();
+      });
+      media.appendChild(img);
+    }
+    if (!soldOut) {
+      selectBtn.addEventListener("click", () => onMenuItemTap(item));
+    }
+
+    const infoBtn = document.createElement("button");
+    infoBtn.type = "button";
+    infoBtn.className = "menu-card-info";
+    infoBtn.setAttribute(
+      "aria-label",
+      `View information about ${item.name}`
+    );
+    infoBtn.innerHTML = `<span class="menu-card-info-icon" aria-hidden="true">ⓘ</span><span>Info</span>`;
+    infoBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openProductKnowledge(item);
+    });
+
+    card.appendChild(selectBtn);
+    card.appendChild(infoBtn);
+    if (state.role === "admin" || state.permissions.includes("menu.sold_out.update")) {
+      const soldBtn = document.createElement("button");
+      soldBtn.type = "button";
+      soldBtn.className = "menu-card-soldout";
+      soldBtn.textContent = soldOut ? "Sold" : "Available";
+      soldBtn.setAttribute(
+        "aria-label",
+        soldOut ? `Mark ${item.name} available` : `Mark ${item.name} sold out`
+      );
+      soldBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSoldOut(item);
+      });
+      card.appendChild(soldBtn);
+    }
+    grid.appendChild(card);
+  }
+}
+
+async function toggleSoldOut(item) {
+  const markingSoldOut = !item.is_sold_out;
+  const ok = window.confirm(
+    markingSoldOut
+      ? `Mark “${item.name}” as sold out?`
+      : `Mark “${item.name}” as available again?`
+  );
+  if (!ok) return;
+  const res = await api(
+    `/v1/menu-items/${encodeURIComponent(item.item_id)}/availability`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ isSoldOut: !item.is_sold_out }),
+    }
+  );
+  if (!res.ok) {
+    setStatus(res.json?.error || "Could not update sold out.", false);
+    return;
+  }
+  const next = res.json?.menuItem;
+  if (next && Number(next.price_cents) !== Number(item.price_cents)) {
+    setStatus("Sold out was not saved because the item price changed.", false);
+    return;
+  }
+  item.is_sold_out = Boolean(next?.is_sold_out);
+  renderMenu();
+  setStatus(item.is_sold_out ? `${item.name} is sold out.` : `${item.name} is available.`);
+}
+
+function onMenuItemTap(item) {
+  if (state.addingLock) return;
+  if (!item.is_active) {
+    setStatus("That item is inactive.", false);
+    return;
+  }
+  if (item.is_sold_out) {
+    setStatus("That item is sold out.", false);
+    return;
+  }
+  if (item.hasVariants) {
+    const vars = salesVariants(item);
+    if (!vars.length) {
+      setStatus("No available sizes for this item.", false);
+      return;
+    }
+    openVariantPicker(item, vars);
+    return;
+  }
+  addToCart(item, null);
+}
+
+function openVariantPicker(item, variants) {
+  state.variantPickerItem = item;
+  const dialog = $("variant-dialog");
+  $("variant-item-name").textContent = item.name;
+  const host = $("variant-options");
+  host.innerHTML = "";
+  for (const v of variants) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "variant-option";
+    btn.setAttribute("role", "option");
+    btn.innerHTML = `<strong>${escapeHtml(v.name)}</strong><span>${escapeHtml(
+      formatPrice(v.priceCents)
+    )}</span>`;
+    btn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (state.addingLock) return;
+      state.addingLock = true;
+      try {
+        addToCart(item, v);
+        closeVariantPicker();
+      } finally {
+        setTimeout(() => {
+          state.addingLock = false;
+        }, 250);
+      }
+    });
+    host.appendChild(btn);
+  }
+  if (typeof dialog.showModal === "function" && !dialog.open) {
+    dialog.showModal();
+  }
+  host.querySelector("button")?.focus();
+}
+
+function closeVariantPicker() {
+  const dialog = $("variant-dialog");
+  state.variantPickerItem = null;
+  if (dialog?.open) dialog.close();
+  $("menu-search")?.focus();
+}
+
+function formatPrepTimeDisplay(min, max) {
+  if (min == null && max == null) return null;
+  if (min != null && max != null) {
+    if (min === max) return `${min} minute${min === 1 ? "" : "s"}`;
+    return `${min}–${max} minutes`;
+  }
+  const n = min ?? max;
+  return `About ${n} minute${n === 1 ? "" : "s"}`;
+}
+
+function stationNameForId(stationId) {
+  if (!stationId) return "";
+  const s = (state.stations || []).find(
+    (x) => x.station_id === stationId || x.stationId === stationId
+  );
+  return s?.name || "";
+}
+
+function setPkTab(tab) {
+  state.pkTab = tab === "ingredients" || tab === "service" ? tab : "about";
+  document.querySelectorAll(".pk-tab").forEach((btn) => {
+    const active = btn.dataset.pkTab === state.pkTab;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  renderProductKnowledgeBody();
+}
+
+function renderPkMedia(imageUrl, name) {
+  const host = $("pk-item-media");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!imageUrl) {
+    host.classList.add("is-empty");
+    return;
+  }
+  host.classList.remove("is-empty");
+  const img = document.createElement("img");
+  img.alt = "";
+  img.loading = "lazy";
+  img.src = imageUrl;
+  img.addEventListener("error", () => {
+    host.innerHTML = "";
+    host.classList.add("is-empty");
+  });
+  host.appendChild(img);
+}
+
+function pkSectionBlock(title, bodyHtml) {
+  if (!bodyHtml) return "";
+  return `<section class="pk-block"><h4>${escapeHtml(title)}</h4>${bodyHtml}</section>`;
+}
+
+function pkPlainPara(text) {
+  const t = String(text || "").trim();
+  if (!t) return "";
+  return `<p class="pk-text">${escapeHtml(t).replaceAll("\n", "<br>")}</p>`;
+}
+
+function renderProductKnowledgeBody() {
+  const host = $("pk-dialog-body");
+  if (!host) return;
+  const payload = state.pkPayload;
+  if (!payload) {
+    host.innerHTML = `<p class="pk-loading">Loading…</p>`;
+    return;
+  }
+  const pk = payload.productKnowledge || {};
+  const shortDesc = payload.menuItem?.description || "";
+  const hasContent = Boolean(payload.hasContent);
+
+  if (!hasContent) {
+    const adminHint =
+      state.role === "admin"
+        ? `<p class="pk-admin-hint"><a href="/menu.html">Open Menu Setup</a> to add product information for this item.</p>`
+        : "";
+    host.innerHTML = `<div class="pk-empty-state"><p class="pk-empty">Product information has not been added yet.</p>${adminHint}</div>`;
+    return;
+  }
+
+  if (state.pkTab === "ingredients") {
+    const chips = (pk.ingredients || [])
+      .map((n) => `<span class="pk-chip-view">${escapeHtml(n)}</span>`)
+      .join("");
+    const allergenVerified = Boolean(pk.allergenVerified);
+    const allergenNotes = String(pk.allergenNotes || "").trim();
+    let allergenHtml = "";
+    if (allergenVerified && allergenNotes) {
+      allergenHtml = pkSectionBlock(
+        "Verified allergens",
+        pkPlainPara(allergenNotes)
+      );
+    } else if (allergenNotes && !allergenVerified) {
+      allergenHtml = pkSectionBlock(
+        "Allergen notes",
+        `${pkPlainPara(allergenNotes)}<p class="pk-caution">Allergen information not verified — confirm with the restaurant.</p>`
+      );
+    } else {
+      allergenHtml = `<p class="pk-caution">Allergen information not verified — confirm with the restaurant.</p>`;
+    }
+    host.innerHTML = `
+      ${
+        chips
+          ? pkSectionBlock(
+              "Main ingredients",
+              `<div class="pk-chip-row">${chips}</div>`
+            )
+          : `<p class="pk-muted-line">No ingredients listed.</p>`
+      }
+      ${allergenHtml}
+    `;
+    return;
+  }
+
+  if (state.pkTab === "service") {
+    const prep = formatPrepTimeDisplay(pk.prepTimeMin, pk.prepTimeMax);
+    const station =
+      stationNameForId(payload.menuItem?.prepStationId) ||
+      (payload.menuItem?.stationIds || [])
+        .map(stationNameForId)
+        .filter(Boolean)
+        .join(", ");
+    const rows = [
+      pk.brand
+        ? pkSectionBlock("Brand", pkPlainPara(pk.brand))
+        : "",
+      pk.ingredientBrand
+        ? pkSectionBlock("Ingredient brand", pkPlainPara(pk.ingredientBrand))
+        : "",
+      prep
+        ? pkSectionBlock(
+            "Estimated preparation time",
+            `${pkPlainPara(prep)}<p class="pk-muted-line">Estimate only — not a guaranteed completion time.</p>`
+          )
+        : pkSectionBlock(
+            "Estimated preparation time",
+            `<p class="pk-muted-line">Preparation time not specified.</p>`
+          ),
+      pk.servingStyle
+        ? pkSectionBlock("Serving style", pkPlainPara(pk.servingStyle))
+        : "",
+      pk.servingAccompaniments
+        ? pkSectionBlock("Served with", pkPlainPara(pk.servingAccompaniments))
+        : "",
+      station
+        ? pkSectionBlock("Preparation station", pkPlainPara(station))
+        : "",
+      pk.serviceNotes
+        ? pkSectionBlock("Service notes", pkPlainPara(pk.serviceNotes))
+        : "",
+    ]
+      .filter(Boolean)
+      .join("");
+    host.innerHTML =
+      rows || `<p class="pk-muted-line">No service details listed.</p>`;
+    return;
+  }
+
+  // About
+  const quick = String(pk.salesmanQuickAnswer || "").trim();
+  const parts = [
+    quick
+      ? `<section class="pk-quick-answer"><h4>Salesman Quick Answer</h4>${pkPlainPara(quick)}</section>`
+      : "",
+    shortDesc ? pkSectionBlock("Short description", pkPlainPara(shortDesc)) : "",
+    pk.detailedDescription
+      ? pkSectionBlock(
+          "Detailed description",
+          pkPlainPara(pk.detailedDescription)
+        )
+      : "",
+    pk.specialFeatures
+      ? pkSectionBlock("Special features", pkPlainPara(pk.specialFeatures))
+      : "",
+  ]
+    .filter(Boolean)
+    .join("");
+  host.innerHTML =
+    parts || `<p class="pk-muted-line">No about details listed.</p>`;
+}
+
+async function openProductKnowledge(item) {
+  const dialog = $("pk-dialog");
+  if (!dialog || !item) return;
+  state._pkTrigger = document.activeElement;
+  state.pkItem = item;
+  state.pkPayload = null;
+  state.pkTab = "about";
+  $("pk-item-name").textContent = item.name || "Product information";
+  const catBits = [item.category, item.subcategory].filter(Boolean).join(" · ");
+  const catEl = $("pk-item-category");
+  if (catEl) {
+    if (catBits) {
+      catEl.hidden = false;
+      catEl.textContent = catBits;
+    } else {
+      catEl.hidden = true;
+      catEl.textContent = "";
+    }
+  }
+  renderPkMedia(item.image_url || item.imageUrl || null, item.name);
+  setPkTab("about");
+  renderProductKnowledgeBody();
+  if (typeof dialog.showModal === "function" && !dialog.open) {
+    dialog.showModal();
+  }
+  $("pk-close-btn")?.focus();
+
+  const res = await api(
+    `/v1/menu-items/${encodeURIComponent(item.item_id)}/product-knowledge`
+  );
+  if (state.pkItem?.item_id !== item.item_id) return;
+  if (!res.ok) {
+    const host = $("pk-dialog-body");
+    if (host) {
+      host.innerHTML = `<p class="pk-empty">${escapeHtml(
+        res.json?.error || "Could not load product information."
+      )}</p>`;
+    }
+    return;
+  }
+  state.pkPayload = res.json;
+  if (res.json?.menuItem?.imageUrl || res.json?.menuItem?.image_url) {
+    renderPkMedia(
+      res.json.menuItem.imageUrl || res.json.menuItem.image_url,
+      res.json.menuItem.name
+    );
+  }
+  renderProductKnowledgeBody();
+}
+
+function closeProductKnowledge() {
+  const dialog = $("pk-dialog");
+  state.pkItem = null;
+  state.pkPayload = null;
+  if (dialog?.open) dialog.close();
+  const trigger = state._pkTrigger;
+  state._pkTrigger = null;
+  if (trigger && typeof trigger.focus === "function") {
+    trigger.focus();
+  } else {
+    $("menu-search")?.focus();
+  }
+}
+
+function lineSplitNo(line) {
+  const n = Number(line?.splitNo);
+  return Number.isInteger(n) && n >= 1 && n <= 12 ? n : 1;
+}
+
+function linesForSplit(splitNo) {
+  const n = lineSplitNo({ splitNo });
+  return state.cart.filter((line) => lineSplitNo(line) === n);
+}
+
+function splitIds() {
+  const ids = new Set(state.cart.map((line) => lineSplitNo(line)));
+  if (!ids.size) ids.add(1);
+  else ids.add(lineSplitNo({ splitNo: state.activeSplit }));
+  return [...ids].sort((a, b) => a - b);
+}
+
+function splitItemsCents(lines) {
+  return lines.reduce((sum, line) => sum + line.quantity * lineUnitCents(line), 0);
+}
+
+function splitInUse() {
+  return splitIds().length > 1;
+}
+
+function lineMergeKey(line) {
+  return [
+    line.itemId,
+    line.variantId || "",
+    Number(line.priceCents || 0),
+    line.basePriceAdjusted ? "1" : "0",
+    line.taxApplicable !== false ? "1" : "0",
+    lineSplitNo(line),
+    customizationKey(line),
+  ].join("::");
+}
+
+function lineConfiguredPrice(line) {
+  return Number(
+    line.configuredPriceCents != null
+      ? line.configuredPriceCents
+      : line.priceCents || 0
+  );
+}
+
+function addToCart(item, variant) {
+  if (!item.is_active) {
+    setStatus("That item is inactive.", false);
+    return;
+  }
+  if (item.is_sold_out) {
+    setStatus("That item is sold out.", false);
+    return;
+  }
+  if (variant) {
+    if (!variant.isActive || variant.isSoldOut) {
+      setStatus("That variant is unavailable.", false);
+      return;
+    }
+  } else if (item.hasVariants && salesVariants(item).length) {
+    openVariantPicker(item, salesVariants(item));
+    return;
+  }
+
+  const priceCents = variant
+    ? Number(variant.priceCents || 0)
+    : Number(item.price_cents || 0);
+
+  const candidate = {
+    lineId: `line_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    itemId: item.item_id,
+    name: item.name,
+    variantId: variant?.variantId || null,
+    variantName: variant?.name || "",
+    imageUrl: item.image_url || "",
+    configuredPriceCents: priceCents,
+    priceCents,
+    basePriceAdjusted: false,
+    taxApplicable: item.taxApplicable !== false,
+    stationIds: item.stationIds || [],
+    instructionModifiers: item.instructionModifiers || DEFAULT_MODIFIERS,
+    instructionTargets: item.instructionTargets || DEFAULT_TARGETS,
+    instructionStandalone: item.instructionStandalone || [],
+    availableAddons: (item.addons || []).filter((a) => a.isActive),
+    quantity: 1,
+    instructions: [],
+    orderNote: "",
+    addons: [],
+    splitNo: lineSplitNo({ splitNo: state.activeSplit }),
+  };
+
+  const key = lineMergeKey(candidate);
+  const existing = state.cart.find((l) => lineMergeKey(l) === key);
+  if (existing) {
+    existing.quantity += 1;
+    focusCartLine(existing.lineId, { follow: true });
+  } else {
+    state.cart.push(candidate);
+    focusCartLine(candidate.lineId, { follow: true });
+  }
+  renderCart();
+  const label = variant
+    ? `${item.name} — ${variant.name}`
+    : item.name;
+  showToast(splitInUse() ? `Added ${label} to order ${lineSplitNo(candidate)}` : `Added ${label}`);
+  setStatus("");
+  void syncDraftNumber();
+}
+
+function focusCartLine(lineId, { follow = false } = {}) {
+  state.cartFocusLineId = lineId || null;
+  state.cartFollowLatest = Boolean(follow && lineId);
+}
+
+function revealFocusedCartLine() {
+  const host = $("cart-lines");
+  if (!host || !state.cartFocusLineId) return;
+  const id =
+    typeof CSS !== "undefined" && CSS.escape
+      ? CSS.escape(state.cartFocusLineId)
+      : String(state.cartFocusLineId).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const el = host.querySelector(`[data-line-id="${id}"]`);
+  if (!el) return;
+  host.querySelectorAll(".cart-line.just-added").forEach((n) => {
+    n.classList.remove("just-added");
+  });
+  el.classList.add("just-added");
+  host.querySelector(".cart-scroll-tail")?.remove();
+  const pad = 6;
+  const hostRect = host.getBoundingClientRect();
+  const rect = el.getBoundingClientRect();
+  const name = el.querySelector(".cart-line-name");
+  const nameRect = name ? name.getBoundingClientRect() : rect;
+  const top = host.scrollTop + (rect.top - hostRect.top);
+  const nameTop = host.scrollTop + (nameRect.top - hostRect.top);
+  const view = host.clientHeight;
+  const fullyInside =
+    rect.top >= hostRect.top + pad - 1 && rect.bottom <= hostRect.bottom - pad + 1;
+  let next = host.scrollTop;
+  if (!fullyInside) {
+    if (rect.height + pad * 2 <= view) {
+      next =
+        rect.top < hostRect.top + pad
+          ? Math.max(0, top - pad)
+          : Math.max(0, top - (view - rect.height - pad));
+    } else {
+      next = Math.max(0, nameTop - pad);
+    }
+  }
+  const maxScroll = Math.max(0, host.scrollHeight - view);
+  if (next > maxScroll) {
+    let tail = host.querySelector(".cart-scroll-tail");
+    if (!tail) {
+      tail = document.createElement("div");
+      tail.className = "cart-scroll-tail";
+      tail.setAttribute("aria-hidden", "true");
+      host.appendChild(tail);
+    }
+    tail.style.height = `${Math.ceil(next - maxScroll)}px`;
+  }
+  state._cartProgrammaticScroll = true;
+  host.scrollTop = next;
+  window.setTimeout(() => {
+    state._cartProgrammaticScroll = false;
+  }, 320);
+}
+
+function onCartLinesScroll() {
+  if (state._cartProgrammaticScroll) return;
+  if (!state.cartFollowLatest) return;
+  state.cartFollowLatest = false;
+  $("cart-lines")
+    ?.querySelectorAll(".cart-line.just-added")
+    .forEach((n) => n.classList.remove("just-added"));
+}
+
+function instructionKey(list) {
+  return (list || [])
+    .map((s) => String(s).trim().toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join("|");
+}
+
+function cartTotals() {
+  let count = 0;
+  let cents = 0;
+  for (const line of state.cart) {
+    count += line.quantity;
+    cents += line.quantity * lineUnitCents(line);
+  }
+  return { count, cents };
+}
+
+function cartTaxEstimate() {
+  return estimateOrderTax(state.cart, state.config?.shop || {});
+}
+
+function selectedOrderType() {
+  const id = $("order-type")?.value;
+  return (state.orderTypes || []).find((row) => row.orderTypeId === id) || null;
+}
+
+function blankFulfillment() {
+  return {
+    customerId: "",
+    addressId: "",
+    addressLabel: "",
+    customerName: "",
+    customerPhone: "",
+    buildingNumber: "",
+    roadNumber: "",
+    blockNumber: "",
+    addressNote: "",
+    tableNumber: "",
+    vehicleNumber: "",
+    parkingLocation: "",
+    counterLabel: "",
+    deliveryChargeCents: null,
+    deliveryFeeOverride: false,
+    expectedBlockRateCents: null,
+  };
+}
+
+function deliveryQuote() {
+  const type = selectedOrderType();
+  if (!type || type.behavior !== "DELIVERY" || !state.fulfillment.blockNumber) {
+    return { show: false, cents: 0, valid: true };
+  }
+  const cents = state.fulfillment.deliveryChargeCents;
+  const valid = Number.isSafeInteger(cents) && cents >= 0;
+  return { show: true, cents: valid ? cents : 0, valid };
+}
+
+function deliveryFeeTaxEstimate() {
+  const quote = deliveryQuote();
+  if (!quote.show || !quote.valid || quote.cents <= 0) {
+    return { taxCents: 0, addedCents: 0, treatment: "not_applied" };
+  }
+  const rate = activeBlockRate(state.fulfillment.blockNumber);
+  if (!rate?.taxApplicable) {
+    return { taxCents: 0, addedCents: 0, treatment: "not_applied" };
+  }
+  return estimateDeliveryFeeTax(quote.cents, true, state.config?.shop || {});
+}
+
+function deliveryTaxHint() {
+  const fee = deliveryFeeTaxEstimate();
+  if (fee.treatment === "not_applied") return "";
+  const shop = state.config?.shop || {};
+  const name = shop.taxName || "VAT";
+  const rate = formatTaxPercentFromBps(shop.taxRateBps || 0);
+  if (fee.treatment === "included") return `Includes ${name} (${rate}%)`;
+  return `${name} (${rate}%) is added`;
+}
+
+function customerPayableCents(tax) {
+  const quote = deliveryQuote();
+  const fee = deliveryFeeTaxEstimate();
+  return (
+    Number(tax?.totalCents || 0) +
+    (quote.show && quote.valid ? quote.cents : 0) +
+    fee.addedCents
+  );
+}
+
+function renderTaxSummaryHtml(tax, { compact = false, itemCount = null } = {}) {
+  if (!tax) return "";
+  const rate = formatTaxPercentFromBps(tax.taxRateBps || 0);
+  const quote = deliveryQuote();
+  const feeTax = deliveryFeeTaxEstimate();
+  const shownTaxCents = Number(tax.taxCents || 0) + feeTax.taxCents;
+  const payable =
+    Number(tax.totalCents || 0) +
+    (quote.show && quote.valid ? quote.cents : 0) +
+    feeTax.addedCents;
+  const itemsRow =
+    itemCount != null
+      ? `<div><span class="muted">Items</span> <strong>${itemCount}</strong></div>`
+      : "";
+  const deliveryRow = quote.show
+    ? `<div><span class="muted">Delivery charge</span> <strong>${
+        quote.valid ? formatPrice(quote.cents) : "—"
+      }</strong></div>`
+    : "";
+  const est = tax.estimate
+    ? `<p class="muted tax-est-note">Estimate — server validates on send</p>`
+    : "";
+  if (!tax.taxEnabled) {
+    return `${est}<div class="tax-breakdown${compact ? " compact" : ""}">
+      ${itemsRow}
+      <div><span class="muted">Items total</span> <strong>${formatPrice(tax.goodsCents)}</strong></div>
+      ${deliveryRow}
+      <div class="tax-row-final"><span class="muted">Customer total</span> <strong>${formatPrice(payable)}</strong></div>
+    </div>`;
+  }
+  if (tax.taxMode === "inclusive") {
+    return `${est}<div class="tax-breakdown${compact ? " compact" : ""}">
+      ${itemsRow}
+      <div><span class="muted">Items total</span> <strong>${formatPrice(tax.goodsCents)}</strong></div>
+      ${
+        tax.nontaxableGoodsCents > 0
+          ? `<div><span class="muted">Taxable</span> <strong>${formatPrice(tax.taxableGoodsCents)}</strong></div>
+             <div><span class="muted">Non-taxable</span> <strong>${formatPrice(tax.nontaxableGoodsCents)}</strong></div>`
+          : ""
+      }
+      <div><span class="muted">Included ${escapeHtml(tax.taxName)} (${rate}%)</span> <strong>${formatPrice(shownTaxCents)}</strong></div>
+      ${deliveryRow}
+      <div class="tax-row-final"><span class="muted">Customer total</span> <strong>${formatPrice(payable)}</strong></div>
+    </div>`;
+  }
+  return `${est}<div class="tax-breakdown${compact ? " compact" : ""}">
+    ${itemsRow}
+    <div><span class="muted">Items total</span> <strong>${formatPrice(tax.goodsCents)}</strong></div>
+    ${
+      tax.nontaxableGoodsCents > 0 || tax.taxableGoodsCents !== tax.goodsCents
+        ? `<div><span class="muted">Taxable amount</span> <strong>${formatPrice(tax.taxableGoodsCents)}</strong></div>`
+        : ""
+    }
+    ${
+      tax.nontaxableGoodsCents > 0
+        ? `<div><span class="muted">Non-taxable</span> <strong>${formatPrice(tax.nontaxableGoodsCents)}</strong></div>`
+        : ""
+    }
+    <div><span class="muted">${escapeHtml(tax.taxName)} (${rate}%)</span> <strong>${formatPrice(shownTaxCents)}</strong></div>
+    ${deliveryRow}
+    <div class="tax-row-final"><span class="muted">Customer total</span> <strong>${formatPrice(payable)}</strong></div>
+  </div>`;
+}
+
+function renderSplitBar() {
+  const bar = $("split-bar");
+  if (!bar) return;
+  if (!state.cart.length) {
+    state.activeSplit = 1;
+    bar.hidden = true;
+    bar.innerHTML = "";
+    return;
+  }
+  const ids = splitIds();
+  bar.hidden = false;
+  if (ids.length === 1) {
+    bar.innerHTML = `<button type="button" class="btn ghost small" data-split-add>Split order</button>`;
+    return;
+  }
+  bar.innerHTML =
+    ids
+      .map((n) => {
+        const lines = linesForSplit(n);
+        const active = lineSplitNo({ splitNo: state.activeSplit }) === n;
+        return `<span class="split-chip-wrap">
+          <button type="button" class="split-chip${active ? " active" : ""}" data-split="${n}" aria-pressed="${active ? "true" : "false"}">
+            <span>Order ${n}</span>
+            <strong>${formatPrice(splitItemsCents(lines))}</strong>
+          </button>
+          ${
+            lines.length
+              ? ""
+              : `<button type="button" class="split-remove" data-split-remove="${n}" aria-label="Remove empty order ${n}">×</button>`
+          }
+        </span>`;
+      })
+      .join("") +
+    `<button type="button" class="btn ghost small split-add" data-split-add>+ Order</button>`;
+}
+
+function addSplitOrder() {
+  const next = Math.max(...splitIds()) + 1;
+  if (next > 12) {
+    showToast("12 orders is the limit");
+    return;
+  }
+  state.activeSplit = next;
+  renderCart();
+  showToast(`Order ${next} is ready. New items go there.`);
+}
+
+function moveLineToSplit(line, splitNo) {
+  const next = lineSplitNo({ splitNo });
+  if (!line || lineSplitNo(line) === next) return;
+  line.splitNo = next;
+  const key = lineMergeKey(line);
+  const dup = state.cart.find((other) => other !== line && lineMergeKey(other) === key);
+  if (dup) {
+    dup.quantity += Number(line.quantity || 1);
+    state.cart = state.cart.filter((other) => other !== line);
+    focusCartLine(dup.lineId, { follow: true });
+  } else {
+    focusCartLine(line.lineId, { follow: true });
+  }
+  renderCart();
+}
+
+function renderCart() {
+  const host = $("cart-lines");
+  host.innerHTML = "";
+  const totals = cartTotals();
+  const tax = cartTaxEstimate();
+  if ($("mobile-cart-count")) {
+    $("mobile-cart-count").textContent = String(totals.count);
+  }
+  if ($("mobile-cart-total")) {
+    $("mobile-cart-total").textContent = formatPrice(customerPayableCents(tax));
+  }
+  const mobileBar = $("mobile-cart-bar");
+  if (mobileBar) {
+    mobileBar.hidden = false;
+  }
+  const orderInput = $("order-number");
+  if (orderInput) {
+    orderInput.title = state.orderNumber || "";
+  }
+  const taxHost = $("cart-tax-summary");
+  if (taxHost) {
+    taxHost.innerHTML = state.cart.length
+      ? renderTaxSummaryHtml(tax, { itemCount: totals.count })
+      : "";
+  }
+
+  renderSplitBar();
+  if (!state.cart.length) {
+    host.innerHTML = `<p class="empty">Cart is empty. Tap a menu item to add it.</p>`;
+    state.cartFocusLineId = null;
+    state.cartFollowLatest = false;
+    syncReviewWithCart();
+    return;
+  }
+  const groups = splitInUse() ? splitIds() : [null];
+  for (const splitNo of groups) {
+    const groupLines = splitNo == null ? state.cart : linesForSplit(splitNo);
+    if (splitNo != null) {
+      const head = document.createElement("div");
+      head.className = "split-group-head";
+      const adding = lineSplitNo({ splitNo: state.activeSplit }) === splitNo;
+      head.innerHTML = `<span>Order ${splitNo}${adding ? " · adding here" : ""}</span><strong>${formatPrice(splitItemsCents(groupLines))}</strong>`;
+      host.appendChild(head);
+      if (!groupLines.length) {
+        const note = document.createElement("p");
+        note.className = "muted split-empty";
+        note.textContent = `Tap a menu item to add it to order ${splitNo}.`;
+        host.appendChild(note);
+      }
+    }
+  for (const line of groupLines) {
+    const el = document.createElement("div");
+    el.className = "cart-line";
+    el.dataset.lineId = line.lineId;
+    if (line.lineId === state.cartFocusLineId && state.cartFollowLatest) {
+      el.classList.add("just-added");
+    }
+    const tags = (line.instructions || [])
+      .map((i) => `<span class="tag">${escapeHtml(i)}</span>`)
+      .join("");
+    const addonTags = (line.addons || [])
+      .map((a) => {
+        const p = addonAppliedPrice(a);
+        const label = `${p < 0 ? "− " : p > 0 ? "+ " : ""}${a.name} ${formatPrice(Math.abs(p))}`;
+        return `<span class="tag">${escapeHtml(label)}</span>`;
+      })
+      .join("");
+    const unit = lineUnitCents(line);
+    const nameHtml = escapeHtml(line.name);
+    const customizeLabel = line.variantName
+      ? `Customize ${line.name} — ${line.variantName}`
+      : `Customize ${line.name}`;
+    const variantHtml = line.variantName
+      ? `<span class="cart-line-variant">${escapeHtml(line.variantName)}</span>`
+      : "";
+    const adjusted =
+      line.basePriceAdjusted ||
+      Number(line.priceCents) !== lineConfiguredPrice(line);
+    el.innerHTML = `
+      <div class="cart-line-main" data-act="customize" role="button" tabindex="0" aria-label="${escapeHtml(customizeLabel)}">
+        <div class="cart-line-head">
+          <div class="cart-line-info">
+            <strong class="cart-line-name">${nameHtml}</strong>
+            ${variantHtml}
+            <div class="cart-line-price muted">${formatPrice(line.priceCents)} × ${line.quantity} · <strong>${formatPrice(unit * line.quantity)}</strong>${
+              adjusted ? ` <span class="price-adjusted-badge">Adjusted</span>` : ""
+            }</div>
+          </div>
+          <span class="cart-line-edit-hint" aria-hidden="true">
+            <svg viewBox="0 0 20 20" width="14" height="14"><path fill="currentColor" d="M14.7 2.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-9.5 9.5-3.2.8a.5.5 0 0 1-.6-.6l.8-3.2 9.5-9.5z"/></svg>
+          </span>
+        </div>
+        ${tags ? `<div class="instr-tags">${tags}</div>` : ""}
+        ${addonTags ? `<div class="instr-tags">${addonTags}</div>` : ""}
+        ${
+          line.orderNote
+            ? `<div class="cart-order-note">Note: ${escapeHtml(line.orderNote)}</div>`
+            : ""
+        }
+      </div>
+      <div class="cart-line-toolbar">
+        ${
+          splitInUse()
+            ? `<label class="split-move"><select data-act="move-split" aria-label="Move ${escapeHtml(line.name)} to another order">${splitIds()
+                .map(
+                  (n) =>
+                    `<option value="${n}"${n === lineSplitNo(line) ? " selected" : ""}>Order ${n}</option>`
+                )
+                .join("")}</select></label>`
+            : ""
+        }
+        <div class="qty-controls">
+          <button type="button" data-act="dec" aria-label="Decrease quantity">−</button>
+          <span aria-live="polite">${line.quantity}</span>
+          <button type="button" data-act="inc" aria-label="Increase quantity">+</button>
+        </div>
+        <button type="button" class="icon-btn danger" data-act="remove" aria-label="Remove item" title="Remove">
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 3h6l.5 1H17v2H3V4h3.5L7 3zm1 5h2v7H8V8zm4 0h2v7h-2V8zM5 8h2v7H5V8z"/></svg>
+        </button>
+      </div>
+    `;
+    const openCustomize = (e) => {
+      e?.preventDefault?.();
+      state._customizeTrigger = document.activeElement;
+      openInstructions(line.lineId);
+    };
+    el.querySelector('[data-act="customize"]').addEventListener("click", openCustomize);
+    el.querySelector('[data-act="customize"]').addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openCustomize(e);
+      }
+    });
+    el.querySelector('[data-act="dec"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (line.quantity <= 1) {
+        state.cart = state.cart.filter((l) => l.lineId !== line.lineId);
+        if (state.cartFocusLineId === line.lineId) {
+          focusCartLine(null);
+        }
+      } else {
+        line.quantity -= 1;
+      }
+      renderCart();
+    });
+    el.querySelector('[data-act="inc"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      line.quantity += 1;
+      renderCart();
+      void syncDraftNumber();
+    });
+    el.querySelector('[data-act="remove"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      state.cart = state.cart.filter((l) => l.lineId !== line.lineId);
+      if (state.cartFocusLineId === line.lineId) {
+        focusCartLine(null);
+      }
+      renderCart();
+    });
+    el.querySelector('[data-act="move-split"]')?.addEventListener("change", (e) => {
+      moveLineToSplit(line, Number(e.target.value));
+    });
+    host.appendChild(el);
+  }
+  }
+  if (state.cartFollowLatest && state.cartFocusLineId) {
+    requestAnimationFrame(() => revealFocusedCartLine());
+  }
+  persistActiveCart();
+  updateHeldCartUi();
+  syncReviewWithCart();
+}
+
+function openInstructions(lineId) {
+  const line = state.cart.find((l) => l.lineId === lineId);
+  if (!line) return;
+  if (line.configuredPriceCents == null) {
+    line.configuredPriceCents = Number(line.priceCents || 0);
+  }
+  state.editingLineId = lineId;
+  state.selectedMod = null;
+  state.selectedTargets = [];
+  state.kitchenStep = 1;
+  state.customizeTab = "notes";
+  state.priceBreakdownOpen = false;
+  const configured = lineConfiguredPrice(line);
+  const applied = Number(line.priceCents || 0);
+  state.customizeDraft = {
+    lineId,
+    isNew: Boolean(line._pendingCustomize),
+    quantity: Number(line.quantity || 1),
+    qtyDraft: String(Number(line.quantity || 1)),
+    configuredPriceCents: configured,
+    unitPriceCents: applied,
+    basePriceAdjusted: Boolean(line.basePriceAdjusted) || applied !== configured,
+    priceDraft: state.money
+      ? state.money.formatPlain(applied)
+      : String(applied),
+    instructions: [...(line.instructions || [])],
+    orderNote: String(line.orderNote || ""),
+    addons: (line.addons || []).map((a) => {
+      const entered = Boolean(a.priceEnteredAtSale);
+      const applied = addonAppliedPrice(a);
+      return {
+        addonId: a.addonId,
+        name: a.name,
+        quantity: a.quantity || 1,
+        priceEnteredAtSale: entered,
+        configuredUnitPriceCents: entered ? null : addonConfiguredPrice(a),
+        unitPriceCents: applied,
+        priceAdjusted: entered ? false : Boolean(a.priceAdjusted),
+        taxApplicable: a.taxApplicable !== false,
+        draftText:
+          applied == null
+            ? ""
+            : state.money
+              ? state.money.formatPlain(applied)
+              : String(applied),
+        editingPrice: entered,
+      };
+    }),
+    priceError: "",
+  };
+  $("instr-item-name").textContent = line.name;
+  const variantLabel = $("customize-variant-label");
+  if (variantLabel) {
+    if (line.variantName) {
+      variantLabel.hidden = false;
+      variantLabel.textContent = line.variantName;
+    } else {
+      variantLabel.hidden = true;
+      variantLabel.textContent = "";
+    }
+  }
+  renderCustomizeMedia(line);
+  $("custom-note").value = state.customizeDraft.orderNote;
+  const hint = $("addon-price-hint");
+  if (hint) {
+    hint.hidden = state.canAdjustAddonPrices;
+    hint.textContent = state.canAdjustAddonPrices
+      ? ""
+      : "Changing a priced add-on needs add-on price permission. If an add-on has no price, enter it here.";
+  }
+  setCustomizeTab("notes");
+  syncCustomizeQty();
+  syncCustomizeUnitPrice();
+  setKitchenStep(1);
+  renderInstrChips();
+  renderSelectedInstructions();
+  renderAddonPicker();
+  updatePriceSummary();
+  $("addon-price-error").hidden = true;
+  $("customize-price-error").hidden = true;
+  document.body.classList.add("customize-open");
+  $("instr-dialog").showModal();
+}
+
+function renderCustomizeMedia(line) {
+  const host = $("customize-item-media");
+  if (!host) return;
+  host.innerHTML = "";
+  if (line.imageUrl) {
+    const img = document.createElement("img");
+    img.src = line.imageUrl;
+    img.alt = "";
+    img.className = "customize-item-img";
+    img.addEventListener("error", () => {
+      host.innerHTML = `<div class="customize-item-fallback" aria-hidden="true"></div>`;
+    });
+    host.appendChild(img);
+  } else {
+    host.innerHTML = `<div class="customize-item-fallback" aria-hidden="true"></div>`;
+  }
+}
+
+function setCustomizeTab(tab) {
+  state.customizeTab = tab === "extras" ? "extras" : "notes";
+  const notes = $("panel-notes");
+  const extras = $("panel-extras");
+  const tabNotes = $("tab-notes");
+  const tabExtras = $("tab-extras");
+  if (notes) notes.hidden = state.customizeTab !== "notes";
+  if (extras) extras.hidden = state.customizeTab !== "extras";
+  if (tabNotes) {
+    tabNotes.classList.toggle("active", state.customizeTab === "notes");
+    tabNotes.setAttribute(
+      "aria-selected",
+      state.customizeTab === "notes" ? "true" : "false"
+    );
+  }
+  if (tabExtras) {
+    tabExtras.classList.toggle("active", state.customizeTab === "extras");
+    tabExtras.setAttribute(
+      "aria-selected",
+      state.customizeTab === "extras" ? "true" : "false"
+    );
+  }
+}
+
+function setKitchenStep(step) {
+  state.kitchenStep = step === 2 ? 2 : 1;
+  const s1 = $("kitchen-step-1");
+  const s2 = $("kitchen-step-2");
+  if (s1) s1.hidden = state.kitchenStep !== 1;
+  if (s2) s2.hidden = state.kitchenStep !== 2;
+  const label = $("kitchen-target-label");
+  if (label && state.selectedMod) {
+    label.textContent = `Which ingredients for “${state.selectedMod}”?`;
+  }
+  renderInstrChips();
+}
+
+function joinInstructionTargets(targets) {
+  if (targets.length <= 1) return targets[0] || "";
+  if (targets.length === 2) return `${targets[0]} and ${targets[1]}`;
+  return `${targets.slice(0, -1).join(", ")} and ${targets[targets.length - 1]}`;
+}
+
+function syncKitchenTargetsOk() {
+  const btn = $("kitchen-targets-ok");
+  if (!btn) return;
+  const count = state.selectedTargets.length;
+  btn.disabled = count === 0;
+  btn.textContent = count > 1 ? `OK (${count})` : "OK";
+}
+
+function showInstrFeedback(message, { error = false } = {}) {
+  const el = $("instr-preview");
+  if (!el) return;
+  if (!message) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  el.hidden = false;
+  el.textContent = message;
+  el.classList.toggle("instr-feedback-error", error);
+  window.setTimeout(() => {
+    if (el.textContent === message) {
+      el.hidden = true;
+    }
+  }, 1600);
+}
+
+function getDraft() {
+  return state.customizeDraft;
+}
+
+function getEditingLine() {
+  return state.cart.find((l) => l.lineId === state.editingLineId);
+}
+
+function syncCustomizeQty() {
+  const draft = getDraft();
+  const el = $("customize-qty");
+  if (el && document.activeElement !== el) {
+    el.value = draft?.qtyDraft ?? String(draft?.quantity || 1);
+  }
+  const dec = $("customize-qty-dec");
+  if (dec) dec.disabled = !draft || Number(draft.quantity || 1) <= 1;
+}
+
+function changeCustomizeQty(delta) {
+  const draft = getDraft();
+  if (!draft) return;
+  const next = Number(draft.quantity || 1) + delta;
+  if (next < 1) return;
+  draft.quantity = next;
+  draft.qtyDraft = String(next);
+  syncCustomizeQty();
+  updatePriceSummary();
+}
+
+function onCustomizeQtyInput(e) {
+  const draft = getDraft();
+  if (!draft) return;
+  draft.qtyDraft = e.target.value;
+}
+
+function commitCustomizeQty() {
+  const draft = getDraft();
+  const el = $("customize-qty");
+  if (!draft || !el) return true;
+  const raw = String(el.value ?? draft.qtyDraft ?? "").trim();
+  if (!raw) {
+    // Keep drafting empty while typing — do not delete the line in-modal.
+    $("customize-price-error").hidden = false;
+    $("customize-price-error").textContent = "Enter a quantity of 1 or more.";
+    return false;
+  }
+  if (!/^\d+$/.test(raw)) {
+    $("customize-price-error").hidden = false;
+    $("customize-price-error").textContent =
+      "Quantity must be a whole number (e.g. 1, 2, 10).";
+    return false;
+  }
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    $("customize-price-error").hidden = false;
+    $("customize-price-error").textContent =
+      "Quantity must be a whole number of at least 1.";
+    return false;
+  }
+  draft.quantity = n;
+  draft.qtyDraft = String(n);
+  el.value = String(n);
+  $("customize-price-error").hidden = true;
+  syncCustomizeQty();
+  updatePriceSummary();
+  return true;
+}
+
+function syncCustomizeUnitPrice() {
+  const draft = getDraft();
+  const input = $("customize-unit-price");
+  const badge = $("customize-price-adjusted");
+  const reset = $("customize-price-reset");
+  const locked = $("customize-price-locked");
+  const configuredEl = $("customize-configured-price");
+  const currencyEl = $("customize-price-currency");
+  const labelEl = $("customize-price-label");
+  if (!draft || !input) return;
+  const canEdit = Boolean(state.canAdjustBasePrices);
+  if (canEdit) {
+    input.removeAttribute("readonly");
+    input.disabled = false;
+  } else {
+    input.setAttribute("readonly", "readonly");
+    input.disabled = false;
+  }
+  input.classList.toggle("is-editable", canEdit);
+  if (currencyEl) {
+    currencyEl.textContent = state.money?.label || "";
+  }
+  if (configuredEl) {
+    configuredEl.textContent = `Menu price: ${formatPrice(draft.configuredPriceCents)}`;
+  }
+  if (labelEl) {
+    labelEl.textContent = canEdit ? "Custom price" : "Unit price";
+  }
+  if (locked) locked.hidden = canEdit;
+  if (document.activeElement !== input) {
+    input.value =
+      draft.priceDraft ??
+      (state.money
+        ? state.money.formatPlain(draft.unitPriceCents)
+        : String(draft.unitPriceCents));
+  }
+  const adjusted =
+    draft.basePriceAdjusted ||
+    Number(draft.unitPriceCents) !== Number(draft.configuredPriceCents);
+  if (badge) badge.hidden = !adjusted;
+  if (reset) reset.hidden = !(canEdit && adjusted);
+  updateCustomizeLineTotalPreview();
+}
+
+function updateCustomizeLineTotalPreview() {
+  const draft = getDraft();
+  const el = $("customize-line-total");
+  if (!el || !draft) return;
+  const addons = draft.addons.reduce(
+    (s, a) => s + Number(a.unitPriceCents || 0) * Number(a.quantity || 1),
+    0
+  );
+  const unit = Number(draft.unitPriceCents || 0) + addons;
+  const lineTotal = unit * Number(draft.quantity || 1);
+  el.textContent = `Line total ${formatPrice(lineTotal)}`;
+}
+
+function onCustomizeUnitPriceInput(e) {
+  const draft = getDraft();
+  if (!draft || !state.canAdjustBasePrices) return;
+  const raw = e.target.value;
+  draft.priceDraft = raw;
+  const trimmed = String(raw || "").trim().replace(/,/g, "");
+  if (/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
+    try {
+      const minor = state.money.parse(raw);
+      if (minor >= 0) {
+        draft.unitPriceCents = minor;
+        draft.basePriceAdjusted =
+          minor !== Number(draft.configuredPriceCents);
+        $("customize-price-error").hidden = true;
+        const badge = $("customize-price-adjusted");
+        const reset = $("customize-price-reset");
+        if (badge) badge.hidden = !draft.basePriceAdjusted;
+        if (reset) reset.hidden = !draft.basePriceAdjusted;
+        updateCustomizeLineTotalPreview();
+        updatePriceSummary();
+      }
+    } catch {
+      /* keep drafting */
+    }
+  }
+}
+
+function commitCustomizeUnitPrice() {
+  const draft = getDraft();
+  const input = $("customize-unit-price");
+  const err = $("customize-price-error");
+  if (!draft || !input) return true;
+  if (!state.canAdjustBasePrices) {
+    draft.unitPriceCents = Number(draft.configuredPriceCents || 0);
+    draft.basePriceAdjusted = false;
+    draft.priceDraft = state.money
+      ? state.money.formatPlain(draft.unitPriceCents)
+      : String(draft.unitPriceCents);
+    syncCustomizeUnitPrice();
+    return true;
+  }
+  const raw = String(input.value ?? draft.priceDraft ?? "").trim();
+  if (!raw || raw === "." || /\.$/.test(raw)) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Enter a complete custom price.";
+    }
+    return false;
+  }
+  try {
+    const minor = state.money.parse(raw);
+    if (minor < 0) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = "Custom price cannot be negative.";
+      }
+      return false;
+    }
+    draft.unitPriceCents = minor;
+    draft.basePriceAdjusted = minor !== Number(draft.configuredPriceCents);
+    draft.priceDraft = state.money.formatPlain(minor);
+    input.value = draft.priceDraft;
+    if (err) err.hidden = true;
+    syncCustomizeUnitPrice();
+    updatePriceSummary();
+    return true;
+  } catch (ex) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = ex.message || "Invalid price.";
+    }
+    return false;
+  }
+}
+
+function resetCustomizeUnitPrice() {
+  const draft = getDraft();
+  if (!draft || !state.canAdjustBasePrices) return;
+  draft.unitPriceCents = Number(draft.configuredPriceCents || 0);
+  draft.basePriceAdjusted = false;
+  draft.priceDraft = state.money
+    ? state.money.formatPlain(draft.unitPriceCents)
+    : String(draft.unitPriceCents);
+  syncCustomizeUnitPrice();
+  updatePriceSummary();
+  $("customize-unit-price")?.focus();
+}
+
+function renderAddonPicker() {
+  const host = $("addon-pick-list");
+  if (!host) return;
+  const line = getEditingLine();
+  const draft = getDraft();
+  host.innerHTML = "";
+  const available = line?.availableAddons || [];
+  if (!available.length) {
+    host.innerHTML = `<p class="muted">No extras for this item.</p>`;
+    updatePriceSummary();
+    return;
+  }
+  const canEdit = state.canAdjustAddonPrices;
+  for (const addon of available) {
+    let sel = draft.addons.find((a) => a.addonId === addon.addonId);
+    const priceUnset = addonCatalogUnset(addon);
+    const configured = priceUnset
+      ? null
+      : Number(addon.effectivePriceCents ?? addon.priceCents);
+    const row = document.createElement("div");
+    const checked = Boolean(sel);
+    const needsEntry = checked && Boolean(sel?.priceEnteredAtSale);
+    row.className = `addon-pick-row${checked ? " is-selected" : ""}${
+      needsEntry ? " needs-price" : ""
+    }`;
+    const applied = sel ? sel.unitPriceCents : configured;
+    const kind = priceKindLabel(applied, priceUnset && !checked);
+    const priceBit = applied == null ? "" : formatSignedPrice(applied);
+    const showPriceEdit = checked && canEdit && sel?.editingPrice && !needsEntry;
+    const showRequiredPrice = needsEntry;
+    row.innerHTML = `
+      <button type="button" class="addon-select-btn" aria-pressed="${checked}">
+        <span class="addon-select-name">${escapeHtml(addon.name)}</span>
+        <span class="addon-kind muted">${escapeHtml(kind)}${
+          priceBit ? ` · ${escapeHtml(priceBit)}` : ""
+        }</span>
+      </button>
+      ${
+        checked && canEdit && !needsEntry
+          ? `<button type="button" class="btn ghost small addon-edit-price-btn">${
+              showPriceEdit ? "Done" : "Edit price"
+            }</button>`
+          : ""
+      }
+      ${
+        showPriceEdit || showRequiredPrice
+          ? `<label class="field addon-price-field">
+              <span class="currency-prefix">${escapeHtml(state.money?.label || "")}</span>
+              <input type="text" inputmode="decimal" class="addon-price-input${
+                showRequiredPrice ? " is-required" : ""
+              }"
+                data-addon-price="${escapeHtml(addon.addonId)}"
+                value="${escapeHtml(sel?.draftText || "")}"
+                placeholder="${showRequiredPrice ? "Required" : ""}"
+                aria-label="Price for ${escapeHtml(addon.name)}" />
+            </label>`
+          : ""
+      }
+    `;
+    row.querySelector(".addon-select-btn").addEventListener("click", () => {
+      if (checked) {
+        draft.addons = draft.addons.filter((a) => a.addonId !== addon.addonId);
+        renderAddonPicker();
+        return;
+      }
+      draft.addons.push({
+        addonId: addon.addonId,
+        name: addon.name,
+        quantity: 1,
+        priceEnteredAtSale: priceUnset,
+        configuredUnitPriceCents: configured,
+        unitPriceCents: priceUnset ? null : configured,
+        priceAdjusted: false,
+        taxApplicable: addon.taxApplicable !== false,
+        draftText:
+          priceUnset
+            ? ""
+            : state.money
+              ? state.money.formatPlain(configured)
+              : String(configured),
+        editingPrice: priceUnset,
+      });
+      renderAddonPicker();
+      if (priceUnset) {
+        $("addon-pick-list")
+          ?.querySelector(`[data-addon-price="${CSS.escape(addon.addonId)}"]`)
+          ?.focus();
+      }
+    });
+    const editBtn = row.querySelector(".addon-edit-price-btn");
+    if (editBtn) {
+      editBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const entry = draft.addons.find((a) => a.addonId === addon.addonId);
+        if (!entry) return;
+        entry.editingPrice = !entry.editingPrice;
+        renderAddonPicker();
+        if (entry.editingPrice) {
+          row.querySelector(".addon-price-input")?.focus();
+        }
+      });
+    }
+    const priceInput = row.querySelector(".addon-price-input");
+    if (priceInput) {
+      priceInput.addEventListener("input", (e) => {
+        const entry = draft.addons.find((a) => a.addonId === addon.addonId);
+        if (!entry) return;
+        entry.draftText = e.target.value;
+        if (/^-?(?:\d+(?:\.\d+)?|\.\d+)$/.test(String(e.target.value).trim().replace(/,/g, ""))) {
+          try {
+            const minor = state.money.parse(e.target.value);
+            entry.unitPriceCents = minor;
+            entry.priceAdjusted = entry.priceEnteredAtSale
+              ? false
+              : minor !== entry.configuredUnitPriceCents;
+            $("addon-price-error").hidden = true;
+          } catch (err) {
+            $("addon-price-error").hidden = false;
+            $("addon-price-error").textContent = err.message;
+            if (entry.priceEnteredAtSale) entry.unitPriceCents = null;
+          }
+        } else if (entry.priceEnteredAtSale) {
+          entry.unitPriceCents = null;
+        }
+        updatePriceSummary();
+      });
+      priceInput.addEventListener("blur", (e) => {
+        const entry = draft.addons.find((a) => a.addonId === addon.addonId);
+        if (!entry) return;
+        const raw = String(e.target.value || "").trim();
+        if (!raw || raw === "-" || raw.endsWith(".")) {
+          $("addon-price-error").hidden = false;
+          $("addon-price-error").textContent =
+            "Enter a complete price (e.g. 0.300 or -0.100).";
+          return;
+        }
+        try {
+          const minor = state.money.parse(raw);
+          entry.unitPriceCents = minor;
+          entry.priceAdjusted = entry.priceEnteredAtSale
+            ? false
+            : minor !== entry.configuredUnitPriceCents;
+          entry.draftText = state.money.formatPlain(minor);
+          e.target.value = entry.draftText;
+          $("addon-price-error").hidden = true;
+          updatePriceSummary();
+        } catch (err) {
+          $("addon-price-error").hidden = false;
+          $("addon-price-error").textContent = err.message;
+        }
+      });
+    }
+    host.appendChild(row);
+  }
+  updatePriceSummary();
+}
+
+function updatePriceSummary() {
+  const host = $("price-summary");
+  const detail = $("price-summary-detail");
+  const toggle = $("price-breakdown-toggle");
+  if (!host) return;
+  const draft = getDraft();
+  if (!draft) {
+    host.innerHTML = "";
+    if (detail) detail.innerHTML = "";
+    return;
+  }
+  const base = Number(draft.unitPriceCents || 0);
+  let charges = 0;
+  let reductions = 0;
+  for (const a of draft.addons) {
+    const p = Number(a.unitPriceCents || 0) * Number(a.quantity || 1);
+    if (p > 0) charges += p;
+    else if (p < 0) reductions += p;
+  }
+  const net = charges + reductions;
+  const unit = base + net;
+  const qty = Number(draft.quantity || 1);
+  const lineTotal = unit * qty;
+  const priceNeeded = draft.addons.some(
+    (a) => a.priceEnteredAtSale && a.unitPriceCents == null
+  );
+  const extrasNote = priceNeeded
+    ? `<div><dt>Extras</dt><dd>Enter add-on price</dd></div>`
+    : net !== 0
+      ? `<div><dt>Extras</dt><dd>${escapeHtml(formatSignedPrice(net))}</dd></div>`
+      : "";
+  host.innerHTML = `
+    <div><dt>Unit price</dt><dd>${escapeHtml(formatPrice(base))}</dd></div>
+    <div><dt>Quantity</dt><dd>${qty}</dd></div>
+    ${extrasNote}
+    <div class="price-summary-total"><dt>Line total</dt><dd><strong>${escapeHtml(
+      formatPrice(lineTotal)
+    )}</strong></dd></div>
+  `;
+  if (detail) {
+    detail.hidden = !state.priceBreakdownOpen;
+    detail.innerHTML = `
+      <div><dt>Base selling price</dt><dd>${escapeHtml(formatPrice(base))}</dd></div>
+      <div><dt>Add-on charges</dt><dd>${escapeHtml(formatSignedPrice(charges))}</dd></div>
+      <div><dt>Reductions</dt><dd>${escapeHtml(formatSignedPrice(reductions))}</dd></div>
+      <div><dt>Net adjustment</dt><dd>${escapeHtml(formatSignedPrice(net))}</dd></div>
+      <div><dt>Unit total</dt><dd><strong>${escapeHtml(formatPrice(unit))}</strong></dd></div>
+      <div class="price-summary-total"><dt>Line total</dt><dd><strong>${escapeHtml(
+        formatPrice(lineTotal)
+      )}</strong></dd></div>
+    `;
+  }
+  if (toggle) {
+    toggle.textContent = state.priceBreakdownOpen
+      ? "Hide price breakdown"
+      : "View price breakdown";
+  }
+  updateCustomizeLineTotalPreview();
+  if (unit < 0 || lineTotal < 0) {
+    $("addon-price-error").hidden = false;
+    $("addon-price-error").textContent =
+      "Final unit/line total cannot be negative.";
+  }
+}
+
+function renderSelectedInstructions() {
+  const host = $("instr-chip-list");
+  if (!host) return;
+  const draft = getDraft();
+  host.innerHTML = "";
+  if (!draft?.instructions?.length) {
+    host.innerHTML = "";
+    return;
+  }
+  draft.instructions.forEach((text, idx) => {
+    const chip = document.createElement("span");
+    chip.className = "tag-chip";
+    chip.innerHTML = `${escapeHtml(text)} <button type="button" aria-label="Remove ${escapeHtml(text)}">×</button>`;
+    chip.querySelector("button").addEventListener("click", () => {
+      draft.instructions.splice(idx, 1);
+      renderSelectedInstructions();
+    });
+    host.appendChild(chip);
+  });
+}
+
+function renderInstrList() {
+  renderSelectedInstructions();
+}
+
+function currentLineOptions() {
+  const line = getEditingLine();
+  return {
+    modifiers: line?.instructionModifiers?.length
+      ? line.instructionModifiers
+      : DEFAULT_MODIFIERS,
+    targets: line?.instructionTargets?.length
+      ? line.instructionTargets
+      : DEFAULT_TARGETS,
+  };
+}
+
+function renderInstrChips() {
+  const { modifiers, targets } = currentLineOptions();
+  const line = getEditingLine();
+  const modHost = $("mod-chips");
+  const targetHost = $("target-chips");
+  const standHost = $("standalone-chips");
+  if (!modHost || !targetHost) return;
+  modHost.innerHTML = "";
+  targetHost.innerHTML = "";
+  if (standHost) standHost.innerHTML = "";
+
+  if (state.kitchenStep === 1) {
+    for (const m of modifiers) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip kitchen-choice";
+      btn.textContent = m;
+      btn.addEventListener("click", () => {
+        state.selectedMod = m;
+        state.selectedTargets = [];
+        setKitchenStep(2);
+        showInstrFeedback("Select one or more ingredients, then OK");
+      });
+      modHost.appendChild(btn);
+    }
+    for (const s of line?.instructionStandalone || []) {
+      if (!standHost) break;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip kitchen-choice";
+      btn.textContent = s;
+      btn.addEventListener("click", () => addStandaloneInstruction(s));
+      standHost.appendChild(btn);
+    }
+    return;
+  }
+
+  for (const t of targets) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    const selected = state.selectedTargets.includes(t);
+    btn.className = `chip green kitchen-choice${selected ? " active" : ""}`;
+    btn.textContent = t;
+    btn.setAttribute("aria-pressed", selected ? "true" : "false");
+    btn.addEventListener("click", () => {
+      if (state.selectedTargets.includes(t)) {
+        state.selectedTargets = state.selectedTargets.filter((name) => name !== t);
+      } else {
+        state.selectedTargets = [...state.selectedTargets, t];
+      }
+      renderInstrChips();
+    });
+    targetHost.appendChild(btn);
+  }
+  syncKitchenTargetsOk();
+}
+
+function addStandaloneInstruction(text) {
+  const draft = getDraft();
+  if (!draft) return;
+  const exists = draft.instructions.some(
+    (i) => i.trim().toLowerCase() === text.toLowerCase()
+  );
+  if (exists) {
+    showInstrFeedback("Already added", { error: true });
+    return;
+  }
+  draft.instructions.push(text);
+  renderSelectedInstructions();
+  showInstrFeedback(`Added ${text}`);
+}
+
+function syncOrderNoteFromInput() {
+  const draft = getDraft();
+  if (!draft) return;
+  draft.orderNote = String($("custom-note")?.value || "").trim();
+}
+
+function addInstruction() {
+  const draft = getDraft();
+  if (!draft) return;
+  if (!state.selectedMod || !state.selectedTargets.length) return;
+  const text = `${state.selectedMod} ${joinInstructionTargets(state.selectedTargets)}`;
+  const exists = draft.instructions.some(
+    (i) => i.trim().toLowerCase() === text.toLowerCase()
+  );
+  if (exists) {
+    showInstrFeedback("Already added", { error: true });
+    return;
+  }
+  draft.instructions.push(text);
+  showInstrFeedback(`Added ${text}`);
+  state.selectedMod = null;
+  state.selectedTargets = [];
+  setKitchenStep(1);
+  renderSelectedInstructions();
+}
+
+function validateDraftPrices() {
+  const draft = getDraft();
+  if (!draft) return false;
+  if (!commitCustomizeQty()) return false;
+  if (!commitCustomizeUnitPrice()) return false;
+  for (const a of draft.addons) {
+    const raw = String(a.draftText ?? "").trim();
+    if (a.priceEnteredAtSale && (!raw || raw === "-" || /\.$/.test(raw))) {
+      $("addon-price-error").hidden = false;
+      $("addon-price-error").textContent = `Enter a price for ${a.name}.`;
+      setCustomizeTab("extras");
+      $("addon-pick-list")
+        ?.querySelector(`[data-addon-price="${CSS.escape(a.addonId)}"]`)
+        ?.focus();
+      return false;
+    }
+    if (!a.priceEnteredAtSale && (!raw || raw === "-" || /\.$/.test(raw))) {
+      $("addon-price-error").hidden = false;
+      $("addon-price-error").textContent = `Complete the price for ${a.name}.`;
+      setCustomizeTab("extras");
+      return false;
+    }
+    try {
+      const minor = state.money.parse(raw);
+      a.unitPriceCents = minor;
+      a.priceAdjusted = a.priceEnteredAtSale
+        ? false
+        : minor !== Number(a.configuredUnitPriceCents);
+      a.draftText = state.money.formatPlain(minor);
+    } catch (err) {
+      $("addon-price-error").hidden = false;
+      $("addon-price-error").textContent = `${a.name}: ${err.message}`;
+      setCustomizeTab("extras");
+      return false;
+    }
+  }
+  const base = Number(draft.unitPriceCents || 0);
+  const addons = draft.addons.reduce(
+    (s, a) => s + Number(a.unitPriceCents || 0) * Number(a.quantity || 1),
+    0
+  );
+  if (base + addons < 0) {
+    $("addon-price-error").hidden = false;
+    $("addon-price-error").textContent =
+      "Final unit/line total cannot be negative.";
+    return false;
+  }
+  if (!state.canAdjustAddonPrices) {
+    for (const a of draft.addons) {
+      if (a.priceAdjusted && !a.priceEnteredAtSale) {
+        $("addon-price-error").hidden = false;
+        $("addon-price-error").textContent =
+          "Administrator permission required to adjust add-on prices.";
+        setCustomizeTab("extras");
+        return false;
+      }
+    }
+  }
+  if (!state.canAdjustBasePrices && draft.basePriceAdjusted) {
+    $("customize-price-error").hidden = false;
+    $("customize-price-error").textContent =
+      "Administrator permission required to override the item selling price.";
+    return false;
+  }
+  $("addon-price-error").hidden = true;
+  $("customize-price-error").hidden = true;
+  return true;
+}
+
+function applyCustomization() {
+  const draft = getDraft();
+  const line = getEditingLine();
+  if (!draft || !line) return;
+  if ($("customize-apply-btn")?.disabled) return;
+  if (!validateDraftPrices()) return;
+  syncOrderNoteFromInput();
+  line.quantity = draft.quantity;
+  line.configuredPriceCents = Number(draft.configuredPriceCents || 0);
+  line.priceCents = Number(draft.unitPriceCents || 0);
+  line.basePriceAdjusted = Boolean(draft.basePriceAdjusted);
+  line.instructions = [...draft.instructions];
+  line.orderNote = String(draft.orderNote || "").trim();
+  line.addons = draft.addons.map((a) => ({
+    addonId: a.addonId,
+    name: a.name,
+    quantity: a.quantity || 1,
+    priceEnteredAtSale: Boolean(a.priceEnteredAtSale),
+    configuredUnitPriceCents: a.priceEnteredAtSale
+      ? null
+      : a.configuredUnitPriceCents,
+    unitPriceCents: a.unitPriceCents,
+    effectivePriceCents: a.unitPriceCents,
+    priceAdjusted: Boolean(a.priceAdjusted) && !a.priceEnteredAtSale,
+    taxApplicable: a.taxApplicable !== false,
+  }));
+  line._pendingCustomize = false;
+  state.customizeDraft = null;
+  closeCustomizeDialog();
+  focusCartLine(line.lineId, { follow: true });
+  renderCart();
+}
+
+function closeCustomizeDialog() {
+  const dialog = $("instr-dialog");
+  document.body.classList.remove("customize-open");
+  if (dialog?.open) dialog.close();
+  const trigger = state._customizeTrigger;
+  state._customizeTrigger = null;
+  if (trigger?.focus) {
+    try {
+      trigger.focus();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/** Structured kitchen instructions + optional free-text note (note last, for tickets). */
+function lineInstructionsForOrder(line) {
+  const instr = [...(line.instructions || [])];
+  const note = String(line.orderNote || "").trim();
+  if (note && !instr.some((i) => i.toLowerCase() === note.toLowerCase())) {
+    instr.push(note);
+  }
+  return instr;
+}
+
+function cancelCustomization() {
+  const draft = getDraft();
+  const line = getEditingLine();
+  if (draft?.isNew && line) {
+    state.cart = state.cart.filter((l) => l.lineId !== line.lineId);
+  }
+  state.customizeDraft = null;
+  state.editingLineId = null;
+  closeCustomizeDialog();
+  renderCart();
+}
+
+function setStatus(message, ok = true) {
+  const el = $("send-status");
+  el.hidden = !message;
+  el.textContent = message || "";
+  el.className = `status-line ${ok ? "ok" : "err"}`;
+}
+
+function fieldHtml(id, label, value, { wide = false, placeholder = "", inputMode = "" } = {}) {
+  return `<label class="field${wide ? " wide" : ""}">
+    <span>${label}</span>
+    <input id="${id}" type="text" value="${escapeHtml(value || "")}" placeholder="${escapeHtml(placeholder)}" ${
+      inputMode ? `inputmode="${inputMode}"` : ""
+    } autocomplete="off" />
+  </label>`;
+}
+
+function activeBlockRate(blockNumber) {
+  const norm = String(blockNumber || "").trim().replace(/\s+/g, "").toUpperCase();
+  return (state.blockRates || []).find(
+    (row) => String(row.blockNumber || "").trim().replace(/\s+/g, "").toUpperCase() === norm
+  );
+}
+
+function fillOrderTypeSelect() {
+  const select = $("order-type");
+  if (!select) return;
+  const previous = select.value;
+  const types = state.orderTypes || [];
+  select.innerHTML = types
+    .map(
+      (row) =>
+        `<option value="${escapeHtml(row.orderTypeId)}">${escapeHtml(row.name)}</option>`
+    )
+    .join("");
+  const still = types.some((row) => row.orderTypeId === previous);
+  if (still) select.value = previous;
+  else {
+    const takeaway = types.find((row) => row.code === "TAKEAWAY");
+    select.value = (takeaway || types[0])?.orderTypeId || "";
+  }
+}
+
+function syncDeliveryFromInput(raw, { format = false } = {}) {
+  const money = state.money;
+  if (!money) return;
+  const text = String(raw ?? "").trim();
+  if (!text) {
+    state.fulfillment.deliveryChargeCents = null;
+    updateFeeNote();
+    renderCart();
+    return;
+  }
+  try {
+    const cents = money.parse(text);
+    if (cents < 0) throw new Error("Delivery charge cannot be negative.");
+    state.fulfillment.deliveryChargeCents = cents;
+    const suggested = state.fulfillment.expectedBlockRateCents;
+    state.fulfillment.deliveryFeeOverride =
+      suggested == null || cents !== suggested;
+    if (format) {
+      const input = $("dl-charge");
+      if (input) input.value = money.formatPlain(cents);
+    }
+  } catch {
+    state.fulfillment.deliveryChargeCents = null;
+  }
+  updateFeeNote();
+  renderCart();
+}
+
+function withDeliveryTaxHint(text) {
+  const hint = deliveryTaxHint();
+  return hint ? `${text} · ${hint}` : text;
+}
+
+function updateFeeNote() {
+  const note = $("fee-note");
+  if (!note) return;
+  const money = state.money;
+  const block = state.fulfillment.blockNumber;
+  const suggested = state.fulfillment.expectedBlockRateCents;
+  if (!block) {
+    note.textContent = "Enter a block number.";
+    note.classList.remove("is-custom");
+    return;
+  }
+  if (suggested == null) {
+    const entered = state.fulfillment.deliveryChargeCents != null;
+    note.textContent = withDeliveryTaxHint(
+      entered ? "Custom delivery charge" : "No saved rate for this block"
+    );
+    note.classList.toggle("is-custom", entered);
+    return;
+  }
+  if (state.fulfillment.deliveryChargeCents == null) {
+    note.textContent = "Enter a delivery charge using the shop currency.";
+    note.classList.remove("is-custom");
+    return;
+  }
+  if (state.fulfillment.deliveryFeeOverride) {
+    note.textContent = withDeliveryTaxHint("Custom delivery charge");
+    note.classList.add("is-custom");
+    return;
+  }
+  note.textContent = withDeliveryTaxHint(
+    `Suggested block rate: ${money ? money.format(suggested) : suggested}`
+  );
+  note.classList.remove("is-custom");
+}
+
+function applyBlockRate(blockNumber, { keepManual = false } = {}) {
+  const norm = String(blockNumber || "").trim().replace(/\s+/g, "").toUpperCase();
+  state.fulfillment.blockNumber = norm;
+  const rate = activeBlockRate(norm);
+  if (!rate) {
+    state.fulfillment.expectedBlockRateCents = null;
+    if (!keepManual) {
+      state.fulfillment.deliveryChargeCents = null;
+      state.fulfillment.deliveryFeeOverride = false;
+    }
+    return;
+  }
+  state.fulfillment.expectedBlockRateCents = rate.chargeCents;
+  if (!keepManual) {
+    state.fulfillment.deliveryChargeCents = rate.chargeCents;
+    state.fulfillment.deliveryFeeOverride = false;
+  }
+}
+
+function commitBlockInput(raw) {
+  const norm = String(raw || "").trim().replace(/\s+/g, "").toUpperCase();
+  const prev = state.fulfillment.blockNumber || "";
+  if (norm === prev) {
+    const input = $("dl-block");
+    if (input) input.value = prev;
+    return;
+  }
+  if (norm && !/^[A-Z0-9-]{1,20}$/.test(norm)) {
+    const note = $("fee-note");
+    if (note) {
+      note.textContent = "Enter a block number using letters, numbers, or hyphens (max 20).";
+      note.classList.remove("is-custom");
+    }
+    return;
+  }
+  const nextRate = norm ? activeBlockRate(norm) : null;
+  const hadManual =
+    state.fulfillment.deliveryFeeOverride && state.fulfillment.deliveryChargeCents != null;
+  if (hadManual) {
+    const message = nextRate
+      ? "Selecting a different block will reset the delivery charge to that block's rate."
+      : "This block has no saved rate. The current delivery charge will be cleared until you enter one for this order.";
+    if (!window.confirm(message)) {
+      const input = $("dl-block");
+      if (input) input.value = prev;
+      return;
+    }
+  }
+  if (!norm) {
+    state.fulfillment.blockNumber = "";
+    state.fulfillment.expectedBlockRateCents = null;
+    state.fulfillment.deliveryChargeCents = null;
+    state.fulfillment.deliveryFeeOverride = false;
+  } else {
+    applyBlockRate(norm);
+  }
+  renderFulfillmentFields();
+  renderCart();
+  persistActiveCart();
+}
+
+function applySuggestedRate(cents) {
+  if (!Number.isSafeInteger(cents)) return;
+  state.fulfillment.expectedBlockRateCents = cents;
+  state.fulfillment.deliveryChargeCents = cents;
+  state.fulfillment.deliveryFeeOverride = false;
+  const input = $("dl-charge");
+  if (input && state.money) input.value = state.money.formatPlain(cents);
+  updateFeeNote();
+  renderCart();
+}
+
+function readFulfillmentInputs() {
+  const read = (id) => {
+    const el = $(id);
+    return el ? el.value.trim() : null;
+  };
+  const type = selectedOrderType();
+  if (!type) return;
+  if (type.behavior === "COUNTER") {
+    const value = read("ff-counter");
+    if (value != null) state.fulfillment.counterLabel = value;
+  }
+  if (type.behavior === "TABLE") {
+    const table = read("ff-table");
+    if (table != null) state.fulfillment.tableNumber = table;
+  }
+  if (type.behavior === "CAR_HOP") {
+    const vehicle = read("ff-vehicle");
+    const parking = read("ff-parking");
+    if (vehicle != null) state.fulfillment.vehicleNumber = vehicle;
+    if (parking != null) state.fulfillment.parkingLocation = parking;
+  }
+}
+
+function customerPickerHtml(required) {
+  const label = required ? "Customer (Required)" : "Customer (Optional)";
+  return `<div class="customer-picker wide">
+    <label class="field">
+      <span>${label}</span>
+      <input id="cust-search" type="search" placeholder="Search customer name or phone" autocomplete="off" enterkeyhint="search" />
+    </label>
+    <button type="button" id="cust-add" class="btn ghost small">+ Add</button>
+    <div id="cust-results" class="cust-results" hidden></div>
+  </div>`;
+}
+
+function customerSummaryHtml(f, { addresses = false } = {}) {
+  if (!f.customerId) return "";
+  const who = [f.customerName, f.customerPhone].filter(Boolean).join(" · ");
+  const place = [
+    f.addressLabel || "",
+    f.buildingNumber ? `Building ${f.buildingNumber}` : "",
+    f.roadNumber ? `Road ${f.roadNumber}` : "",
+    f.blockNumber ? `Block ${f.blockNumber}` : "",
+  ].filter(Boolean).join(" · ");
+  const addressHtml = addresses
+    ? `<p class="cust-summary-address">${escapeHtml(place || "No saved address")}</p>
+    ${f.addressNote ? `<p class="muted">${escapeHtml(f.addressNote)}</p>` : ""}`
+    : "";
+  const addressActions = `<button type="button" id="cust-pick-address" class="btn ghost small">Change address</button>
+      ${addresses ? `<button type="button" id="cust-add-address" class="btn ghost small">+ Add address</button>` : ""}`;
+  return `<div class="cust-summary wide">
+    <div class="cust-summary-top">
+      <strong>${escapeHtml(who || "Customer")}</strong>
+      <button type="button" id="cust-edit" class="btn ghost small">Edit</button>
+    </div>
+    ${addressHtml}
+    <div class="cust-summary-actions">
+      <button type="button" id="cust-change" class="btn ghost small">Change customer</button>
+      ${addressActions}
+    </div>
+  </div>`;
+}
+
+function activeAddresses(customer) {
+  return (customer?.addresses || []).filter((row) => row && row.isActive !== false);
+}
+
+function preferredAddress(customer) {
+  const rows = activeAddresses(customer);
+  return rows.find((row) => row.isDefault) || rows[0] || null;
+}
+
+function applySavedAddress(address) {
+  state.fulfillment.addressId = address?.addressId || "";
+  state.fulfillment.addressLabel = address?.label || "";
+  state.fulfillment.buildingNumber = address?.buildingNumber || "";
+  state.fulfillment.roadNumber = address?.roadNumber || "";
+  state.fulfillment.addressNote = address?.addressNote || "";
+  applyBlockRate(address?.blockNumber || "");
+}
+
+function selectCustomer(customer, { stayInPicker = false } = {}) {
+  if (!customer?.customerId) return;
+  state.addressBook = activeAddresses(customer);
+  state.fulfillment.customerId = customer.customerId;
+  state.fulfillment.customerName = customer.name || "";
+  state.fulfillment.customerPhone = customer.phone || "";
+  applySavedAddress(preferredAddress(customer));
+  const pickerSearch = $("picker-cust-search");
+  if (pickerSearch) pickerSearch.value = "";
+  const pickerResults = $("picker-cust-results");
+  if (pickerResults) {
+    pickerResults.hidden = true;
+    pickerResults.innerHTML = "";
+  }
+  renderFulfillmentFields();
+  renderCart();
+  persistActiveCart();
+  if (stayInPicker) {
+    openAddressPicker();
+    return;
+  }
+  if (selectedOrderType()?.behavior === "DELIVERY" && state.addressBook.length > 1) {
+    openAddressPicker("address");
+  }
+}
+
+function clearSelectedCustomer() {
+  state.addressBook = [];
+  state.fulfillment.customerId = "";
+  state.fulfillment.addressId = "";
+  state.fulfillment.addressLabel = "";
+  state.fulfillment.customerName = "";
+  state.fulfillment.customerPhone = "";
+  state.fulfillment.buildingNumber = "";
+  state.fulfillment.roadNumber = "";
+  state.fulfillment.addressNote = "";
+  state.fulfillment.blockNumber = "";
+  state.fulfillment.deliveryChargeCents = null;
+  state.fulfillment.deliveryFeeOverride = false;
+  state.fulfillment.expectedBlockRateCents = null;
+  renderFulfillmentFields();
+  renderCart();
+  persistActiveCart();
+  $("cust-search")?.focus();
+}
+
+function scheduleCustomerSearch() {
+  clearTimeout(state._custTimer);
+  const q = $("cust-search")?.value.trim() || "";
+  state._custTimer = setTimeout(() => runCustomerSearch(q), 200);
+}
+
+function schedulePickerSearch() {
+  clearTimeout(state._pickerTimer);
+  const q = $("picker-cust-search")?.value.trim() || "";
+  state._pickerTimer = setTimeout(
+    () =>
+      runCustomerSearch(q, {
+        hostId: "picker-cust-results",
+        inputId: "picker-cust-search",
+        stayInPicker: true,
+      }),
+    200
+  );
+}
+
+async function runCustomerSearch(q, { hostId = "cust-results", inputId = "cust-search", stayInPicker = false } = {}) {
+  const host = $(hostId);
+  if (!host) return;
+  if (!q) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  const res = await api(`/v1/customers?q=${encodeURIComponent(q)}`);
+  if (($(inputId)?.value.trim() || "") !== q) return;
+  const rows = res.ok ? res.json.customers || [] : [];
+  if (!rows.length) {
+    host.hidden = false;
+    host.innerHTML = `<p class="muted cust-empty">No matching customer</p>`;
+    return;
+  }
+  host.hidden = false;
+  host.innerHTML = rows
+    .map(
+      (row) => `<button type="button" class="cust-hit" data-id="${escapeHtml(row.customerId)}">
+        <strong>${escapeHtml(row.name)}</strong>
+        <span>${escapeHtml(row.phone)}</span>
+      </button>`
+    )
+    .join("");
+  host.querySelectorAll(".cust-hit").forEach((button) => {
+    button.addEventListener("click", () => {
+      const match = rows.find((row) => row.customerId === button.dataset.id);
+      if (match) selectCustomer(match, { stayInPicker });
+    });
+  });
+}
+
+function closeCustomerDialog() {
+  const dialog = $("customer-dialog");
+  if (dialog?.open) dialog.close();
+  const err = $("cust-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  const dup = $("cust-dup");
+  if (dup) dup.hidden = true;
+}
+
+function openCustomerDialog(mode = "create") {
+  state._customerMode = mode;
+  state._dupCustomer = null;
+  const editing = mode === "edit";
+  const title = $("customer-dialog-title");
+  if (title) title.textContent = editing ? "Edit customer" : "Add customer";
+  const profile = $("cust-profile-fields");
+  const address = $("cust-address-fields");
+  if (profile) profile.hidden = false;
+  if (address) address.hidden = editing;
+  const another = $("cust-save-another");
+  if (another) another.hidden = editing;
+  const save = $("cust-save");
+  if (save) save.textContent = editing ? "Save customer" : "Save customer";
+  if (editing) {
+    $("cust-name").value = state.fulfillment.customerName || "";
+    $("cust-phone").value = state.fulfillment.customerPhone || "";
+  } else {
+    for (const id of ["cust-name", "cust-phone", "cust-label", "cust-building", "cust-road", "cust-block", "cust-note"]) {
+      const el = $(id);
+      if (el) el.value = "";
+    }
+  }
+  closeCustomerDialog();
+  $("customer-dialog")?.showModal();
+  $("cust-name")?.focus();
+}
+
+function showCustomerError(message) {
+  const err = $("cust-error");
+  if (!err) return;
+  err.hidden = !message;
+  err.textContent = message || "";
+}
+
+function customerFormBody() {
+  return {
+    name: $("cust-name")?.value || "",
+    phone: $("cust-phone")?.value || "",
+    label: $("cust-label")?.value || "",
+    buildingNumber: $("cust-building")?.value || "",
+    roadNumber: $("cust-road")?.value || "",
+    blockNumber: $("cust-block")?.value || "",
+    addressNote: $("cust-note")?.value || "",
+  };
+}
+
+function deliveryNeedsBlock() {
+  return selectedOrderType()?.behavior === "DELIVERY";
+}
+
+async function saveNewCustomer({ another = false } = {}) {
+  const saveBtn = $("cust-save");
+  const extraBtn = $("cust-save-another");
+  if (saveBtn?.disabled) return;
+  showCustomerError("");
+  const dup = $("cust-dup");
+  if (dup) dup.hidden = true;
+  if (state._customerMode === "edit") {
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      const res = await api(`/v1/customers/${encodeURIComponent(state.fulfillment.customerId)}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: $("cust-name")?.value || "",
+          phone: $("cust-phone")?.value || "",
+        }),
+      });
+      if (res.status === 409 && res.json?.code === "CUSTOMER_PHONE_EXISTS") {
+        showCustomerError("Customer already exists. Select existing customer.");
+        return;
+      }
+      if (!res.ok) {
+        showCustomerError(res.json?.error || "Could not save the customer.");
+        return;
+      }
+      const saved = res.json.customer;
+      state.fulfillment.customerName = saved.name;
+      state.fulfillment.customerPhone = saved.phone;
+      state.addressBook = activeAddresses(saved);
+      closeCustomerDialog();
+      renderFulfillmentFields();
+      persistActiveCart();
+      showToast("Customer saved");
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+    return;
+  }
+  const body = customerFormBody();
+  if (deliveryNeedsBlock() && !String(body.blockNumber).trim()) {
+    showCustomerError("Enter a block number.");
+    return;
+  }
+  if (saveBtn) saveBtn.disabled = true;
+  if (extraBtn) extraBtn.disabled = true;
+  try {
+    const res = await api("/v1/customers", { method: "POST", body: JSON.stringify(body) });
+    if (res.status === 409 && res.json?.code === "CUSTOMER_PHONE_EXISTS" && res.json.customer) {
+      state._dupCustomer = res.json.customer;
+      const text = $("cust-dup-text");
+      if (text) text.textContent = "Customer already exists. Select existing customer.";
+      if (dup) dup.hidden = false;
+      return;
+    }
+    if (!res.ok) {
+      showCustomerError(res.json?.error || "Could not save the customer.");
+      return;
+    }
+    selectCustomer(res.json.customer);
+    showToast("Customer saved");
+    if (!another) {
+      closeCustomerDialog();
+      return;
+    }
+    state._customerMode = "extra";
+    for (const id of ["cust-label", "cust-building", "cust-road", "cust-block", "cust-note"]) {
+      const el = $(id);
+      if (el) el.value = "";
+    }
+    if ($("customer-dialog-title")) $("customer-dialog-title").textContent = "Add another address";
+    if (saveBtn) saveBtn.textContent = "Save address";
+    if (extraBtn) extraBtn.hidden = true;
+    $("cust-block")?.focus();
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+    if (extraBtn) extraBtn.disabled = false;
+  }
+}
+
+async function saveExtraAddressFromCustomerDialog() {
+  const customerId = state.fulfillment.customerId;
+  if (!customerId) return saveNewCustomer({ another: false });
+  const body = {
+    label: $("cust-label")?.value || "",
+    buildingNumber: $("cust-building")?.value || "",
+    roadNumber: $("cust-road")?.value || "",
+    blockNumber: $("cust-block")?.value || "",
+    addressNote: $("cust-note")?.value || "",
+  };
+  if (!String(body.blockNumber).trim()) {
+    showCustomerError("Enter a block number.");
+    return;
+  }
+  const res = await api(`/v1/customers/${encodeURIComponent(customerId)}/addresses`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    showCustomerError(res.json?.error || "Could not save the address.");
+    return;
+  }
+  const created = res.json.customer;
+  const previous = new Set((state.addressBook || []).map((row) => row.addressId));
+  const rows = activeAddresses(created);
+  const newest = rows.find((row) => !previous.has(row.addressId)) || rows[rows.length - 1];
+  state.addressBook = rows;
+  if (newest) applySavedAddress(newest);
+  closeCustomerDialog();
+  renderFulfillmentFields();
+  renderCart();
+  persistActiveCart();
+  showToast("Address saved");
+}
+
+function closeAddressDialog() {
+  const dialog = $("address-dialog");
+  if (dialog?.open) dialog.close();
+  const err = $("addr-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+}
+
+function openAddressEditor(address) {
+  if (!state.fulfillment.customerId) return;
+  state._editingAddressId = address?.addressId || "";
+  const title = $("address-dialog-title");
+  if (title) title.textContent = address ? "Edit address" : "Add address";
+  $("addr-label").value = address?.label || "";
+  $("addr-building").value = address?.buildingNumber || "";
+  $("addr-road").value = address?.roadNumber || "";
+  $("addr-block").value = address?.blockNumber || "";
+  $("addr-note").value = address?.addressNote || "";
+  $("addr-default").checked = Boolean(address?.isDefault);
+  const err = $("addr-error");
+  if (err) err.hidden = true;
+  $("address-dialog")?.showModal();
+}
+
+async function openAddressPicker(mode) {
+  const host = $("address-picker-list");
+  if (!host) return;
+  if (mode === "customer" || mode === "address") state._pickerMode = mode;
+  if (state.fulfillment.customerId && !(state.addressBook || []).length) {
+    const res = await api(`/v1/customers/${encodeURIComponent(state.fulfillment.customerId)}`);
+    if (res.ok && res.json.customer?.customerId === state.fulfillment.customerId) {
+      state.addressBook = activeAddresses(res.json.customer);
+    }
+  }
+  const focusCustomer = state._pickerMode === "customer";
+  const dialog = $("address-picker-dialog");
+  dialog?.classList.toggle("picker-mode-customer", focusCustomer);
+  dialog?.classList.toggle("picker-mode-address", !focusCustomer);
+  if (!focusCustomer && mode === "address") dialog?.classList.remove("show-customer-search");
+  const title = $("address-picker-title");
+  if (title) title.textContent = focusCustomer ? "Change customer" : "Change address";
+  const current = $("picker-current");
+  if (current) {
+    const who = [state.fulfillment.customerName, state.fulfillment.customerPhone].filter(Boolean).join(" · ");
+    current.textContent = who || "Selected customer";
+  }
+  const adjust = $("address-picker-adjust");
+  if (adjust) adjust.hidden = selectedOrderType()?.behavior !== "DELIVERY";
+  const rows = state.addressBook || [];
+  host.innerHTML = rows.length
+    ? rows
+        .map(
+          (row) => `<div class="address-pick">
+            <button type="button" class="address-pick-main${row.addressId === state.fulfillment.addressId ? " is-selected" : ""}" data-id="${escapeHtml(row.addressId)}">
+              <strong>${escapeHtml(row.label || "Address")}${row.isDefault ? " · Default" : ""}</strong>
+              <span>${escapeHtml(
+                [
+                  row.buildingNumber ? `Building ${row.buildingNumber}` : "",
+                  row.roadNumber ? `Road ${row.roadNumber}` : "",
+                  row.blockNumber ? `Block ${row.blockNumber}` : "",
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
+              )}</span>
+            </button>
+            <button type="button" class="btn ghost small" data-edit="${escapeHtml(row.addressId)}">Edit</button>
+          </div>`
+        )
+        .join("")
+    : `<p class="muted">No saved address yet.</p>`;
+  host.querySelectorAll(".address-pick-main").forEach((button) => {
+    button.addEventListener("click", () => {
+      const match = rows.find((row) => row.addressId === button.dataset.id);
+      if (!match) return;
+      applySavedAddress(match);
+      $("address-picker-dialog")?.close();
+      renderFulfillmentFields();
+      renderCart();
+      persistActiveCart();
+    });
+  });
+  host.querySelectorAll("[data-edit]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const match = rows.find((row) => row.addressId === button.dataset.edit);
+      $("address-picker-dialog")?.close();
+      if (match) openAddressEditor(match);
+    });
+  });
+  if (dialog && !dialog.open) dialog.showModal();
+  if (focusCustomer) $("picker-cust-search")?.focus();
+}
+
+function openOrderAddressDialog() {
+  $("order-addr-building").value = state.fulfillment.buildingNumber || "";
+  $("order-addr-road").value = state.fulfillment.roadNumber || "";
+  $("order-addr-note").value = state.fulfillment.addressNote || "";
+  $("order-address-dialog")?.showModal();
+}
+
+async function saveAddressEditor() {
+  const err = $("addr-error");
+  const customerId = state.fulfillment.customerId;
+  const body = {
+    label: $("addr-label")?.value || "",
+    buildingNumber: $("addr-building")?.value || "",
+    roadNumber: $("addr-road")?.value || "",
+    blockNumber: $("addr-block")?.value || "",
+    addressNote: $("addr-note")?.value || "",
+    isDefault: Boolean($("addr-default")?.checked),
+  };
+  if (!String(body.blockNumber).trim()) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Enter a block number.";
+    }
+    return;
+  }
+  const editing = state._editingAddressId;
+  const path = editing
+    ? `/v1/customers/${encodeURIComponent(customerId)}/addresses/${encodeURIComponent(editing)}`
+    : `/v1/customers/${encodeURIComponent(customerId)}/addresses`;
+  const res = await api(path, { method: editing ? "PUT" : "POST", body: JSON.stringify(body) });
+  if (!res.ok) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = res.json?.error || "Could not save the address.";
+    }
+    return;
+  }
+  const previous = new Set((state.addressBook || []).map((row) => row.addressId));
+  const saved = res.json.customer;
+  state.addressBook = activeAddresses(saved);
+  const chosen = editing
+    ? state.addressBook.find((row) => row.addressId === editing)
+    : state.addressBook.find((row) => !previous.has(row.addressId));
+  if (chosen) applySavedAddress(chosen);
+  closeAddressDialog();
+  renderFulfillmentFields();
+  renderCart();
+  persistActiveCart();
+  showToast("Address saved");
+}
+
+function renderFulfillmentFields() {
+  const host = $("fulfillment-fields");
+  if (!host) return;
+  const type = selectedOrderType();
+  const f = state.fulfillment;
+  if (!type) {
+    host.innerHTML = `<p class="fee-warn">No active order types. Add one in Shop Settings.</p>`;
+    return;
+  }
+  const delivery = type.behavior === "DELIVERY";
+  if (delivery && f.blockNumber) {
+    const rate = activeBlockRate(f.blockNumber);
+    if (rate && !f.deliveryFeeOverride) {
+      f.expectedBlockRateCents = rate.chargeCents;
+      f.deliveryChargeCents = rate.chargeCents;
+    } else if (rate) {
+      f.expectedBlockRateCents = rate.chargeCents;
+      if (f.deliveryChargeCents === rate.chargeCents) f.deliveryFeeOverride = false;
+    }
+  }
+  const summary = customerSummaryHtml(f, { addresses: delivery });
+  const picker = customerPickerHtml(delivery);
+  let html = f.customerId ? summary + picker : picker + summary;
+  if (type.behavior === "COUNTER") {
+    html += fieldHtml("ff-counter", "Counter", f.counterLabel, {
+      wide: true,
+      placeholder: "Optional",
+    });
+  } else if (delivery) {
+    const charge =
+      Number.isSafeInteger(f.deliveryChargeCents) && state.money
+        ? state.money.formatPlain(f.deliveryChargeCents)
+        : "";
+    const suggestions = (state.blockRates || [])
+      .map((row) => `<option value="${escapeHtml(row.blockNumber)}"></option>`)
+      .join("");
+    html += `
+      <div class="fee-row wide">
+        <label class="field">
+          <span>Block number</span>
+          <input id="dl-block" type="text" value="${escapeHtml(f.blockNumber || "")}" list="dl-block-list" autocomplete="off" />
+          <datalist id="dl-block-list">${suggestions}</datalist>
+        </label>
+        <label class="field">
+          <span>Delivery charge</span>
+          <input id="dl-charge" type="text" inputmode="decimal" value="${escapeHtml(charge)}" autocomplete="off" />
+        </label>
+      </div>
+      <p id="fee-note" class="fee-note wide"></p>`;
+  } else if (type.behavior === "TABLE") {
+    html += fieldHtml("ff-table", "Table number", f.tableNumber, {
+      wide: true,
+      placeholder: "Required",
+    });
+  } else if (type.behavior === "CAR_HOP") {
+    html +=
+      fieldHtml("ff-vehicle", "Vehicle number", f.vehicleNumber, {
+        placeholder: "Optional",
+      }) +
+      fieldHtml("ff-parking", "Parking location", f.parkingLocation, {
+        wide: true,
+        placeholder: "Optional",
+      });
+  }
+  host.innerHTML = html;
+  $("cust-search")?.addEventListener("input", scheduleCustomerSearch);
+  $("cust-add")?.addEventListener("click", () => openCustomerDialog("create"));
+  $("cust-change")?.addEventListener("click", () => openAddressPicker("customer"));
+  $("cust-edit")?.addEventListener("click", () => openCustomerDialog("edit"));
+  $("cust-pick-address")?.addEventListener("click", () => openAddressPicker("address"));
+  $("cust-add-address")?.addEventListener("click", () => openAddressEditor(null));
+  if (delivery) {
+    const block = $("dl-block");
+    block?.addEventListener("change", () => commitBlockInput(block.value));
+    block?.addEventListener("blur", () => commitBlockInput(block.value));
+    $("dl-charge")?.addEventListener("input", (event) => {
+      syncDeliveryFromInput(event.target.value);
+      persistActiveCart();
+    });
+    $("dl-charge")?.addEventListener("blur", (event) => {
+      syncDeliveryFromInput(event.target.value, { format: true });
+      persistActiveCart();
+    });
+    updateFeeNote();
+  }
+  host.querySelectorAll("input").forEach((input) => {
+    if (input.id === "dl-charge" || input.id === "dl-block" || input.id === "cust-search") return;
+    input.addEventListener("input", () => {
+      readFulfillmentInputs();
+      persistActiveCart();
+    });
+  });
+  syncReviewWithCart();
+}
+
+function fulfillmentSummary() {
+  const type = selectedOrderType();
+  const f = state.fulfillment;
+  if (!type) return "";
+  if (type.behavior === "DELIVERY") {
+    return [f.customerName, f.customerPhone, f.blockNumber ? `Block ${f.blockNumber}` : "", f.buildingNumber, f.roadNumber]
+      .filter(Boolean)
+      .join(" · ");
+  }
+  const who = [f.customerName, f.customerPhone].filter(Boolean).join(" · ");
+  if (type.behavior === "TABLE") {
+    return [f.tableNumber ? `Table ${f.tableNumber}` : "", who].filter(Boolean).join(" · ");
+  }
+  if (type.behavior === "CAR_HOP") {
+    return [f.vehicleNumber, f.parkingLocation, who].filter(Boolean).join(" · ");
+  }
+  if (type.behavior === "COUNTER") return [f.counterLabel, who].filter(Boolean).join(" · ");
+  return who;
+}
+
+function fulfillmentPayload() {
+  const type = selectedOrderType();
+  const f = state.fulfillment;
+  const body = {};
+  if (!type) return body;
+  if (f.customerId) {
+    body.customerId = f.customerId;
+    body.customerName = f.customerName;
+    body.customerPhone = f.customerPhone;
+  }
+  if (type.behavior === "COUNTER") body.counterLabel = f.counterLabel;
+  if (type.behavior === "DELIVERY") {
+    body.customerId = f.customerId;
+    body.addressId = f.addressId;
+    body.customerName = f.customerName;
+    body.customerPhone = f.customerPhone;
+    body.buildingNumber = f.buildingNumber;
+    body.roadNumber = f.roadNumber;
+    body.addressNote = f.addressNote;
+    body.blockNumber = f.blockNumber;
+    body.deliveryChargeCents = f.deliveryChargeCents;
+    body.deliveryFeeOverride = Boolean(f.deliveryFeeOverride);
+    body.expectedBlockRateCents = f.expectedBlockRateCents;
+  }
+  if (type.behavior === "TABLE") body.tableNumber = f.tableNumber;
+  if (type.behavior === "CAR_HOP") {
+    body.vehicleNumber = f.vehicleNumber;
+    body.parkingLocation = f.parkingLocation;
+  }
+  return body;
+}
+
+function validateFulfillmentForSend() {
+  const type = selectedOrderType();
+  if (!type) return { ok: false, error: "Choose an order type." };
+  readFulfillmentInputs();
+  if (type.behavior === "TABLE" && !state.fulfillment.tableNumber) {
+    return { ok: false, error: "Enter a table number." };
+  }
+  if (type.behavior === "DELIVERY") {
+    if (!state.fulfillment.customerId || !state.fulfillment.customerPhone) {
+      return { ok: false, error: "Select a customer with a contact number." };
+    }
+    if (!state.fulfillment.addressId) {
+      return { ok: false, error: "Select a delivery address." };
+    }
+    if (!state.fulfillment.blockNumber) {
+      return { ok: false, error: "Enter a block number." };
+    }
+    const cents = state.fulfillment.deliveryChargeCents;
+    if (!Number.isSafeInteger(cents) || cents < 0) {
+      return { ok: false, error: "Enter a valid delivery charge." };
+    }
+    if (!activeBlockRate(state.fulfillment.blockNumber) && !state.fulfillment.deliveryFeeOverride) {
+      return { ok: false, error: "No saved rate for this block. Enter a delivery charge." };
+    }
+  }
+  return { ok: true };
+}
+
+function resetFulfillmentForNewOrder() {
+  state.fulfillment = blankFulfillment();
+  renderFulfillmentFields();
+}
+
+function fulfillmentHasDetails() {
+  const f = state.fulfillment || {};
+  return [
+    f.customerId,
+    f.addressId,
+    f.addressLabel,
+    f.customerName,
+    f.customerPhone,
+    f.buildingNumber,
+    f.roadNumber,
+    f.blockNumber,
+    f.addressNote,
+    f.tableNumber,
+    f.vehicleNumber,
+    f.parkingLocation,
+    f.counterLabel,
+  ].some((value) => String(value || "").trim())
+    || f.deliveryFeeOverride === true
+    || Number.isInteger(f.deliveryChargeCents);
+}
+
+async function loadOrderSetup() {
+  const [typesRes, ratesRes] = await Promise.all([
+    api("/v1/order-types"),
+    api("/v1/block-delivery-rates"),
+  ]);
+  if (!typesRes.ok) return;
+  state.orderTypes = (typesRes.json.orderTypes || []).filter((row) => row.isActive);
+  state.blockRates = ratesRes.ok
+    ? (ratesRes.json.rates || []).filter((row) => row.isActive)
+    : [];
+  fillOrderTypeSelect();
+  renderFulfillmentFields();
+}
+
+function reviewLineHtml(l) {
+  const instr = (l.instructions || []).length
+    ? `<div class="instr-tags">${l.instructions
+        .map((i) => `<span class="tag">${escapeHtml(i)}</span>`)
+        .join("")}</div>`
+    : "";
+  const noteHtml = l.orderNote
+    ? `<div class="muted review-order-note">Note: ${escapeHtml(l.orderNote)}</div>`
+    : "";
+  const addonHtml = (l.addons || [])
+    .map((a) => {
+      const p = addonAppliedPrice(a);
+      const label = `${a.name} ${formatSignedPrice(p)}`;
+      return `<span class="tag">${escapeHtml(label)}</span>`;
+    })
+    .join("");
+  const variant = l.variantName
+    ? `<span class="review-variant">${escapeHtml(l.variantName)}</span>`
+    : "";
+  const label = l.variantName
+    ? `Edit ${l.name} — ${l.variantName}`
+    : `Edit ${l.name}`;
+  return `<div class="review-line" data-line-id="${escapeHtml(l.lineId)}">
+    <div class="review-line-main">
+      <span class="review-qty">${escapeHtml(l.quantity)}×</span>
+      <span class="review-name">${escapeHtml(l.name)}${variant}</span>
+      <span class="review-line-price">${formatPrice(lineUnitCents(l) * l.quantity)}</span>
+      <button type="button" class="review-edit" data-act="edit" aria-label="${escapeHtml(label)}">
+        <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M14.7 2.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-9.5 9.5-3.2.8a.5.5 0 0 1-.6-.6l.8-3.2 9.5-9.5z"/></svg>
+        Edit
+      </button>
+    </div>
+    ${instr}${addonHtml ? `<div class="instr-tags">${addonHtml}</div>` : ""}${noteHtml}
+  </div>`;
+}
+
+function paintReview() {
+  const totals = cartTotals();
+  const type = selectedOrderType();
+  const destination = fulfillmentSummary();
+  const meta = $("review-meta");
+  if (meta) {
+    const hasCustomer = Boolean(state.fulfillment.customerId);
+    const summary = `${escapeHtml(type?.name || "")}${destination ? ` · ${escapeHtml(destination)}` : ""}`;
+    const numberLabel = state.editingOrderId ? "Editing" : "Draft";
+    const numberTitle = state.editingOrderId
+      ? "Saving replaces this accepted order."
+      : "This draft number is not accepted until the order is sent.";
+    meta.innerHTML = `<span class="review-order-id" title="${numberTitle}">${numberLabel} ${escapeHtml(state.orderNumber)}</span>
+      <div class="review-customer-row">
+        <span class="muted">${summary || "No customer"}</span>
+        <span class="review-customer-actions">
+          ${
+            hasCustomer
+              ? `<button type="button" class="review-edit" id="review-edit-customer">Edit</button>`
+              : ""
+          }
+          <button type="button" class="review-edit" id="review-change-customer">${hasCustomer ? "Change" : "Add customer"}</button>
+        </span>
+      </div>`;
+  }
+  const splitGroups = splitInUse()
+    ? splitIds().filter((n) => linesForSplit(n).length)
+    : [];
+  const linesHtml = splitGroups.length
+    ? splitGroups
+        .map((n) => {
+          const lines = linesForSplit(n);
+          return `<section class="review-split">
+            <header class="review-split-head"><strong>Order ${n}</strong><strong>${formatPrice(splitItemsCents(lines))}</strong></header>
+            <div class="review-lines">${reviewLinesHtml(lines)}</div>
+          </section>`;
+        })
+        .join("")
+    : `<div class="review-lines">${reviewLinesHtml(state.cart)}</div>`;
+  $("review-body").innerHTML = `
+    ${linesHtml}
+    ${renderTaxSummaryHtml(cartTaxEstimate(), {
+      compact: true,
+      itemCount: totals.count,
+    })}
+  `;
+  const confirm = $("review-confirm");
+  if (confirm && !state.sending) {
+    confirm.textContent = state.editingOrderId ? "Save changes" : "Confirm & Send";
+  }
+}
+
+function syncReviewWithCart() {
+  const dialog = $("review-dialog");
+  if (!dialog?.open) return;
+  if (!state.cart.length) {
+    dialog.close();
+    setStatus("Add at least one item before sending.", false);
+    return;
+  }
+  paintReview();
+}
+
+async function openReview() {
+  if (!state.cart.length) {
+    setStatus("Add at least one item before sending.", false);
+    return;
+  }
+  const ready = validateFulfillmentForSend();
+  if (!ready.ok) {
+    setStatus(ready.error, false);
+    return;
+  }
+  await syncDraftNumber();
+  paintReview();
+  const dialog = $("review-dialog");
+  if (!dialog.open) dialog.showModal();
+  watchReviewNumber();
+  $("review-confirm")?.focus();
+}
+
+function editReviewLine(lineId, trigger) {
+  if (!state.cart.some((l) => l.lineId === lineId)) return;
+  state._customizeTrigger = trigger || null;
+  openInstructions(lineId);
+}
+
+async function sendTestOrder() {
+  if (state.sending) return;
+  if (!state.cart.length) {
+    setStatus("Add at least one item before sending.", false);
+    return;
+  }
+  state.sending = true;
+  $("review-confirm").disabled = true;
+  const rb = $("review-btn") || $("review-order-btn");
+  if (rb) rb.disabled = true;
+  setStatus(state.editingOrderId ? "Saving order changes…" : "Sending test order…");
+
+  const ready = validateFulfillmentForSend();
+  if (!ready.ok) {
+    state.sending = false;
+    $("review-confirm").disabled = false;
+    if (rb) rb.disabled = false;
+    setStatus(ready.error, false);
+    return;
+  }
+  const type = selectedOrderType();
+  if (!state.submissionId) state.submissionId = newSubmissionId();
+  const body = {
+    orderNumber: state.orderNumber,
+    ...(state.editingOrderId ? { orderId: state.editingOrderId } : {}),
+    submissionId: state.submissionId,
+    orderTypeId: type.orderTypeId,
+    orderType: type.code,
+    ticketRevision: 1,
+    fulfillment: fulfillmentPayload(),
+    lines: state.cart.map((l) => {
+      const configured = lineConfiguredPrice(l);
+      const applied = Number(l.priceCents || 0);
+      const overridden =
+        Boolean(l.basePriceAdjusted) || applied !== configured;
+      const instructions = lineInstructionsForOrder(l);
+      if (splitInUse()) instructions.unshift(`Order ${lineSplitNo(l)}`);
+      return {
+        itemId: l.itemId,
+        variantId: l.variantId || undefined,
+        unitBasePriceCents: applied,
+        ...(overridden
+          ? {
+              basePriceOverride: true,
+              configuredUnitBasePriceCents: configured,
+            }
+          : {}),
+        quantity: l.quantity,
+        instructions,
+        addons: (l.addons || []).map((a) => ({
+          addonId: a.addonId,
+          quantity: a.quantity || 1,
+          ...(a.priceAdjusted || a.priceEnteredAtSale
+            ? { unitPriceCents: Number(a.unitPriceCents) }
+            : {}),
+        })),
+      };
+    }),
+  };
+
+  try {
+    const res = await api("/v1/test-orders", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      if (res.status === 401) {
+        persistActiveCart();
+        if ($("review-dialog")?.open) $("review-dialog").close();
+        showLogin("This sign-in is no longer valid. The order was not sent, and the cart is still here.");
+        return;
+      }
+      if (
+        res.json?.code === "SUBMISSION_CONFLICT" ||
+        res.json?.code === "SUBMISSION_REQUIRED" ||
+        res.json?.code === "ORDER_NUMBER_USED" ||
+        res.json?.code === "ORDER_ALREADY_PAID" ||
+        res.json?.code === "ORDER_NOT_EDITABLE"
+      ) {
+        setStatus(res.json.error || "This order was not accepted.", false);
+        return;
+      }
+      if (res.json?.code === "DELIVERY_RATE_CHANGED") {
+        applySuggestedRate(res.json.configuredChargeCents, res.json.blockNumber);
+        if ($("review-dialog").open) $("review-dialog").close();
+      }
+      setStatus(res.json?.error || "Send failed", false);
+      return;
+    }
+    const sentOrderNumber = res.json.order?.order_number || state.orderNumber;
+    const sentOrderId = res.json.order.order_id;
+    state.lastOrderId = sentOrderId;
+    const created = res.json.created;
+    const edited = Boolean(res.json.edited);
+    if ($("review-dialog").open) $("review-dialog").close();
+
+    pushPrintNotice({
+      tone: "ok",
+      text: edited
+        ? `Order ${sentOrderNumber} updated.`
+        : created
+          ? `Order ${sentOrderNumber} accepted.`
+          : `Order ${sentOrderNumber} was already accepted.`,
+    });
+    await prepareNextOrderAfterDispatch(sentOrderNumber);
+    watchSentOrderTickets(sentOrderId, sentOrderNumber);
+    void openPaymentOffer(sentOrderId);
+  } catch (err) {
+    setStatus(err.message || "Network error", false);
+  } finally {
+    state.sending = false;
+    $("review-confirm").disabled = false;
+    const rb2 = $("review-btn") || $("review-order-btn");
+    if (rb2) rb2.disabled = false;
+  }
+}
+
+function isJobDispatched(status) {
+  return status === "DISPATCHED" || status === "CONFIRMED";
+}
+
+function allOrderJobsComplete(jobs) {
+  if (!Array.isArray(jobs) || !jobs.length) return false;
+  return jobs.every((j) => isJobDispatched(j.status));
+}
+
+function jobsIncludeOrderNumber(jobs, orderNumber) {
+  const target = String(orderNumber || "");
+  if (!target) return false;
+  return (jobs || []).some((job) => {
+    try {
+      return JSON.parse(job.payload_snapshot || "{}").orderNumber === target;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function watchSentOrderTickets(orderId, sentOrderNumber) {
+  if (!orderId) return;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await sleep(attempt === 0 ? 1600 : 800);
+    const jobs = (await refreshJobs({ quiet: true, orderId })) || [];
+    if (allOrderJobsComplete(jobs)) return;
+    if (jobs.some((job) => PRINT_ATTENTION.has(job.status))) {
+      pushPrintNotice({
+        tone: "err",
+        sticky: true,
+        text: `Order ${sentOrderNumber}: some tickets still need attention.`,
+      });
+      return;
+    }
+  }
+}
+
+function clearPrinterView() {
+  setPrintDrawer(false);
+}
+
+async function prepareNextOrderAfterDispatch(sentOrderNumber) {
+  const sent = sentOrderNumber || state.orderNumber;
+  state.lastOrderId = null;
+  state.submissionId = "";
+  state.orderNumber = "";
+  await ensureDraftIdentity({ fresh: true });
+  emptyCart({
+    status: `Order ${sent} accepted — cart cleared for the next order.`,
+  });
+  resetFulfillmentForNewOrder();
+  clearPrinterView();
+  showToast(`Order ${sent} accepted`);
+  refreshJobs({ quiet: true });
+}
+
+const PRINT_ATTENTION = new Set(["FAILED", "UNKNOWN", "NEEDS_REVIEW"]);
+const PRINT_CONFIRM = new Set(["DISPATCHED", "UNKNOWN", "NEEDS_REVIEW"]);
+const PRINT_REPRINT = new Set(["FAILED", "UNKNOWN", "NEEDS_REVIEW", "DISPATCHED", "CONFIRMED"]);
+
+async function refreshJobs({ quiet = false, orderId = state.lastOrderId } = {}) {
+  const [printersRes, stationsRes, jobsRes] = await Promise.all([
+    api("/v1/printers"),
+    api("/v1/stations"),
+    api(
+      orderId
+        ? `/v1/print-jobs?orderId=${encodeURIComponent(orderId)}`
+        : "/v1/print-jobs"
+    ),
+  ]);
+  if (!printersRes.ok || !stationsRes.ok || !jobsRes.ok) {
+    if (printersRes.status === 401 || jobsRes.status === 401) {
+      showLogin("Session expired. Sign in again.");
+    }
+    return [];
+  }
+  state.printers = printersRes.json.printers || [];
+  state.stations = stationsRes.json.stations || [];
+  const jobs = jobsRes.json.jobs || [];
+  noteJobUpdates(jobs, { quiet });
+  renderPrinterStatus(jobs);
+  await renderTicketCards(jobs);
+  return jobs;
+}
+
+function jobNoticeKey(job) {
+  return `${job.job_id}:${job.status}`;
+}
+
+function jobContext(job) {
+  let payload = {};
+  try {
+    payload = JSON.parse(job.payload_snapshot || "{}");
+  } catch {
+    payload = {};
+  }
+  const station = state.stations.find((row) => row.station_id === job.station_id);
+  const printer = state.printers.find((row) => row.printer_id === job.printer_id);
+  return {
+    payload,
+    stationName: station?.name || job.station_id || "Station",
+    orderNumber: payload.orderNumber || "—",
+    printer,
+  };
+}
+
+function jobNotice(job) {
+  const ctx = jobContext(job);
+  const where = `${ctx.stationName} · order ${ctx.orderNumber}`;
+  if (job.status === "DISPATCHED" && ctx.printer?.connection_type === "MOCK") {
+    return { tone: "ok", text: `Mock ticket generated for ${where}. Not a physical print.` };
+  }
+  if (job.status === "DISPATCHED") {
+    return { tone: "ok", text: `Ticket handed off for ${where}. Not confirmed as printed.` };
+  }
+  if (job.status === "CONFIRMED") {
+    return { tone: "ok", text: `Operator confirmed the ticket for ${where}.` };
+  }
+  if (PRINT_ATTENTION.has(job.status)) {
+    const detail = job.last_error ? ` ${job.last_error}` : "";
+    return { tone: "err", sticky: true, text: `${job.status} for ${where}.${detail}` };
+  }
+  return null;
+}
+
+function noteJobUpdates(jobs, { quiet = false } = {}) {
+  if (!state._jobNoticeKeys) state._jobNoticeKeys = new Set();
+  updatePrintBadge(jobs);
+  if (!state._jobNoticeReady || quiet) {
+    for (const job of jobs) state._jobNoticeKeys.add(jobNoticeKey(job));
+    state._jobNoticeReady = true;
+    return;
+  }
+  for (const job of jobs) {
+    const key = jobNoticeKey(job);
+    if (state._jobNoticeKeys.has(key)) continue;
+    state._jobNoticeKeys.add(key);
+    const notice = jobNotice(job);
+    if (notice) pushPrintNotice(notice);
+  }
+}
+
+function updatePrintBadge(jobs) {
+  const count = jobs.filter((job) => PRINT_ATTENTION.has(job.status)).length;
+  const badge = $("print-jobs-count");
+  const button = $("print-jobs-btn");
+  if (!badge || !button) return;
+  badge.hidden = count === 0;
+  badge.textContent = count > 9 ? "9+" : String(count);
+  button.setAttribute(
+    "aria-label",
+    count ? `Print jobs, ${count} need attention` : "Print jobs"
+  );
+}
+
+function pushPrintNotice({ text, tone = "ok", sticky = false } = {}) {
+  const host = $("print-notices");
+  if (!host || !text) return;
+  const el = document.createElement("div");
+  el.className = `print-notice ${tone}`;
+  el.innerHTML = `<span>${escapeHtml(text)}</span><button type="button" aria-label="Dismiss notice">✕</button>`;
+  el.querySelector("button").addEventListener("click", () => el.remove());
+  host.appendChild(el);
+  if (!sticky) setTimeout(() => el.remove(), 4200);
+}
+
+function setPrintDrawer(open) {
+  const drawer = $("print-jobs-drawer");
+  const backdrop = $("print-jobs-backdrop");
+  const button = $("print-jobs-btn");
+  if (!drawer) return;
+  drawer.hidden = !open;
+  if (backdrop) backdrop.hidden = !open;
+  if (button) button.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function renderPrinterStatus(jobs) {
+  const host = $("printer-status");
+  host.innerHTML = "";
+  const stationByPrinter = {};
+  for (const s of state.stations) {
+    if (s.printer_id) stationByPrinter[s.printer_id] = s.name;
+  }
+  for (const p of state.printers) {
+    const related = jobs.filter((j) => j.printer_id === p.printer_id);
+    const worst = pickStatus(related.map((j) => j.status));
+    const card = document.createElement("div");
+    card.className = "printer-card";
+    card.innerHTML = `
+      <strong>${escapeHtml(p.display_name)}</strong>
+      <div>Station: ${escapeHtml(stationByPrinter[p.printer_id] || "—")}</div>
+      <div>Type: ${escapeHtml(p.connection_type)}</div>
+      <div>Jobs: ${related.length}${worst ? ` · <span class="status-badge ${worst}">${worst}</span>` : ""}</div>
+    `;
+    host.appendChild(card);
+  }
+  if (state.config?.physicalPrintEnabled && state.role === "admin") {
+    const note = document.createElement("p");
+    note.className = "muted";
+    note.textContent =
+      "Physical printing is enabled in server config. Use admin reprint/confirm APIs carefully — MOCK remains the supported test path.";
+    host.appendChild(note);
+  }
+}
+
+async function renderTicketCards(jobs) {
+  const host = $("ticket-cards");
+  host.innerHTML = "";
+  if (!jobs.length) {
+    host.innerHTML = `<p class="empty">No print jobs yet for this order.</p>`;
+    return;
+  }
+  const printerName = Object.fromEntries(
+    state.printers.map((p) => [p.printer_id, p.display_name])
+  );
+  const stationName = Object.fromEntries(
+    state.stations.map((s) => [s.station_id, s.name])
+  );
+
+  for (const job of jobs) {
+    let payload = {};
+    try {
+      payload = JSON.parse(job.payload_snapshot || "{}");
+    } catch {
+      payload = {};
+    }
+    const items = (payload.items || [])
+      .map(
+        (i) =>
+          `${i.quantity} × ${i.name}${(i.instructions || []).length ? ` (${i.instructions.join(", ")})` : ""}`
+      )
+      .join("<br>");
+    const card = document.createElement("article");
+    card.className = "ticket-card";
+    card.innerHTML = `
+      <h3>${escapeHtml(job.job_type)} · ${escapeHtml(stationName[job.station_id] || job.station_id || "—")}</h3>
+      <div><span class="status-badge ${job.status}">${escapeHtml(job.status)}</span></div>
+      <p class="muted">Order ${escapeHtml(payload.orderNumber || "—")}</p>
+      <p>${items || "<span class='muted'>No items</span>"}</p>
+      <p class="muted">Printer: ${escapeHtml(printerName[job.printer_id] || job.printer_id)}${
+        state.printers.find((row) => row.printer_id === job.printer_id)?.connection_type === "MOCK"
+          ? " · MOCK, not a physical print"
+          : ""
+      }</p>
+      ${job.last_error ? `<p class="ticket-error">${escapeHtml(job.last_error)}</p>` : ""}
+      <div class="ticket-actions"></div>
+    `;
+    const actions = card.querySelector(".ticket-actions");
+    const view = document.createElement("button");
+    view.type = "button";
+    view.className = "btn ghost small";
+    view.textContent = "View ticket";
+    view.addEventListener("click", () => openPreview(job.job_id));
+    actions.appendChild(view);
+    if (state.role === "admin" && PRINT_REPRINT.has(job.status)) {
+      const reprint = document.createElement("button");
+      reprint.type = "button";
+      reprint.className = "btn ghost small";
+      reprint.textContent = "Reprint";
+      reprint.addEventListener("click", () => reprintJob(job.job_id));
+      actions.appendChild(reprint);
+    }
+    if (state.role === "admin" && PRINT_CONFIRM.has(job.status)) {
+      const confirm = document.createElement("button");
+      confirm.type = "button";
+      confirm.className = "btn ghost small";
+      confirm.textContent = "Confirm";
+      confirm.addEventListener("click", () => confirmPrintJob(job.job_id));
+      actions.appendChild(confirm);
+    }
+    host.appendChild(card);
+  }
+}
+
+async function reprintJob(jobId) {
+  const res = await api(`/v1/print-jobs/${encodeURIComponent(jobId)}/reprint`, {
+    method: "POST",
+    body: "{}",
+  });
+  if (!res.ok) {
+    pushPrintNotice({ tone: "err", sticky: true, text: res.json?.error || "Reprint was not started." });
+    return;
+  }
+  pushPrintNotice({ tone: "ok", text: "Reprint queued. The original job was not marked successful." });
+  await refreshJobs();
+}
+
+async function confirmPrintJob(jobId) {
+  const res = await api(`/v1/print-jobs/${encodeURIComponent(jobId)}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ note: "Confirmed from Sales" }),
+  });
+  if (!res.ok) {
+    pushPrintNotice({ tone: "err", sticky: true, text: res.json?.error || "Job was not confirmed." });
+    return;
+  }
+  pushPrintNotice({
+    tone: "ok",
+    text: "Job marked confirmed by the operator. This is not a new physical print.",
+  });
+  await refreshJobs();
+}
+
+async function openPreview(jobId) {
+  const res = await api(`/v1/print-jobs/${encodeURIComponent(jobId)}/preview`);
+  if (!res.ok) {
+    setStatus(res.json?.error || "Preview failed", false);
+    return;
+  }
+  $("preview-title").textContent = `${res.json.jobType} · ${res.json.printerName} · ${res.json.status}`;
+  $("preview-text").textContent = res.json.text || "";
+  $("preview-dialog").showModal();
+}
+
+function pickStatus(statuses) {
+  const order = [
+    "FAILED",
+    "UNKNOWN",
+    "NEEDS_REVIEW",
+    "DISPATCHING",
+    "PENDING",
+    "DISPATCHED",
+    "CONFIRMED",
+  ];
+  for (const s of order) {
+    if (statuses.includes(s)) return s;
+  }
+  return "";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function bootstrapData() {
+  const [menuRes, cfgRes, catRes] = await Promise.all([
+    api("/v1/menu-items?includeInactive=0"),
+    api("/v1/config"),
+    api("/v1/menu-categories?includeInactive=0"),
+  ]);
+  if (!menuRes.ok) {
+    if (menuRes.status === 401) showLogin("Session expired.");
+    else setStatus(menuRes.json?.error || "Failed to load menu", false);
+    return;
+  }
+  state.menu = menuRes.json.menuItems || [];
+  state.categories = catRes.ok ? catRes.json.categories || [] : [];
+  state.subcategories = catRes.ok ? catRes.json.subcategories || [] : [];
+  state.config = cfgRes.ok ? cfgRes.json : null;
+  if (cfgRes.ok) {
+    state.canAdjustAddonPrices = Boolean(state.config?.canAdjustAddonPrices);
+    state.canAdjustBasePrices = Boolean(state.config?.canAdjustBasePrices);
+  }
+  if (state.config?.shop) {
+    state.money = createMoneyFormatter(state.config.shop);
+  } else {
+    state.money = createMoneyFormatter({
+      currencyLabel: "QR",
+      currencyDecimals: 2,
+    });
+  }
+  renderCategories();
+  renderMenu();
+  await loadOrderSetup();
+  const restored = restoreActiveCartIfAny();
+  const editId = new URLSearchParams(location.search).get("editOrder");
+  if (editId) history.replaceState(null, "", location.pathname);
+  let editStarted = false;
+  if (editId) editStarted = await beginEdit(editId);
+  if (!editStarted) {
+    if (restored && !state.submissionId) state.submissionId = newSubmissionId();
+    if (!restored) await ensureDraftIdentity({ fresh: true });
+    else if (!state.editingOrderId) await syncDraftNumber();
+    renderCart();
+    updateHeldCartUi();
+    const jobs = (await refreshJobs()) || [];
+    if (restored && !state.editingOrderId && jobsIncludeOrderNumber(jobs, state.orderNumber)) {
+      await prepareNextOrderAfterDispatch(state.orderNumber);
+    } else if (restored) {
+      setStatus("Cart restored after refresh.");
+    }
+  } else {
+    updateHeldCartUi();
+  }
+}
+
+function canReceivePayment() {
+  return Boolean(state.staff && state.permissions.includes("sales.payment.receive"));
+}
+
+function canEditOrders() {
+  if (state.role === "admin" || state.role === "device") return true;
+  return Boolean(state.staff && state.permissions.includes("sales.order.create"));
+}
+
+function cartLineFromDraft(raw) {
+  const item = state.menu.find((row) => row.item_id === raw.itemId);
+  const stored = Array.isArray(raw.instructions) ? raw.instructions : [];
+  const split = /^Order (\d+)$/.exec(stored[0] || "");
+  const instructions = split ? stored.slice(1) : stored;
+  return {
+    lineId: `line_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    itemId: raw.itemId,
+    name: raw.name || item?.name || "Item",
+    variantId: raw.variantId || null,
+    variantName: raw.variantName || "",
+    imageUrl: item?.image_url || "",
+    configuredPriceCents: Number(raw.configuredPriceCents ?? raw.priceCents ?? 0),
+    priceCents: Number(raw.priceCents || 0),
+    basePriceAdjusted: Boolean(raw.basePriceAdjusted),
+    taxApplicable: raw.taxApplicable !== false,
+    stationIds: item?.stationIds || [],
+    instructionModifiers: item?.instructionModifiers || DEFAULT_MODIFIERS,
+    instructionTargets: item?.instructionTargets || DEFAULT_TARGETS,
+    instructionStandalone: item?.instructionStandalone || [],
+    availableAddons: (item?.addons || []).filter((addon) => addon.isActive),
+    quantity: Math.max(1, Number(raw.quantity) || 1),
+    instructions,
+    orderNote: "",
+    addons: (raw.addons || []).map((addon) => ({
+      addonId: addon.addonId,
+      name: addon.name,
+      quantity: addon.quantity || 1,
+      unitPriceCents: Number(addon.unitPriceCents || 0),
+      configuredUnitPriceCents: Number(
+        addon.configuredUnitPriceCents ?? addon.unitPriceCents ?? 0
+      ),
+      priceAdjusted: Boolean(addon.priceAdjusted),
+      priceEnteredAtSale: Boolean(addon.priceAdjusted),
+    })),
+    splitNo: split ? Number(split[1]) : 1,
+  };
+}
+
+async function beginEdit(orderId) {
+  if (!orderId) return false;
+  if (!canEditOrders()) {
+    setStatus("You do not have permission to edit orders.", false);
+    return false;
+  }
+  if (cartHasItems() && state.editingOrderId !== orderId) {
+    if (!confirmLeaveCart("Editing this order")) return false;
+  }
+  const res = await api(`/v1/orders/${encodeURIComponent(orderId)}/edit-draft`);
+  if (res.status === 401) {
+    showLogin("This sign-in is no longer valid.");
+    return false;
+  }
+  if (!res.ok) {
+    setStatus(res.json?.error || "This order cannot be edited.", false);
+    return false;
+  }
+  const draft = res.json;
+  state.editingOrderId = draft.orderId;
+  state.orderNumber = draft.orderNumber || "";
+  state.submissionId = newSubmissionId();
+  state.lastOrderId = null;
+  state.fulfillment = { ...blankFulfillment(), ...(draft.fulfillment || {}) };
+  const typeSelect = $("order-type");
+  if (typeSelect) {
+    const known = (state.orderTypes || []).some((row) => row.orderTypeId === draft.orderTypeId);
+    if (known) typeSelect.value = draft.orderTypeId;
+    else {
+      const byCode = (state.orderTypes || []).find((row) => row.code === draft.orderTypeCode);
+      if (byCode) typeSelect.value = byCode.orderTypeId;
+    }
+  }
+  state.cart = (draft.lines || []).map((line, index) => {
+    const built = cartLineFromDraft(line);
+    built.lineId = `line_edit_${index}_${Math.random().toString(16).slice(2)}`;
+    return built;
+  });
+  state.activeSplit = Math.max(1, ...state.cart.map((line) => lineSplitNo(line)));
+  focusCartLine(null);
+  showOrderNumber();
+  renderFulfillmentFields();
+  renderCart();
+  persistActiveCart();
+  $("payment-dialog")?.close();
+  $("payment-offer-dialog")?.close();
+  $("pending-dialog")?.close();
+  setStatus(`Editing order ${draft.orderNumber}. Change it, then review and save.`);
+  return true;
+}
+
+function paymentAttemptKey(orderId) {
+  return `gtct.cashSettlement.${orderId}`;
+}
+
+function readPaymentAttempt(orderId) {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(paymentAttemptKey(orderId)) || "null");
+    if (parsed && /^[A-Za-z0-9_-]{8,80}$/.test(String(parsed.submissionId || ""))) {
+      if (Number.isSafeInteger(Number(parsed.amountCents)) && parsed.currencyCode) {
+        return {
+          submissionId: String(parsed.submissionId),
+          amountCents: Number(parsed.amountCents),
+          currencyCode: String(parsed.currencyCode),
+          tender: parsed.tender === "BANK" ? "BANK" : "CASH",
+          bankAccountId: String(parsed.bankAccountId || ""),
+          submitted: parsed.submitted === true,
+        };
+      }
+    }
+  } catch {
+    /* use the in-memory attempt */
+  }
+  if (state.payment.orderId === orderId && state.payment.attempt?.submissionId) {
+    return state.payment.attempt;
+  }
+  return null;
+}
+
+function storePaymentAttempt(orderId, attempt) {
+  state.payment.orderId = orderId;
+  state.payment.attempt = attempt;
+  try {
+    sessionStorage.setItem(paymentAttemptKey(orderId), JSON.stringify(attempt));
+  } catch {
+    /* the in-memory attempt still retries with the same id */
+  }
+}
+
+function clearPaymentAttempt(orderId) {
+  state.payment.attempt = null;
+  try {
+    sessionStorage.removeItem(paymentAttemptKey(orderId));
+  } catch {
+    /* nothing stored */
+  }
+}
+
+function ensurePaymentAttempt(orderId, view) {
+  const existing = readPaymentAttempt(orderId);
+  if (existing) return existing;
+  const attempt = {
+    submissionId: newSubmissionId(),
+    amountCents: Number(view.balanceCents),
+    currencyCode: String(view.currencyCode || ""),
+    tender: "CASH",
+    bankAccountId: "",
+    submitted: false,
+  };
+  storePaymentAttempt(orderId, attempt);
+  return attempt;
+}
+
+function paymentMoney(view) {
+  return createMoneyFormatter({
+    currencyLabel: view?.currencyLabel || view?.currencyCode || "",
+    currencyDecimals: view?.currencyDecimals,
+  });
+}
+
+function showPaymentError(message) {
+  const el = $("payment-error");
+  if (!el) return;
+  el.hidden = !message;
+  el.textContent = message || "";
+}
+
+function closePaymentUi() {
+  for (const id of ["payment-offer-dialog", "payment-dialog"]) {
+    const dialog = $(id);
+    if (dialog?.open) dialog.close();
+  }
+  setPendingDrawer(false);
+}
+
+function setPendingDrawer(open) {
+  const drawer = $("pending-payments-drawer");
+  const backdrop = $("pending-backdrop");
+  const btn = $("pending-payments-btn");
+  if (drawer) drawer.hidden = !open;
+  if (backdrop) backdrop.hidden = !open;
+  if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function selectedPaymentChoice() {
+  const locked = state.payment.attempt?.submitted ? state.payment.attempt : null;
+  const tender = locked
+    ? locked.tender === "BANK" ? "BANK" : "CASH"
+    : document.querySelector('input[name="pay-method"]:checked')?.value === "BANK"
+      ? "BANK"
+      : "CASH";
+  const bankAccountId = tender === "BANK"
+    ? String((locked ? locked.bankAccountId : $("payment-bank-account")?.value) || "")
+    : "";
+  return { tender, bankAccountId };
+}
+
+function accountOptionLabel(account) {
+  const mask = account.maskedReference ? ` ${account.maskedReference}` : "";
+  return `${account.displayName} · ${account.bankName}${mask}`;
+}
+
+function renderPaymentAccounts() {
+  const select = $("payment-bank-account");
+  if (!select) return;
+  const selected = state.payment.attempt?.bankAccountId || select.value;
+  select.innerHTML = (state.payment.accounts || [])
+    .map((account) => {
+      const id = escapeHtml(account.accountId);
+      const picked = account.accountId === selected ? " selected" : "";
+      return `<option value="${id}"${picked}>${escapeHtml(accountOptionLabel(account))}</option>`;
+    })
+    .join("");
+}
+
+function renderPayment(view) {
+  const money = paymentMoney(view);
+  const paid = view?.paymentStatus === "PAID";
+  $("payment-order-number").textContent = view?.orderNumber ? `Order ${view.orderNumber}` : "";
+  const customer = [view?.customerName, view?.customerPhone].filter(Boolean).join(" · ");
+  $("payment-customer").textContent = customer || "No customer on this order";
+  $("payment-total").textContent = view ? money.format(view.orderTotalCents) : "—";
+  $("payment-paid").textContent = view ? money.format(view.paidCents) : "—";
+  $("payment-due").textContent = view ? money.format(view.balanceCents) : "—";
+  const status = $("payment-status");
+  status.textContent = paid ? "Paid" : "Unpaid";
+  status.className = `pay-status ${paid ? "paid" : "unpaid"}`;
+  const choice = $("payment-choice");
+  const method = $("payment-method");
+  if (paid) {
+    const settlement = view?.settlement;
+    method.textContent = settlement?.tender === "BANK"
+      ? (settlement.bankAccountLabel ? `Bank · ${settlement.bankAccountLabel}` : "Bank")
+      : "Cash";
+    if (choice) choice.hidden = true;
+  } else {
+    const locked = state.payment.attempt?.submitted === true;
+    const current = selectedPaymentChoice();
+    for (const input of document.querySelectorAll('input[name="pay-method"]')) {
+      input.checked = input.value === current.tender;
+      input.disabled = locked || state.payment.confirming;
+    }
+    renderPaymentAccounts();
+    const bankFields = $("payment-bank-fields");
+    const empty = $("payment-bank-empty");
+    const select = $("payment-bank-account");
+    const bank = current.tender === "BANK";
+    if (bankFields) bankFields.hidden = !bank;
+    const ready = (state.payment.accounts || []).length > 0;
+    if (empty) empty.hidden = !bank || ready;
+    if (select) {
+      select.disabled = locked || state.payment.confirming || !ready;
+      if (current.bankAccountId) select.value = current.bankAccountId;
+    }
+    method.textContent = bank ? "Bank" : "Cash";
+    if (choice) choice.hidden = false;
+  }
+  const confirm = $("payment-confirm");
+  const bankBlocked = !paid && selectedPaymentChoice().tender === "BANK" && !(state.payment.accounts || []).length;
+  confirm.hidden = paid;
+  confirm.disabled = state.payment.confirming || bankBlocked;
+  confirm.textContent = state.payment.confirming ? "Confirming…" : "Confirm Payment";
+  const edit = $("payment-edit");
+  if (edit) edit.hidden = paid || !canEditOrders() || !(view?.orderId || state.payment.orderId);
+  if (paid) $("payment-renew").hidden = true;
+}
+
+async function readServerPayment(orderId) {
+  return api(`/v1/orders/${encodeURIComponent(orderId)}/settlements`);
+}
+
+async function openPaymentOffer(orderId) {
+  if (!canReceivePayment() || !orderId) return;
+  const dialog = $("payment-offer-dialog");
+  if (!dialog) return;
+  state.payment.orderId = orderId;
+  $("payment-offer-text").textContent = "Checking payment status…";
+  $("payment-offer-take").hidden = true;
+  if (!dialog.open) dialog.showModal();
+  void refreshPendingCount();
+  const res = await readServerPayment(orderId);
+  if (!dialog.open || state.payment.orderId !== orderId) return;
+  if (res.status === 401) {
+    dialog.close();
+    showLogin("This sign-in is no longer valid.");
+    return;
+  }
+  if (!res.ok || !res.json?.orderNumber) {
+    $("payment-offer-text").textContent =
+      "The order was accepted. Payment status could not be confirmed.";
+    return;
+  }
+  const paid = res.json.paymentStatus === "PAID";
+  const who = res.json.customerName ? ` for ${res.json.customerName}` : "";
+  $("payment-offer-text").textContent = paid
+    ? `Order ${res.json.orderNumber}${who} is paid.`
+    : `Order ${res.json.orderNumber}${who} was accepted and is still unpaid.`;
+  $("payment-offer-take").hidden = paid;
+}
+
+async function openTakePayment(orderId, { fromPending = false } = {}) {
+  if (!canReceivePayment() || !orderId) return;
+  const dialog = $("payment-dialog");
+  if (!dialog) return;
+  state.payment.orderId = orderId;
+  state.payment.fromPending = fromPending;
+  state.payment.confirming = false;
+  state.payment.view = null;
+  state.payment.accounts = [];
+  setPendingDrawer(false);
+  const offer = $("payment-offer-dialog");
+  if (offer?.open) offer.close();
+  showPaymentError("");
+  $("payment-renew").hidden = true;
+  $("payment-order-number").textContent = "Loading order…";
+  $("payment-customer").textContent = "";
+  $("payment-confirm").disabled = true;
+  if (!dialog.open) dialog.showModal();
+  const res = await readServerPayment(orderId);
+  if (!dialog.open || state.payment.orderId !== orderId) return;
+  if (res.status === 401) {
+    dialog.close();
+    showLogin("This sign-in is no longer valid.");
+    return;
+  }
+  if (!res.ok || !res.json) {
+    showPaymentError(res.json?.error || "This order could not be opened.");
+    $("payment-confirm").hidden = true;
+    return;
+  }
+  state.payment.view = res.json;
+  if (res.json.paymentStatus !== "PAID") {
+    const attempt = ensurePaymentAttempt(orderId, res.json);
+    for (const input of document.querySelectorAll('input[name="pay-method"]')) {
+      input.checked = input.value === (attempt.tender === "BANK" ? "BANK" : "CASH");
+    }
+    const accounts = await api("/v1/bank-accounts");
+    if (!dialog.open || state.payment.orderId !== orderId) return;
+    state.payment.accounts = accounts.ok ? accounts.json?.accounts || [] : [];
+  }
+  renderPayment(res.json);
+}
+
+function showPaidPayment(view) {
+  state.payment.view = view;
+  state.payment.confirming = false;
+  clearPaymentAttempt(view.orderId || state.payment.orderId);
+  showPaymentError("");
+  renderPayment(view);
+  void refreshPendingCount();
+}
+
+async function confirmCashPayment() {
+  const orderId = state.payment.orderId;
+  if (!orderId || state.payment.confirming) return;
+  const dialog = $("payment-dialog");
+  state.payment.confirming = true;
+  $("payment-confirm").disabled = true;
+  $("payment-confirm").textContent = "Confirming…";
+  $("payment-renew").hidden = true;
+  showPaymentError("");
+  try {
+    const current = await readServerPayment(orderId);
+    if (!current.ok || !current.json) {
+      showPaymentError(current.json?.error || "Payment status could not be confirmed.");
+      return;
+    }
+    if (current.json.paymentStatus === "PAID") {
+      showPaidPayment(current.json);
+      return;
+    }
+    const attempt = ensurePaymentAttempt(orderId, current.json);
+    if (!attempt.submitted) {
+      const choice = selectedPaymentChoice();
+      if (choice.tender === "BANK" && !choice.bankAccountId) {
+        showPaymentError("Choose an operational bank account.");
+        return;
+      }
+      attempt.tender = choice.tender;
+      attempt.bankAccountId = choice.bankAccountId;
+      attempt.submitted = true;
+      storePaymentAttempt(orderId, attempt);
+    }
+    const payload = {
+      submissionId: attempt.submissionId,
+      tender: attempt.tender === "BANK" ? "BANK" : "CASH",
+      amountCents: attempt.amountCents,
+      currencyCode: attempt.currencyCode,
+    };
+    if (payload.tender === "BANK") payload.bankAccountId = attempt.bankAccountId;
+    let res;
+    try {
+      res = await api(`/v1/orders/${encodeURIComponent(orderId)}/settlements`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      await recoverUncertainPayment(orderId, err);
+      return;
+    }
+    if (res.ok && res.json?.paymentStatus === "PAID") {
+      showPaidPayment({
+        ...current.json,
+        ...res.json,
+        orderNumber: res.json.settlement?.orderNumber || current.json.orderNumber,
+        paymentStatus: res.json.paymentStatus,
+        orderTotalCents: res.json.balance?.orderTotalCents ?? current.json.orderTotalCents,
+        paidCents: res.json.balance?.paidCents ?? current.json.paidCents,
+        balanceCents: res.json.balance?.balanceCents ?? 0,
+      });
+      return;
+    }
+    if (res.status === 401) {
+      dialog?.close();
+      showLogin("This sign-in is no longer valid. The payment was not confirmed.");
+      return;
+    }
+    if (res.json?.code === "ALREADY_PAID" || res.json?.code === "SUBMISSION_CONFLICT" || res.json?.code === "PAYMENT_IN_PROGRESS") {
+      await recoverUncertainPayment(orderId, null, res.json);
+      return;
+    }
+    if (res.status === 400 && state.payment.attempt) {
+      state.payment.attempt.submitted = false;
+      storePaymentAttempt(orderId, state.payment.attempt);
+    }
+    showPaymentError(res.json?.error || "The payment was not confirmed.");
+  } catch (err) {
+    await recoverUncertainPayment(orderId, err);
+  } finally {
+    if (state.payment.view?.paymentStatus !== "PAID") {
+      state.payment.confirming = false;
+      if (state.payment.view) renderPayment(state.payment.view);
+    }
+  }
+}
+
+async function recoverUncertainPayment(orderId, err, serverError) {
+  let status = null;
+  try {
+    status = await readServerPayment(orderId);
+  } catch {
+    status = null;
+  }
+  if (status?.ok && status.json?.paymentStatus === "PAID") {
+    showPaidPayment(status.json);
+    return;
+  }
+  const code = serverError?.code || "";
+  if (code === "ALREADY_PAID") {
+    showPaymentError("This order is already paid. The status could not be reloaded. It was not paid again.");
+    return;
+  }
+  if (code === "SUBMISSION_CONFLICT") {
+    showPaymentError("This confirmation does not match the earlier payment attempt. The order was not paid again.");
+    if (status?.ok && status.json?.paymentStatus !== "PAID") {
+      state.payment.view = status.json;
+      renderPayment(status.json);
+      $("payment-renew").hidden = false;
+    }
+    return;
+  }
+  if (code === "PAYMENT_IN_PROGRESS" || code === "PAYMENT_CONFLICT") {
+    showPaymentError(serverError.error || "This payment could not be confirmed. Check the order before trying again.");
+    return;
+  }
+  showPaymentError(
+    status?.ok
+      ? "The payment was not confirmed. This order is still unpaid. You can confirm again."
+      : "The payment was not confirmed. Check the connection, then confirm again. Do not treat this order as paid."
+  );
+  if (err) return;
+}
+
+async function renewPaymentAttempt() {
+  const orderId = state.payment.orderId;
+  if (!orderId || state.payment.confirming) return;
+  const status = await readServerPayment(orderId);
+  if (!status.ok || status.json?.paymentStatus === "PAID") {
+    if (status.json?.paymentStatus === "PAID") showPaidPayment(status.json);
+    else showPaymentError(status.json?.error || "Payment status could not be confirmed.");
+    return;
+  }
+  clearPaymentAttempt(orderId);
+  ensurePaymentAttempt(orderId, status.json);
+  state.payment.view = status.json;
+  renderPayment(status.json);
+  showPaymentError("A new confirmation is ready. Confirm payment when the amount is correct.");
+}
+
+async function refreshPendingCount() {
+  const btn = $("pending-payments-btn");
+  if (!btn) return;
+  if (!canReceivePayment()) {
+    btn.hidden = true;
+    setPendingDrawer(false);
+    return;
+  }
+  btn.hidden = false;
+  const res = await api("/v1/pending-payments");
+  if (!res.ok) return;
+  const count = (res.json?.orders || []).length;
+  const badge = $("pending-payments-count");
+  if (badge) {
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+  }
+}
+
+function pendingQuery() {
+  return ($("pending-search")?.value || "").trim().toLowerCase();
+}
+
+function orderMatchesPendingSearch(order, query) {
+  if (!query) return true;
+  const haystack = [order.orderNumber, order.customerName, order.customerPhone]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(query);
+}
+
+function renderPendingOrders() {
+  const list = $("pending-payments-list");
+  if (!list) return;
+  const orders = state.pendingOrders;
+  const query = pendingQuery();
+  const matched = orders.filter((order) => orderMatchesPendingSearch(order, query));
+  if (!orders.length) {
+    list.innerHTML = `<p class="muted">No unpaid orders.</p>`;
+    return;
+  }
+  if (!matched.length) {
+    list.innerHTML = `<p class="muted">No unpaid orders match that search.</p>`;
+    return;
+  }
+  list.innerHTML = matched
+    .map((order) => {
+      const money = paymentMoney(order);
+      const customer = [order.customerName, order.customerPhone].filter(Boolean).join(" · ");
+      return `<article class="pending-payment-card">
+        <div>
+          <strong>${escapeHtml(order.orderNumber || "")}</strong>
+          <span class="pay-status unpaid">Unpaid</span>
+        </div>
+        <p>${escapeHtml(customer || "No customer on this order")}</p>
+        <p class="pending-payment-due">${escapeHtml(money.format(order.balanceCents))}</p>
+        <button type="button" class="btn primary" data-pay-order="${escapeHtml(order.orderId)}">Take Payment</button>
+      </article>`;
+    })
+    .join("");
+}
+
+async function openPendingPayments() {
+  if (!canReceivePayment()) return;
+  setPendingDrawer(true);
+  const list = $("pending-payments-list");
+  list.innerHTML = `<p class="muted">Loading unpaid orders…</p>`;
+  const res = await api("/v1/pending-payments");
+  if (res.status === 401) {
+    setPendingDrawer(false);
+    showLogin("This sign-in is no longer valid.");
+    return;
+  }
+  if (!res.ok) {
+    state.pendingOrders = [];
+    list.innerHTML = `<p class="error">${escapeHtml(res.json?.error || "Unpaid orders could not be loaded.")}</p>`;
+    return;
+  }
+  const orders = res.json?.orders || [];
+  state.pendingOrders = orders;
+  const badge = $("pending-payments-count");
+  if (badge) {
+    badge.textContent = String(orders.length);
+    badge.hidden = orders.length === 0;
+  }
+  renderPendingOrders();
+}
+
+function bindUi() {
+  $("login-btn").addEventListener("click", (e) => {
+    e.preventDefault();
+    login();
+  });
+  for (const id of ["login-username", "login-password"]) {
+    $(id).addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        login();
+      }
+    });
+    $(id).addEventListener("input", () => setLoginError(""));
+  }
+  $("toggle-password-btn").addEventListener("click", () => {
+    const input = $("login-password");
+    const btn = $("toggle-password-btn");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    btn.textContent = show ? "Hide" : "Show";
+    btn.setAttribute("aria-pressed", show ? "true" : "false");
+    input.focus();
+  });
+  $("logout-btn").addEventListener("click", () => {
+    setNavMenu(false);
+    logout();
+  });
+  $("menu-search").addEventListener("input", (e) => {
+    state.search = e.target.value;
+    renderMenu();
+  });
+  $("clear-cart-btn").addEventListener("click", () => {
+    const wasEditing = Boolean(state.editingOrderId);
+    if (!cartHasItems() && !wasEditing && !fulfillmentHasDetails()) return;
+    if (!window.confirm("Clear this order, including the customer and address?")) return;
+    if ($("review-dialog")?.open) $("review-dialog").close();
+    emptyCart({ status: "Cart cleared." });
+    resetFulfillmentForNewOrder();
+    if (wasEditing) void ensureDraftIdentity({ fresh: true });
+  });
+  $("cart-lines")?.addEventListener("scroll", onCartLinesScroll, {
+    passive: true,
+  });
+  const reviewBtn = $("review-btn") || $("review-order-btn");
+  reviewBtn?.addEventListener("click", openReview);
+  $("review-cancel").addEventListener("click", () => $("review-dialog").close());
+  $("review-body")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-act='edit']");
+    if (!btn || !$("review-body").contains(btn)) return;
+    const lineId = btn.closest("[data-line-id]")?.dataset.lineId;
+    if (!lineId) return;
+    editReviewLine(lineId, btn);
+  });
+  $("review-meta")?.addEventListener("click", (e) => {
+    if (e.target.closest("#review-edit-customer")) {
+      if (!state.fulfillment.customerId) return;
+      openCustomerDialog("edit");
+      return;
+    }
+    if (e.target.closest("#review-change-customer")) {
+      openAddressPicker("customer");
+    }
+  });
+  $("review-confirm").addEventListener("click", sendTestOrder);
+  $("pending-payments-btn")?.addEventListener("click", () => {
+    setNavMenu(false);
+    void openPendingPayments();
+  });
+  $("pending-payments-close")?.addEventListener("click", () => setPendingDrawer(false));
+  $("pending-search")?.addEventListener("input", () => {
+    if (state.pendingOrders) renderPendingOrders();
+  });
+  $("pending-backdrop")?.addEventListener("click", () => setPendingDrawer(false));
+  $("pending-payments-list")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-pay-order]");
+    if (!button) return;
+    void openTakePayment(button.dataset.payOrder, { fromPending: true });
+  });
+  $("payment-offer-later")?.addEventListener("click", () => $("payment-offer-dialog")?.close());
+  $("payment-offer-take")?.addEventListener("click", () => {
+    const orderId = state.payment.orderId;
+    if (orderId) void openTakePayment(orderId);
+  });
+  $("payment-edit")?.addEventListener("click", () => {
+    const orderId = state.payment.orderId;
+    if (!orderId) return;
+    void beginEdit(orderId);
+  });
+  $("payment-back")?.addEventListener("click", () => {
+    $("payment-dialog")?.close();
+    if (state.payment.fromPending) void openPendingPayments();
+  });
+  $("payment-confirm")?.addEventListener("click", () => {
+    void confirmCashPayment();
+  });
+  document.querySelectorAll('input[name="pay-method"]').forEach((input) => {
+    input.addEventListener("change", () => {
+      if (state.payment.view && state.payment.view.paymentStatus !== "PAID") {
+        renderPayment(state.payment.view);
+      }
+    });
+  });
+  $("payment-renew")?.addEventListener("click", () => {
+    void renewPaymentAttempt();
+  });
+  $("refresh-jobs-btn").addEventListener("click", refreshJobs);
+  $("split-bar")?.addEventListener("click", (e) => {
+    const remove = e.target.closest("[data-split-remove]");
+    if (remove) {
+      const n = Number(remove.dataset.splitRemove);
+      if (linesForSplit(n).length) return;
+      if (lineSplitNo({ splitNo: state.activeSplit }) === n) {
+        const rest = splitIds().filter((id) => id !== n);
+        state.activeSplit = rest[rest.length - 1] || 1;
+      }
+      renderCart();
+      return;
+    }
+    if (e.target.closest("[data-split-add]")) {
+      addSplitOrder();
+      return;
+    }
+    const pick = e.target.closest("[data-split]");
+    if (!pick) return;
+    state.activeSplit = lineSplitNo({ splitNo: Number(pick.dataset.split) });
+    renderCart();
+  });
+  $("new-order-btn")?.addEventListener("click", () => {
+    if (cartHasItems() && !confirmLeaveCart("Start a new order")) return;
+    state.lastOrderId = null;
+    state.submissionId = "";
+    state.orderNumber = "";
+    emptyCart({ status: "New test order number ready." });
+    resetFulfillmentForNewOrder();
+    void ensureDraftIdentity({ fresh: true });
+    refreshJobs();
+  });
+  $("hold-cart-btn")?.addEventListener("click", holdActiveCart);
+  $("hold-confirm-btn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    confirmHoldCart();
+  });
+  $("hold-cancel-btn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    closeHoldDialog();
+  });
+  $("hold-label-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      confirmHoldCart();
+    }
+  });
+  $("hold-dialog")?.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    closeHoldDialog();
+  });
+  $("cust-cancel")?.addEventListener("click", closeCustomerDialog);
+  $("cust-save")?.addEventListener("click", () => {
+    if (state._customerMode === "extra") saveExtraAddressFromCustomerDialog();
+    else saveNewCustomer();
+  });
+  $("cust-save-another")?.addEventListener("click", () => {
+    if (state._customerMode === "extra") return;
+    saveNewCustomer({ another: true });
+  });
+  $("cust-use-existing")?.addEventListener("click", () => {
+    const existing = state._dupCustomer;
+    closeCustomerDialog();
+    if (existing) selectCustomer(existing);
+  });
+  $("customer-dialog")?.addEventListener("close", () => {
+    const err = $("cust-error");
+    if (err) err.hidden = true;
+  });
+  $("addr-cancel")?.addEventListener("click", closeAddressDialog);
+  $("addr-save")?.addEventListener("click", () => {
+    saveAddressEditor();
+  });
+  $("picker-cust-search")?.addEventListener("input", schedulePickerSearch);
+  $("picker-show-customer")?.addEventListener("click", () => {
+    $("address-picker-dialog")?.classList.add("show-customer-search");
+    $("picker-cust-search")?.focus();
+  });
+  $("address-picker-cancel")?.addEventListener("click", () => $("address-picker-dialog")?.close());
+  $("address-picker-clear")?.addEventListener("click", () => {
+    $("address-picker-dialog")?.close();
+    clearSelectedCustomer();
+  });
+  $("address-picker-add")?.addEventListener("click", () => {
+    $("address-picker-dialog")?.close();
+    openAddressEditor(null);
+  });
+  $("address-picker-adjust")?.addEventListener("click", () => {
+    $("address-picker-dialog")?.close();
+    openOrderAddressDialog();
+  });
+  $("order-addr-cancel")?.addEventListener("click", () => $("order-address-dialog")?.close());
+  $("order-addr-apply")?.addEventListener("click", () => {
+    state.fulfillment.buildingNumber = $("order-addr-building")?.value.trim() || "";
+    state.fulfillment.roadNumber = $("order-addr-road")?.value.trim() || "";
+    state.fulfillment.addressNote = $("order-addr-note")?.value.trim() || "";
+    $("order-address-dialog")?.close();
+    renderFulfillmentFields();
+    renderCart();
+    persistActiveCart();
+  });
+  $("order-type")?.addEventListener("change", () => {
+    renderFulfillmentFields();
+    renderCart();
+    persistActiveCart();
+  });
+  document.querySelectorAll("#app-nav a.nav-link[href]").forEach((link) => {
+    link.addEventListener("click", () => {
+      persistActiveCart();
+      setNavMenu(false);
+    });
+  });
+  $("customize-qty-dec")?.addEventListener("click", () => changeCustomizeQty(-1));
+  $("customize-qty-inc")?.addEventListener("click", () => changeCustomizeQty(1));
+  $("customize-qty")?.addEventListener("input", onCustomizeQtyInput);
+  $("customize-qty")?.addEventListener("blur", () => commitCustomizeQty());
+  $("customize-qty")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitCustomizeQty();
+      e.target.blur();
+    }
+  });
+  $("customize-unit-price")?.addEventListener("input", onCustomizeUnitPriceInput);
+  $("customize-unit-price")?.addEventListener("focus", (e) => {
+    if (!state.canAdjustBasePrices) return;
+    e.target.select();
+  });
+  $("customize-unit-price")?.addEventListener("blur", () =>
+    commitCustomizeUnitPrice()
+  );
+  $("customize-unit-price")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitCustomizeUnitPrice();
+      e.target.blur();
+    }
+  });
+  $("customize-price-reset")?.addEventListener("click", resetCustomizeUnitPrice);
+  $("kitchen-step-back")?.addEventListener("click", () => {
+    state.selectedMod = null;
+    state.selectedTargets = [];
+    setKitchenStep(1);
+    showInstrFeedback("");
+  });
+  $("kitchen-targets-ok")?.addEventListener("click", () => {
+    addInstruction();
+  });
+  $("tab-notes")?.addEventListener("click", () => setCustomizeTab("notes"));
+  $("tab-extras")?.addEventListener("click", () => setCustomizeTab("extras"));
+  $("price-breakdown-toggle")?.addEventListener("click", () => {
+    state.priceBreakdownOpen = !state.priceBreakdownOpen;
+    updatePriceSummary();
+  });
+  $("customize-apply-btn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    applyCustomization();
+  });
+  $("customize-cancel-btn")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    cancelCustomization();
+  });
+  $("instr-dialog")?.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    cancelCustomization();
+  });
+  $("instr-dialog")?.addEventListener("close", () => {
+    document.body.classList.remove("customize-open");
+  });
+  $("custom-note")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      syncOrderNoteFromInput();
+    }
+  });
+  $("custom-note")?.addEventListener("input", syncOrderNoteFromInput);
+  $("preview-close")?.addEventListener("click", () => {
+    $("preview-dialog").close();
+  });
+  $("variant-close-btn")?.addEventListener("click", closeVariantPicker);
+  $("pk-close-btn")?.addEventListener("click", closeProductKnowledge);
+  $("pk-dialog")?.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    closeProductKnowledge();
+  });
+  $("pk-dialog")?.addEventListener("close", () => {
+    state.pkItem = null;
+    state.pkPayload = null;
+  });
+  document.querySelectorAll(".pk-tab").forEach((btn) => {
+    btn.addEventListener("click", () => setPkTab(btn.dataset.pkTab));
+  });
+  $("variant-dialog")?.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    closeVariantPicker();
+  });
+  $("print-jobs-btn")?.addEventListener("click", () => {
+    const open = $("print-jobs-drawer")?.hidden !== false;
+    setPrintDrawer(open);
+    if (open) refreshJobs({ quiet: true });
+  });
+  $("print-jobs-close")?.addEventListener("click", () => setPrintDrawer(false));
+  $("print-jobs-backdrop")?.addEventListener("click", () => setPrintDrawer(false));
+  $("mobile-cart-bar")?.addEventListener("click", () => {
+    setNavMenu(false);
+    setCartDrawer(true);
+  });
+  $("close-cart-drawer")?.addEventListener("click", () => setCartDrawer(false));
+  $("cart-drawer-backdrop")?.addEventListener("click", () => setCartDrawer(false));
+  $("nav-menu-btn")?.addEventListener("click", () => {
+    setNavMenu(!state.navMenuOpen);
+  });
+  $("nav-menu-backdrop")?.addEventListener("click", () => setNavMenu(false));
+  $("app-nav")?.addEventListener("click", (e) => {
+    const t = e.target;
+    if (t && (t.matches("a.nav-link") || t.closest("a.nav-link"))) {
+      setNavMenu(false);
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!$("print-jobs-drawer")?.hidden) {
+      e.preventDefault();
+      setPrintDrawer(false);
+      return;
+    }
+    if (state.navMenuOpen) {
+      e.preventDefault();
+      setNavMenu(false);
+      return;
+    }
+    if (
+      state.cartDrawerOpen &&
+      !$("review-dialog")?.open &&
+      !$("instr-dialog")?.open &&
+      !$("variant-dialog")?.open &&
+      !$("pk-dialog")?.open
+    ) {
+      e.preventDefault();
+      setCartDrawer(false);
+    }
+  });
+  window.addEventListener("resize", () => {
+    if (!isMobileSalesLayout()) {
+      if (state.navMenuOpen) setNavMenu(false);
+      if (state.cartDrawerOpen) setCartDrawer(false);
+    }
+    syncScrollLock();
+  });
+}
+
+function isMobileSalesLayout() {
+  return window.matchMedia("(max-width: 1023px)").matches;
+}
+
+function lockPageScroll(lock) {
+  if (lock) {
+    if (document.body.classList.contains("page-scroll-lock")) return;
+    state._scrollLockY = window.scrollY || 0;
+    document.body.classList.add("page-scroll-lock");
+    document.body.style.top = `-${state._scrollLockY}px`;
+  } else {
+    if (!document.body.classList.contains("page-scroll-lock")) return;
+    document.body.classList.remove("page-scroll-lock");
+    document.body.style.top = "";
+    window.scrollTo(0, state._scrollLockY || 0);
+  }
+}
+
+function syncScrollLock() {
+  const shouldLock =
+    isMobileSalesLayout() && (state.cartDrawerOpen || state.navMenuOpen);
+  lockPageScroll(shouldLock);
+}
+
+function setNavMenu(open) {
+  const next = Boolean(open);
+  const btn = $("nav-menu-btn");
+  const backdrop = $("nav-menu-backdrop");
+  if (next && !state.navMenuOpen) {
+    state._navTrigger = document.activeElement;
+  }
+  state.navMenuOpen = next;
+  document.body.classList.toggle("nav-menu-open", next);
+  if (btn) {
+    btn.setAttribute("aria-expanded", next ? "true" : "false");
+    btn.setAttribute("aria-label", next ? "Close navigation menu" : "Open navigation menu");
+  }
+  if (backdrop) backdrop.hidden = !next;
+  syncScrollLock();
+  if (next) {
+    const first = $("app-nav")?.querySelector("a.nav-link:not([hidden]), button.nav-link");
+    first?.focus();
+  } else if (state._navTrigger?.focus) {
+    state._navTrigger.focus();
+    state._navTrigger = null;
+  }
+}
+
+function setCartDrawer(open) {
+  const next = Boolean(open) && isMobileSalesLayout();
+  if (next && !state.cartDrawerOpen) {
+    state._cartTrigger = document.activeElement;
+  }
+  state.cartDrawerOpen = next;
+  document.body.classList.toggle("cart-drawer-open", next);
+  const backdrop = $("cart-drawer-backdrop");
+  const closeBtn = $("close-cart-drawer");
+  if (backdrop) backdrop.hidden = !next;
+  if (closeBtn) closeBtn.hidden = !next;
+  syncScrollLock();
+  if (next) {
+    closeBtn?.focus();
+  } else if (state._cartTrigger?.focus) {
+    state._cartTrigger.focus();
+    state._cartTrigger = null;
+  }
+}
+
+async function init() {
+  bindUi();
+  const ok = await ensureSession();
+  if (ok) await bootstrapData();
+}
+
+init();

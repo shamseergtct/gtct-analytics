@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>GTCT Menu Setup</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/menu-setup.css" />
+  </head>
+  <body class="menu-setup-page">
+    <div id="app">
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-card">
+          <p class="brand">GTCT Restaurant</p>
+          <h1>Menu Setup</h1>
+          <p class="banner">TEST MODE — ADMIN ONLY</p>
+          <p class="hint">Sign in with your administrator username and password.</p>
+          <div class="login-form">
+            <div class="field">
+              <label for="login-username">Username</label>
+              <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off" />
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <div class="password-row">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" />
+                <button type="button" id="toggle-password-btn" class="btn ghost password-toggle" aria-controls="login-password">Show</button>
+              </div>
+            </div>
+            <button type="button" id="login-btn" class="btn primary">Sign in</button>
+            <p id="login-error" class="error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="main-view" class="view main-view" hidden>
+        <header class="topbar">
+          <div>
+            <p class="brand-inline">GTCT</p>
+            <h1>Menu Setup</h1>
+            <p class="page-desc">Manage items, categories, and kitchen notes for this restaurant.</p>
+          </div>
+          <div class="topbar-meta">
+            <span class="banner compact">TEST MODE</span>
+            <span id="session-role" class="pill"></span>
+            <span id="currency-pill" class="pill"></span>
+            <a class="btn ghost small" href="/">Sales</a>
+            <a class="btn ghost small" href="/shop-settings.html">Shop Settings</a>
+            <a class="btn ghost small" href="/settings.html">Printers</a>
+            <a class="btn ghost small" href="/users.html">Users</a>
+            <button type="button" id="logout-btn" class="btn ghost small">Sign out</button>
+          </div>
+        </header>
+
+        <div id="device-block" class="settings-banner" hidden>
+          Administrator role required for menu administration.
+        </div>
+
+        <div class="menu-shell" id="admin-shell" hidden>
+          <nav class="ms-tabs" role="tablist" aria-label="Menu Setup sections">
+            <button type="button" class="ms-tab active" data-tab="items" role="tab" aria-selected="true">Items</button>
+            <button type="button" class="ms-tab" data-tab="categories" role="tab" aria-selected="false">Categories</button>
+            <button type="button" class="ms-tab" data-tab="notes" role="tab" aria-selected="false">Kitchen Instructions</button>
+            <button type="button" class="ms-tab" data-tab="addons" role="tab" aria-selected="false">Add-ons</button>
+          </nav>
+
+          <!-- ITEMS -->
+          <section id="panel-items" class="ms-panel" role="tabpanel">
+            <div id="items-layout" class="items-layout">
+              <div class="list-pane ms-card">
+                <div class="ms-toolbar">
+                  <input id="menu-search" class="ms-search" type="search" placeholder="Search name, SKU, code…" />
+                  <button type="button" id="new-item-btn" class="btn primary small desktop-add">+ New menu item</button>
+                </div>
+                <div id="avail-filters" class="ms-chips" style="margin-bottom:12px"></div>
+                <div class="ms-toolbar" style="margin-top:0">
+                  <select id="filter-category" class="ms-select" aria-label="Category filter">
+                    <option value="ALL">All categories</option>
+                  </select>
+                  <select id="filter-subcategory" class="ms-select" aria-label="Subcategory filter">
+                    <option value="ALL">All subcategories</option>
+                  </select>
+                </div>
+                <div id="item-list" class="item-list"></div>
+              </div>
+
+            </div>
+            <button type="button" id="fab-add" class="btn primary fab-add">+ Add Item</button>
+          </section>
+
+          <dialog id="item-editor-dialog" class="item-editor-dialog" aria-labelledby="editor-title">
+            <form id="item-form" class="item-editor-form" novalidate>
+              <header class="item-editor-head">
+                <div class="item-editor-titles">
+                  <h2 id="editor-title">Create Menu Item</h2>
+                  <p id="editor-subtitle" class="muted" hidden></p>
+                  <p id="editor-hint" class="muted">Required fields marked *</p>
+                </div>
+                <button type="button" id="close-editor-btn" class="btn ghost small" aria-label="Close item editor">Close</button>
+              </header>
+              <nav class="item-editor-tabs" role="tablist" aria-label="Item editor sections">
+                <button type="button" class="item-editor-tab active" role="tab" data-editor-tab="basic" aria-selected="true">Basic</button>
+                <button type="button" class="item-editor-tab" role="tab" data-editor-tab="variants" aria-selected="false">Variants</button>
+                <button type="button" class="item-editor-tab" role="tab" data-editor-tab="kitchen" aria-selected="false">Kitchen &amp; Extras</button>
+                <button type="button" class="item-editor-tab" role="tab" data-editor-tab="knowledge" aria-selected="false">Product Knowledge</button>
+              </nav>
+              <div class="item-editor-body">
+                <section data-editor-panel="basic" role="tabpanel">
+                  <input type="hidden" id="f-item-id" />
+                  <div class="photo-block">
+                    <div id="photo-preview" class="photo-preview">No photo</div>
+                    <div class="photo-actions">
+                      <input id="f-photo" class="visually-hidden-file" type="file" accept="image/jpeg,image/png,image/webp" />
+                      <button type="button" id="choose-photo-btn" class="btn ghost small">Choose photo</button>
+                      <button type="button" id="clear-photo-btn" class="btn ghost small">Remove photo</button>
+                      <button type="button" id="restore-photo-btn" class="btn ghost small" hidden>Restore original</button>
+                      <p id="photo-note" class="muted photo-note">The photo is saved with the item. Cancel leaves the saved photo unchanged.</p>
+                      <p id="photo-status" class="photo-status" hidden></p>
+                    </div>
+                  </div>
+                  <div class="item-form-fields">
+                    <label class="field">
+                      <span>Name <em class="req">*</em></span>
+                      <input id="f-name" type="text" maxlength="120" required autocomplete="off" />
+                    </label>
+                    <label class="field field-price">
+                      <span>Price <em class="req">*</em></span>
+                      <div class="price-input">
+                        <span class="currency-prefix" id="price-prefix">QR</span>
+                        <input id="f-price" type="text" inputmode="decimal" placeholder="0.00" required />
+                      </div>
+                    </label>
+                    <label class="field">
+                      <span>Kitchen station</span>
+                      <select id="f-station">
+                        <option value="">None — No Preparation</option>
+                      </select>
+                      <p class="info-callout">Use None for packaged items (e.g. bottled drinks). They skip prep tickets and still appear on the cashier receipt.</p>
+                    </label>
+                    <div class="form-grid-2">
+                      <label class="field">
+                        <span>Category <em class="req">*</em></span>
+                        <select id="f-category" required></select>
+                      </label>
+                      <label class="field">
+                        <span>Subcategory <span class="opt">(optional)</span></span>
+                        <select id="f-subcategory"></select>
+                      </label>
+                    </div>
+                  </div>
+
+                  <p class="field" style="margin-top:16px"><span>Availability</span></p>
+                  <div id="avail-segment" class="segmented" role="group" aria-label="Availability">
+                    <button type="button" data-status="active">Active</button>
+                    <button type="button" data-status="sold_out">Sold out</button>
+                    <button type="button" data-status="inactive">Inactive</button>
+                  </div>
+
+                  <div class="tax-applicable-block">
+                    <p class="field"><span>Tax Applicable</span></p>
+                    <label class="check-row tax-switch">
+                      <input id="f-tax-applicable" type="checkbox" checked />
+                      <span>Apply shop tax to this item when tax is enabled</span>
+                    </label>
+                    <p class="muted" style="font-size:0.78rem;margin:4px 0 0">Default for new items: ON. Separate from Active / Sold out.</p>
+                  </div>
+
+                  <details class="advanced-block">
+                    <summary>SKU, code, and sort</summary>
+                    <div class="form-grid-2" style="margin-top:12px">
+                      <label class="field">
+                        <span>SKU <span class="opt">(optional)</span></span>
+                        <input id="f-sku" type="text" maxlength="64" placeholder="Leave blank if unused" />
+                      </label>
+                      <label class="field">
+                        <span>Code <span class="opt">(optional)</span></span>
+                        <input id="f-code" type="text" maxlength="32" placeholder="Short kitchen/POS code" />
+                      </label>
+                      <label class="field">
+                        <span>Sort order</span>
+                        <input id="f-sort" type="number" step="1" value="0" />
+                      </label>
+                    </div>
+                  </details>
+                  <details class="tech-details">
+                    <summary>Technical details</summary>
+                    <p id="editor-tech-id" class="muted">New item — ID assigned on save.</p>
+                  </details>
+                </section>
+
+                <section data-editor-panel="variants" role="tabpanel" hidden>
+                  <div class="editor-section" id="variants-section">
+                    <div class="editor-section-head">
+                      <h3>Variants &amp; Sizes</h3>
+                      <button type="button" id="add-variant-btn" class="btn ghost small">+ Add variant</button>
+                    </div>
+                    <label class="check-row tax-switch">
+                      <input id="f-has-variants" type="checkbox" />
+                      <span>Has Variants</span>
+                    </label>
+                    <p id="variant-off-hint" class="muted" style="font-size:0.82rem;margin:6px 0 10px">
+                      Off: Sales uses the base price and adds this item directly. Turn on to sell sizes such as Small and Large.
+                    </p>
+                    <p id="variant-on-hint" class="muted" hidden style="font-size:0.82rem;margin:6px 0 10px">
+                      On: Sales asks for a size. The selected size price is the unit price. Changing the base price does not change size prices.
+                    </p>
+                    <div id="variant-list" class="variant-list"></div>
+                    <p id="variant-error" class="error" hidden></p>
+                  </div>
+                </section>
+
+                <section data-editor-panel="kitchen" role="tabpanel" hidden>
+                  <div class="editor-section">
+                    <div class="editor-section-head">
+                      <h3>Kitchen instructions</h3>
+                      <div class="item-actions">
+                        <button type="button" id="instr-use-defaults" class="btn ghost small">Use shop defaults</button>
+                        <button type="button" id="instr-customize" class="btn ghost small">Customize</button>
+                      </div>
+                    </div>
+                    <p id="instr-mode-hint" class="muted" style="margin:0 0 8px">Using shop defaults (all active modifiers &amp; targets).</p>
+                    <p id="instr-summary" class="instr-summary">Shop defaults apply to this item.</p>
+                    <div id="instr-custom-fields" hidden>
+                    <p class="check-group-label">Allowed modifiers <button type="button" class="linkish" id="mods-select-all">Select all</button> <button type="button" class="linkish" id="mods-clear">Clear</button></p>
+                    <div id="item-mod-checks" class="check-grid"></div>
+                    <p class="check-group-label">Allowed targets <button type="button" class="linkish" id="tgts-select-all">Select all</button> <button type="button" class="linkish" id="tgts-clear">Clear</button></p>
+                    <div id="item-target-checks" class="check-grid"></div>
+                    <p class="check-group-label">Standalone instructions</p>
+                    <div id="item-stand-checks" class="check-grid"></div>
+                    </div>
+                  </div>
+
+                  <div class="editor-section">
+                    <div class="editor-section-head">
+                      <h3>Add-ons</h3>
+                    </div>
+                    <p class="muted" style="margin:0 0 8px">Tick to allow on this item. Item price is optional. Leave it blank to use the library price. If neither price is set, Sales asks for a price when the add-on is selected.</p>
+                    <div id="item-addon-checks" class="addon-assign-list"></div>
+                  </div>
+                </section>
+
+                <section data-editor-panel="knowledge" role="tabpanel" hidden>
+                  <div class="editor-section pk-section" id="product-knowledge-section">
+                    <p class="muted pk-intro">
+                      Optional notes for sales staff. They do not change price, tax, or kitchen orders.
+                    </p>
+                    <h3 class="pk-group-title">About</h3>
+                    <div class="pk-fields">
+                      <label class="field">
+                        <span>Short description</span>
+                        <textarea id="f-description" maxlength="400" rows="2" placeholder="One or two sentences about this item"></textarea>
+                        <span class="field-hint"><span id="f-description-count">0</span>/400</span>
+                      </label>
+                      <label class="field">
+                        <span>Detailed description</span>
+                        <textarea id="f-pk-detailed" maxlength="2000" rows="3" placeholder="Fuller product story for staff reference"></textarea>
+                        <span class="field-hint"><span id="f-pk-detailed-count">0</span>/2000</span>
+                      </label>
+                      <label class="field pk-quick-field">
+                        <span>What should the salesman tell the customer?</span>
+                        <textarea id="f-pk-quick" maxlength="500" rows="3" placeholder="Short, natural answer a salesman can say to a customer"></textarea>
+                        <span class="field-hint"><span id="f-pk-quick-count">0</span>/500 · Salesman Quick Answer</span>
+                      </label>
+                      <label class="field">
+                        <span>Special features / selling points</span>
+                        <textarea id="f-pk-features" maxlength="1000" rows="2" placeholder="What makes this item special"></textarea>
+                      </label>
+                      <h3 class="pk-group-title">Ingredients</h3>
+                      <div class="field">
+                        <span>Main ingredients</span>
+                        <div class="pk-ingredient-row">
+                          <input id="f-pk-ingredient-input" type="text" maxlength="80" placeholder="Type an ingredient and press Add" autocomplete="off" />
+                          <button type="button" id="f-pk-ingredient-add" class="btn ghost small">Add</button>
+                        </div>
+                        <div id="f-pk-ingredients" class="pk-ingredient-chips" aria-live="polite"></div>
+                        <p class="muted" style="font-size:0.75rem;margin:4px 0 0">Informational only — not inventory or recipes.</p>
+                      </div>
+                      <label class="field">
+                        <span>Verified allergen notes</span>
+                        <textarea id="f-pk-allergens" maxlength="1000" rows="2" placeholder="Only enter allergens confirmed by the restaurant"></textarea>
+                        <label class="check-row" style="margin-top:6px">
+                          <input id="f-pk-allergen-verified" type="checkbox" />
+                          <span>Allergen information has been verified</span>
+                        </label>
+                      </label>
+                      <h3 class="pk-group-title">Service details</h3>
+                      <div class="form-grid-2">
+                        <label class="field">
+                          <span>Product brand</span>
+                          <input id="f-pk-brand" type="text" maxlength="120" placeholder="Optional" />
+                        </label>
+                        <label class="field">
+                          <span>Main ingredient brand</span>
+                          <input id="f-pk-ingredient-brand" type="text" maxlength="200" placeholder="Optional" />
+                        </label>
+                        <label class="field">
+                          <span>Prep time from (minutes)</span>
+                          <input id="f-pk-prep-min" type="number" min="0" max="999" step="1" placeholder="e.g. 5" />
+                        </label>
+                        <label class="field">
+                          <span>Prep time to (minutes)</span>
+                          <input id="f-pk-prep-max" type="number" min="0" max="999" step="1" placeholder="e.g. 8" />
+                        </label>
+                        <label class="field">
+                          <span>Serving style</span>
+                          <input id="f-pk-serving-style" type="text" maxlength="200" placeholder="e.g. Served as a wrap" />
+                        </label>
+                        <label class="field">
+                          <span>Served with</span>
+                          <input id="f-pk-serving-with" type="text" maxlength="400" placeholder="e.g. French fries" />
+                        </label>
+                      </div>
+                      <label class="field">
+                        <span>Additional service notes</span>
+                        <textarea id="f-pk-service-notes" maxlength="400" rows="2" placeholder="Optional service guidance for staff"></textarea>
+                      </label>
+                      <label class="field">
+                        <span>Staff training notes <span class="opt">(admin only · not shown on sales devices)</span></span>
+                        <textarea id="f-pk-training" maxlength="2000" rows="2" placeholder="Internal coaching notes"></textarea>
+                      </label>
+                    </div>
+                  </div>
+                </section>
+              </div>
+              <footer class="item-editor-footer">
+                <p id="form-error" class="error" hidden></p>
+                <div class="editor-footer">
+                  <button type="button" id="reset-form-btn" class="btn ghost">Cancel</button>
+                  <button type="submit" id="save-btn" class="btn primary">Save Item</button>
+                </div>
+              </footer>
+            </form>
+          </dialog>
+
+          <!-- CATEGORIES -->
+          <section id="panel-categories" class="ms-panel" role="tabpanel" hidden>
+            <div class="ms-card">
+              <div class="ms-toolbar">
+                <button type="button" id="add-category-btn" class="btn primary small">+ Add category</button>
+                <label class="check-inline" style="margin-left:auto">
+                  <input id="show-inactive-cats" type="checkbox" /> Show inactive
+                </label>
+              </div>
+              <div id="category-admin-list"></div>
+            </div>
+          </section>
+
+          <!-- KITCHEN INSTRUCTIONS LIBRARY -->
+          <section id="panel-notes" class="ms-panel" role="tabpanel" hidden>
+            <div class="ms-card">
+              <h2 style="margin:0 0 8px;font-size:1.1rem">Kitchen Instructions Library</h2>
+              <p class="muted">Shop-wide modifiers, targets, and standalone prep notes. Assign allowed options per item in the item editor — do not retype lists on every item.</p>
+              <div class="lib-tabs" id="instr-lib-tabs">
+                <button type="button" class="ms-tab active" data-lib="modifiers">Modifiers</button>
+                <button type="button" class="ms-tab" data-lib="targets">Targets</button>
+                <button type="button" class="ms-tab" data-lib="standalone">Standalone</button>
+              </div>
+              <div class="ms-toolbar" style="margin-top:12px">
+                <input id="lib-search" class="ms-search" type="search" placeholder="Search library…" />
+                <label class="check-inline"><input id="lib-show-inactive" type="checkbox" /> Show inactive</label>
+              </div>
+              <div id="kitchen-lib-list" class="lib-table"></div>
+              <div class="chip-add-row" style="margin-top:12px">
+                <input id="new-lib-name" type="text" placeholder="New name…" />
+                <button type="button" id="add-lib-btn" class="btn primary small">Add</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ADD-ONS LIBRARY -->
+          <section id="panel-addons" class="ms-panel" role="tabpanel" hidden>
+            <div class="ms-card">
+              <div class="ms-toolbar">
+                <h2 style="margin:0;font-size:1.1rem">Add-ons Library</h2>
+                <button type="button" id="new-addon-btn" class="btn primary small" style="margin-left:auto">+ New add-on</button>
+              </div>
+              <p class="muted">Reusable add-ons. Leave the price blank to set it on a menu item, or enter it on the sales screen when the add-on is selected. Use 0 for free.</p>
+              <div id="addon-editor" class="addon-editor" hidden>
+                <h3 id="addon-editor-title" style="margin:0 0 12px;font-size:1rem">New add-on</h3>
+                <input type="hidden" id="addon-edit-id" />
+                <div class="form-grid-2">
+                  <label class="field" style="grid-column:1 / -1">
+                    <span>Name <em class="req">*</em></span>
+                    <input id="addon-edit-name" type="text" maxlength="80" placeholder="e.g. Double Cheese" autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>Default price</span>
+                    <div class="price-input">
+                      <span class="currency-prefix" id="addon-price-prefix">QR</span>
+                      <input id="addon-edit-price" type="text" inputmode="decimal" placeholder="Optional" />
+                    </div>
+                    <span class="muted" style="font-size:0.75rem">Leave blank to set the price on the item or at the sale. Use 0 for free. Signed amounts allowed (e.g. −0.100).</span>
+                  </label>
+                  <label class="field check-inline" style="align-self:end;padding-bottom:8px">
+                    <input id="addon-edit-active" type="checkbox" checked /> Active
+                  </label>
+                  <label class="field check-inline" style="align-self:end;padding-bottom:8px;grid-column:1 / -1">
+                    <input id="addon-edit-tax" type="checkbox" checked /> Tax Applicable
+                  </label>
+                </div>
+                <p id="addon-edit-error" class="error" hidden></p>
+                <div class="item-actions" style="margin-top:12px">
+                  <button type="button" id="addon-save-btn" class="btn primary small">Save add-on</button>
+                  <button type="button" id="addon-cancel-btn" class="btn ghost small">Cancel</button>
+                </div>
+              </div>
+              <div class="ms-toolbar">
+                <input id="addon-search" class="ms-search" type="search" placeholder="Search add-ons…" />
+                <label class="check-inline"><input id="addon-show-inactive" type="checkbox" /> Show inactive</label>
+              </div>
+              <div id="addon-lib-list" class="lib-table"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="/menu.js"></script>
+  </body>
+</html>

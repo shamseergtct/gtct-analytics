@@ -1,0 +1,275 @@
+/* GTCT Modern Light — Shop Settings */
+
+.shop-settings-page {
+  --blue: #0b539e;
+  --blue-pressed: #083a6e;
+  --accent: #99ac3e;
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --ink: #142033;
+  --muted: #5b6b7c;
+  --line: #d7e0ea;
+}
+
+.shop-shell {
+  max-width: 960px;
+}
+
+.shop-tabs {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex-wrap: nowrap;
+}
+
+.shop-tabs .ms-tab {
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.ss-panel {
+  margin-bottom: 1rem;
+}
+
+.ss-card h2 {
+  margin: 0 0 0.35rem;
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.ss-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+
+.ss-fieldset {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 0.75rem 1rem;
+  margin: 0;
+}
+
+.ss-fieldset legend {
+  padding: 0 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.radio-row,
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  min-height: 44px;
+  padding: 0.35rem 0;
+  font-size: 0.92rem;
+  color: var(--ink);
+}
+
+.radio-row input,
+.check-row input {
+  margin-top: 0.2rem;
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--blue);
+}
+
+.tax-fields[data-disabled="1"] {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.order-lock-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+}
+
+.dirty-hint {
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+  background: #fff4ce;
+  color: #7a5b00;
+  font-weight: 600;
+  font-size: 0.88rem;
+}
+
+.ss-save-bar[hidden] {
+  display: none;
+}
+
+.ss-save-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.85rem 0 calc(0.85rem + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(180deg, transparent, var(--bg) 28%);
+  z-index: 5;
+}
+
+.ss-receipt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+.receipt-preview {
+  margin: 0;
+  background: #0f1724;
+  color: #e8f0ff;
+  border-radius: 12px;
+  padding: 0.9rem;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  max-height: 60vh;
+  overflow: auto;
+}
+
+.logo-preview {
+  width: 96px;
+  height: 96px;
+}
+
+.status-line.ok {
+  background: #dcfae6;
+  color: var(--ok, #067647);
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+}
+
+.status-line.err {
+  background: #fee4e2;
+  color: var(--danger, #b42318);
+  padding: 0.55rem 0.75rem;
+  border-radius: 10px;
+}
+
+@media (max-width: 900px) {
+  .ss-receipt-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ss-save-bar {
+    flex-direction: column-reverse;
+  }
+
+  .ss-save-bar .btn {
+    width: 100%;
+  }
+}
+
+.od-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+
+.od-head .hint,
+.od-row .hint,
+#delivery-tax-note {
+  margin: 0.2rem 0 0;
+}
+
+.od-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding: 0.75rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.od-row strong {
+  margin-right: 0.4rem;
+}
+
+.od-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.od-money {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.od-money input {
+  flex: 1;
+}
+
+.od-currency {
+  min-width: 2.4rem;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.ss-dialog {
+  width: min(420px, calc(100vw - 1.5rem));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 1rem 1.1rem 1.15rem;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 16px 40px rgba(20, 32, 51, 0.12);
+}
+
+.ss-dialog::backdrop {
+  background: rgba(20, 32, 51, 0.35);
+}
+
+.ss-dialog h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.ss-dialog .item-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+}
+
+.bank-account-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--line, #d7e0ea);
+}
+
+.bank-account-card .hint {
+  margin: 0.2rem 0 0;
+}
+
+@media (max-width: 640px) {
+  .bank-account-card {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+
+  .od-actions,
+  .od-actions .btn,
+  .ss-dialog .item-actions .btn {
+    width: 100%;
+  }
+
+  .ss-dialog .item-actions {
+    flex-direction: column-reverse;
+  }
+}

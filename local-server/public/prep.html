@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>GTCT Preparation</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/prep.css" />
+  </head>
+  <body>
+    <section id="login-view" class="view login-view" hidden>
+      <div class="login-card">
+        <p class="brand">GTCT Restaurant</p>
+        <h1>Preparation</h1>
+        <p class="hint">Sign in to work a preparation station.</p>
+        <div class="login-form">
+          <div class="field">
+            <label for="login-username">Username</label>
+            <input id="login-username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="login-password">Password</label>
+            <input id="login-password" type="password" autocomplete="current-password" />
+          </div>
+          <button type="button" id="login-btn" class="btn primary">Sign in</button>
+          <p id="login-error" class="error" hidden></p>
+        </div>
+      </div>
+    </section>
+
+    <section id="main-view" class="view" hidden>
+      <header class="topbar">
+        <div class="topbar-brand">
+          <p class="brand-inline">GTCT</p>
+          <h1 id="station-title">Preparation</h1>
+        </div>
+        <div class="topbar-actions">
+          <span id="session-role" class="pill"></span>
+          <button type="button" id="nav-menu-btn" class="nav-menu-btn" aria-expanded="false" aria-controls="app-nav" aria-label="Open navigation menu">
+            <span class="nav-menu-icon" aria-hidden="true"></span>
+          </button>
+          <nav id="app-nav" class="app-nav" aria-label="Main">
+            <a class="nav-link" href="/">Sales</a>
+            <a class="nav-link" href="/orders.html">Orders</a>
+            <a class="nav-link" href="/prep.html" aria-current="page">Preparation</a>
+            <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
+          </nav>
+        </div>
+      </header>
+      <main class="prep-page">
+        <p id="prep-denied" class="error" hidden>You do not have permission to work a preparation station.</p>
+        <div id="prep-shell">
+          <div id="station-tabs" class="chips chip-scroll" role="tablist" aria-label="Preparation stations"></div>
+          <div id="prep-alerts" class="prep-alerts" aria-live="assertive"></div>
+          <p id="prep-status" class="hint" aria-live="polite">Loading orders…</p>
+          <div id="prep-board" class="prep-board"></div>
+        </div>
+      </main>
+    </section>
+    <script type="module" src="/prep.js"></script>
+  </body>
+</html>

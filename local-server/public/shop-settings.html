@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="light" />
+    <title>GTCT Shop Settings</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/menu-setup.css" />
+    <link rel="stylesheet" href="/shop-settings.css" />
+  </head>
+  <body class="menu-setup-page shop-settings-page">
+    <div id="app">
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-card">
+          <p class="brand">GTCT Restaurant</p>
+          <h1>Shop Settings</h1>
+          <p class="banner">TEST MODE — ADMIN ONLY</p>
+          <p class="hint">Sign in with your administrator username and password.</p>
+          <div class="login-form">
+            <div class="field">
+              <label for="login-username">Username</label>
+              <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off" />
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <div class="password-row">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" />
+                <button type="button" id="toggle-password-btn" class="btn ghost password-toggle" aria-controls="login-password">Show</button>
+              </div>
+            </div>
+            <button type="button" id="login-btn" class="btn primary">Sign in</button>
+            <p id="login-error" class="error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="main-view" class="view main-view" hidden>
+        <header class="topbar">
+          <div>
+            <p class="brand-inline">GTCT</p>
+            <h1>Shop Settings</h1>
+            <p class="page-desc">Business profile, tax, currency, receipts, and order fulfillment for this restaurant.</p>
+          </div>
+          <div class="topbar-meta">
+            <span class="banner compact">TEST MODE</span>
+            <span id="session-role" class="pill"></span>
+            <span id="currency-pill" class="pill"></span>
+            <a class="btn ghost small" href="/">Sales</a>
+            <a class="btn ghost small" href="/menu.html">Menu Setup</a>
+            <a class="btn ghost small" href="/settings.html">Printers</a>
+            <a class="btn ghost small" href="/users.html">Users</a>
+            <button type="button" id="logout-btn" class="btn ghost small">Sign out</button>
+          </div>
+        </header>
+
+        <div id="device-block" class="settings-banner" hidden>
+          Administrator role required for shop settings.
+        </div>
+
+        <div class="menu-shell shop-shell" id="admin-shell" hidden>
+          <nav class="ms-tabs shop-tabs" role="tablist" aria-label="Shop Settings sections">
+            <button type="button" class="ms-tab active" data-tab="profile" role="tab" aria-selected="true">Business Profile</button>
+            <button type="button" class="ms-tab" data-tab="tax" role="tab" aria-selected="false">Tax &amp; Billing</button>
+            <button type="button" class="ms-tab" data-tab="currency" role="tab" aria-selected="false">Currency &amp; Regional</button>
+            <button type="button" class="ms-tab" data-tab="receipt" role="tab" aria-selected="false">Receipt Settings</button>
+            <button type="button" class="ms-tab" data-tab="orders" role="tab" aria-selected="false">Order &amp; Delivery</button>
+            <button type="button" class="ms-tab" data-tab="banks" role="tab" aria-selected="false">Bank Accounts</button>
+          </nav>
+
+          <p id="save-status" class="status-line" hidden></p>
+          <p id="dirty-hint" class="dirty-hint" hidden>You have unsaved changes.</p>
+
+          <form id="shop-form" novalidate>
+            <!-- PROFILE -->
+            <section id="panel-profile" class="ms-panel ss-panel" role="tabpanel">
+              <div class="ms-card ss-card">
+                <h2>Business profile</h2>
+                <p class="muted">Display name appears in the app and on receipts when enabled. Legal name is for official headers.</p>
+                <div class="ss-fields">
+                  <label class="field">
+                    <span>Shop display name <em class="req">*</em></span>
+                    <input id="f-display-name" type="text" maxlength="120" required />
+                  </label>
+                  <label class="field">
+                    <span>Legal business name <span class="opt">(optional)</span></span>
+                    <input id="f-legal-name" type="text" maxlength="160" />
+                  </label>
+                  <label class="field">
+                    <span>Business address <span class="opt">(optional)</span></span>
+                    <textarea id="f-address" maxlength="500" rows="3" placeholder="Street, building, area…"></textarea>
+                  </label>
+                  <div class="form-grid-2">
+                    <label class="field">
+                      <span>City</span>
+                      <input id="f-city" type="text" maxlength="80" />
+                    </label>
+                    <label class="field">
+                      <span>Country</span>
+                      <input id="f-country" type="text" maxlength="80" />
+                    </label>
+                  </div>
+                  <div class="form-grid-2">
+                    <label class="field">
+                      <span>Contact phone</span>
+                      <input id="f-phone" type="text" maxlength="40" />
+                    </label>
+                    <label class="field">
+                      <span>Secondary phone</span>
+                      <input id="f-phone2" type="text" maxlength="40" />
+                    </label>
+                  </div>
+                  <div class="form-grid-2">
+                    <label class="field">
+                      <span>WhatsApp</span>
+                      <input id="f-whatsapp" type="text" maxlength="40" />
+                    </label>
+                    <label class="field">
+                      <span>Email</span>
+                      <input id="f-email" type="email" maxlength="120" />
+                    </label>
+                  </div>
+                  <label class="field">
+                    <span>Commercial / business registration number</span>
+                    <input id="f-registration" type="text" maxlength="80" />
+                  </label>
+
+                  <div class="logo-block">
+                    <p class="field"><span>Shop logo <span class="opt">(optional)</span></span></p>
+                    <div class="photo-row">
+                      <div id="logo-preview" class="photo-preview logo-preview">No logo</div>
+                      <div>
+                        <input id="f-logo" type="file" accept="image/jpeg,image/png,image/webp" />
+                        <div class="item-actions" style="margin-top:8px">
+                          <button type="button" id="upload-logo-btn" class="btn ghost small">Upload</button>
+                          <button type="button" id="clear-logo-btn" class="btn ghost small">Remove</button>
+                        </div>
+                        <p class="muted" style="margin:.4rem 0 0;font-size:.8rem">JPEG, PNG or WebP · max ~2MB</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- TAX -->
+            <section id="panel-tax" class="ms-panel ss-panel" role="tabpanel" hidden>
+              <div class="ms-card ss-card">
+                <h2>Tax &amp; billing</h2>
+                <p class="muted">Tax applies to the order goods total (item prices + signed add-ons). Historical orders keep their snapshot.</p>
+                <div class="ss-fields">
+                  <label class="check-row">
+                    <input id="f-tax-enabled" type="checkbox" />
+                    <span>Enable tax</span>
+                  </label>
+                  <div id="tax-fields" class="tax-fields">
+                    <label class="field">
+                      <span>Tax name</span>
+                      <input id="f-tax-name" type="text" maxlength="40" placeholder="VAT / GST" />
+                    </label>
+                    <label class="field field-price">
+                      <span>Tax percentage</span>
+                      <div class="price-input">
+                        <span class="currency-prefix">%</span>
+                        <input id="f-tax-rate" type="text" inputmode="decimal" placeholder="10" />
+                      </div>
+                    </label>
+                    <fieldset class="ss-fieldset">
+                      <legend>Tax calculation mode</legend>
+                      <label class="radio-row"><input type="radio" name="tax-mode" value="exclusive" /> Tax exclusive (prices do not include tax)</label>
+                      <label class="radio-row"><input type="radio" name="tax-mode" value="inclusive" /> Tax inclusive (prices already include tax)</label>
+                    </fieldset>
+                    <label class="field">
+                      <span>Tax registration number</span>
+                      <input id="f-tax-reg" type="text" maxlength="80" />
+                    </label>
+                  </div>
+                  <p id="tax-disabled-note" class="info-callout" hidden>Tax is disabled. Existing rate and mode are kept for reactivation but are not applied to new orders.</p>
+                </div>
+              </div>
+            </section>
+
+            <!-- CURRENCY -->
+            <section id="panel-currency" class="ms-panel ss-panel" role="tabpanel" hidden>
+              <div class="ms-card ss-card">
+                <h2>Currency &amp; regional</h2>
+                <p class="muted">Changing currency code or decimal places does not convert amounts. While test orders exist, currency changes are blocked — clear them below first.</p>
+                <div class="ss-fields">
+                  <div id="order-lock-card" class="info-callout order-lock-card">
+                    <p id="order-lock-text" style="margin:0 0 0.65rem">Checking orders…</p>
+                    <button type="button" id="clear-orders-btn" class="btn ghost small">Clear test orders</button>
+                  </div>
+                  <label class="field">
+                    <span>Currency preset</span>
+                    <select id="f-currency-preset">
+                      <option value="">Custom / keep current</option>
+                      <option value="BHD">BHD — 3 decimals</option>
+                      <option value="QAR">QAR (QR) — 2 decimals</option>
+                      <option value="INR">INR (₹) — 2 decimals</option>
+                    </select>
+                  </label>
+                  <div class="form-grid-2">
+                    <label class="field">
+                      <span>Currency code</span>
+                      <input id="f-currency-code" type="text" maxlength="8" />
+                    </label>
+                    <label class="field">
+                      <span>Display label / symbol</span>
+                      <input id="f-currency-label" type="text" maxlength="12" />
+                    </label>
+                  </div>
+                  <label class="field field-price">
+                    <span>Decimal places</span>
+                    <select id="f-currency-decimals">
+                      <option value="0">0</option>
+                      <option value="1">1</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                      <option value="4">4</option>
+                    </select>
+                  </label>
+                  <p id="money-example" class="info-callout"></p>
+                  <div class="form-grid-2">
+                    <label class="field">
+                      <span>Time zone (IANA)</span>
+                      <input id="f-timezone" type="text" maxlength="64" placeholder="Asia/Bahrain" />
+                    </label>
+                    <label class="field">
+                      <span>Date display format</span>
+                      <select id="f-date-format">
+                        <option value="YYYY-MM-DD">YYYY-MM-DD</option>
+                        <option value="DD/MM/YYYY">DD/MM/YYYY</option>
+                        <option value="MM/DD/YYYY">MM/DD/YYYY</option>
+                        <option value="DD-MM-YYYY">DD-MM-YYYY</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <!-- RECEIPT -->
+            <section id="panel-receipt" class="ms-panel ss-panel" role="tabpanel" hidden>
+              <div class="ss-receipt-grid">
+                <div class="ms-card ss-card">
+                  <h2>Receipt settings</h2>
+                  <p class="muted">Choose what appears on cashier test receipts. Preview uses form values and is never sent to a printer.</p>
+                  <div class="ss-fields">
+                    <label class="check-row"><input id="r-show-display" type="checkbox" /> Display shop name</label>
+                    <label class="check-row"><input id="r-show-legal" type="checkbox" /> Display legal business name</label>
+                    <label class="check-row"><input id="r-show-address" type="checkbox" /> Display address</label>
+                    <label class="check-row"><input id="r-show-phone" type="checkbox" /> Display contact phone</label>
+                    <label class="check-row"><input id="r-show-whatsapp" type="checkbox" /> Display WhatsApp number</label>
+                    <label class="check-row"><input id="r-show-tax-name" type="checkbox" /> Display tax name / rate</label>
+                    <label class="check-row"><input id="r-show-tax-number" type="checkbox" /> Display tax registration number</label>
+                    <label class="check-row"><input id="r-show-registration" type="checkbox" /> Display CR / business registration</label>
+                    <label class="check-row"><input id="r-show-logo" type="checkbox" /> Show shop logo where supported</label>
+                    <label class="field">
+                      <span>Receipt footer message</span>
+                      <input id="f-receipt-footer" type="text" maxlength="240" placeholder="Thank you! Visit again." />
+                    </label>
+                    <div class="item-actions">
+                      <button type="button" id="preview-receipt-btn" class="btn ghost">Refresh preview</button>
+                      <select id="preview-mode" class="ms-select" aria-label="Preview tax mode">
+                        <option value="active">Active shop tax</option>
+                        <option value="disabled">Tax disabled example</option>
+                        <option value="exclusive">Tax exclusive example</option>
+                        <option value="inclusive">Tax inclusive example</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+                <div class="ms-card ss-card">
+                  <h2>Preview</h2>
+                  <pre id="receipt-preview" class="receipt-preview">Loading…</pre>
+                </div>
+              </div>
+            </section>
+
+            <div class="ss-save-bar">
+              <button type="button" id="reload-btn" class="btn ghost">Discard changes</button>
+              <button type="submit" id="save-btn" class="btn primary">Save Changes</button>
+            </div>
+          </form>
+
+          <section id="panel-orders" class="ms-panel" hidden>
+            <div class="ms-card ss-card">
+              <div class="od-head">
+                <div>
+                  <h2>Order types</h2>
+                  <p class="hint">Display names can change. Fulfillment behavior is what the app uses.</p>
+                </div>
+                <button type="button" id="add-order-type-btn" class="btn primary">Add order type</button>
+              </div>
+              <div id="order-type-list" class="od-list"></div>
+            </div>
+
+            <div class="ms-card ss-card">
+              <div class="od-head">
+                <div>
+                  <h2>Block delivery charges</h2>
+                  <p class="hint">One charge per block. Zero is allowed. Amounts use this shop’s currency and are not converted.</p>
+                </div>
+                <button type="button" id="add-block-btn" class="btn primary">Add block</button>
+              </div>
+              <div id="block-rate-list" class="od-list"></div>
+              <p id="delivery-tax-note" class="hint">Each block delivery charge can include this shop’s tax. Set it when you add or edit the charge. Item and add-on tax is unchanged.</p>
+            </div>
+          </section>
+
+          <section id="panel-banks" class="ms-panel" hidden>
+            <div class="ms-card ss-card">
+              <h2 id="bank-form-title">Add bank account</h2>
+              <p class="hint">Operational accounts can receive sales payments. Reserve accounts are kept for later transfers and do not appear at the register. Passwords and full account numbers are not stored.</p>
+              <div class="ss-fields">
+                <label class="field">
+                  <span>Display name</span>
+                  <input id="bank-display-name" type="text" maxlength="80" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>Bank name</span>
+                  <input id="bank-name" type="text" maxlength="80" autocomplete="off" />
+                </label>
+                <label class="field">
+                  <span>Account type</span>
+                  <select id="bank-type">
+                    <option value="OPERATIONAL">Operational</option>
+                    <option value="RESERVE">Reserve</option>
+                  </select>
+                </label>
+                <label class="field">
+                  <span>Masked reference <span class="opt">(optional)</span></span>
+                  <input id="bank-reference" type="text" maxlength="64" placeholder="****1234" autocomplete="off" />
+                </label>
+                <label class="check-row"><input id="bank-active" type="checkbox" checked /> Active</label>
+              </div>
+              <p id="bank-form-error" class="error" hidden></p>
+              <div class="item-actions">
+                <button type="button" id="bank-cancel" class="btn ghost" hidden>Cancel edit</button>
+                <button type="button" id="bank-save" class="btn primary">Save account</button>
+              </div>
+            </div>
+            <div id="bank-account-list" class="od-list"></div>
+          </section>
+        </div>
+      </section>
+
+      <dialog id="order-type-dialog" class="ss-dialog">
+        <form id="order-type-form" method="dialog">
+          <h2 id="order-type-dialog-title">Order type</h2>
+          <label class="field">
+            <span>Display name</span>
+            <input id="ot-name" type="text" maxlength="40" required autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Fulfillment behavior</span>
+            <select id="ot-behavior" class="ms-select" required>
+              <option value="COUNTER">Counter</option>
+              <option value="TAKEAWAY">Takeaway</option>
+              <option value="DELIVERY">Delivery</option>
+              <option value="TABLE">Table</option>
+              <option value="CAR_HOP">Car-Hop</option>
+            </select>
+          </label>
+          <p id="ot-fields" class="hint"></p>
+          <label class="check-row"><input id="ot-active" type="checkbox" checked /> Active</label>
+          <p id="ot-error" class="error" hidden></p>
+          <div class="item-actions">
+            <button type="button" id="ot-cancel" class="btn ghost">Cancel</button>
+            <button type="submit" class="btn primary">Save</button>
+          </div>
+        </form>
+      </dialog>
+
+      <dialog id="block-rate-dialog" class="ss-dialog">
+        <form id="block-rate-form" method="dialog">
+          <h2 id="block-dialog-title">Block delivery charge</h2>
+          <label class="field">
+            <span>Block number</span>
+            <input id="br-block" type="text" maxlength="20" required autocomplete="off" />
+          </label>
+          <label class="field">
+            <span>Delivery charge</span>
+            <div class="od-money">
+              <span id="br-currency" class="od-currency">—</span>
+              <input id="br-charge" type="text" inputmode="decimal" required autocomplete="off" />
+            </div>
+          </label>
+          <label class="check-row"><input id="br-tax" type="checkbox" checked /> Tax applicable</label>
+          <p id="br-tax-hint" class="hint"></p>
+          <label class="check-row"><input id="br-active" type="checkbox" checked /> Active</label>
+          <p id="br-error" class="error" hidden></p>
+          <div class="item-actions">
+            <button type="button" id="br-cancel" class="btn ghost">Cancel</button>
+            <button type="submit" class="btn primary">Save</button>
+          </div>
+        </form>
+      </dialog>
+    </div>
+    <script type="module" src="/shop-settings.js"></script>
+  </body>
+</html>

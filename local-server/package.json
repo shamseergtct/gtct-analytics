@@ -1,0 +1,50 @@
+{
+  "name": "gtct-restaurant-local-server",
+  "version": "0.1.3",
+  "private": true,
+  "description": "Phase 1 isolated Windows local server + multi-printer kitchen prototype (test data only).",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0 <25"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "seed": "node src/scripts/seedSample.js",
+    "demo:order": "node src/scripts/runSampleOrder.js",
+    "dispatch": "node src/scripts/runDispatcherOnce.js",
+    "migrate": "node src/scripts/migrate.js",
+    "accept:phase1.1": "node src/scripts/acceptancePhase11.js",
+    "accept:phase1.2": "node src/scripts/acceptancePhase12.js",
+    "accept:phase1.3": "node src/scripts/acceptancePhase13.js",
+    "accept:phase1.4": "node src/scripts/acceptancePhase14.js",
+    "accept:phase1.5": "node src/scripts/acceptancePhase15.js",
+    "accept:phase1.6": "node src/scripts/acceptancePhase16.js",
+    "accept:phase1.7": "node src/scripts/acceptancePhase17.js",
+    "accept:phase1.8": "node src/scripts/acceptancePhase18.js",
+    "accept:phase1.9": "node src/scripts/acceptancePhase19.js",
+    "accept:phase1.9c": "node src/scripts/acceptancePhase19Customize.js",
+    "accept:phase2.0": "node src/scripts/acceptancePhase20.js",
+    "accept:phase2.1": "node src/scripts/acceptancePhase21.js",
+    "accept:phase2.1.1": "node src/scripts/acceptancePhase211.js",
+    "accept:addon-price": "node src/scripts/acceptanceOptionalAddonPrice.js",
+    "accept:order-delivery": "node src/scripts/acceptanceOrderDelivery.js",
+    "accept:phase2.3b": "node src/scripts/acceptancePhase23b.js",
+    "accept:customers": "node src/scripts/acceptanceCustomers.js",
+    "accept:staff-foundation": "node src/scripts/acceptanceStaffFoundation.js",
+    "accept:staff-login": "node src/scripts/acceptanceStaffLogin.js",
+    "accept:staff-access": "node src/scripts/acceptanceStaffAccess.js",
+    "accept:auth-hardening": "node src/scripts/acceptanceAuthHardening.js",
+    "accept:lan-foundation": "node src/scripts/acceptanceLanFoundation.js",
+    "accept:lan-testing": "node src/scripts/acceptanceLanTesting.js",
+    "accept:order-identity": "node src/scripts/acceptanceOrderIdentity.js",
+    "accept:cash-settlement": "node src/scripts/acceptanceCashSettlement.js",
+    "accept:cash-payment-ui": "node src/scripts/acceptanceCashPaymentUi.js",
+    "accept:bank-payment": "node src/scripts/acceptanceBankPayment.js",
+    "accept:order-register": "node src/scripts/acceptanceOrderRegister.js",
+    "admin:create": "node src/scripts/createFirstAdmin.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  }
+}

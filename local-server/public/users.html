@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>GTCT User Management</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="users-page">
+    <div id="app">
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-card">
+          <p class="brand">GTCT Restaurant</p>
+          <h1>User Management</h1>
+          <p class="hint">Sign in with your administrator username and password.</p>
+          <div class="login-form">
+            <div class="field">
+              <label for="login-username">Username</label>
+              <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off" />
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <div class="password-row">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" />
+                <button type="button" id="toggle-password-btn" class="btn ghost password-toggle" aria-controls="login-password">Show</button>
+              </div>
+            </div>
+            <button type="button" id="login-btn" class="btn primary">Sign in</button>
+            <p id="login-error" class="error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="main-view" class="view main-view" hidden>
+        <header class="topbar">
+          <div>
+            <p class="brand-inline">GTCT</p>
+            <h1>User Management</h1>
+            <p class="page-desc">Create cashier accounts and grant optional sales permissions.</p>
+          </div>
+          <div class="topbar-meta">
+            <span id="session-role" class="pill"></span>
+            <a class="btn ghost small" href="/">Sales</a>
+            <a class="btn ghost small" href="/menu.html">Menu Setup</a>
+            <a class="btn ghost small" href="/shop-settings.html">Shop Settings</a>
+            <a class="btn ghost small" href="/settings.html">Printers</a>
+            <button type="button" id="logout-btn" class="btn ghost small">Sign out</button>
+          </div>
+        </header>
+
+        <div id="denied-block" class="settings-banner" hidden>
+          Administrator access is required for user management.
+          <a href="/">Back to Sales</a>
+        </div>
+
+        <div id="admin-shell" class="users-shell" hidden>
+          <div class="users-toolbar">
+            <input id="user-search" type="search" placeholder="Search name or username" autocomplete="off" />
+            <button type="button" id="add-user-btn" class="btn primary">Add User</button>
+          </div>
+          <p id="user-status" class="status-line" hidden></p>
+          <div class="user-table-wrap">
+            <table class="user-table">
+              <thead>
+                <tr>
+                  <th>Staff name</th>
+                  <th>Username</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="user-rows"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <div id="user-dialog" class="user-dialog" hidden>
+      <form id="user-form" class="user-dialog-card">
+        <h2 id="user-dialog-title">Add user</h2>
+        <p id="user-dialog-error" class="error" hidden></p>
+        <label class="field" id="name-field">
+          <span>Full name</span>
+          <input id="user-name" autocomplete="off" required />
+        </label>
+        <label class="field" id="username-field">
+          <span>Username</span>
+          <input id="user-username" autocomplete="off" spellcheck="false" autocapitalize="off" required />
+        </label>
+        <label class="field" id="password-field">
+          <span id="password-label">Password</span>
+          <input id="user-password" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field" id="confirm-field">
+          <span>Confirm password</span>
+          <input id="user-confirm" type="password" autocomplete="new-password" />
+        </label>
+        <label class="field" id="role-field">
+          <span>Role</span>
+          <select id="user-role">
+            <option value="cashier" selected>Cashier</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <label class="check-row" id="active-field">
+          <input id="user-active" type="checkbox" checked />
+          <span>Active</span>
+        </label>
+        <div id="permission-fields" hidden>
+          <p class="hint">These grants apply to this cashier only. Admin already includes them.</p>
+          <label class="check-row">
+            <input id="perm-price" type="checkbox" />
+            <span>Edit cart item selling price</span>
+          </label>
+          <label class="check-row">
+            <input id="perm-addon" type="checkbox" />
+            <span>Edit add-on price</span>
+          </label>
+        </div>
+        <div class="dialog-actions">
+          <button type="button" id="user-cancel" class="btn ghost">Cancel</button>
+          <button type="submit" id="user-save" class="btn primary">Save</button>
+        </div>
+      </form>
+    </div>
+    <script src="/users.js"></script>
+  </body>
+</html>
