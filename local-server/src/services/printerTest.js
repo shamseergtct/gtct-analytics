@@ -1,6 +1,8 @@
+import { computeDeliveryFeeTax, computeOrderTax } from "./tax.js";
 import { renderTicketText } from "../print/ticketFormat.js";
 import { dispatchMock } from "../print/adapters/mockAdapter.js";
-import { probeNetworkTcp } from "../print/adapters/networkTcpAdapter.js";
+import { getDb } from "../db/db.js";
+import { dispatchNetworkTcp, probeNetworkTcp } from "../print/adapters/networkTcpAdapter.js";
 import {
   getPrinter,
   markPrinterTest,
@@ -31,10 +33,47 @@ export function buildSampleTicketPayload(printer, config) {
 }
 
 export function previewPrinterTicket(printer, config) {
+  const stationSlip = printer.printer_id === "mj330-manual-test";
   const payload = buildSampleTicketPayload(printer, config);
-  const jobType = "KITCHEN";
+  if (stationSlip) Object.assign(payload, {
+    stationName: "Juice", orderNumber: "TEST-155882", orderTypeName: "Delivery",
+    serverName: "Owner", terminalName: "Terminal 2", tokenNumber: 31,
+    customerName: "Sample Guest", customerPhone: "00000000",
+    addressNote: "Flat:11 House:12 Road:34 Block:56", currencyCode: "BHD", currencyDecimals: 3,
+    items: [{ quantity: 1, name: "Orange Juice", variantName: "ORANGE SMALL", lineTotalCents: 350 }],
+  });
+  const cashier = printer.printer_id === "mj330-manual-receipt";
+  if (cashier) Object.assign(payload, {
+    shopDisplayName: "Alabriq sandwich & grill", orderNumber: "TEST-RECEIPT",
+    currencyCode: "BHD", currencyLabel: "BD", currencyDecimals: 3,
+    customerName: "Sample Guest", customerPhone: "0000 0001", buildingNumber: "12",
+    roadNumber: "34", blockNumber: "56", addressNote: "Flat 11, second floor. Use the side entrance.",
+    destination: "", addressText: "Sample address, Manama, Bahrain", phone: "0000 0000",
+    taxRegistrationNumber: "SAMPLE ONLY", tokenNumber: 34, serverName: "Owner", terminalName: "Terminal 2", orderType: "Delivery",
+    items: Array.from({ length: 5 }, (_, index) => [
+      ["Cheese Sandwich", "Sandwiches", 1, 150],
+      ["Chicken Sandwich", "Sandwiches", 1, 500],
+      ["Orange Juice", "Drinks", 2, 600],
+      ["Chicken Shawarma", "Grill", 3, 500],
+    ].map(([name, category, categorySort, lineTotalCents]) => ({
+      quantity: 1, name, category, categorySort, lineTotalCents,
+      instructions: [`Order ${index + 1}`],
+    }))).flat(),
+    deliveryChargeCents: 500, fulfillmentBehavior: "DELIVERY",
+  });
+  if (cashier) {
+    const tax = { taxEnabled: true, taxName: "VAT", taxMode: "exclusive", taxRateBps: 1000 };
+    const goods = computeOrderTax(payload.items.reduce((sum, item) => sum + item.lineTotalCents, 0), tax);
+    const fee = computeDeliveryFeeTax(payload.deliveryChargeCents, true, tax);
+    Object.assign(payload, goods, {
+      taxCents: goods.taxCents + fee.taxCents,
+      totalCents: goods.totalCents + payload.deliveryChargeCents + fee.addedCents,
+    });
+  }
+  const jobType = cashier ? "CASHIER" : "KITCHEN";
   const text = renderTicketText(jobType, payload, {
     paperWidthMm: printer.paper_width_mm || 80,
+    layout: stationSlip ? "station-slip" : undefined,
   });
   return {
     printerId: printer.printer_id,
@@ -63,6 +102,32 @@ export async function runPrinterTest({
   mode = "preview",
   actorRole = "admin",
 }) {
+  if (mode === "manual_mj330_kot" || mode === "manual_mj330_receipt") {
+    const receipt = mode === "manual_mj330_receipt";
+    const kind = receipt ? "receipt" : "kot";
+    const host = "192.168.0.110";
+    const port = 9100;
+    if (actorRole !== "admin" || config.operatingMode !== "TEST" || !config.loopback ||
+        !config.physicalPrintEnabled || printer.printer_id !== (receipt ? "mj330-manual-receipt" : "mj330-manual-test") ||
+        printer.connection_type !== "NETWORK_TCP" || printer.host !== host ||
+        printer.port !== port || !printer.is_active || !printer.capabilities?.physicalDispatchEnabled) {
+      return { ok: false, error: "Manual print requires the designated active TEST printer." };
+    }
+    const text = previewPrinterTicket(printer, config).text;
+    // Consume the disposable database's single authorization before touching the socket.
+    const claim = getDb().prepare("UPDATE meta SET value='used' WHERE key=? AND value='armed'").run(`manual.mj330.${kind}`);
+    if (!claim.changes) return { ok: false, error: "Test already attempted or not armed. Check the printer." };
+    markPrinterTest(printer.printer_id, "ATTEMPTED", `One manual test ${kind}. Check paper.`);
+    const result = await dispatchNetworkTcp({ job_id: `manual-test-${kind}` }, printer, text, {
+      physicalPrintEnabled: config.physicalPrintEnabled, allowPhysicalDispatch: true,
+      confirmedHost: host, confirmedPort: port, format: "MJ330_RASTER",
+    });
+    recordAudit({ actorRole, action: `printer.manual_${kind}`, entityType: "printer",
+      entityId: printer.printer_id, detail: { outcome: result.outcome, host, port } });
+    return { ok: result.outcome === "DISPATCHED", mode, outcome: result.outcome,
+      detail: result.detail, error: result.outcome === "DISPATCHED" ? undefined : result.detail };
+  }
+
   if (mode === "preview") {
     const preview = previewPrinterTicket(printer, config);
     recordAudit({

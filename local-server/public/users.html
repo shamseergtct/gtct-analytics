@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>GTCT User Management</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/backup-health.css" />
   </head>
   <body class="users-page">
     <div id="app">
@@ -36,7 +37,7 @@
           <div>
             <p class="brand-inline">GTCT</p>
             <h1>User Management</h1>
-            <p class="page-desc">Create cashier accounts and grant optional sales permissions.</p>
+            <p class="page-desc">Manage staff accounts and access.</p>
           </div>
           <div class="topbar-meta">
             <span id="session-role" class="pill"></span>
@@ -52,6 +53,11 @@
           Administrator access is required for user management.
           <a href="/">Back to Sales</a>
         </div>
+
+        <section id="backup-health-box" class="settings-banner backup-health" data-health-tone="neutral" hidden aria-live="polite">
+          <strong>TEST Backup Health:</strong> <span id="backup-health-message">Checking…</span>
+          <button type="button" class="btn ghost small" id="backup-health-refresh">Refresh status</button>
+        </section>
 
         <div id="admin-shell" class="users-shell" hidden>
           <div class="users-toolbar">
@@ -102,8 +108,54 @@
           <select id="user-role">
             <option value="cashier" selected>Cashier</option>
             <option value="admin">Admin</option>
+            <option value="kitchen">Kitchen Staff</option>
+            <option value="delivery">Delivery Boy (TEST)</option>
           </select>
         </label>
+        <div id="rider-commission-field" class="field" hidden>
+          <fieldset class="staff-commission-panel">
+            <legend>Delivery Boy Commission</legend>
+            <p class="hint">Set once for this rider. Rider Cash automatically uses the saved rule at settlement; no second approval.</p>
+            <label class="field"><span>Commission method</span>
+              <select id="staff-commission-method">
+                <option value="NONE">No commission</option>
+                <option value="FIXED_PER_DELIVERY">Fixed per delivery</option>
+                <option value="TIERED_FIXED">Daily delivery target slabs</option>
+                <option value="PERCENTAGE">Percentage</option>
+                <option value="MANUAL">Fixed daily amount (Admin configured)</option>
+              </select>
+            </label>
+            <div id="staff-commission-amount-row" hidden>
+              <label class="field"><span>Amount per delivery / day (<span class="staff-commission-currency">BHD</span>)</span>
+              <input id="staff-commission-amount" inputmode="decimal" placeholder="0.100" />
+              </label>
+            </div>
+            <div id="staff-commission-basis-row" hidden>
+              <label class="field"><span>Calculate based on</span>
+                <select id="staff-commission-basis">
+                  <option value="TOTAL_BILL">Total delivery bill amount</option>
+                  <option value="DELIVERY_CHARGE">Delivery charge only</option>
+                </select>
+              </label>
+            </div>
+            <div id="staff-commission-rate-row" hidden>
+              <label class="field"><span>Percentage (%)</span>
+                <input id="staff-commission-rate" inputmode="decimal" value="0.00" placeholder="5.00" />
+              </label>
+            </div>
+            <div id="staff-commission-tiers-row" hidden>
+              <p class="hint">Daily targets — one per line: <strong>50.000 = 0.500</strong>. Highest eligible slab only, not cumulative.</p>
+              <textarea id="staff-commission-tiers" rows="3" spellcheck="false" placeholder="50.000 = 0.500
+80.000 = 1.000"></textarea>
+            </div>
+            <p id="staff-commission-status" class="hint" aria-live="polite"></p>
+          </fieldset>
+        </div>
+        <div id="stations-field" class="field" hidden>
+          <span>Assigned preparation stations</span>
+          <div id="user-stations" class="station-assignment-list"></div>
+          <p class="hint">Kitchen Staff may view and update only these stations. Assign at least one.</p>
+        </div>
         <label class="check-row" id="active-field">
           <input id="user-active" type="checkbox" checked />
           <span>Active</span>
@@ -125,6 +177,17 @@
         </div>
       </form>
     </div>
+    <style>
+      #rider-commission-field[hidden],#staff-commission-amount-row[hidden],
+      #staff-commission-basis-row[hidden],#staff-commission-rate-row[hidden],
+      #staff-commission-tiers-row[hidden]{display:none!important}
+      .staff-commission-panel{border:1px solid #cbdcf0;border-radius:12px;
+        padding:12px;margin:8px 0 12px;background:#f5f9ff;color:#1c3556}
+      .staff-commission-panel legend{font-weight:800;padding:0 6px}
+      .staff-commission-panel .field{display:grid;gap:5px;margin:9px 0}
+      .staff-commission-panel textarea{width:100%;min-height:80px;font:inherit;
+        padding:9px;border:1px solid #c6d8eb;border-radius:9px}
+    </style>
     <script src="/users.js"></script>
   </body>
 </html>

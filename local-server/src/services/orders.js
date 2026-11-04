@@ -12,6 +12,7 @@ import {
 } from "./addons.js";
 import { validateOrderInstructions } from "./kitchenLibrary.js";
 import { recordAudit } from "./audit.js";
+import { allocateTokenInOrderTransaction, assertOrderShiftOpenForEdit } from "./businessShifts.js";
 import { getShopSettings } from "./shopSettings.js";
 import {
   computeDeliveryFeeTax,
@@ -206,6 +207,7 @@ export function createTestOrder(
 
       const replaceId = String(input.orderId || "").trim();
       let replacing = null;
+      let shiftIdentity = null;
       if (replaceId) {
         replacing = db
           .prepare(`SELECT * FROM orders WHERE order_id = ? AND tenant_id = ?`)
@@ -216,6 +218,7 @@ export function createTestOrder(
             code: "ORDER_NOT_FOUND",
           });
         }
+        assertOrderShiftOpenForEdit(db, tenantId, replacing);
         if (replacing.status !== "OPEN") {
           throw Object.assign(new Error("Only open orders can be edited."), {
             status: 400,
@@ -223,10 +226,9 @@ export function createTestOrder(
           });
         }
         const settled = db
-          .prepare(
-            `SELECT 1 AS ok FROM order_settlements WHERE shop_id = ? AND order_id = ?`
-          )
-          .get(tenantId, replaceId);
+          .prepare(`SELECT 1 AS ok FROM order_settlements WHERE shop_id = ? AND order_id = ?
+            UNION ALL SELECT 1 AS ok FROM order_payment_allocations WHERE shop_id = ? AND order_id = ? LIMIT 1`)
+          .get(tenantId, replaceId, tenantId, replaceId);
         if (settled) {
           throw Object.assign(new Error("This order is paid and cannot be edited."), {
             status: 409,
@@ -241,6 +243,8 @@ export function createTestOrder(
           if (taken && !taken.submission_id && !preview) throw historicalNumberUsed();
           orderNumber = nextShopOrderNumber(db, tenantId);
         }
+        // Token belongs to the active business shift; invoice/order_number stays shop-wide.
+        shiftIdentity = allocateTokenInOrderTransaction(db, tenantId, userId);
       }
 
       const fulfillment = resolveSaleFulfillment(tenantId, input);
@@ -286,8 +290,8 @@ export function createTestOrder(
           `INSERT INTO orders (
             order_id, tenant_id, order_number, order_type, destination,
             status, is_test, total_cents, created_at, updated_at,
-            submission_id, submission_fingerprint
-          ) VALUES (?, ?, ?, ?, ?, 'OPEN', 1, 0, ?, ?, ?, ?)`
+            submission_id, submission_fingerprint, business_shift_id, business_date, token_number
+          ) VALUES (?, ?, ?, ?, ?, 'OPEN', 1, 0, ?, ?, ?, ?, ?, ?, ?)`
         ).run(
           orderId,
           tenantId,
@@ -297,7 +301,10 @@ export function createTestOrder(
           ts,
           ts,
           submissionId || null,
-          fingerprint || null
+          fingerprint || null,
+          shiftIdentity.shiftId,
+          shiftIdentity.businessDate,
+          shiftIdentity.tokenNumber
         );
       }
 
@@ -978,8 +985,9 @@ export function loadOrderForEdit(shopId, orderId) {
     });
   }
   const settled = getDb()
-    .prepare(`SELECT 1 AS ok FROM order_settlements WHERE shop_id = ? AND order_id = ?`)
-    .get(shopId, orderId);
+    .prepare(`SELECT 1 AS ok FROM order_settlements WHERE shop_id = ? AND order_id = ?
+      UNION ALL SELECT 1 AS ok FROM order_payment_allocations WHERE shop_id = ? AND order_id = ? LIMIT 1`)
+    .get(shopId, orderId, shopId, orderId);
   if (settled) {
     throw Object.assign(new Error("This order is paid and cannot be edited."), {
       status: 409,
@@ -1083,7 +1091,10 @@ export function clearTestOrders(tenantId, { role = "device", confirm = false } =
          WHERE o.tenant_id = ? AND o.is_test = 1`
       )
       .get(tenantId);
-    if (Number(settled?.n || 0) > 0) {
+    const splitCount = db.prepare(`SELECT COUNT(*) AS n FROM order_payment_allocations a
+      JOIN orders o ON o.order_id=a.order_id
+      WHERE o.tenant_id=? AND o.is_test=1`).get(tenantId);
+    if (Number(settled?.n || 0) > 0 || Number(splitCount?.n || 0) > 0) {
       throw Object.assign(new Error("Settled test orders cannot be deleted."), {
         status: 409,
         code: "SETTLED_TEST_ORDERS",

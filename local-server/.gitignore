@@ -10,3 +10,11 @@ data/
 npm-debug.log*
 yarn-error.log*
 .DS_Store
+
+# Codex merge leftovers / patch tooling
+_p2e*/
+p2e2*.py
+p2e2*.mjs
+*.before-wal-fix
+*.p2e*-before-hotfix.bak
+acceptanceCompactMonitor.mjs

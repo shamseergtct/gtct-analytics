@@ -1,12 +1,16 @@
 import { loadConfig, ensureDataDirs } from "./config.js";
+import { inspectExistingTestDatabase, stampMigratedTestDatabase } from "./db/testStartup.js";
 import { openDatabase, runMigrations, closeDatabase, getDb } from "./db/db.js";
 import { initLogger, log } from "./util/logger.js";
 import { createServer } from "./http/server.js";
 import { startDispatchLoop } from "./print/dispatcher.js";
 import { seedIfEmpty } from "./seed/sampleData.js";
+import { startTestAutoBackups } from "./backup/testBackup.js";
+import { recordTestBackupAttempt } from "./backup/testBackupManagement.js";
 
 async function boot() {
   const config = loadConfig({ mode: "http" });
+  inspectExistingTestDatabase(config);
   ensureDataDirs(config);
   initLogger(config.logDir);
 
@@ -16,7 +20,10 @@ async function boot() {
 
   openDatabase(config.dbPath);
   await runMigrations(getDb());
+  stampMigratedTestDatabase(getDb(), config);
   seedIfEmpty(config);
+  // P2-C1: TEST-only; opt-in, checked hot SQLite backup BEFORE serving requests.
+  const testBackups = await startTestAutoBackups({ logger: log, onAttempt: recordTestBackupAttempt });
 
   if (!config.loopback && config.lanAccessReady !== true) {
     throw new Error("Refusing to listen outside this computer.");
@@ -48,6 +55,7 @@ async function boot() {
     shuttingDown = true;
     log.info("Shutting down", { signal });
     dispatcher.stop();
+    testBackups.stop();
     server.close(() => {
       closeDatabase();
       log.info("Shutdown complete");

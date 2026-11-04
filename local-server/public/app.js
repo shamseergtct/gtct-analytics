@@ -62,6 +62,7 @@ const state = {
   customizeTab: "notes",
   kitchenStep: 1,
   priceBreakdownOpen: false,
+  cartPriceBreakdownOpen: false,
   _customizeTrigger: null,
   variantPickerItem: null,
   pkItem: null,
@@ -235,6 +236,7 @@ function showMain() {
   const menuLink = $("menu-setup-link");
   const usersLink = $("users-link");
   const ordersLink = $("orders-link");
+  const monitorLink = $("monitor-link");
   const prepLink = $("prep-link");
   if (settingsLink) settingsLink.hidden = !isAdmin;
   if (shopSettingsLink) shopSettingsLink.hidden = !isAdmin;
@@ -245,12 +247,33 @@ function showMain() {
   if (ordersLink) {
     ordersLink.hidden = !(state.staff && state.permissions.includes("sales.orders.view"));
   }
+  if (monitorLink) monitorLink.hidden = !(state.staff && state.permissions.includes("sales.orders.view"));
   if (prepLink) {
     prepLink.hidden = !(state.role === "admin" || (state.staff && state.permissions.includes("prep.station.work")));
   }
+  // P2-E3C2: show the presentation-only Delivery Management menu only to
+  // authorized staff; API endpoints independently enforce their permissions.
+  const deliveryMenu = $("delivery-management");
+  const canCash = state.staff && ["admin", "cashier"].includes(state.role) &&
+    state.permissions.includes("sales.payment.receive");
+  const canCommission = state.role === "admin" && state.staff &&
+    state.permissions.includes("staff.manage");
+  if (deliveryMenu) deliveryMenu.hidden = !canCash && !canCommission;
+  const commissionLink = $("delivery-commission-link");
+  const commissionInstalled = commissionLink?.dataset.installed === "yes";
+  if (commissionLink) commissionLink.hidden = !canCommission || !commissionInstalled;
+  const commissionUnavailable = $("delivery-commission-unavailable");
+  if (commissionUnavailable) commissionUnavailable.hidden = !canCommission || commissionInstalled;
   setNavMenu(false);
   startDraftNumberSync();
   void refreshPendingCount();
+}
+
+function redirectKitchenToPreparation() {
+  if (state.role !== "kitchen" && state.role !== "delivery") return false;
+  // Restricted staff never initialize the POS.
+  window.location.replace(state.role === "delivery" ? "/delivery-pool.html" : "/prep.html");
+  return true;
 }
 
 async function ensureSession() {
@@ -260,6 +283,7 @@ async function ensureSession() {
     return false;
   }
   applySession(me.json);
+  if (redirectKitchenToPreparation()) return false;
   showMain();
   return true;
 }
@@ -306,6 +330,7 @@ async function login() {
     passwordInput.value = "";
     applySession(me.json);
     setLoginError("");
+    if (redirectKitchenToPreparation()) return;
     showMain();
     await bootstrapData();
   } catch (err) {
@@ -1673,7 +1698,7 @@ function customerPayableCents(tax) {
   );
 }
 
-function renderTaxSummaryHtml(tax, { compact = false, itemCount = null } = {}) {
+function renderTaxSummaryHtml(tax, { compact = false, itemCount = null, showEstimateNote = true } = {}) {
   if (!tax) return "";
   const rate = formatTaxPercentFromBps(tax.taxRateBps || 0);
   const quote = deliveryQuote();
@@ -1692,7 +1717,7 @@ function renderTaxSummaryHtml(tax, { compact = false, itemCount = null } = {}) {
         quote.valid ? formatPrice(quote.cents) : "—"
       }</strong></div>`
     : "";
-  const est = tax.estimate
+  const est = tax.estimate && showEstimateNote
     ? `<p class="muted tax-est-note">Estimate — server validates on send</p>`
     : "";
   if (!tax.taxEnabled) {
@@ -1821,8 +1846,21 @@ function renderCart() {
   }
   const taxHost = $("cart-tax-summary");
   if (taxHost) {
+    if (!state.cart.length) state.cartPriceBreakdownOpen = false;
     taxHost.innerHTML = state.cart.length
-      ? renderTaxSummaryHtml(tax, { itemCount: totals.count })
+      ? `<div class="cart-price-inline">
+          <span>Est. total</span>
+          <strong>${escapeHtml(formatPrice(customerPayableCents(tax)))}</strong>
+        </div>
+        <button type="button" id="cart-price-breakdown-toggle"
+          class="cart-price-breakdown-toggle"
+          aria-expanded="${state.cartPriceBreakdownOpen}"
+          aria-controls="cart-price-breakdown">
+          ${state.cartPriceBreakdownOpen ? "Hide" : "View"} price breakdown
+        </button>
+        <div id="cart-price-breakdown" class="cart-price-detail" ${state.cartPriceBreakdownOpen ? "" : "hidden"}>
+          ${renderTaxSummaryHtml(tax, { compact: true, itemCount: totals.count, showEstimateNote: false })}
+        </div>`
       : "";
   }
 
@@ -2876,6 +2914,42 @@ function activeBlockRate(blockNumber) {
   );
 }
 
+// Mobile order-type buttons mirror the existing select. Keep all fulfillment,
+// pricing and draft behavior on the original select `change` path.
+function syncOrderTypeQuickButtons() {
+  const selectedId = $("order-type")?.value || "";
+  const host = $("order-type-quick");
+  if (!host) return;
+  host.querySelectorAll("button[data-order-type-id]").forEach((button) => {
+    const selected = button.dataset.orderTypeId === selectedId;
+    button.classList.toggle("is-selected", selected);
+    button.setAttribute("aria-pressed", String(selected));
+  });
+}
+
+function renderOrderTypeQuickButtons() {
+  const host = $("order-type-quick");
+  const select = $("order-type");
+  if (!host || !select) return;
+  const fragment = document.createDocumentFragment();
+  for (const type of state.orderTypes || []) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "order-type-option";
+    button.dataset.orderTypeId = type.orderTypeId;
+    button.textContent = type.name || type.code || "Order type";
+    button.setAttribute("aria-pressed", "false");
+    button.addEventListener("click", () => {
+      if (select.value === type.orderTypeId) return;
+      select.value = type.orderTypeId;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    fragment.appendChild(button);
+  }
+  host.replaceChildren(fragment);
+  syncOrderTypeQuickButtons();
+}
+
 function fillOrderTypeSelect() {
   const select = $("order-type");
   if (!select) return;
@@ -2893,6 +2967,7 @@ function fillOrderTypeSelect() {
     const takeaway = types.find((row) => row.code === "TAKEAWAY");
     select.value = (takeaway || types[0])?.orderTypeId || "";
   }
+  renderOrderTypeQuickButtons();
 }
 
 function syncDeliveryFromInput(raw, { format = false } = {}) {
@@ -3540,6 +3615,7 @@ async function saveAddressEditor() {
 function renderFulfillmentFields() {
   const host = $("fulfillment-fields");
   if (!host) return;
+  syncOrderTypeQuickButtons();
   const type = selectedOrderType();
   const f = state.fulfillment;
   if (!type) {
@@ -4385,6 +4461,12 @@ async function bootstrapData() {
   } else {
     updateHeldCartUi();
   }
+  // One cashier payment screen: Order Management links here, too.
+  const payOrder = new URLSearchParams(location.search).get("payOrder");
+  if (payOrder && canReceivePayment() && !editId) {
+    history.replaceState(null, "", location.pathname);
+    void openTakePayment(payOrder);
+  }
 }
 
 function canReceivePayment() {
@@ -4579,87 +4661,212 @@ function setPendingDrawer(open) {
   if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-function selectedPaymentChoice() {
-  const locked = state.payment.attempt?.submitted ? state.payment.attempt : null;
-  const tender = locked
-    ? locked.tender === "BANK" ? "BANK" : "CASH"
-    : document.querySelector('input[name="pay-method"]:checked')?.value === "BANK"
-      ? "BANK"
-      : "CASH";
-  const bankAccountId = tender === "BANK"
-    ? String((locked ? locked.bankAccountId : $("payment-bank-account")?.value) || "")
-    : "";
-  return { tender, bankAccountId };
+// P2-E2C3B: a single TEST payment entry, shared by Sales and Order Management.
+// All new payments use the existing idempotent payment-allocations endpoint.
+function exactPaymentUnits(raw, decimals) {
+  const text = String(raw ?? "").trim();
+  if (!/^\d+(?:\.\d+)?$/.test(text)) return null;
+  const [whole, part = ""] = text.split(".");
+  if (part.length > decimals) return null;
+  const units = Number(whole) * 10 ** decimals + Number(part.padEnd(decimals, "0"));
+  return Number.isSafeInteger(units) ? units : null;
 }
 
-function accountOptionLabel(account) {
-  const mask = account.maskedReference ? ` ${account.maskedReference}` : "";
-  return `${account.displayName} · ${account.bankName}${mask}`;
+function paymentInputText(cents, decimals) {
+  return (Number(cents) / 10 ** decimals).toFixed(decimals);
+}
+
+function selectedEntryMode() {
+  return document.querySelector('input[name="pay-entry-mode"]:checked')?.value || "CASH";
+}
+
+function paymentEntryAmounts(view) {
+  const decimals = Number(view?.currencyDecimals ?? 2);
+  const mode = selectedEntryMode();
+  const cashCents = exactPaymentUnits($("payment-cash-input").value, decimals);
+  const bankCents = exactPaymentUnits($("payment-bank-input").value, decimals);
+  const creditCents = exactPaymentUnits($("payment-credit-input").value, decimals);
+  if ([cashCents, bankCents, creditCents].some((n) => n === null)) return null;
+  if (mode === "CASH" && (bankCents || creditCents)) return null;
+  if (mode === "BANK" && (cashCents || creditCents)) return null;
+  if (mode === "CREDIT" && (cashCents || bankCents)) return null;
+  const total = cashCents + bankCents + creditCents;
+  if (!Number.isSafeInteger(total)) return null;
+  return { cashCents, bankCents, creditCents, total };
 }
 
 function renderPaymentAccounts() {
   const select = $("payment-bank-account");
   if (!select) return;
-  const selected = state.payment.attempt?.bankAccountId || select.value;
-  select.innerHTML = (state.payment.accounts || [])
-    .map((account) => {
-      const id = escapeHtml(account.accountId);
-      const picked = account.accountId === selected ? " selected" : "";
-      return `<option value="${id}"${picked}>${escapeHtml(accountOptionLabel(account))}</option>`;
-    })
+  const selected = select.value;
+  select.innerHTML = '<option value="">Select account</option>' + (state.payment.accounts || [])
+    .filter((a) => a.accountType === "OPERATIONAL" && a.isActive)
+    .map((a) => `<option value="${escapeHtml(a.accountId)}">${escapeHtml(a.displayName + " · " + a.bankName)}</option>`)
     .join("");
+  if ([...select.options].some((o) => o.value === selected)) select.value = selected;
+}
+
+function resetEntryMode(mode = "CASH") {
+  const view = state.payment.view;
+  if (!view) return;
+  const decimals = Number(view.currencyDecimals ?? 2);
+  const remaining = Number(view.unallocatedCents ?? view.balanceCents ?? 0);
+  document.querySelectorAll('input[name="pay-entry-mode"]').forEach((el) => {
+    el.checked = el.value === mode;
+  });
+  const fields = { CASH: "payment-cash-input", BANK: "payment-bank-input", CREDIT: "payment-credit-input" };
+  for (const id of Object.values(fields)) $(id).value = paymentInputText(0, decimals);
+  if (fields[mode]) $(fields[mode]).value = paymentInputText(remaining, decimals);
+  renderPaymentEntry();
+}
+
+// Credit is never anonymous: the server also validates this customer/shop binding.
+function creditSelectionNeeded() {
+  const parts = state.payment.view ? paymentEntryAmounts(state.payment.view) : null;
+  return selectedEntryMode() === "CREDIT" || Number(parts?.creditCents || 0) > 0;
+}
+function creditCustomerError(message) {
+  const node = $("payment-credit-customer-error");
+  if (node) { node.hidden = !message; node.textContent = message || ""; }
+}
+function renderCreditCustomer() {
+  const wrap = $("payment-credit-customer-wrap");
+  if (!wrap) return;
+  const needed = creditSelectionNeeded();
+  wrap.hidden = !needed;
+  if (!needed) return;
+  const customer = state.payment.creditCustomer;
+  $("payment-credit-selected").hidden = !customer;
+  $("payment-credit-lookup").hidden = Boolean(customer);
+  $("payment-credit-selected-name").textContent = customer
+    ? [customer.name, customer.phone].filter(Boolean).join(" · ") : "";
+  $("payment-credit-change").hidden = Boolean(state.payment.view?.customerId || state.payment.view?.creditCustomerId);
+  const locked = state.payment.confirming || state.payment.uncertain;
+  for (const id of ["payment-credit-search", "payment-credit-create-toggle", "payment-credit-new-name", "payment-credit-new-phone", "payment-credit-create-save", "payment-credit-change"]) {
+    const el = $(id); if (el && id !== "payment-credit-create-save") el.disabled = locked;
+  }
+}
+function selectPaymentCreditCustomer(customer) {
+  if (!customer?.customerId) return;
+  state.payment.creditCustomer = { customerId: customer.customerId,
+    name: customer.name || "", phone: customer.phone || "" };
+  $("payment-credit-search").value = "";
+  $("payment-credit-results").hidden = true;
+  $("payment-credit-results").replaceChildren();
+  $("payment-credit-create").hidden = true;
+  creditCustomerError("");
+  renderPaymentEntry();
+}
+let paymentCreditSearchSeq = 0;
+let paymentCreditSearchTimer = null;
+async function searchPaymentCreditCustomers() {
+  const input = $("payment-credit-search");
+  const host = $("payment-credit-results");
+  const q = input?.value.trim() || "";
+  const seq = ++paymentCreditSearchSeq;
+  if (!host || q.length < 2 || !creditSelectionNeeded()) {
+    if (host) { host.hidden = true; host.replaceChildren(); }
+    return;
+  }
+  try {
+    const res = await api(`/v1/customers?q=${encodeURIComponent(q)}`);
+    if (seq !== paymentCreditSearchSeq || input.value.trim() !== q || !$("payment-dialog")?.open) return;
+    const customers = res.ok ? res.json?.customers || [] : [];
+    host.innerHTML = customers.length ? customers.map((customer) =>
+      `<button type="button" class="payment-credit-result" data-credit-customer-id="${escapeHtml(customer.customerId)}"><span>${escapeHtml(customer.name)}</span><small>${escapeHtml(customer.phone)}</small></button>`
+    ).join("") : '<p class="muted">No matching customers</p>';
+    host.hidden = false;
+    host.querySelectorAll("[data-credit-customer-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const match = customers.find((x) => x.customerId === button.dataset.creditCustomerId);
+        if (match) selectPaymentCreditCustomer(match);
+      });
+    });
+  } catch { creditCustomerError("Could not search customers."); }
+}
+async function createPaymentCreditCustomer() {
+  const btn = $("payment-credit-create-save");
+  if (btn.disabled || state.payment.confirming || state.payment.uncertain) return;
+  const name = $("payment-credit-new-name").value.trim();
+  const phone = $("payment-credit-new-phone").value.trim();
+  if (!name || !phone) { creditCustomerError("Enter customer name and phone."); return; }
+  btn.disabled = true;
+  creditCustomerError("");
+  try {
+    const res = await api("/v1/customers", { method:"POST", body:JSON.stringify({name,phone}) });
+    if (res.ok && res.json?.customer) {
+      selectPaymentCreditCustomer(res.json.customer);
+    } else if (res.status === 409 && res.json?.customer) {
+      selectPaymentCreditCustomer(res.json.customer);
+    } else {
+      creditCustomerError(res.json?.error || "Could not save the customer.");
+    }
+  } catch { creditCustomerError("Could not save the customer."); }
+  finally { btn.disabled = false; }
+}
+
+function renderPaymentEntry() {
+  const view = state.payment.view;
+  if (!view) return;
+  const mode = selectedEntryMode();
+  const blocked = state.payment.confirming || state.payment.uncertain;
+  $("payment-entry-fields").classList.toggle("is-single", mode !== "SPLIT");
+  for (const [key, inputId] of [
+    ["CASH", "payment-cash-field"], ["BANK", "payment-bank-field"], ["CREDIT", "payment-credit-field"]
+  ]) {
+    $(inputId).hidden = mode !== "SPLIT" && mode !== key;
+  }
+  document.querySelectorAll('input[name="pay-entry-mode"]').forEach((el) => { el.disabled = blocked; });
+  for (const id of ["payment-cash-input", "payment-bank-input", "payment-credit-input"]) $(id).disabled = blocked;
+  const amounts = paymentEntryAmounts(view);
+  const remaining = Number(view.unallocatedCents ?? view.balanceCents ?? 0);
+  const money = paymentMoney(view);
+  const bankRequired = mode === "BANK" || (mode === "SPLIT" && (amounts?.bankCents || 0) > 0);
+  $("payment-bank-fields").hidden = !bankRequired;
+  const hasAccounts = (state.payment.accounts || []).some((a) => a.accountType === "OPERATIONAL" && a.isActive);
+  $("payment-bank-empty").hidden = !bankRequired || hasAccounts;
+  $("payment-bank-account").disabled = blocked || !hasAccounts;
+  const creditRequired = Number(amounts?.creditCents || 0) > 0;
+  renderCreditCustomer();
+  const valid = Boolean(amounts && amounts.total > 0 && amounts.total <= remaining &&
+    (!creditRequired || state.payment.creditCustomer?.customerId) &&
+    (!bankRequired || (hasAccounts && $("payment-bank-account").value)));
+  $("payment-remaining").textContent = amounts && amounts.total <= remaining
+    ? money.format(remaining - amounts.total) : "—";
+  $("payment-remaining").classList.toggle("payment-invalid", !amounts || amounts.total > remaining);
+  const confirm = $("payment-confirm");
+  confirm.disabled = blocked || !valid;
+  confirm.hidden = remaining <= 0;
+  confirm.textContent = state.payment.confirming ? "Recording…" : "Record Payment";
 }
 
 function renderPayment(view) {
+  state.payment.view = view;
   const money = paymentMoney(view);
-  const paid = view?.paymentStatus === "PAID";
+  const remaining = Number(view?.unallocatedCents ?? view?.balanceCents ?? 0);
   $("payment-order-number").textContent = view?.orderNumber ? `Order ${view.orderNumber}` : "";
-  const customer = [view?.customerName, view?.customerPhone].filter(Boolean).join(" · ");
+  const customer = [view?.customerName || view?.creditCustomerName,
+    view?.customerPhone || view?.creditCustomerPhone].filter(Boolean).join(" · ");
   $("payment-customer").textContent = customer || "No customer on this order";
-  $("payment-total").textContent = view ? money.format(view.orderTotalCents) : "—";
-  $("payment-paid").textContent = view ? money.format(view.paidCents) : "—";
-  $("payment-due").textContent = view ? money.format(view.balanceCents) : "—";
-  const status = $("payment-status");
-  status.textContent = paid ? "Paid" : "Unpaid";
-  status.className = `pay-status ${paid ? "paid" : "unpaid"}`;
-  const choice = $("payment-choice");
-  const method = $("payment-method");
-  if (paid) {
-    const settlement = view?.settlement;
-    method.textContent = settlement?.tender === "BANK"
-      ? (settlement.bankAccountLabel ? `Bank · ${settlement.bankAccountLabel}` : "Bank")
-      : "Cash";
-    if (choice) choice.hidden = true;
-  } else {
-    const locked = state.payment.attempt?.submitted === true;
-    const current = selectedPaymentChoice();
-    for (const input of document.querySelectorAll('input[name="pay-method"]')) {
-      input.checked = input.value === current.tender;
-      input.disabled = locked || state.payment.confirming;
-    }
-    renderPaymentAccounts();
-    const bankFields = $("payment-bank-fields");
-    const empty = $("payment-bank-empty");
-    const select = $("payment-bank-account");
-    const bank = current.tender === "BANK";
-    if (bankFields) bankFields.hidden = !bank;
-    const ready = (state.payment.accounts || []).length > 0;
-    if (empty) empty.hidden = !bank || ready;
-    if (select) {
-      select.disabled = locked || state.payment.confirming || !ready;
-      if (current.bankAccountId) select.value = current.bankAccountId;
-    }
-    method.textContent = bank ? "Bank" : "Cash";
-    if (choice) choice.hidden = false;
+  const selectedId = view?.customerId || view?.creditCustomerId;
+  if (selectedId && (!state.payment.creditCustomer || state.payment.creditCustomer.customerId !== selectedId)) {
+    state.payment.creditCustomer = { customerId: selectedId,
+      name: view?.customerName || view?.creditCustomerName || "Customer",
+      phone: view?.customerPhone || view?.creditCustomerPhone || "" };
   }
-  const confirm = $("payment-confirm");
-  const bankBlocked = !paid && selectedPaymentChoice().tender === "BANK" && !(state.payment.accounts || []).length;
-  confirm.hidden = paid;
-  confirm.disabled = state.payment.confirming || bankBlocked;
-  confirm.textContent = state.payment.confirming ? "Confirming…" : "Confirm Payment";
-  const edit = $("payment-edit");
-  if (edit) edit.hidden = paid || !canEditOrders() || !(view?.orderId || state.payment.orderId);
-  if (paid) $("payment-renew").hidden = true;
+  $("payment-total").textContent = view ? money.format(view.orderTotalCents) : "—";
+  $("payment-paid").textContent = view ? money.format(view.paidCents || 0) : "—";
+  $("payment-credit-total").textContent = view ? money.format(view.creditCents || 0) : "—";
+  $("payment-due").textContent = view ? money.format(remaining) : "—";
+  const label = { PAID: "Paid", CREDIT: "Credit", PARTIAL: "Partial", UNPAID: "Unpaid" };
+  const status = $("payment-status");
+  status.textContent = label[view?.paymentStatus] || "Unpaid";
+  status.className = `pay-status ${view?.paymentStatus === "PAID" ? "paid" : "unpaid"}`;
+  $("payment-choice").hidden = remaining <= 0;
+  $("payment-edit").hidden = remaining <= 0 || Boolean(view?.hasAllocations) ||
+    !canEditOrders() || !(view?.orderId || state.payment.orderId);
+  $("payment-renew").hidden = true;
+  renderPaymentEntry();
 }
 
 async function readServerPayment(orderId) {
@@ -4687,12 +4894,12 @@ async function openPaymentOffer(orderId) {
       "The order was accepted. Payment status could not be confirmed.";
     return;
   }
-  const paid = res.json.paymentStatus === "PAID";
+  const allocated = Number(res.json.unallocatedCents ?? res.json.balanceCents) <= 0;
   const who = res.json.customerName ? ` for ${res.json.customerName}` : "";
-  $("payment-offer-text").textContent = paid
-    ? `Order ${res.json.orderNumber}${who} is paid.`
-    : `Order ${res.json.orderNumber}${who} was accepted and is still unpaid.`;
-  $("payment-offer-take").hidden = paid;
+  $("payment-offer-text").textContent = allocated
+    ? `Order ${res.json.orderNumber}${who}: ${res.json.paymentStatus === "PAID" ? "Paid" : "Payment allocated"}.`
+    : `Order ${res.json.orderNumber}${who} was accepted. Payment is pending.`;
+  $("payment-offer-take").hidden = allocated;
 }
 
 async function openTakePayment(orderId, { fromPending = false } = {}) {
@@ -4702,40 +4909,43 @@ async function openTakePayment(orderId, { fromPending = false } = {}) {
   state.payment.orderId = orderId;
   state.payment.fromPending = fromPending;
   state.payment.confirming = false;
+  state.payment.uncertain = false;
+  state.payment.unifiedSubmission = null;
   state.payment.view = null;
   state.payment.accounts = [];
+  state.payment.creditCustomer = null;
+  ++paymentCreditSearchSeq;
+  clearTimeout(paymentCreditSearchTimer);
+  $("payment-credit-search").value = "";
+  $("payment-credit-results").hidden = true;
+  $("payment-credit-results").replaceChildren();
+  $("payment-credit-create").hidden = true;
+  creditCustomerError("");
   setPendingDrawer(false);
   const offer = $("payment-offer-dialog");
   if (offer?.open) offer.close();
   showPaymentError("");
-  $("payment-renew").hidden = true;
   $("payment-order-number").textContent = "Loading order…";
   $("payment-customer").textContent = "";
   $("payment-confirm").disabled = true;
   if (!dialog.open) dialog.showModal();
   const res = await readServerPayment(orderId);
   if (!dialog.open || state.payment.orderId !== orderId) return;
-  if (res.status === 401) {
-    dialog.close();
-    showLogin("This sign-in is no longer valid.");
-    return;
-  }
+  if (res.status === 401) { dialog.close(); showLogin("Session expired."); return; }
   if (!res.ok || !res.json) {
-    showPaymentError(res.json?.error || "This order could not be opened.");
+    showPaymentError(res.json?.error || "Order could not be opened.");
     $("payment-confirm").hidden = true;
     return;
   }
   state.payment.view = res.json;
-  if (res.json.paymentStatus !== "PAID") {
-    const attempt = ensurePaymentAttempt(orderId, res.json);
-    for (const input of document.querySelectorAll('input[name="pay-method"]')) {
-      input.checked = input.value === (attempt.tender === "BANK" ? "BANK" : "CASH");
-    }
+  if (Number(res.json.unallocatedCents ?? res.json.balanceCents) > 0) {
     const accounts = await api("/v1/bank-accounts");
     if (!dialog.open || state.payment.orderId !== orderId) return;
     state.payment.accounts = accounts.ok ? accounts.json?.accounts || [] : [];
   }
+  renderPaymentAccounts();
   renderPayment(res.json);
+  resetEntryMode("CASH");
 }
 
 function showPaidPayment(view) {
@@ -4747,87 +4957,94 @@ function showPaidPayment(view) {
   void refreshPendingCount();
 }
 
-async function confirmCashPayment() {
+async function confirmUnifiedPayment() {
   const orderId = state.payment.orderId;
-  if (!orderId || state.payment.confirming) return;
-  const dialog = $("payment-dialog");
+  const view = state.payment.view;
+  if (!orderId || !view || state.payment.confirming || state.payment.uncertain) return;
+  const parts = paymentEntryAmounts(view);
+  const remaining = Number(view.unallocatedCents ?? view.balanceCents ?? 0);
+  if (!parts || parts.total <= 0 || parts.total > remaining) {
+    showPaymentError("Enter a valid amount within the available balance.");
+    return;
+  }
+  const creditCustomerId = parts.creditCents ? state.payment.creditCustomer?.customerId || "" : "";
+  if (parts.creditCents && !creditCustomerId) {
+    showPaymentError("Select a customer for credit.");
+    $("payment-credit-search").focus();
+    return;
+  }
+  const bankAccountId = parts.bankCents ? $("payment-bank-account").value : "";
+  if (parts.bankCents && !bankAccountId) {
+    showPaymentError("Select an operational bank account.");
+    return;
+  }
   state.payment.confirming = true;
-  $("payment-confirm").disabled = true;
-  $("payment-confirm").textContent = "Confirming…";
-  $("payment-renew").hidden = true;
+  renderPaymentEntry();
   showPaymentError("");
   try {
-    const current = await readServerPayment(orderId);
-    if (!current.ok || !current.json) {
-      showPaymentError(current.json?.error || "Payment status could not be confirmed.");
+    // Always read the authoritative balance immediately before posting.
+    const fresh = await readServerPayment(orderId);
+    if (fresh.status === 401) { $("payment-dialog")?.close(); showLogin("Session expired."); return; }
+    if (!fresh.ok || !fresh.json) {
+      showPaymentError("Could not verify the order. Nothing was recorded.");
       return;
     }
-    if (current.json.paymentStatus === "PAID") {
-      showPaidPayment(current.json);
+    if (Number(fresh.json.unallocatedCents ?? fresh.json.balanceCents) !== remaining ||
+        fresh.json.currencyCode !== view.currencyCode ||
+        fresh.json.orderTotalCents !== view.orderTotalCents) {
+      state.payment.view = fresh.json;
+      showPaymentError("Order balance changed. Review the payment before continuing.");
+      renderPayment(fresh.json);
+      resetEntryMode("CASH");
       return;
     }
-    const attempt = ensurePaymentAttempt(orderId, current.json);
-    if (!attempt.submitted) {
-      const choice = selectedPaymentChoice();
-      if (choice.tender === "BANK" && !choice.bankAccountId) {
-        showPaymentError("Choose an operational bank account.");
-        return;
-      }
-      attempt.tender = choice.tender;
-      attempt.bankAccountId = choice.bankAccountId;
-      attempt.submitted = true;
-      storePaymentAttempt(orderId, attempt);
+    // Keep one submission ID for retries. Never silently resubmit with another ID.
+    const signature = JSON.stringify([parts.cashCents, parts.bankCents, parts.creditCents, bankAccountId, creditCustomerId, view.currencyCode]);
+    const previous = state.payment.unifiedSubmission;
+    if (previous && previous.signature !== signature) {
+      showPaymentError("Reopen this order before changing a pending payment.");
+      state.payment.uncertain = true;
+      return;
     }
-    const payload = {
-      submissionId: attempt.submissionId,
-      tender: attempt.tender === "BANK" ? "BANK" : "CASH",
-      amountCents: attempt.amountCents,
-      currencyCode: attempt.currencyCode,
-    };
-    if (payload.tender === "BANK") payload.bankAccountId = attempt.bankAccountId;
-    let res;
+    const submission = previous || { id: newSubmissionId(), signature };
+    state.payment.unifiedSubmission = submission;
+    let result;
     try {
-      res = await api(`/v1/orders/${encodeURIComponent(orderId)}/settlements`, {
+      result = await api(`/v1/orders/${encodeURIComponent(orderId)}/payment-allocations`, {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ submissionId: submission.id,
+          cashCents: parts.cashCents, bankCents: parts.bankCents,
+          creditCents: parts.creditCents, bankAccountId: bankAccountId || undefined,
+          creditCustomerId: creditCustomerId || undefined,
+          currencyCode: view.currencyCode })
       });
-    } catch (err) {
-      await recoverUncertainPayment(orderId, err);
+    } catch {
+      // A timeout can mean the server already committed. Lock editing, allow only same-ID retry.
+      state.payment.uncertain = true;
+      showPaymentError("Connection interrupted. Reopen the order to check the payment before retrying.");
       return;
     }
-    if (res.ok && res.json?.paymentStatus === "PAID") {
-      showPaidPayment({
-        ...current.json,
-        ...res.json,
-        orderNumber: res.json.settlement?.orderNumber || current.json.orderNumber,
-        paymentStatus: res.json.paymentStatus,
-        orderTotalCents: res.json.balance?.orderTotalCents ?? current.json.orderTotalCents,
-        paidCents: res.json.balance?.paidCents ?? current.json.paidCents,
-        balanceCents: res.json.balance?.balanceCents ?? 0,
-      });
+    if (!result.ok) {
+      if (result.status === 401) { $("payment-dialog")?.close(); showLogin("Session expired."); return; }
+      showPaymentError(result.json?.error || "Payment was not recorded.");
+      if ([409, 500, 503].includes(result.status)) state.payment.uncertain = true;
+      else state.payment.unifiedSubmission = null; // proven rejected input, no commit
       return;
     }
-    if (res.status === 401) {
-      dialog?.close();
-      showLogin("This sign-in is no longer valid. The payment was not confirmed.");
+    state.payment.unifiedSubmission = null;
+    const updated = await readServerPayment(orderId);
+    if (!updated.ok || !updated.json) {
+      state.payment.uncertain = true;
+      showPaymentError("Recorded. Reopen this order to refresh the balance.");
       return;
     }
-    if (res.json?.code === "ALREADY_PAID" || res.json?.code === "SUBMISSION_CONFLICT" || res.json?.code === "PAYMENT_IN_PROGRESS") {
-      await recoverUncertainPayment(orderId, null, res.json);
-      return;
-    }
-    if (res.status === 400 && state.payment.attempt) {
-      state.payment.attempt.submitted = false;
-      storePaymentAttempt(orderId, state.payment.attempt);
-    }
-    showPaymentError(res.json?.error || "The payment was not confirmed.");
-  } catch (err) {
-    await recoverUncertainPayment(orderId, err);
+    renderPayment(updated.json);
+    resetEntryMode("CASH");
+    void refreshPendingCount();
+    showPaymentError("");
   } finally {
-    if (state.payment.view?.paymentStatus !== "PAID") {
-      state.payment.confirming = false;
-      if (state.payment.view) renderPayment(state.payment.view);
-    }
+    state.payment.confirming = false;
+    if (state.payment.view) renderPaymentEntry();
   }
 }
 
@@ -5066,15 +5283,35 @@ function bindUi() {
     if (state.payment.fromPending) void openPendingPayments();
   });
   $("payment-confirm")?.addEventListener("click", () => {
-    void confirmCashPayment();
+    void confirmUnifiedPayment();
   });
-  document.querySelectorAll('input[name="pay-method"]').forEach((input) => {
+  document.querySelectorAll('input[name="pay-entry-mode"]').forEach((input) => {
     input.addEventListener("change", () => {
-      if (state.payment.view && state.payment.view.paymentStatus !== "PAID") {
-        renderPayment(state.payment.view);
-      }
+      if (!state.payment.confirming && !state.payment.uncertain) resetEntryMode(input.value);
     });
   });
+  for (const id of ["payment-cash-input", "payment-bank-input", "payment-credit-input"]) {
+    $(id)?.addEventListener("input", () => {
+      if (!state.payment.confirming && !state.payment.uncertain) renderPaymentEntry();
+    });
+  }
+  $("payment-bank-account")?.addEventListener("change", () => renderPaymentEntry());
+  $("payment-credit-search")?.addEventListener("input", () => {
+    clearTimeout(paymentCreditSearchTimer);
+    paymentCreditSearchTimer = setTimeout(searchPaymentCreditCustomers, 200);
+  });
+  $("payment-credit-change")?.addEventListener("click", () => {
+    if (state.payment.confirming || state.payment.uncertain || (state.payment.view?.customerId || state.payment.view?.creditCustomerId)) return;
+    state.payment.creditCustomer = null;
+    renderPaymentEntry();
+    $("payment-credit-search").focus();
+  });
+  $("payment-credit-create-toggle")?.addEventListener("click", () => {
+    const box = $("payment-credit-create");
+    box.hidden = !box.hidden;
+    if (!box.hidden) $("payment-credit-new-name").focus();
+  });
+  $("payment-credit-create-save")?.addEventListener("click", () => void createPaymentCreditCustomer());
   $("payment-renew")?.addEventListener("click", () => {
     void renewPaymentAttempt();
   });
@@ -5232,6 +5469,17 @@ function bindUi() {
     state.priceBreakdownOpen = !state.priceBreakdownOpen;
     updatePriceSummary();
   });
+  $("cart-tax-summary")?.addEventListener("click", (event) => {
+    const button = event.target.closest("#cart-price-breakdown-toggle");
+    if (!button) return;
+    state.cartPriceBreakdownOpen = !state.cartPriceBreakdownOpen;
+    const detail = $("cart-price-breakdown");
+    if (detail) detail.hidden = !state.cartPriceBreakdownOpen;
+    button.textContent = state.cartPriceBreakdownOpen
+      ? "Hide price breakdown"
+      : "View price breakdown";
+    button.setAttribute("aria-expanded", String(state.cartPriceBreakdownOpen));
+  });
   $("customize-apply-btn")?.addEventListener("click", (e) => {
     e.preventDefault();
     applyCustomization();
@@ -5286,6 +5534,7 @@ function bindUi() {
     setCartDrawer(true);
   });
   $("close-cart-drawer")?.addEventListener("click", () => setCartDrawer(false));
+  $("cart-add-more-items")?.addEventListener("click", () => setCartDrawer(false));
   $("cart-drawer-backdrop")?.addEventListener("click", () => setCartDrawer(false));
   $("nav-menu-btn")?.addEventListener("click", () => {
     setNavMenu(!state.navMenuOpen);

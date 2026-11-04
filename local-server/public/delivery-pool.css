@@ -1,0 +1,86 @@
+:root { color-scheme:light; font-family:system-ui,-apple-system,"Segoe UI",sans-serif; background:#f4f7fb; color:#172b48; }
+* { box-sizing:border-box; }
+body { margin:0; }
+button,input,select { font:inherit; }
+button { cursor:pointer; border-radius:12px; padding:12px 16px; min-height:46px; font-weight:700; border:1px solid #cdd8e7; background:white; color:#14589e; }
+button:disabled { opacity:.55; cursor:wait; }
+button.primary { background:#125a9f; color:white; border-color:#125a9f; }
+.header { display:flex; align-items:center; gap:14px; justify-content:space-between; padding:14px max(16px,calc((100vw - 800px)/2)); background:white; border-bottom:1px solid #dce5ef; }
+.brand { display:grid; }
+.brand small { font-size:12px; letter-spacing:.12em; color:#15589c; font-weight:900; }
+.brand strong { font-size:20px; }
+.test-pill { background:#e8eddb; color:#435c24; border-radius:8px; padding:5px 10px; font-size:12px; font-weight:800; margin-left:auto; }
+main { width:min(800px,100%); margin:0 auto; padding:22px 16px 70px; }
+h1 { font-size:23px; margin:0; }
+.intro { margin:0 0 18px; }
+.intro p { margin:4px 0; color:#66778f; font-size:13px; }
+.login-panel { margin:6vh auto 0; padding:26px; max-width:420px; border:1px solid #d7e2ef; border-radius:18px; background:white; display:grid; gap:16px; }
+.login-panel[hidden], [hidden] { display:none !important; }
+label { display:grid; gap:6px; color:#55677d; font-weight:600; font-size:14px; }
+input,select { padding:12px 14px; border:1px solid #cbd8e8; border-radius:12px; background:#fff; color:#172b48; width:100%; min-height:48px; }
+input:focus-visible,select:focus-visible,button:focus-visible { outline:3px solid #8bb5ff; outline-offset:1px; }
+.tabs { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-bottom:14px; }
+.tabs button.active { background:#155a9f; border-color:#155a9f; color:white; }
+.filters { display:grid; grid-template-columns:1fr 1fr auto; gap:10px; align-items:end; margin-bottom:14px; }
+.list { display:grid; gap:12px; }
+.order { border:1px solid #d8e2ef; background:white; border-radius:16px; padding:18px; display:grid; gap:10px; }
+.order header { display:flex; justify-content:space-between; gap:12px; align-items:baseline; }
+.order strong { font-size:19px; }
+.order .token { background:#ebf3ff; color:#1d5690; padding:4px 8px; border-radius:6px; font-size:12px; font-weight:800; }
+.order .route { font-weight:800; }
+.order .customer { font-size:14px; color:#566a80; }
+.order .meta { display:flex; gap:8px; flex-wrap:wrap; font-size:13px; color:#64748b; }
+.order .total { font-size:14px; font-weight:650; }
+.order button { width:100%; }
+.message { color:#5d7086; font-size:14px; min-height:1.2em; margin:0 0 10px; }
+.error { color:#a52c28; }
+.suggestions { padding:14px; border:1px solid #b8d9bd; background:#eff9f1; border-radius:14px; margin:12px 0; font-size:14px; }
+.suggestions h2 { font-size:15px; margin:0 0 8px; }
+.suggestions ul { margin:0; padding-left:19px; }
+.empty { background:#fff; border:1px dashed #c9d8e9; border-radius:14px; padding:25px; color:#6a7b90; text-align:center; }
+@media(max-width:480px){main{padding:16px 12px 75px}.filters{grid-template-columns:1fr 1fr}.filters button{grid-column:span 2}.header{padding:12px}.order{padding:15px}.order strong{font-size:17px}}
+
+/* P2-E2B: Compact, actionable route suggestions. No route-distance claims. */
+.suggestions { background:#f5f9ff; border-color:#c6d8ee; }
+.suggestions .hint { margin:0 0 12px; color:#61758a; font-size:13px; }
+.suggestion-list { display:grid; gap:8px; }
+.suggestion-item { display:flex; gap:10px; justify-content:space-between; align-items:center; padding:12px;
+  border:1px solid #d5e0ed; border-radius:12px; background:#fff; }
+.suggestion-info { display:grid; gap:5px; min-width:0; }
+.suggestion-info strong { font-size:15px; }
+.suggestion-info .route { color:#586e85; font-size:13px; overflow-wrap:anywhere; }
+.suggestion-tag { background:#ebf1fa; color:#365779; border-radius:8px; padding:4px 7px;
+  font-size:11px; font-weight:800; width:max-content; }
+.suggestion-tag.priority { background:#e0f5e9; color:#11623c; }
+.suggestion-accept { min-width:88px; flex-shrink:0; }
+.route-finder { background:#f6faff; border-color:#bfd5ed; }
+@media(max-width:360px) { .suggestion-item{align-items:stretch;flex-direction:column} .suggestion-accept{width:100%} }
+
+/* P2-E2C0: Customer payment OBSERVATIONS — not shop payments. */
+.order-total { font-size:14px; font-weight:800; color:#1f3d5d; }
+.payment-mark { border-top:1px solid #e5edf6; padding-top:12px; display:grid; gap:9px; }
+.payment-heading { display:flex; align-items:center; gap:8px; justify-content:space-between; flex-wrap:wrap; }
+.payment-heading strong { font-size:14px; }
+.payment-heading span { font-size:12px; font-weight:700; color:#6a7683; }
+.payment-heading .verified-payment { color:#16803b; }
+.payment-fields { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; }
+.payment-fields select { min-width:0; }
+.order .payment-fields button { width:auto; }
+.payment-note { font-size:12px; line-height:1.4; color:#67768a; }
+.payment-warning { color:#9d5113; font-size:12px; font-weight:700; }
+.cash-summary { padding:14px; margin:0 0 14px; border:1px solid #c3d9ea; border-radius:14px; background:#e9f4ff; }
+.cash-summary strong { font-size:14px; }
+.cash-summary .cash-amount { font-size:23px; font-weight:800; margin-top:3px; color:#124b83; font-variant-numeric:tabular-nums; }
+.cash-summary p { font-size:12px; color:#637b94; margin:5px 0 0; }
+@media(max-width:440px) { .payment-fields {grid-template-columns:1fr} .order .payment-fields button {width:100%} }
+/* P2-E2C1: fulfillment status shown separately from payment report. */
+.delivery-lifecycle { display:grid; gap:9px; border-top:1px solid #e5edf6; padding-top:12px; }
+.delivery-heading {display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+.delivery-heading strong {font-size:14px}
+.delivery-state {font-size:12px; font-weight:800; padding:5px 8px; border-radius:8px; background:#edf2f9; }
+.status-delivered {background:#e4f8ec;color:#137342}
+.status-cancel_requested {background:#fff4d8;color:#985c12}
+.status-cancelled {background:#ffe8e8;color:#ab2929}
+.lifecycle-actions {display:grid; grid-template-columns:1fr 1fr; gap:8px}
+@media(max-width:440px){.lifecycle-actions{grid-template-columns:1fr}}
+

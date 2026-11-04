@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import { getDb } from "../db/db.js";
+import { recordAudit } from "./audit.js";
 import { nowIso } from "../util/time.js";
 import { getShopSettings } from "./shopSettings.js";
 import { getStation } from "./stations.js";
@@ -45,8 +47,8 @@ function startOfShopDay(timeZone) {
   return new Date(utcGuess.getTime() - (asUtc - utcGuess.getTime())).toISOString();
 }
 
-function listPrepStations() {
-  return getDb()
+function listPrepStations(allowedStationIds = null) {
+  const stations = getDb()
     .prepare(
       `SELECT station_id, name
        FROM stations
@@ -55,6 +57,7 @@ function listPrepStations() {
     )
     .all(CASHIER_STATION)
     .map((row) => ({ stationId: row.station_id, name: row.name }));
+  return allowedStationIds === null ? stations : stations.filter((station) => allowedStationIds.includes(station.stationId));
 }
 
 function requirePrepStation(stationId) {
@@ -143,17 +146,32 @@ function ticketView(order, stored) {
   const signature = lineSignature(order.lines);
   const changed = Boolean(stored && stored.line_signature && stored.line_signature !== signature);
   const status = !stored || changed ? "NEW" : stored.status;
+  // The revision covers the immutable station line content AND order edits.
+  // A stale browser must not finish an older recipe after Sales changes it.
+  const revision = createHash("sha256")
+    .update(JSON.stringify([
+      order.orderId,
+      order.updatedAt,
+      signature,
+      stored?.status || "NEW",
+      stored?.updated_at || "",
+    ]))
+    .digest("hex");
   return {
     ...order,
     status,
     updated: changed,
     signature,
-    finishedAt: stored?.finished_at || "",
+    revision,
+    finishedAt: changed ? "" : stored?.finished_at || "",
   };
 }
 
-export function listPrepBoard(shopId, stationId) {
-  const stations = listPrepStations();
+export function listPrepBoard(shopId, stationId, allowedStationIds = null) {
+  const stations = listPrepStations(allowedStationIds);
+  if (allowedStationIds !== null && stationId && !allowedStationIds.includes(stationId)) {
+    fail(403, "This preparation station is not assigned to you.", "STATION_FORBIDDEN");
+  }
   const selected = stationId
     ? requirePrepStation(stationId)
     : stations[0]
@@ -176,6 +194,13 @@ export function listPrepBoard(shopId, stationId) {
   } catch {
     dayStart = startOfShopDay("UTC");
   }
+  // Keep FINISHED tickets visible for the whole active shift, including after midnight.
+  // Never alter ticket statuses or order dates; this only changes the board's read filter.
+  const openShift = db.prepare(`SELECT opened_at FROM shop_business_shifts
+    WHERE shop_id = ? AND status = 'OPEN'`).get(shopId);
+  if (openShift?.opened_at && (!dayStart || openShift.opened_at < dayStart)) {
+    dayStart = openShift.opened_at;
+  }
   const tickets = orders
     .map((order) => ticketView(order, stored.get(order.orderId)))
     .filter((ticket) => ticket.status !== "FINISHED" || !ticket.finishedAt || ticket.finishedAt >= dayStart)
@@ -187,55 +212,148 @@ export function listPrepBoard(shopId, stationId) {
   };
 }
 
-export function setPrepStatus(shopId, orderId, stationId, status, userId) {
+/**
+ * Atomic, station-scoped state change.
+ * A board client must send the status and revision it actually saw.
+ * BEGIN IMMEDIATE serializes competing processes BEFORE checking the state.
+ * Existing PREP ticket rows and historic orders remain unchanged.
+ */
+export function setPrepStatus(shopId, orderId, stationId, status, userId, expectedStatus, expectedRevision, actorRole = "") {
   const next = status === "FINISHED" ? "FINISHED" : status === "ACCEPTED" ? "ACCEPTED" : "";
   if (!next) fail(400, "Choose accept or finished.", "STATUS_REQUIRED");
-  const station = requirePrepStation(stationId);
+  const before = String(expectedStatus || "");
+  const revision = String(expectedRevision || "");
+  if (!["NEW", "ACCEPTED"].includes(before) || !/^[a-f0-9]{64}$/.test(revision)) {
+    fail(400, "Refresh the preparation board before updating this order.", "PREP_EXPECTATION_REQUIRED");
+  }
   const id = String(orderId || "").trim();
+  const station = requirePrepStation(stationId);
   const db = getDb();
-  const order = db
-    .prepare(`SELECT order_id, status, tenant_id FROM orders WHERE order_id = ?`)
-    .get(id);
-  if (!order || order.tenant_id !== shopId) fail(404, "Order not found.", "ORDER_NOT_FOUND");
-  if (order.status !== "OPEN") fail(400, "This order is no longer open.", "ORDER_NOT_OPEN");
-  const [current] = loadStationLines(db, shopId, station.station_id, id);
-  if (!current) fail(400, "This order has no items for that station.", "STATION_EMPTY");
-  const signature = lineSignature(current.lines);
-  const ts = nowIso();
-  const existing = db
-    .prepare(
+  const change = db.transaction(() => {
+    const order = db.prepare(
+      `SELECT order_id, status, tenant_id FROM orders WHERE order_id = ?`
+    ).get(id);
+    if (!order || order.tenant_id !== shopId) fail(404, "Order not found.", "ORDER_NOT_FOUND");
+    if (order.status !== "OPEN") fail(400, "This order is no longer open.", "ORDER_NOT_OPEN");
+    const [current] = loadStationLines(db, shopId, station.station_id, id);
+    if (!current) fail(400, "This order has no items for that station.", "STATION_EMPTY");
+    const existing = db.prepare(
       `SELECT * FROM station_prep_tickets
        WHERE shop_id = ? AND order_id = ? AND station_id = ?`
-    )
-    .get(shopId, id, station.station_id);
-  db.prepare(
-    `INSERT INTO station_prep_tickets (
-       shop_id, order_id, station_id, status, line_signature,
-       accepted_at, finished_at, updated_by_user_id, updated_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (shop_id, order_id, station_id) DO UPDATE SET
-       status = excluded.status,
-       line_signature = excluded.line_signature,
-       accepted_at = CASE
-         WHEN excluded.status = 'ACCEPTED' THEN excluded.accepted_at
-         ELSE station_prep_tickets.accepted_at
-       END,
-       finished_at = CASE
-         WHEN excluded.status = 'FINISHED' THEN excluded.finished_at
-         ELSE NULL
-       END,
-       updated_by_user_id = excluded.updated_by_user_id,
-       updated_at = excluded.updated_at`
-  ).run(
-    shopId,
-    id,
-    station.station_id,
-    next,
-    signature,
-    next === "ACCEPTED" ? ts : existing?.accepted_at || null,
-    next === "FINISHED" ? ts : null,
-    userId || null,
-    ts
-  );
-  return { orderId: id, stationId: station.station_id, status: next };
+    ).get(shopId, id, station.station_id);
+    const view = ticketView(current, existing);
+    if (view.status !== before || view.revision !== revision) {
+      fail(409, "This preparation ticket changed. Refresh and review it again.", "PREP_STALE");
+    }
+    if (
+      (next === "ACCEPTED" && view.status !== "NEW") ||
+      (next === "FINISHED" && view.status !== "ACCEPTED")
+    ) {
+      fail(409, "Accept the current ticket before finishing it.", "PREP_INVALID_TRANSITION");
+    }
+    const ts = nowIso();
+    db.prepare(
+      `INSERT INTO station_prep_tickets (
+         shop_id, order_id, station_id, status, line_signature,
+         accepted_at, finished_at, updated_by_user_id, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (shop_id, order_id, station_id) DO UPDATE SET
+         status = excluded.status,
+         line_signature = excluded.line_signature,
+         accepted_at = CASE
+           WHEN excluded.status = 'ACCEPTED' THEN excluded.accepted_at
+           ELSE station_prep_tickets.accepted_at
+         END,
+         finished_at = CASE
+           WHEN excluded.status = 'FINISHED' THEN excluded.finished_at
+           ELSE NULL
+         END,
+         updated_by_user_id = excluded.updated_by_user_id,
+         updated_at = excluded.updated_at`
+    ).run(
+      shopId,
+      id,
+      station.station_id,
+      next,
+      view.signature,
+      next === "ACCEPTED" ? ts : existing?.accepted_at || null,
+      next === "FINISHED" ? ts : null,
+      userId || null,
+      ts
+    );
+    recordAudit({
+      actorRole: actorRole || "",
+      actorUserId: userId || "",
+      action: next === "ACCEPTED" ? "prep.station.accept" : "prep.station.finish",
+      entityType: "station_prep_ticket",
+      entityId: `${id}:${station.station_id}`,
+      detail: {
+        shopId,
+        orderId: id,
+        stationId: station.station_id,
+        fromStatus: view.status,
+        toStatus: next,
+        staffUserId: userId || "",
+      },
+    });
+    return { orderId: id, stationId: station.station_id, status: next };
+  });
+  return change.immediate();
+}
+
+
+/**
+ * P2-E1: Reuse the exact Kitchen board's signature/stale-state logic for
+ * overall order monitoring. No prep mutations, no duplicate kitchen engine.
+ * The cashier printer station is not a preparation station.
+ */
+export function getOrderPrepProgress(shopId, orderId) {
+  const db = getDb();
+  const stationRows = db.prepare(`
+    SELECT DISTINCT l.station_id AS station_id, s.name AS station_name
+    FROM order_lines l
+    JOIN orders o ON o.order_id = l.order_id
+    LEFT JOIN stations s ON s.station_id = l.station_id
+    WHERE o.tenant_id = ? AND o.order_id = ?
+      AND l.station_id IS NOT NULL AND l.station_id != '' AND l.station_id != ?
+    ORDER BY l.station_id
+  `).all(shopId, orderId, CASHIER_STATION);
+  const unassigned = db.prepare(`
+    SELECT COUNT(*) AS n FROM order_lines l
+    JOIN orders o ON o.order_id = l.order_id
+    WHERE o.tenant_id = ? AND o.order_id = ?
+      AND (l.station_id IS NULL OR l.station_id = '' OR l.station_id = ?)
+  `).get(shopId, orderId, CASHIER_STATION).n;
+
+  const stations = stationRows.map(({ station_id, station_name }) => {
+    const [order] = loadStationLines(db, shopId, station_id, orderId);
+    if (!order) return { stationId: station_id, stationName: station_name || station_id, status: 'NEW', revision: '' };
+    const stored = db.prepare(`
+      SELECT * FROM station_prep_tickets
+      WHERE shop_id = ? AND order_id = ? AND station_id = ?
+    `).get(shopId, orderId, station_id);
+    const view = ticketView(order, stored);
+    return {
+      stationId: station_id,
+      stationName: station_name || station_id,
+      status: view.status,
+      revision: view.revision,
+      updated: view.updated,
+    };
+  });
+  const finishedCount = stations.filter((station) => station.status === 'FINISHED').length;
+  const allFinished = stations.length > 0 && unassigned === 0 && finishedCount === stations.length;
+  const stage = stations.length === 0 || unassigned > 0
+    ? 'NOT_ROUTED'
+    : allFinished ? 'FINISHED'
+    : stations.every((s) => s.status === 'NEW') ? 'NEW'
+    : stations.every((s) => s.status === 'ACCEPTED') ? 'ACCEPTED' : 'PREPARING';
+  return {
+    stage,
+    allFinished,
+    finishedCount,
+    stationCount: stations.length,
+    unassignedLineCount: Number(unassigned),
+    stations,
+  };
 }

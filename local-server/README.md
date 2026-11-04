@@ -126,3 +126,91 @@ Staff sign-in stays a username and password. The cookie is HttpOnly, Secure, and
 - `docs/phase1-local-server.md`
 - `docs/phase1-sqlite-backup.md`
 - `docs/phase1-acceptance.md`
+
+
+## Phase P2-A1 — TEST / production isolation (not Real Mode)
+
+The current server remains **TEST-ONLY**. No production order path has been added.
+The default operating mode is `TEST` (including existing loopback and LAN pilot
+configurations). `GTCT_OPERATING_MODE=REAL`, `PRODUCTION`, or any value other
+than `TEST` **rejects startup**, including `npm run migrate` / `npm run seed`.
+
+A future production data directory is reserved separately from the legacy test
+data directory (`RestaurantProductionServer` beside `RestaurantLocalServer`
+on Windows; `data-production` beside `data` in source development).
+Optionally set `GTCT_PRODUCTION_DATA_DIR` to reserve a different absolute folder.
+The TEST process refuses to use that folder (or a nested folder) for its SQLite
+database. The reservation does **not** create a production DB or start Real Mode.
+
+At HTTP boot, an existing SQLite DB is inspected through a **read-only handle
+before migrations**. Any existing non-test orders, malformed identity marker,
+or mismatched identity cause startup to stop. After migrations, the TEST DB gets
+a `meta` identity marker (`gtct.database.identity.v1`) with its TEST tenant.
+Legacy test databases with no marker and only test orders can continue as before.
+Never point this server at live restaurant databases.
+
+Run the dependency-free targeted tests:
+
+```sh
+npm run accept:production-guard
+```
+
+Before ever enabling real sales, a separate production initialization workflow,
+production tenant identity, reporting/void/refund/close, backup validation,
+Kitchen status integrity and physical printer strategy still require design,
+implementation and independent Windows verification.
+
+## Phase P2-A2 — SEALED production database placeholder (NO real sales)
+
+This is an **offline, deliberately non-operational** production identity placeholder. It
+is not a production release and cannot accept orders, money, customers, or printer
+jobs. The normal server and all normal CLI commands remain TEST-only, even when
+`GTCT_OPERATING_MODE=PRODUCTION` is requested. P2-A2 does not import TEST data,
+run restaurant migrations on the sealed database, create an Admin, or expose a
+production HTTP listener.
+
+Run the **acceptance test first** on a Mac test copy:
+
+```sh
+npm run accept:production-vault
+```
+
+Future explicit initialization (`GTCT_PRODUCTION_DATA_DIR` must be a fresh,
+**nonexistent local folder**, outside the source tree and TEST folder):
+
+```sh
+GTCT_PRODUCTION_DATA_DIR="$HOME/GTCT-Production-Vault" \
+  npm run production:prepare-sealed -- --confirm-sealed-only
+GTCT_PRODUCTION_DATA_DIR="$HOME/GTCT-Production-Vault" \
+  npm run production:verify-sealed
+```
+
+The preparer creates exactly one SQLite file `gtct-production-sealed.sqlite`
+containing a sealed PRODUCTION identity and **no operational tables**. A second
+initialization refuses to overwrite the folder.
+
+Make an optional **manual, SQLite-safe, verified** backup outside that folder:
+
+```sh
+GTCT_PRODUCTION_DATA_DIR="$HOME/GTCT-Production-Vault" \
+GTCT_PRODUCTION_BACKUP_DIR="$HOME/GTCT-Production-Backups" \
+  npm run production:backup-sealed
+```
+
+These commands are for an authorized **future controlled foundation step**, not
+for immediate use on existing restaurant or Windows pilot data. This is not an
+automatic backup service; no restore/production activation is provided. Backups
+are unencrypted and must be protected with OS permissions, secure storage and
+an eventual restore drill. Real mode, production migrations, printers, shifts,
+financial corrections and live go-live remain blocked.
+
+
+### P2-B2 Kitchen-only staff (TEST only)
+
+- In **Users** (Admin login), create a **Kitchen Staff** account and check one or more active preparation stations.
+- Kitchen staff sign in on `/prep.html` using their own username/password.
+- The API returns only their assigned stations and refuses reads/writes for other stations (HTTP 403). Admin retains all stations; Cashier retains the P2-B1 preparation permission.
+- Changing station assignments, role or active status revokes that staff member's existing sessions. They must sign in again.
+- Kitchen staff have `prep.station.work` only; they cannot create sales, view the order register, manage staff or access Admin APIs.
+- Migration `027_kitchen_staff_stations.js` is additive, creating `role_kitchen` and `staff_station_assignments`. It does **not** touch financial calculations, existing orders or production vault.
+- Run `npm run accept:kitchen-roles` on the isolated Mac TEST copy. It creates disposable temporary SQLite data only. This is not approval to enable real sales or physical printing.

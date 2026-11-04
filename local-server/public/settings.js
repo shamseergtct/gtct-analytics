@@ -181,7 +181,7 @@ function renderPrinters() {
     card.addEventListener("click", () => fillEditor(p));
     host.appendChild(card);
   }
-  $("config-flags").textContent = `Server: physicalPrint=${Boolean(state.config?.physicalPrintEnabled)} · tcpProbe=${Boolean(state.config?.allowTcpProbe)} · Phase 1.2 blocks real print tests.`;
+  $("config-flags").textContent = `Server: physicalPrint=${Boolean(state.config?.physicalPrintEnabled)} · tcpProbe=${Boolean(state.config?.allowTcpProbe)}.`;
 }
 
 function renderStations() {
@@ -355,6 +355,16 @@ async function refreshAll() {
   state.printers = printers.json.printers || [];
   state.stations = stations.json.stations || [];
   renderPrinters();
+  for (const [section, printerId] of [["manual-kot", "mj330-manual-test"], ["manual-receipt", "mj330-manual-receipt"]]) {
+    const manual = state.printers.find(p => p.printer_id === printerId);
+    $(section).hidden = !(state.config?.physicalPrintEnabled && manual?.is_active &&
+      manual.connection_type === "NETWORK_TCP" && manual.host === "192.168.0.110" &&
+      manual.port === 9100 && manual.capabilities?.physicalDispatchEnabled);
+    if (manual?.last_test_status?.startsWith("ATTEMPTED")) {
+      $(section + "-btn").disabled = true;
+      $(section + "-result").textContent = "Test already attempted. Check the paper at the printer.";
+    }
+  }
   renderStations();
   await refreshJobs();
 }
@@ -389,6 +399,25 @@ function bindUi() {
   $("save-printer-btn").addEventListener("click", savePrinter);
   $("save-stations-btn").addEventListener("click", saveStations);
   $("preview-btn").addEventListener("click", previewTicket);
+  for (const [section, printerId, mode] of [
+    ["manual-kot", "mj330-manual-test", "manual_mj330_kot"],
+    ["manual-receipt", "mj330-manual-receipt", "manual_mj330_receipt"],
+  ]) {
+    $(section + "-btn").addEventListener("click", async (event) => {
+      event.currentTarget.disabled = true;
+      const status = $(section + "-result");
+      status.textContent = "Sending one test ticket…";
+      try {
+        const res = await api(`/v1/printers/${printerId}/test`, {
+          method: "POST", body: JSON.stringify({ mode }),
+        });
+        status.textContent = res.ok ? "Sent to printer. Please confirm paper output." :
+          (res.json?.error || "Outcome uncertain. Check the printer.");
+      } catch {
+        status.textContent = "Outcome uncertain. Check the printer. No automatic retry.";
+      }
+    });
+  }
   $("test-btn").addEventListener("click", safeTest);
   $("refresh-jobs-btn").addEventListener("click", refreshJobs);
   $("preview-close").addEventListener("click", () => $("preview-dialog").close());

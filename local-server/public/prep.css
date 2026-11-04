@@ -156,3 +156,135 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* P2-E1.2 — presentation-only prep board refinement. No workflow changes. */
+.prep-page { max-width: 1260px; padding: 18px clamp(12px, 2.5vw, 26px) 30px; }
+#station-tabs { margin: 0 0 18px; }
+#station-tabs .chip { min-height: 39px; padding: 7px 16px; border-radius: 999px; font-size: .91rem; font-weight: 750; }
+.prep-board { gap: 16px; }
+.prep-column { gap: 10px; }
+.prep-column h2 { display: flex; align-items: center; gap: 8px; font-size: .85rem; letter-spacing: .045em; padding: 3px 0 2px; color: #3e4f63; }
+.prep-count { min-width: 25px; height: 25px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; background: #e8eef5; color: #455a72; font-size: .75rem; letter-spacing: 0; }
+.prep-column:first-child .prep-count { background: #fff0d6; color: #a55c0c; }
+.prep-column:nth-child(2) .prep-count { background: #e8f0ff; color: #285b98; }
+.prep-column:last-child .prep-count { background: #e5f4eb; color: #077346; }
+.prep-card { gap: 10px; border-radius: 13px; padding: 15px; box-shadow: 0 1px 4px rgba(20,32,51,.04); }
+.prep-column:first-child .prep-card { border-top: 3px solid #dfaa58; }
+.prep-column:nth-child(2) .prep-card { border-top: 3px solid #2f78c7; }
+.prep-column:last-child .prep-card { border-top: 3px solid #60ad86; }
+.prep-card-head { align-items: center; }
+.prep-card-head strong { font-size: 1.06rem; line-height: 1.3; overflow-wrap: anywhere; }
+.prep-time { font-size: .78rem; flex-shrink: 0; }
+.prep-card-meta { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.prep-order-type { font-size: .76rem; font-weight: 690; background: #f1f5f9; color: #52657a; padding: 4px 7px; border-radius: 7px; }
+.prep-updated { font-size: .75rem; color: #a55d13; font-weight: 740; }
+.prep-place { font-size: .8rem; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.prep-lines { gap: 11px; padding: 10px 0 3px; border-top: 1px solid #edf0f5; }
+.prep-lines li { line-height: 1.4; }
+.prep-lines li strong { font-size: 1.01rem; }
+.prep-note { font-size: .82rem; line-height: 1.5; margin-top: 2px; color: #9a4d11; }
+.prep-actions { margin-top: 2px; }
+.prep-actions .btn { min-height: 46px; border-radius: 9px; font-size: .94rem; }
+.prep-card.finished { opacity: 1; background: #fcfdfd; }
+.prep-card.finished .prep-lines { color: #6e7b89; }
+.prep-empty { display: flex; justify-content: center; align-items: center; min-height: 54px; border: 1px dashed #d7e1eb; border-radius: 12px; color: #a2b0bd; font-size: 1.2rem; }
+/* Alerts must remain visible: shorter, calmer, but still operationally noticeable. */
+.prep-alert { min-height: 54px; border: 1px solid #c4d9f2; background: #edf5ff; color: #14599b; padding: 10px 14px; border-radius: 11px; }
+.prep-alert.updated { border-color: #f0d6ad; background: #fff6e8; color: #8d510d; }
+.prep-alert span { font-size: .83rem; letter-spacing: .02em; }
+.prep-alert strong { font-size: 1.05rem; }
+@media (max-width: 1080px) and (min-width: 741px) { .prep-board { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 740px) {
+  .prep-page { padding: 12px; }
+  .prep-board { grid-template-columns: 1fr; gap: 22px; }
+  .prep-card { padding: 13px; }
+  .prep-column h2 { position: relative; }
+  .prep-card-head strong { font-size: 1rem; }
+}
+
+/* P2-E1.4 — Kitchen focus view + on-demand finished history.
+   Presentation only; prep state transitions are still server enforced. */
+.prep-board { display: block; }
+.prep-active-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.85fr) minmax(280px, 0.9fr);
+  gap: 18px;
+  align-items: start;
+}
+.prep-column-preparing, .prep-column-new { min-width: 0; }
+.prep-column-preparing h2 { font-size: 1rem; color: #164e8b; }
+.prep-column-new h2 { font-size: .9rem; }
+.prep-column-preparing .prep-count { background: #e1efff; color: #145a99; }
+.prep-column-new .prep-count { background: #fff0d6; color: #995000; }
+.prep-ticket-list { display: grid; grid-template-columns: 1fr; gap: 12px; }
+.prep-column-preparing .prep-card { border: 1px solid #bfd3eb; border-left: 4px solid #145c9f; padding: 19px; box-shadow: 0 2px 9px rgba(25,70,110,.07); }
+.prep-column-preparing .prep-card-head strong { font-size: 1.28rem; }
+.prep-column-preparing .prep-lines li strong { font-size: 1.14rem; }
+.prep-column-preparing .prep-note { font-size: .93rem; }
+.prep-column-preparing .prep-card-openable { cursor: pointer; transition: background-color .13s, box-shadow .13s, transform .13s; }
+.prep-column-preparing .prep-card-openable:hover { background: #f5f9ff; box-shadow: 0 4px 15px rgba(23,64,110,.12); }
+.prep-card-openable:focus-visible { outline: 3px solid #65a4f1; outline-offset: 3px; }
+.prep-open-indicator { align-self: end; color: #145ba0; font-size: .82rem; font-weight: 750; }
+.prep-column-new .prep-card { border-top: 3px solid #d8a044; }
+.prep-empty { font-size: .83rem; color: #8494a5; padding: 12px; min-height: 70px; }
+
+/* Finished stays out of the active work surface until requested. */
+.prep-history { margin-top: 24px; border: 1px solid #dce5ee; border-radius: 13px; background: #fff; overflow: hidden; }
+.prep-history-toggle { appearance: none; width: 100%; border: 0; background: #fff; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; font: inherit; font-weight: 730; color: #3a516a; text-align: left; }
+.prep-history-toggle:hover { background: #f7fafc; }
+.prep-history-toggle > span:first-child { display: inline-flex; gap: 10px; align-items: center; }
+.prep-history-toggle-label { font-size: .82rem; color: #2863a0; font-weight: 650; }
+.prep-finished-panel[hidden], .prep-focus-backdrop[hidden], .prep-history-empty[hidden] { display: none !important; }
+.prep-finished-panel { border-top: 1px solid #e6edf3; padding: 14px 16px 18px; }
+#prep-finished-search { display: block; width: 100%; max-width: 460px; min-height: 44px; border: 1px solid #cedbe7; border-radius: 9px; background: #fff; padding: 10px 13px; font: inherit; font-size: .92rem; margin-bottom: 16px; }
+#prep-finished-search:focus-visible { outline: 2px solid #85b5f4; outline-offset: 2px; }
+.prep-finished-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(260px,100%), 1fr)); gap: 10px; max-height: 340px; overflow: auto; overscroll-behavior: contain; }
+.prep-finished-grid .prep-card { padding: 12px; gap: 5px; box-shadow: none; }
+.prep-finished-grid .prep-lines { padding-top: 7px; gap: 5px; }
+.prep-finished-grid .prep-card-head strong { font-size: .99rem; }
+.prep-finished-grid .prep-lines li strong { font-size: .89rem; }
+.prep-history-empty { text-align: center; padding: 18px; color: #687b90; }
+
+/* Large single-order preparation surface. */
+body.prep-focus-open { overflow: hidden; }
+.prep-focus-backdrop { position: fixed; inset: 0; z-index: 2000; background: rgba(14,27,43,.68); display: grid; place-items: center; padding: 18px; }
+.prep-focus-dialog { width: min(930px, 100%); max-height: min(92dvh, 880px); overflow: hidden; display: flex; flex-direction: column; background: #fff; border-radius: 18px; box-shadow: 0 22px 70px rgba(0,0,0,.25); }
+.prep-focus-head { padding: 23px 28px 20px; display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; border-bottom: 1px solid #e3eaf1; }
+.prep-focus-kicker { margin: 0 0 6px; color: #145c9f; font-weight: 800; font-size: .83rem; letter-spacing: .06em; }
+.prep-focus-head h2 { margin: 0; color: #16283e; font-size: clamp(1.55rem, 3.1vw, 2.55rem); line-height: 1.1; overflow-wrap: anywhere; }
+.prep-focus-meta { margin-top: 7px; color: #6a7b8c; font-size: .96rem; }
+.prep-focus-close { min-height: 46px; min-width: 92px; padding: 10px 15px; background: #f2f6fa; color: #1b476f; border: 1px solid #d5e2ed; border-radius: 10px; cursor: pointer; font: inherit; font-weight: 720; flex-shrink: 0; }
+.prep-focus-close:hover { background: #e7f1fb; }
+.prep-focus-body { padding: 24px 28px; overflow: auto; flex: 1; min-height: 120px; }
+.prep-focus-place { margin: 0 0 18px; padding: 12px 14px; border-radius: 10px; background: #f2f6fa; color: #3f5268; font-size: 1rem; }
+.prep-focus-lines { margin: 0; padding: 0; list-style: none; display: grid; gap: 18px; }
+.prep-focus-lines li { border: 1px solid #d9e3ed; border-left: 5px solid #2f78c7; border-radius: 13px; padding: 19px 21px; background: #fff; }
+.prep-focus-lines li strong { display: block; font-size: clamp(1.35rem, 3vw, 2rem); line-height: 1.27; color: #142d47; }
+.prep-focus-lines .prep-note { font-size: clamp(1.12rem, 2vw, 1.43rem); font-weight: 730; color: #a3480b; margin-top: 8px; }
+.prep-focus-footer { padding: 15px 28px 21px; border-top: 1px solid #e3eaf1; display: flex; align-items: center; gap: 16px; }
+.prep-focus-footer .btn { margin-left: auto; flex: 0 0 min(320px, 55%); min-height: 62px; font-size: 1.25rem; font-weight: 800; border-radius: 11px; }
+.prep-focus-feedback { margin: 0; font-size: .86rem; color: #ad371b; flex: 1; }
+.prep-focus-feedback:empty { display: none; }
+
+@media (max-width: 800px) {
+  .prep-active-layout { grid-template-columns: 1fr; }
+  .prep-column-preparing { order: 0; }
+  .prep-column-new { order: 1; }
+  .prep-ticket-list { grid-template-columns: 1fr; }
+}
+@media (max-width: 600px) {
+  .prep-focus-backdrop { padding: 0; }
+  .prep-focus-dialog { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+  .prep-focus-head { padding: 18px 17px; }
+  .prep-focus-close { min-width: 72px; padding: 9px; }
+  .prep-focus-body { padding: 16px; }
+  .prep-focus-lines li { padding: 17px 15px; }
+  .prep-focus-footer { padding: 12px 16px max(16px, env(safe-area-inset-bottom)); flex-wrap: wrap; }
+  .prep-focus-footer .btn { width: 100%; flex-basis: 100%; }
+  .prep-focus-feedback { flex-basis: 100%; }
+}
+/* Override legacy positional column colors now that Preparing comes first. */
+.prep-active-layout .prep-column-preparing .prep-count { background: #e1efff; color: #145a99; }
+.prep-active-layout .prep-column-new .prep-count { background: #fff0d6; color: #995000; }
+.prep-active-layout .prep-column-preparing .prep-card { border-top: 3px solid #2f78c7; }
+.prep-active-layout .prep-column-new .prep-card { border-top: 3px solid #d8a044; }

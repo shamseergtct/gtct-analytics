@@ -1,6 +1,7 @@
 import { getDb } from "../db/db.js";
 import { newId } from "../util/ids.js";
 import { recordAudit } from "./audit.js";
+import { readStaffRiderCommission, assignStaffRiderCommissionInTx } from "./deliveryCommissionSettings.js";
 import {
   hashPassword,
   normalizeUsername,
@@ -12,6 +13,8 @@ import {
 const ROLES = {
   admin: "role_admin",
   cashier: "role_cashier",
+  kitchen: "role_kitchen",
+  delivery: "role_delivery",
 };
 
 export const OPTIONAL_PERMISSIONS = ["sales.price_override", "sales.addon_price_override"];
@@ -39,6 +42,8 @@ function activeAdminCount(db, shopId, exceptUserId = "") {
 function roleCode(roleId) {
   if (roleId === "role_admin") return "admin";
   if (roleId === "role_cashier") return "cashier";
+  if (roleId === "role_kitchen") return "kitchen";
+  if (roleId === "role_delivery") return "delivery";
   return "";
 }
 
@@ -54,6 +59,49 @@ function optionalGrants(db, shopId, userId) {
     .filter((code) => OPTIONAL_PERMISSIONS.includes(code));
 }
 
+export function listAssignablePrepStations() {
+  return getDb().prepare(`SELECT station_id AS stationId, name
+    FROM stations WHERE is_active = 1 AND station_id != 'station_cashier' ORDER BY name`).all();
+}
+
+export function listKitchenStationIds(shopId, userId) {
+  if (!shopId || !userId) return [];
+  return getDb().prepare(`SELECT a.station_id FROM staff_station_assignments a
+    JOIN stations s ON s.station_id = a.station_id
+    WHERE a.shop_id = ? AND a.user_id = ? AND s.is_active = 1
+      AND s.station_id != 'station_cashier' ORDER BY s.name`).all(shopId, userId)
+    .map((row) => row.station_id);
+}
+
+function readStationIds(value) {
+  if (!Array.isArray(value) || value.length > 30) fail(400, "Choose preparation stations from the list.");
+  const ids = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(entry)) {
+      fail(400, "Invalid preparation station.");
+    }
+    if (ids.includes(entry)) fail(400, "Duplicate preparation station.");
+    ids.push(entry);
+  }
+  return ids;
+}
+
+function validateStationIds(db, ids) {
+  for (const id of ids) {
+    const row = db.prepare(`SELECT station_id FROM stations
+      WHERE station_id = ? AND is_active = 1 AND station_id != 'station_cashier'`).get(id);
+    if (!row) fail(400, "Choose an active preparation station.");
+  }
+}
+
+function replaceStationAssignments(db, shopId, userId, ids, now) {
+  db.prepare(`DELETE FROM staff_station_assignments WHERE shop_id = ? AND user_id = ?`)
+    .run(shopId, userId);
+  const insert = db.prepare(`INSERT INTO staff_station_assignments
+    (shop_id, user_id, station_id, assigned_at) VALUES (?, ?, ?, ?)`);
+  for (const id of ids) insert.run(shopId, userId, id, now);
+}
+
 function mapUser(db, shopId, row) {
   return {
     userId: row.user_id,
@@ -61,7 +109,9 @@ function mapUser(db, shopId, row) {
     username: row.username,
     role: roleCode(row.role_id),
     isActive: row.is_active === 1,
-    permissions: optionalGrants(db, shopId, row.user_id),
+    permissions: ["kitchen", "delivery"].includes(roleCode(row.role_id)) ? [] : optionalGrants(db, shopId, row.user_id),
+    stationIds: roleCode(row.role_id) === "kitchen" ? listKitchenStationIds(shopId, row.user_id) : [],
+    commissionRule: roleCode(row.role_id) === "delivery" ? readStaffRiderCommission(shopId,row.user_id) : null,
     createdAt: row.created_at,
   };
 }
@@ -75,7 +125,7 @@ function loadUser(db, shopId, userId) {
          ON r.user_id = u.user_id
         AND r.shop_id = u.shop_id
         AND r.revoked_at IS NULL
-        AND r.role_id IN ('role_admin', 'role_cashier')
+        AND r.role_id IN ('role_admin', 'role_cashier', 'role_kitchen', 'role_delivery')
        WHERE u.shop_id = ? AND u.user_id = ?
        ORDER BY CASE WHEN r.role_id = 'role_admin' THEN 0 ELSE 1 END
        LIMIT 1`
@@ -94,7 +144,7 @@ export function listStaffUsers(shopId) {
          ON r.user_id = u.user_id
         AND r.shop_id = u.shop_id
         AND r.revoked_at IS NULL
-        AND r.role_id IN ('role_admin', 'role_cashier')
+        AND r.role_id IN ('role_admin', 'role_cashier', 'role_kitchen', 'role_delivery')
        WHERE u.shop_id = ?
        ORDER BY u.full_name COLLATE NOCASE, u.username COLLATE NOCASE`
     )
@@ -111,7 +161,7 @@ export function listStaffUsers(shopId) {
 
 function readRole(value, fallback = "cashier") {
   const role = String(value || fallback).trim().toLowerCase();
-  if (!ROLES[role]) fail(400, "Choose Admin or Cashier.");
+  if (!ROLES[role]) fail(400, "Choose Admin, Cashier, Kitchen or Delivery.");
   return role;
 }
 
@@ -212,6 +262,16 @@ export function createStaffUser(shopId, input, actor) {
   const role = readRole(input.role, "cashier");
   const isActive = input.isActive === false || input.isActive === 0 ? 0 : 1;
   const permissions = readOptionalPermissions(input.permissions);
+  const stationIds = role === "kitchen" ? readStationIds(input.stationIds) : [];
+  // Legacy staff creation clients without commission fields default to no commission.
+  // New User Management always sends an explicit rule.
+  if(role !== 'delivery' && input.commissionPolicy != null)
+    fail(400,'Commission rules are only for Delivery Boy staff.');
+  if (["kitchen", "delivery"].includes(role) && permissions.length) fail(400, "Restricted staff cannot receive Sales permissions.");
+  if (role !== "kitchen" && input.stationIds != null && readStationIds(input.stationIds).length) {
+    fail(400, "Only Kitchen staff can be assigned preparation stations.");
+  }
+  if (role === "kitchen" && !stationIds.length) fail(400, "Assign at least one station to Kitchen staff.");
   if (!fullName || fullName.length > 80) fail(400, "Enter the staff member’s name.");
   if (!/^[a-z0-9._-]{3,40}$/.test(normalized)) {
     fail(400, "Use a username of 3–40 letters, numbers, dots, underscores, or hyphens.");
@@ -230,6 +290,7 @@ export function createStaffUser(shopId, input, actor) {
   const run = db.transaction(() => {
     const shop = db.prepare(`SELECT shop_id FROM shop_settings WHERE shop_id = ?`).get(shopId);
     if (!shop) fail(400, "This shop was not found.");
+    validateStationIds(db, stationIds);
     const taken = db
       .prepare(`SELECT user_id FROM staff_users WHERE shop_id = ? AND username_normalized = ?`)
       .get(shopId, normalized);
@@ -242,6 +303,9 @@ export function createStaffUser(shopId, input, actor) {
     ).run(userId, shopId, fullName, username, normalized, passwordHash, isActive, now, now);
     assignRole(db, shopId, userId, role, now);
     replaceOptionalGrants(db, shopId, userId, permissions, now);
+    replaceStationAssignments(db, shopId, userId, stationIds, now);
+    if(role==='delivery' && input.commissionPolicy!=null)
+      assignStaffRiderCommissionInTx(db,shopId,userId,input.commissionPolicy,actor);
   });
   try {
     run.immediate();
@@ -265,6 +329,7 @@ export function createStaffUser(shopId, input, actor) {
       role: user.role,
       isActive: user.isActive,
       permissions: user.permissions,
+      stationIds: user.stationIds,
     },
   });
   return user;
@@ -281,23 +346,42 @@ export function updateStaffUser(shopId, userId, input, actor) {
   const role = input.role != null ? readRole(input.role) : current.role;
   const isActive =
     input.isActive == null ? current.isActive : !(input.isActive === false || input.isActive === 0);
-  const permissions =
-    input.permissions == null ? current.permissions : readOptionalPermissions(input.permissions);
+  const suppliedPermissions = input.permissions == null ? null : readOptionalPermissions(input.permissions);
+  if (["kitchen", "delivery"].includes(role) && suppliedPermissions?.length) {
+    fail(400, "Restricted staff cannot receive Sales permissions.");
+  }
+  const permissions = ["kitchen", "delivery"].includes(role) ? [] : suppliedPermissions ?? current.permissions;
+  const stationIds = role === "kitchen"
+    ? input.stationIds == null ? current.stationIds : readStationIds(input.stationIds)
+    : [];
+  if(role !== 'delivery' && input.commissionPolicy != null)
+    fail(400,'Commission rules are only for Delivery Boy staff.');
+  // Existing integrations can edit delivery staff without changing commission settings.
+  if (["kitchen", "delivery"].includes(role) && permissions.length) fail(400, "Restricted staff cannot receive Sales permissions.");
+  if (role !== "kitchen" && input.stationIds != null && readStationIds(input.stationIds).length) {
+    fail(400, "Only Kitchen staff can be assigned preparation stations.");
+  }
+  if (role === "kitchen" && !stationIds.length) fail(400, "Assign at least one station to Kitchen staff.");
   if (!fullName || fullName.length > 80) fail(400, "Enter the staff member’s name.");
   guardLastAdmin(db, shopId, userId, role, isActive);
 
   const now = new Date().toISOString();
   const roleChanged = role !== current.role;
   const deactivated = current.isActive && !isActive;
+  const stationsChanged = stationIds.join("|") !== current.stationIds.join("|");
   const run = db.transaction(() => {
+    validateStationIds(db, stationIds);
     db.prepare(
       `UPDATE staff_users SET full_name = ?, is_active = ?, updated_at = ? WHERE shop_id = ? AND user_id = ?`
     ).run(fullName, isActive ? 1 : 0, now, shopId, userId);
     assignRole(db, shopId, userId, role, now);
     replaceOptionalGrants(db, shopId, userId, permissions, now);
+    replaceStationAssignments(db, shopId, userId, stationIds, now);
+    if(role === 'delivery' && input.commissionPolicy != null)
+      assignStaffRiderCommissionInTx(db,shopId,userId,input.commissionPolicy,actor);
   });
   run.immediate();
-  if (deactivated || roleChanged) revokeStaffSessions(shopId, userId);
+  if (deactivated || roleChanged || stationsChanged) revokeStaffSessions(shopId, userId);
 
   const user = loadUser(db, shopId, userId);
   const granted = user.permissions.filter((code) => !current.permissions.includes(code));
@@ -315,6 +399,8 @@ export function updateStaffUser(shopId, userId, input, actor) {
       isActive: user.isActive,
       granted,
       revoked,
+      stationIds: user.stationIds,
+      previousStationIds: current.stationIds,
     },
   });
   return user;

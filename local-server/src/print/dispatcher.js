@@ -248,6 +248,11 @@ export function requestReprint(jobId) {
   const db = getDb();
   const job = db.prepare(`SELECT * FROM print_jobs WHERE job_id = ?`).get(jobId);
   if (!job) throw Object.assign(new Error("Job not found"), { status: 404 });
+  const order = db.prepare(`SELECT status FROM orders WHERE order_id=? AND tenant_id=?`)
+    .get(job.order_id, job.tenant_id);
+  if (!order || order.status !== 'OPEN') {
+    throw Object.assign(new Error('Voided or closed invoices cannot be reprinted.'), { status: 409 });
+  }
 
   if (!["FAILED", "UNKNOWN", "NEEDS_REVIEW", "DISPATCHED", "CONFIRMED"].includes(job.status)) {
     throw Object.assign(

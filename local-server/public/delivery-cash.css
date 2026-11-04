@@ -1,0 +1,159 @@
+/* P2-E3B UI1 — use the existing GTCT shared LIGHT theme; cashier-only UI. */
+.cash-page { background: var(--bg); color: var(--ink); }
+.cash-page .cash-topbar { min-height: 60px; }
+.cash-test-badge { background:#fff3d5; color:#8b5c0d; font-size:.65rem; border-radius:6px; padding:3px 6px; font-weight:800; vertical-align:middle; }
+.cash-topnav { flex-wrap:wrap; }
+.cash-shell { width:min(1500px,100%); margin:0 auto; padding:clamp(14px,2.5vw,28px); padding-bottom:50px; }
+.cash-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; flex-wrap:wrap; margin:0 0 16px; }
+.cash-heading h2 { margin:3px 0 5px; color:#152741; font-size:clamp(1.4rem,2.6vw,1.9rem); letter-spacing:-.025em; }
+.cash-heading .hint { margin:0; }
+.cash-kicker { margin:0; font-size:.69rem; font-weight:800; letter-spacing:.11em; color:#5b7aa2; }
+.cash-notice { padding:11px 14px; border:1px solid #cbdcf0; background:#edf5ff; color:#30537e; border-radius:11px; margin-bottom:15px; font-size:.87rem; }
+.cash-notice.bad { border-color:#f6c9c3; color:#a8231b; background:#fff0ee; }
+.cash-notice.good { border-color:#b7e9ce; color:#036d45; background:#edfff5; }
+.cash-layout { display:grid; grid-template-columns:minmax(250px,300px) minmax(0,1fr); gap:17px; align-items:start; }
+.card-panel { background:var(--card); border:1px solid #dce5f0; border-radius:15px; box-shadow:0 4px 16px rgba(27,49,82,.045); }
+.cash-roster { padding:17px; position:sticky; top:77px; max-height:calc(100dvh - 94px); overflow:auto; }
+.cash-section-head { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; margin-bottom:16px; }
+.cash-section-head h3 { margin:0 0 4px; font-size:1rem; color:#193251; }
+.cash-section-head p { margin:0; font-size:.77rem; line-height:1.4; color:var(--muted); }
+.cash-pill { display:inline-block; flex-shrink:0; color:#0c5bac; font-size:.72rem; border-radius:8px; font-weight:800; padding:5px 9px; background:#e8f3ff; }
+.cash-pill-amber { color:#92540e; background:#fff3d8; font-size:.67rem; }
+.cash-search-label { display:block; margin-bottom:6px; color:#526781; font-size:.77rem; font-weight:700; }
+#rider-search { display:block; width:100%; min-height:42px; border:1px solid #d5e1ef; border-radius:10px; padding:9px 11px; outline:none; color:var(--ink); background:#fff; }
+#rider-search:focus { border-color:#0b539e; box-shadow:0 0 0 3px rgba(11,83,158,.1); }
+.cash-rider-list { display:grid; gap:6px; margin-top:13px; }
+.cash-rider-btn { display:flex; align-items:center; gap:10px; width:100%; min-width:0; text-align:left; background:#fff; border:1px solid transparent; border-radius:11px; padding:10px; cursor:pointer; color:var(--ink); }
+.cash-rider-btn:hover { background:#f3f8ff; border-color:#d9e9fb; }
+.cash-rider-btn[aria-pressed="true"] { background:#ebf4ff; border-color:#93c5fd; box-shadow:inset 3px 0 #0b539e; }
+.cash-avatar { display:grid; place-items:center; flex:0 0 39px; height:39px; border-radius:11px; font-size:.9rem; font-weight:800; background:#e9f2fd; color:#1c5ea8; }
+.cash-rider-btn[aria-pressed="true"] .cash-avatar { background:#0b539e; color:white; }
+.cash-rider-meta { display:grid; min-width:0; flex:1; gap:3px; }
+.cash-rider-name { font-size:.85rem; font-weight:760; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cash-rider-sub { font-size:.72rem; color:#748498; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cash-count { flex-shrink:0; display:grid; place-items:center; min-width:24px; height:23px; padding:0 5px; border-radius:8px; background:#e8edf5; color:#476078; font-size:.75rem; font-weight:800; }
+.cash-count.has-pending { background:#fff0ca; color:#9a5a06; }
+.cash-main { display:grid; gap:16px; min-width:0; }
+.cash-selected-header { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+.cash-selected-header h3 { margin:4px 0; font-size:1.25rem; line-height:1.2; }
+.cash-selected-header .hint { margin:0; font-size:.78rem; }
+.cash-status-tag { background:#edf5ff; color:#155da4; padding:6px 10px; border-radius:999px; font-size:.73rem; font-weight:800; }
+.cash-stats { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:11px; }
+.cash-stat { display:flex; flex-direction:column; gap:5px; min-width:0; border:1px solid #e0e7f0; border-radius:13px; padding:14px; background:#fff; }
+.cash-stat span { color:#667b95; font-size:.77rem; font-weight:700; }
+.cash-stat strong { color:#193b65; font-size:clamp(1.15rem,2.15vw,1.65rem); letter-spacing:-.025em; overflow-wrap:anywhere; }
+.cash-stat small { color:#8898a9; font-size:.69rem; }
+.cash-invoices,.cash-history-panel { padding:18px; }
+.cash-invoice-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr)); gap:11px; }
+.cash-invoice { padding:15px; border:1px solid #dfe8f2; border-radius:12px; background:#fff; box-shadow:0 2px 9px rgba(31,57,92,.025); }
+.cash-invoice-head { display:flex; gap:8px; align-items:start; justify-content:space-between; margin-bottom:10px; }
+.cash-invoice-id { display:block; font-weight:800; color:#1c3859; font-size:.91rem; overflow-wrap:anywhere; }
+.cash-ref { display:block; color:#8392a5; margin-top:4px; font-size:.67rem; overflow-wrap:anywhere; }
+.cash-mini-tag { font-size:.66rem; background:#e7f8ef; color:#057147; padding:4px 7px; border-radius:999px; font-weight:800; white-space:nowrap; }
+.cash-invoice-details { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 0 13px; }
+.cash-driver { font-size:.75rem; color:#607b99; }
+.cash-money { font-size:1.32rem; letter-spacing:-.02em; color:#132e52; font-weight:800; }
+.cash-confirm { display:block; width:100%; min-height:43px; font-size:.83rem; }
+.cash-empty { margin:0; color:#71839a; background:#f7fafd; border:1px dashed #dce7f4; padding:24px 15px; font-size:.83rem; text-align:center; border-radius:10px; grid-column:1/-1; }
+.cash-history-item { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 2px; border-bottom:1px solid #edf0f5; }
+.cash-history-item:last-child { border-bottom:0; }
+.cash-history-item strong { font-size:.85rem; color:#243d59; }
+.cash-history-amount { white-space:nowrap; font-size:.86rem; font-weight:800; color:#026847; }
+.cash-history-item .cash-ref { font-size:.72rem; }
+.cash-footnote { text-align:center; margin:19px 0 0; color:#8190a3; font-size:.75rem; line-height:1.5; }
+@media(max-width:950px) { .cash-layout { grid-template-columns:1fr; } .cash-roster { position:static; max-height:none; } .cash-rider-list { grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); } }
+@media(max-width:650px) { .cash-shell { padding:12px; } .cash-topbar { flex-wrap:wrap; } .cash-topnav { width:100%; justify-content:space-between; } .cash-topnav .btn { font-size:.75rem; padding:.55rem .65rem; } .cash-heading { margin-top:4px; } .cash-roster { padding:13px; } .cash-rider-list { grid-template-columns:1fr; max-height:340px; overflow:auto; } .cash-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } .cash-stat:first-child { grid-column:1/-1; } .cash-invoices,.cash-history-panel { padding:13px; } .cash-money { font-size:1.2rem; } }
+
+/* P2-E3C5: same light-theme Rider Cash page now contains the batch collection. */
+.cash-batch { padding:18px; display:grid; gap:13px; }
+.cash-batch[hidden], #batch-history-panel[hidden], #batch-accrual[hidden] { display:none !important; }
+.cash-collection-controls { display:flex; align-items:end; flex-wrap:wrap; gap:10px; }
+.cash-collection-controls label { display:grid; gap:5px; color:#526781; font-size:.75rem; font-weight:750; flex:1 1 175px; max-width:250px; }
+.cash-collection-controls input { min-height:42px; border:1px solid #d5e1ef; background:#fff; border-radius:9px; padding:9px; color:#183452; }
+.cash-subnotice { padding:9px 11px; border:1px solid #d2e2f3; background:#f3f8ff; border-radius:10px; color:#365b83; font-size:.8rem; }
+.cash-subnotice.bad { color:#a52e24; background:#fff3f2; border-color:#f2c4bd; }
+.cash-subnotice.good { color:#05613c; background:#ebfbf2; border-color:#bde7cf; }
+.cash-batch-overview,.cash-batch-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:9px; }
+.cash-batch-overview>div,.cash-batch-stats>div { padding:12px; border-radius:11px; background:#f8fbff; border:1px solid #e0e8f3; min-width:0; display:flex; flex-direction:column; gap:7px; }
+.cash-batch-overview span,.cash-batch-stats span { font-size:.7rem; color:#647d98; font-weight:700; }
+.cash-batch-overview strong,.cash-batch-stats strong { font-size:clamp(.95rem,1.8vw,1.3rem); color:#1b436c; overflow-wrap:anywhere; }
+.cash-batch-stats .cash-net-stat { background:#eaf9f2; border-color:#b6e7cf; }
+.cash-batch-stats .cash-net-stat strong { color:#007548; }
+.cash-commission-toggle { padding:13px; border:1px solid #dce7f3; border-radius:11px; background:#f8fbff; }
+.cash-commission-toggle label { display:flex; gap:10px; align-items:center; font-size:.86rem; }
+.cash-commission-toggle input { width:19px; height:19px; accent-color:#0b59ac; }
+.cash-commission-toggle p { font-size:.76rem; color:#536f8c; margin:7px 0 0; }
+.cash-accrual-approval { margin-top:10px; background:#fff6df; border:1px solid #f8deb0; padding:10px; border-radius:9px; }
+.cash-financial-summary { border:1px solid #dce6f2; border-radius:11px; overflow:hidden; }
+.cash-financial-summary>div { display:flex; justify-content:space-between; align-items:center; gap:14px; padding:10px 12px; border-bottom:1px solid #e6edf5; color:#29415d; font-size:.82rem; }
+.cash-financial-summary>div:last-child { border-bottom:0; }
+.cash-financial-summary .cash-summary-net { background:#e8f8f0; color:#075b3a; font-weight:800; }
+.cash-line-details { border:1px solid #dce6f2; border-radius:11px; overflow:hidden; }
+.cash-line-details summary { padding:12px; cursor:pointer; font-size:.82rem; font-weight:750; color:#1f456c; }
+.cash-line-details summary span { float:right; font-weight:500; color:#71839a; }
+.cash-batch-lines { border-top:1px solid #e6edf5; max-height:300px; overflow-y:auto; }
+.cash-batch-lines>div { display:flex; justify-content:space-between; padding:10px 13px; gap:12px; font-size:.8rem; border-bottom:1px solid #eff3f8; }
+.cash-batch-actions { display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
+.cash-batch-actions p { margin:0; color:#778da5; font-size:.73rem; flex:1; }
+.cash-legacy { padding:0; overflow:hidden; }
+.cash-legacy>summary { padding:15px 18px; cursor:pointer; color:#274b70; font-size:.85rem; font-weight:750; }
+.cash-legacy-tag { color:#8298af; font-size:.7rem; font-weight:600; margin-left:7px; }
+.cash-legacy .cash-invoices { border-top:1px solid #ebf0f6; }
+@media(max-width:1150px) { .cash-batch-overview,.cash-batch-stats { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@media(max-width:650px) { .cash-batch{padding:13px;} .cash-batch-overview,.cash-batch-stats {grid-template-columns:repeat(2,minmax(0,1fr));} .cash-batch-actions .btn{width:100%;} }
+
+/* P2-E3C7 — Invoice metadata + expandable settlement history (read-only). */
+.cash-bill-line { padding: 12px 14px; border-bottom: 1px solid #e2e9f3; min-width: 0; }
+.cash-bill-line:last-child { border-bottom: 0; }
+.cash-bill-line-head { display:flex;justify-content:space-between;gap:12px;align-items:center;color:#183a5c;font-size:.88rem; }
+.cash-bill-meta { display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px 14px;padding-top:10px;font-size:.81rem;color:#2b4565; }
+.cash-bill-field { display:grid;gap:3px;min-width:0;overflow-wrap:anywhere; }
+.cash-bill-field small { font-size:.68rem;color:#72869f;font-weight:650; }
+.cash-history-entry { border-bottom:1px solid #e4ebf4;padding:4px 0;min-width:0; }
+.cash-history-entry:last-child {border-bottom:0;}
+.cash-history-breakdown {padding:0 8px 10px;}
+.cash-history-breakdown summary {cursor:pointer;color:#14599b;font-size:.78rem;font-weight:650;padding:8px 0;}
+.cash-bill-footnote {color:#647b96;font-size:.75rem;margin:8px 0;line-height:1.4;}
+.cash-invoice .cash-bill-meta {grid-template-columns:repeat(2,minmax(0,1fr));}
+.cash-history-item {flex-wrap:wrap;}
+.cash-history-item>.cash-bill-meta {flex-basis:100%;}
+@media(max-width:800px){.cash-bill-meta{grid-template-columns:repeat(2,minmax(0,1fr));}}
+@media(max-width:390px){.cash-bill-meta{grid-template-columns:1fr 1fr;gap:7px}}
+
+.cash-batch-lines>.cash-bill-line { display:block; padding:12px 14px; }
+.cash-bill-line .cash-bill-meta { display:grid; }
+
+/* P2-E3C9: date-wise rider collections + separate admin POS shift controls */
+.cash-pending-dates{margin:12px 0;padding:10px 12px;border:1px solid #dbe6f4;border-radius:12px;background:#f8fbff}
+.cash-pending-dates>strong{font-size:12px;color:#345173}
+.cash-days{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;color:#687e99;font-size:12px}
+.cash-day-chip{border:1px solid #bed4ee;background:white;border-radius:9px;padding:7px 10px;color:#185392;font-weight:700;cursor:pointer}
+.cash-day-chip[aria-pressed="true"]{border-color:#155aaa;background:#e4f0ff;box-shadow:inset 3px 0 #155aaa}
+.cash-shift-admin{margin:16px 0;padding:16px 20px}
+.cash-shift-admin>summary{font-weight:700;color:#234566;cursor:pointer}
+.cash-shift-inner{padding-top:12px}
+.cash-shift-warning{color:#8a5a21;font-size:13px}
+.cash-shift-actions{display:flex;flex-wrap:wrap;gap:12px;align-items:end}
+.cash-shift-actions label{display:grid;gap:5px;font-weight:600;color:#345173}
+.cash-shift-actions input{padding:8px;border:1px solid #c5d9ee;border-radius:8px;font:inherit}
+#shift-feedback{font-size:13px;color:#24577c}
+
+.cash-subnotice.caution{background:#fff8e8;border-color:#f4d8a7;color:#875500}
+
+/* P2-E3D1 — cash/bank split and editable payment details */
+.cash-tender-form { margin: 12px 0; padding: 14px; border: 1px solid #d6e3f2; border-radius: 13px; background: #f8fbff; }
+.cash-tender-form .cash-section-head { margin-bottom: 10px; }
+.cash-tender-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px 12px; }
+.cash-tender-grid label,.cash-tender-edit label { display:flex; flex-direction:column; gap:5px; font-weight:650; font-size:12px; color:#3c5a7f; }
+.cash-tender-grid input,.cash-tender-grid select,.cash-tender-edit input,.cash-tender-edit select {
+  width:100%; min-width:0; min-height:42px; border:1px solid #cadbf0; background:white;
+  border-radius:9px; padding:9px 11px; color:#203d60; font-size:14px; box-sizing:border-box;
+}
+.cash-tender-info { margin:10px 0 0; color:#4f6786; font-size:12px; }
+.cash-tender-info.is-error { color:#a32b2b; font-weight:650; }
+.cash-history-tender { margin-top:7px; color:#496281; font-size:12px; }
+.cash-tender-edit { margin:9px 0; padding:11px; border:1px solid #d6e3f2; border-radius:10px; background:#f8fbff; }
+.cash-tender-edit-grid { display:grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap:10px; }
+.cash-tender-edit-actions { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 0; }
+.cash-correction-notice { margin:8px 0 0; font-size:12px; color:#385878; }
+@media(max-width:640px) {.cash-tender-grid,.cash-tender-edit-grid {grid-template-columns:1fr;} }

@@ -53,9 +53,48 @@
           <div id="station-tabs" class="chips chip-scroll" role="tablist" aria-label="Preparation stations"></div>
           <div id="prep-alerts" class="prep-alerts" aria-live="assertive"></div>
           <p id="prep-status" class="hint" aria-live="polite">Loading orders…</p>
-          <div id="prep-board" class="prep-board"></div>
+          <div id="prep-board" class="prep-board">
+            <div class="prep-active-layout">
+              <section class="prep-column prep-column-preparing" aria-labelledby="preparing-heading">
+                <h2 id="preparing-heading">Preparing <span id="prep-preparing-count" class="prep-count">0</span></h2>
+                <div id="prep-preparing-list" class="prep-ticket-list"></div>
+              </section>
+              <section class="prep-column prep-column-new" aria-labelledby="new-heading">
+                <h2 id="new-heading">New <span id="prep-new-count" class="prep-count">0</span></h2>
+                <div id="prep-new-list" class="prep-ticket-list"></div>
+              </section>
+            </div>
+            <section class="prep-history" aria-label="Finished orders">
+              <button type="button" id="prep-finished-toggle" class="prep-history-toggle" aria-expanded="false" aria-controls="prep-finished-panel">
+                <span>Finished <span id="prep-finished-count" class="prep-count">0</span></span>
+                <span id="prep-finished-toggle-label" class="prep-history-toggle-label">Show orders ▾</span>
+              </button>
+              <div id="prep-finished-panel" class="prep-finished-panel" hidden>
+                <input type="search" id="prep-finished-search" aria-label="Search finished orders" placeholder="Search finished orders" autocomplete="off" />
+                <div id="prep-finished-list" class="prep-finished-grid"></div>
+                <p id="prep-finished-empty" class="prep-history-empty" hidden>No matching finished orders</p>
+              </div>
+            </section>
+          </div>
         </div>
       </main>
+      <div id="prep-focus-backdrop" class="prep-focus-backdrop" hidden>
+        <section class="prep-focus-dialog" role="dialog" aria-modal="true" aria-labelledby="prep-focus-number" tabindex="-1">
+          <header class="prep-focus-head">
+            <div>
+              <p class="prep-focus-kicker">PREPARING</p>
+              <h2 id="prep-focus-number">Order</h2>
+              <div id="prep-focus-meta" class="prep-focus-meta"></div>
+            </div>
+            <button type="button" id="prep-focus-close" class="prep-focus-close" aria-label="Close focused order">Close ✕</button>
+          </header>
+          <div id="prep-focus-body" class="prep-focus-body"></div>
+          <footer class="prep-focus-footer">
+            <p id="prep-focus-feedback" class="prep-focus-feedback" role="status"></p>
+            <button type="button" id="prep-focus-finish" class="btn primary">Finished</button>
+          </footer>
+        </section>
+      </div>
     </section>
     <script type="module" src="/prep.js"></script>
   </body>

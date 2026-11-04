@@ -1,3 +1,4 @@
+import { renderMj330Raster } from "../mj330Raster.js";
 import net from "node:net";
 import { log } from "../../util/logger.js";
 import { isValidIpv4OrHostname, isValidTcpPort } from "../../services/printers.js";
@@ -7,7 +8,9 @@ import { isValidIpv4OrHostname, isValidTcpPort } from "../../services/printers.j
  * Intentionally avoids ESC/POS init, cutter, cash-drawer, and reset sequences —
  * POS-80 variants differ and those commands are unsafe without device confirmation.
  */
-export function buildNetworkTcpPayload(renderedText) {
+export function buildNetworkTcpPayload(renderedText, format = "TEXT") {
+  if (format === "MJ330_RASTER") return renderMj330Raster(renderedText);
+  if (format !== "TEXT") throw new Error("Unknown TCP printer format");
   const text = String(renderedText || "").replace(/\r\n/g, "\n");
   // LF feed only — no ESC/POS binary commands
   return Buffer.from(`${text}\n\n\n`, "utf8");
@@ -114,7 +117,7 @@ export async function dispatchNetworkTcp(job, printer, renderedText, options = {
     return { outcome: "FAILED", detail: "Printer is inactive" };
   }
 
-  const payload = buildNetworkTcpPayload(renderedText);
+  const payload = buildNetworkTcpPayload(renderedText, options.format);
 
   return new Promise((resolve) => {
     const socket = new net.Socket();

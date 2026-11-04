@@ -1,0 +1,36 @@
+/** P2-E2C3B — static UI contract verification, no DB writes. */
+import fs from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const html = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
+const sales = fs.readFileSync(path.join(root, 'public/app.js'), 'utf8');
+const orders = fs.readFileSync(path.join(root, 'public/orders.js'), 'utf8');
+const styles = fs.readFileSync(path.join(root, 'public/styles.css'), 'utf8');
+let passed = 0;
+function check(label, condition) { assert.ok(condition, label); console.log(`PASS ${label}`); passed++; }
+const modal = html.split('<dialog id="payment-dialog"')[1]?.split('</dialog>')[0] || '';
+check('one-sales-take-payment-dialog', html.split('id="payment-dialog"').length === 2);
+check('sales-dialog-existing-header-preserved', modal.includes('id="payment-order-number"') && modal.includes('id="payment-customer"'));
+check('uniform-payment-methods-present', ['CASH','BANK','CREDIT','SPLIT'].every(m => modal.includes(`value="${m}"`)));
+check('one-payment-confirm-control', (modal.match(/id="payment-confirm"/g)||[]).length === 1);
+check('no-legacy-radio-picker', !modal.includes('name="pay-method"'));
+check('shop-cash-amount', modal.includes('id="payment-cash-input"'));
+check('shop-bank-amount', modal.includes('id="payment-bank-input"'));
+check('credit-authorization-amount', modal.includes('id="payment-credit-input"'));
+check('operational-bank-account', modal.includes('id="payment-bank-account"'));
+check('unallocated-balance-display', modal.includes('id="payment-remaining"'));
+check('cash-bank-credit-summary', ['payment-paid','payment-credit-total','payment-due'].every(id => modal.includes(`id="${id}"`)));
+check('backend-idempotent-allocation-endpoint', sales.includes('/payment-allocations') && sales.includes('submissionId: submission.id'));
+check('only-test-server-allows-allocation', fs.readFileSync(path.join(root,'src/http/server.js'),'utf8').includes("config.operatingMode !== 'TEST'"));
+check('submit-reads-fresh-status-before-post', sales.includes('const fresh = await readServerPayment(orderId)'));
+check('no-sales-legacy-settlement-post', !sales.slice(sales.indexOf('async function confirmUnifiedPayment('),sales.indexOf('async function recoverUncertainPayment(')).includes('method: "POST",\n        body: JSON.stringify(payload)'));
+check('order-register-read-only-payment-summary', orders.includes('payment-allocation-summary') && !orders.includes('setupAllocationForm('));
+check('orders-uses-same-sales-payment-screen', orders.includes('href="/?payOrder=${encodeURIComponent(order.orderId)}"'));
+check('sales-handles-pay-order-deeplink', sales.includes('new URLSearchParams(location.search).get("payOrder")'));
+check('entry-fields-respond-to-small-screens', styles.includes('@media(max-width: 480px)') && styles.includes('payment-entry-fields.is-single'));
+check('standard-theme-reused', styles.includes('var(--accent,') && styles.includes('var(--line)'));
+check('delivery-staff-redirect-preserved', sales.includes('state.role !== "kitchen" && state.role !== "delivery"') && sales.includes('"/delivery-pool.html"'));
+check('kitchen-staff-redirect-preserved', sales.includes('state.role === "delivery" ? "/delivery-pool.html" : "/prep.html"'));
+console.log(`Unified Take Payment UI ${passed} passed (read-only checks, no database changes)`);

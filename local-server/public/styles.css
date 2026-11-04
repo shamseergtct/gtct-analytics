@@ -1074,6 +1074,55 @@ body.page-scroll-lock {
   margin-top: 0;
 }
 
+/* P2-E1.6: Compact cart price with optional details; no pricing logic changes. */
+.cart-price-inline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.8rem;
+  padding: 0.15rem 0.2rem 0;
+  font-size: 0.93rem;
+  color: var(--muted);
+}
+
+.cart-price-inline strong {
+  color: var(--blue);
+  font-size: 1.18rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.cart-price-breakdown-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  margin: 0;
+  padding: 0.35rem 0.2rem;
+  border: 0;
+  background: transparent;
+  color: var(--blue);
+  font: inherit;
+  font-size: 0.83rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.cart-price-breakdown-toggle:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+.cart-price-detail {
+  margin: 0.15rem 0 0.5rem;
+}
+
+.cart-price-detail[hidden] {
+  display: none !important;
+}
+
 .tax-breakdown {
   display: grid;
   gap: 0.3rem;
@@ -2679,6 +2728,11 @@ a.btn {
   display: none;
 }
 
+/* Mobile cart has a persistent way back to the menu without clearing the draft. */
+.cart-add-more-items {
+  display: none;
+}
+
 .cart-drawer-backdrop {
   display: none;
 }
@@ -2843,6 +2897,18 @@ a.btn {
   .cart-lines {
     flex: 1 1 0;
     min-height: 4.5rem;
+  }
+
+  .cart-add-more-items {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    min-height: 48px;
+    margin-top: 0.55rem;
+    font-size: 0.95rem;
+    background: #f5f9ff;
+    border-color: rgba(11, 83, 158, 0.28);
   }
 
   .cart-pane .cart-actions {
@@ -3838,3 +3904,165 @@ body.customize-open {
     flex: 1 1 100%;
   }
 }
+
+/* P2-B2: avoid author layout styles overriding the native hidden attribute. */
+#stations-field[hidden] { display: none !important; }
+.station-assignment-list { display: flex; flex-wrap: wrap; gap: 0.4rem 1rem; }
+.station-assignment-list .check-row { margin: 0; }
+
+/* P2-E1.8: One compact native Order Type dropdown on desktop and mobile.
+   Native select + existing change handler own all functionality; styling only. */
+.order-meta.compact-meta .order-type-field {
+  position: relative;
+  min-width: 0;
+}
+
+.order-meta.compact-meta .order-type-field > label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.order-meta.compact-meta .order-type-field > select {
+  display: block;
+  appearance: none;
+  -webkit-appearance: none;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0.65rem 2.7rem 0.65rem 0.9rem;
+  border: 1px solid #c7d5e5;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.04);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.order-meta.compact-meta .order-type-field::after {
+  content: "";
+  position: absolute;
+  right: 1.15rem;
+  bottom: 1.15rem;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 2px solid var(--blue);
+  border-bottom: 2px solid var(--blue);
+  transform: rotate(45deg);
+  pointer-events: none;
+}
+
+.order-meta.compact-meta .order-type-field > select:focus-visible,
+.order-meta.compact-meta .order-type-field > select:focus {
+  outline: none;
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgba(11, 83, 158, 0.13);
+}
+
+@media (max-width: 1023px) {
+  .order-meta.compact-meta {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.45rem;
+    max-height: min(52%, 30rem);
+  }
+
+  .order-meta.compact-meta .order-type-field {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .order-meta.compact-meta .order-type-field > select {
+    min-height: 52px;
+    font-size: 1rem; /* Avoid automatic text zoom on iOS. */
+  }
+
+  .order-meta.compact-meta .order-type-field::after {
+    bottom: 1.25rem;
+  }
+
+  .order-meta.compact-meta > .field:first-child {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.15rem 0 0.35rem;
+    border-bottom: 1px solid var(--line);
+    min-width: 0;
+  }
+
+  .order-meta.compact-meta > .field:first-child #order-number {
+    width: min(70%, 240px);
+    min-width: 0;
+    padding: 0.15rem 0;
+    border: 0;
+    background: transparent;
+    text-align: right;
+    color: var(--muted);
+    cursor: default;
+  }
+
+  .order-meta.compact-meta > .fulfillment-fields {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+}
+
+/* P2-E2C3B: standard, compact, single Take Payment workflow. */
+#payment-dialog.review-dialog { width: min(550px, calc(100vw - 1.25rem)); }
+#payment-dialog .review-dialog-inner { max-height: min(92dvh, 760px); }
+#payment-dialog .payment-body { min-height: 0; overflow-y: auto; padding: 0.9rem 1rem; }
+#payment-dialog .payment-actions { flex-shrink: 0; }
+#payment-dialog .payment-facts { gap: 0.55rem; }
+#payment-dialog .payment-facts-balance { border-top: 1px solid var(--line); padding-top: 0.6rem; }
+#payment-dialog .payment-facts-balance dd { font-size: 1.2rem; }
+#payment-dialog .payment-entry-modes { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.45rem; }
+#payment-dialog .payment-entry-mode { min-width: 0; min-height: 2.75rem; padding: 0.5rem 0.2rem; border: 1px solid var(--line); border-radius: 0.7rem; display: flex; align-items: center; justify-content: center; gap: 0.3rem; font-weight: 700; font-size: 0.9rem; cursor: pointer; }
+#payment-dialog .payment-entry-mode:has(input:checked) { border-color: var(--accent,#0f6b4c); background: #f3faf6; }
+#payment-dialog .payment-entry-mode input { margin: 0; flex-shrink: 0; accent-color: var(--accent,#0f6b4c); }
+#payment-dialog .payment-entry-fields { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0.55rem; }
+#payment-dialog .payment-entry-field { min-width: 0; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.86rem; font-weight: 650; color: var(--muted); }
+#payment-dialog .payment-entry-field[hidden], #payment-dialog #payment-choice[hidden],
+#payment-dialog #payment-bank-fields[hidden] { display: none !important; }
+#payment-dialog .payment-entry-field input { width: 100%; min-width: 0; min-height: 2.75rem; border: 1px solid var(--line); border-radius: 0.7rem; font-size: 1rem; font-weight: 700; color: var(--ink); padding: 0.45rem 0.65rem; background: #fff; }
+#payment-dialog .payment-entry-fields:has(.payment-entry-field:nth-child(2)[hidden]) { grid-template-columns: 1fr; }
+#payment-dialog .payment-bank-select { border-radius: 0.7rem; border: 1px solid var(--line); }
+#payment-dialog .payment-allocation-preview { display:flex; align-items:center; justify-content:space-between; gap: 1rem; padding-top: 0.6rem; border-top: 1px solid var(--line); font-size: 0.86rem; color: var(--muted); }
+#payment-dialog .payment-allocation-preview strong { white-space: nowrap; font-size: 1rem; color: var(--ink); }
+#payment-dialog .payment-allocation-preview .payment-invalid { color: #b91c1c; }
+@media(max-width: 480px) {
+  #payment-dialog .payment-entry-modes { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  #payment-dialog .payment-entry-fields { grid-template-columns: 1fr; }
+  #payment-dialog .payment-entry-mode, #payment-dialog .payment-entry-field input { min-height: 2.8rem; }
+}
+
+#payment-dialog .payment-entry-fields.is-single { grid-template-columns: 1fr; }
+#payment-dialog .payment-facts div:nth-child(3) dd { font-size: inherit; font-weight: 750; }
+#payment-dialog .payment-actions .btn { flex: 1 1 120px; min-height: 3rem; font-size: 0.95rem; padding: 0.6rem 0.75rem; }
+@media (max-width: 480px) { #payment-dialog .payment-actions .payment-confirm { flex-basis: 100%; } }
+
+/* P2-E2C3C: credit customer picker — standard payment modal, no extra dialog. */
+#payment-dialog .payment-credit-customer[hidden],
+#payment-dialog .payment-credit-selected[hidden],
+#payment-dialog .payment-credit-results[hidden],
+#payment-dialog .payment-credit-create[hidden],
+#payment-dialog .payment-credit-customer-error[hidden],
+#payment-dialog .payment-credit-lookup[hidden] { display: none !important; }
+#payment-dialog .payment-credit-customer { border-top: 1px solid var(--line); padding-top: 0.7rem; display:grid; gap:0.5rem; }
+#payment-dialog .payment-credit-label { color:var(--muted); font-size:0.86rem; font-weight:700; }
+#payment-dialog #payment-credit-search,
+#payment-dialog .payment-credit-create input { width:100%; min-height:2.75rem; border:1px solid var(--line); border-radius:0.7rem; background:#fff; color:var(--ink); font-size:1rem; padding:0.5rem 0.7rem; }
+#payment-dialog .payment-credit-selected { display:flex; align-items:center; justify-content:space-between; gap:0.55rem; min-height:2.75rem; border:1px solid var(--line); border-radius:0.7rem; padding:0.35rem 0.6rem; font-weight:700; }
+#payment-dialog .payment-credit-small { min-height:2.5rem; padding:0.45rem 0.75rem; font-size:0.85rem; }
+#payment-dialog .payment-credit-results { max-height:10rem; overflow-y:auto; border:1px solid var(--line); border-radius:0.7rem; margin-top:0.35rem; }
+#payment-dialog .payment-credit-result { display:flex; justify-content:space-between; gap:0.5rem; align-items:center; width:100%; background:transparent; color:var(--ink); font:inherit; padding:0.65rem; border:0; border-bottom:1px solid var(--line); cursor:pointer; text-align:left; }
+#payment-dialog .payment-credit-result:last-child { border-bottom:0; }
+#payment-dialog .payment-credit-result:focus-visible { outline:2px solid var(--accent,#0f6b4c); outline-offset:-2px; }
+#payment-dialog .payment-credit-result small { color:var(--muted); }
+#payment-dialog .payment-credit-create { display:grid; gap:0.5rem; margin-top:0.5rem; }
+#payment-dialog #payment-credit-lookup > .payment-credit-small { margin-top:0.5rem; }

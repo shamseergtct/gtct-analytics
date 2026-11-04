@@ -10,6 +10,7 @@ const state = {
   orderTypeId: "",
   addressLabel: "",
   register: null,
+  activeShift: null,
   money: createMoneyFormatter({ currencyLabel: "", currencyDecimals: 2 }),
 };
 
@@ -67,9 +68,60 @@ function escapeHtml(value) {
 }
 
 function paymentBadge(order) {
-  const paid = order.paymentStatus === "PAID";
-  const label = paid ? "Paid" : "Unpaid";
-  return `<span class="pay-badge ${paid ? "paid" : "unpaid"}">${label}</span>`;
+  if (order.fulfillmentStatus === 'VOID') return '<span class="pay-badge unpaid">VOID</span>';
+  const status = String(order.paymentStatus || 'UNPAID');
+  const label = ({PAID:'Paid', CREDIT:'Credit', PARTIAL:'Partial',UNPAID:'Unpaid'})[status] || status;
+  return `<span class="pay-badge ${status === 'PAID' ? 'paid' : 'unpaid'}">${label}</span>`;
+}
+
+function tokenLabel(order) {
+  return order.tokenNumber == null ? 'Legacy — no shift token' : `Token #${String(order.tokenNumber).padStart(3, '0')}`;
+}
+function currentStatusLabel(order) {
+  return String(order.operationalStatus || order.kitchenStatus || order.fulfillmentStatus || 'UNKNOWN')
+    .replaceAll('_', ' ');
+}
+function deliveryBoyLine(order) {
+  // An unassigned delivery is not useful information in a compact list.
+  if (order.fulfillmentBehavior !== 'DELIVERY' || !order.deliveryBoyName) return '';
+  return `<div class="order-secondary order-delivery-boy">Rider · ${escapeHtml(order.deliveryBoyName)}</div>`;
+}
+
+function deliveryPaymentStatusLine(order) {
+  if (order.fulfillmentBehavior !== 'DELIVERY' || !order.deliveryPaymentReport) return '';
+  const labels = {
+    CASH_WITH_BOY:'Cash with rider · awaiting handover',
+    SHOP_PAID_REPORTED:'Shop paid · rider report (unverified)',
+    CREDIT_REPORTED:'Credit · rider report (unapproved)',
+    PAID_CONFIRMED:'Shop payment verified',
+  };
+  const label = labels[order.deliveryPaymentReport.status];
+  return label ? `<div class="order-secondary order-delivery-payment">${escapeHtml(label)}</div>` : '';
+}
+
+function statusTone(order) {
+  const status = String(order.operationalStatus || order.kitchenStatus || order.fulfillmentStatus || '').toUpperCase();
+  if (status === 'FINISHED' || status === 'READY_FOR_DELIVERY' || status === 'DELIVERED') return 'is-success';
+  if (status === 'ACCEPTED' || status === 'PREPARING' || status === 'ACCEPTED_BY_DELIVERY_BOY') return 'is-active';
+  if (status === 'PACKING_RECHECK_REQUIRED') return 'is-warning';
+  if (status === 'VOID') return 'is-warning';
+  return 'is-neutral';
+}
+
+function statusChip(order) {
+  return `<span class="fulfill-badge current-status ${statusTone(order)}">${escapeHtml(currentStatusLabel(order))}</span>`;
+}
+
+function shortDate(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function tokenMarkup(order) {
+  return order.tokenNumber == null
+    ? ''
+    : `<span class="order-token">Token ${escapeHtml(String(order.tokenNumber).padStart(3, '0'))}</span>`;
 }
 
 function customerLine(order) {
@@ -138,31 +190,29 @@ function renderTabs() {
 function orderCells(order) {
   const money = moneyFor(order);
   return {
-    number: `<button type="button" class="linkish" data-order="${escapeHtml(order.orderId)}">${escapeHtml(order.orderNumber)}</button>${
-      canEditOrders() && order.paymentStatus !== "PAID"
+    number: `<div class="order-ref"><button type="button" class="linkish" data-order="${escapeHtml(order.orderId)}">${escapeHtml(order.invoiceNumber || order.orderNumber)}</button>${
+      order.fulfillmentStatus === 'OPEN' && canEditOrders() && order.paymentStatus === "UNPAID" && !order.hasAllocations
         ? `<button type="button" class="btn ghost orders-edit" data-edit="${escapeHtml(order.orderId)}">Edit</button>`
         : ""
-    }`,
-    when: escapeHtml(when(order.createdAt)),
+    }</div><div class="order-subline">${tokenMarkup(order)}<span class="order-secondary">${escapeHtml(shortDate(order.createdAt))}</span></div>`,
     type: escapeHtml(order.orderTypeName || order.fulfillmentBehavior),
     customer: escapeHtml(customerLine(order) || "—"),
     place: escapeHtml(placeLine(order)),
     total: escapeHtml(money.format(order.totalCents)),
     payment: paymentBadge(order),
-    status: `<span class="fulfill-badge">${escapeHtml(order.fulfillmentStatus || "OPEN")}</span>`,
-    staff: escapeHtml(order.createdByName || "—"),
+    status: statusChip(order),
   };
 }
 
 function renderTable(orders) {
   const rows = orders.map((order) => {
     const cell = orderCells(order);
-    return `<tr>
-      <td>${cell.number}<div class="hint">${cell.when}</div></td>
-      <td>${cell.type}<div class="hint">${cell.place}</div></td>
-      <td>${cell.customer}</td>
-      <td>${cell.total}<div>${cell.payment}</div></td>
-      <td>${cell.status}<div class="hint">${cell.staff}</div></td>
+    return `<tr data-open-order="${escapeHtml(order.orderId)}" tabindex="0" aria-label="Open details for ${escapeHtml(order.invoiceNumber || order.orderNumber)}">
+      <td class="order-main-cell">${cell.number}</td>
+      <td><strong class="order-type">${cell.type}</strong>${cell.place ? `<div class="order-secondary order-place" title="${cell.place}">${cell.place}</div>` : ''}</td>
+      <td><div class="order-customer">${cell.customer}</div>${deliveryBoyLine(order)}</td>
+      <td><strong class="order-total">${cell.total}</strong><div class="order-payment">${cell.payment}</div></td>
+      <td>${cell.status}${deliveryPaymentStatusLine(order)}</td>
     </tr>`;
   }).join("");
   return `<div class="orders-table-wrap"><table class="orders-table">
@@ -174,13 +224,13 @@ function renderTable(orders) {
 function renderCards(orders) {
   return `<div class="orders-cards">${orders.map((order) => {
     const cell = orderCells(order);
-    return `<article class="order-card">
-      <div>${cell.number}</div>
-      <p>${cell.when} · ${cell.type}</p>
-      <p>${cell.customer}</p>
-      <p>${cell.place}</p>
-      <p>${cell.total} ${cell.payment} ${cell.status}</p>
-      <p class="hint">${cell.staff}</p>
+    return `<article class="order-card" data-open-order="${escapeHtml(order.orderId)}" tabindex="0" role="button" aria-label="Open details for ${escapeHtml(order.invoiceNumber || order.orderNumber)}">
+      <div class="order-card-top">${cell.number}${cell.status}</div>
+      <div class="order-card-middle"><strong class="order-type">${cell.type}</strong>${customerLine(order) ? `<span class="order-secondary">${cell.customer}</span>` : ''}</div>
+      ${cell.place ? `<div class="order-secondary order-place" title="${cell.place}">${cell.place}</div>` : ''}
+      ${deliveryBoyLine(order)}
+      ${deliveryPaymentStatusLine(order)}
+      <div class="order-card-bottom"><strong class="order-total">${cell.total}</strong>${cell.payment}</div>
     </article>`;
   }).join("")}</div>`;
 }
@@ -251,33 +301,121 @@ async function openOrder(orderId) {
   }
   const order = result.json.order;
   const money = moneyFor(order);
-  $("detail-title").textContent = order.orderNumber;
+  $("detail-title").textContent = `Invoice ${order.invoiceNumber || order.orderNumber}`;
   const lines = (order.lines || []).map((line) => {
     const extras = [
       line.variantName,
       ...(line.addons || []).map((addon) => `${addon.name} × ${addon.quantity}`),
       ...(line.instructions || []),
     ].filter(Boolean).join(" · ");
-    return `<li><strong>${escapeHtml(line.quantity)} × ${escapeHtml(line.itemName)}</strong>
-      <div class="hint">${escapeHtml(extras)}</div>
-      <div>${escapeHtml(money.format(line.lineTotalCents))}</div></li>`;
+    return `<li class="detail-item">
+      <div class="detail-item-info"><strong>${escapeHtml(line.quantity)} × ${escapeHtml(line.itemName)}</strong>${extras ? `<div class="detail-item-notes">${escapeHtml(extras)}</div>` : ''}</div>
+      <strong class="detail-item-price">${escapeHtml(money.format(line.lineTotalCents))}</strong>
+    </li>`;
   }).join("");
+  const orderMeta = [
+    order.orderTypeName,
+    shortDate(order.createdAt),
+    order.businessDate ? `Business ${order.businessDate}` : '',
+  ].filter(Boolean);
+  const customer = customerLine(order);
+  const place = placeLine(order) || order.destination || '';
+  const showAddress = Boolean(place);
+  const deliveryBoy = order.fulfillmentBehavior === 'DELIVERY' && order.deliveryBoyName
+    ? `<div class="detail-secondary">Rider · ${escapeHtml(order.deliveryBoyName)}</div>` : '';
+  const taxRow = Number(order.taxCents || 0) !== 0
+    ? `<div class="detail-summary-row"><span>Tax</span><span>${escapeHtml(money.format(order.taxCents))}</span></div>` : '';
+  const deliveryRow = Number(order.deliveryChargeCents || 0) !== 0
+    ? `<div class="detail-summary-row"><span>Delivery</span><span>${escapeHtml(money.format(order.deliveryChargeCents))}</span></div>` : '';
+  const paymentObservation = deliveryPaymentStatusLine(order);
+  const tender = order.paymentStatus === 'PAID' && order.paymentTender
+    ? `<span class="detail-secondary">${escapeHtml(order.paymentTender)}${order.bankAccountLabel ? ` · ${escapeHtml(order.bankAccountLabel)}` : ''}</span>` : '';
   $("detail-body").innerHTML = `
-    <p>${escapeHtml(when(order.createdAt))} · ${escapeHtml(order.orderTypeName)}</p>
-    <p>${escapeHtml(customerLine(order) || "No customer snapshot")}</p>
-    <p>${escapeHtml(placeLine(order) || order.destination || "")}</p>
-    <ul class="detail-lines">${lines}</ul>
-    <p>Goods ${escapeHtml(money.format(order.goodsCents))} · Tax ${escapeHtml(money.format(order.taxCents))} · Delivery ${escapeHtml(money.format(order.deliveryChargeCents))}</p>
-    <p><strong>Total ${escapeHtml(money.format(order.totalCents))}</strong></p>
-    <p>${paymentBadge(order)} <span class="fulfill-badge">${escapeHtml(order.fulfillmentStatus)}</span></p>
-    <p class="hint">${escapeHtml(order.paymentTender ? `Payment ${order.paymentTender}${order.bankAccountLabel ? ` · ${order.bankAccountLabel}` : ""}` : "No payment recorded")} · ${escapeHtml(order.createdByName || "Staff name unavailable")}</p>
-    ${
-      canEditOrders() && order.paymentStatus !== "PAID"
-        ? `<p><a class="btn ghost" href="/?editOrder=${encodeURIComponent(order.orderId)}">Edit order</a></p>`
-        : ""
-    }
+    <div class="detail-hero">
+      <div class="detail-hero-top"><div class="detail-token">${tokenMarkup(order)}</div>${statusChip(order)}</div>
+      <div class="detail-secondary">${escapeHtml(orderMeta.join(' · '))}</div>
+    </div>
+    ${customer || showAddress || deliveryBoy ? `<section class="detail-section detail-contact">
+      ${customer ? `<strong>${escapeHtml(customer)}</strong>` : ''}
+      ${showAddress ? `<div class="detail-secondary">${escapeHtml(place)}</div>` : ''}
+      ${deliveryBoy}
+    </section>` : ''}
+    <section class="detail-section">
+      <h3 class="detail-section-title">Items</h3>
+      <ul class="detail-lines">${lines}</ul>
+    </section>
+    <section class="detail-section detail-summary">
+      <div class="detail-summary-row"><span>Subtotal</span><span>${escapeHtml(money.format(order.goodsCents))}</span></div>
+      ${taxRow}${deliveryRow}
+      <div class="detail-total"><span>Total</span><strong>${escapeHtml(money.format(order.totalCents))}</strong></div>
+      <div class="detail-payment">${order.fulfillmentStatus === 'VOID' ? '<span class="fulfill-badge is-warning">VOID</span>' : paymentBadge(order)}${order.fulfillmentStatus === 'VOID' ? '' : tender}${order.fulfillmentStatus === 'VOID' ? '' : paymentObservation}</div>
+      ${order.fulfillmentStatus === 'VOID' ? '<p class="detail-secondary">Voided invoice · payment disabled</p>' : ''}
+      <div class="payment-allocation-summary">
+        <span>Shop Cash: <strong>${escapeHtml(money.format(order.cashCents || 0))}</strong></span>
+        <span>Shop Bank: <strong>${escapeHtml(money.format(order.bankCents || 0))}</strong></span>
+        <span>Shop Credit: <strong>${escapeHtml(money.format(order.creditCents || 0))}</strong></span>
+        <span>Not yet allocated: <strong>${escapeHtml(money.format(order.unallocatedCents ?? order.totalCents))}</strong></span>
+      </div>
+    </section>
+    ${order.fulfillmentStatus !== 'VOID' && state.staff && state.permissions.includes('sales.payment.receive') && Number(order.unallocatedCents ?? order.totalCents) > 0
+      ? `<div class="detail-actions"><a class="btn primary" href="/?payOrder=${encodeURIComponent(order.orderId)}">Take Payment</a></div>`
+      : ''}
+    ${order.fulfillmentStatus !== 'VOID' && canEditOrders() && order.paymentStatus === "UNPAID" && !order.hasAllocations
+      ? `<div class="detail-actions"><a class="btn ghost" href="/?editOrder=${encodeURIComponent(order.orderId)}">Edit order</a></div>`
+      : ''}
+    ${state.role === 'admin' && order.fulfillmentStatus === 'OPEN' && order.paymentStatus === 'UNPAID'
+      && !order.hasAllocations && Number(order.paidCents || 0) === 0
+      && Number(order.creditCents || 0) === 0
+      ? `<div class="detail-actions"><button type="button" id="void-invoice-btn" class="btn ghost">Void Bill</button></div>
+         <section id="void-panel" class="void-confirm-panel" hidden>
+           <h3>Void this invoice</h3>
+           <label for="void-reason">Reason
+             <input id="void-reason" type="text" maxlength="240" autocomplete="off" placeholder="Reason for voiding" />
+           </label>
+           <label for="void-word">Type VOID to confirm
+             <input id="void-word" type="text" maxlength="4" autocomplete="off" placeholder="VOID" />
+           </label>
+           <p id="void-error" role="alert" class="void-error" hidden></p>
+           <div class="void-confirm-actions">
+             <button id="void-cancel-btn" type="button" class="btn ghost">Cancel</button>
+             <button id="void-confirm-btn" type="button" class="btn primary" disabled>Confirm Void</button>
+           </div>
+         </section>` : ''}
   `;
-  $("order-detail").showModal();
+  if (!$('order-detail').open) $('order-detail').showModal();
+  const voidBtn = $('void-invoice-btn');
+  if (voidBtn) {
+    const panel=$('void-panel'), reason=$('void-reason'), word=$('void-word');
+    const confirmBtn=$('void-confirm-btn'), cancelBtn=$('void-cancel-btn');
+    const error=$('void-error');
+    voidBtn.addEventListener('click', () => {
+      panel.hidden=false; voidBtn.hidden=true; reason.focus();
+    });
+    cancelBtn.addEventListener('click', () => {
+      panel.hidden=true; voidBtn.hidden=false; reason.value=''; word.value='';
+      confirmBtn.disabled=true; error.hidden=true;
+    });
+    const validate = () => {
+      confirmBtn.disabled=reason.value.trim().length<5 || word.value !== 'VOID';
+      error.hidden=true;
+    };
+    reason.addEventListener('input',validate);
+    word.addEventListener('input',validate);
+    confirmBtn.addEventListener('click', async () => {
+      if (confirmBtn.disabled) return;
+      confirmBtn.disabled=true; cancelBtn.disabled=true;
+      const result = await api(`/v1/orders/${encodeURIComponent(order.orderId)}/void`, {
+        method:'POST',body:JSON.stringify({reason:reason.value.trim(),expectedUpdatedAt:order.updatedAt})
+      });
+      if (!result.ok) {
+        error.textContent=result.json?.error || 'Void failed. Refresh invoice before retrying.';
+        error.hidden=false;cancelBtn.disabled=false;validate();error.hidden=false;
+        return;
+      }
+      await loadOrders();
+      await openOrder(order.orderId);
+    });
+  }
 }
 
 function showLogin(message = "") {
@@ -298,7 +436,7 @@ function showMain() {
   const allowed = canView();
   $("orders-denied").hidden = allowed;
   $("orders-shell").hidden = !allowed;
-  if (allowed) void loadOrders();
+  if (allowed) { void loadOrders(); void loadShift(); }
 }
 
 async function login() {
@@ -391,9 +529,58 @@ $("orders-list").addEventListener("click", (event) => {
     location.href = `/?editOrder=${encodeURIComponent(edit.dataset.edit)}`;
     return;
   }
-  const button = event.target.closest("[data-order]");
-  if (!button) return;
-  void openOrder(button.dataset.order);
+  const target = event.target.closest("[data-order], [data-open-order]");
+  if (!target) return;
+  void openOrder(target.dataset.order || target.dataset.openOrder);
+});
+$("orders-list").addEventListener("keydown", (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  if (event.target.closest('button, a, input, select')) return;
+  const row = event.target.closest('[data-open-order]');
+  if (!row) return;
+  event.preventDefault();
+  void openOrder(row.dataset.openOrder);
+});
+
+// Shift UI is intentionally operational only. It NEVER settles Cash/Bank.
+async function loadShift() {
+  const result = await api('/v1/business-shift');
+  if (!result.ok) {
+    $('shift-info').textContent = result.json?.error || 'Could not load business shift.';
+    return;
+  }
+  const active = result.json.active;
+  state.activeShift = active;
+  $('shift-info').textContent = active
+    ? `Shift open · ${active.businessDate} · Next token ${String(active.nextTokenNumber).padStart(3, '0')}`
+    : `No active shift${result.json.requiresManualStart ? ' · Open a shift to take orders' : ''}`;
+  const admin = state.role === 'admin';
+  $('shift-actions').hidden = !admin;
+  $('shift-close').hidden = !admin || !active;
+  $('shift-open').hidden = !admin || Boolean(active);
+  $('shift-next-date').hidden = !admin || Boolean(active);
+  if (!active) $('shift-next-date').value = result.json.suggestedBusinessDate || '';
+}
+$('shift-close').addEventListener('click', async () => {
+  const active = state.activeShift;
+  if (!active || state.role !== 'admin') return;
+  const approved = confirm(`Close TEST shift ${active.businessDate}? New orders will be blocked until you open the next shift. This does NOT settle payments or delivery cash.`);
+  if (!approved) return;
+  const result = await api('/v1/business-shift/close', {
+    method: 'POST', body: JSON.stringify({ shiftId: active.shiftId, confirm: true }),
+  });
+  if (!result.ok) { setStatus(result.json?.error || 'Could not close shift.'); return; }
+  await loadShift();
+});
+$('shift-open').addEventListener('click', async () => {
+  if (state.role !== 'admin' || state.activeShift) return;
+  const businessDate = $('shift-next-date').value;
+  if (!businessDate) { setStatus('Choose the business date.'); return; }
+  const result = await api('/v1/business-shift/open', {
+    method: 'POST', body: JSON.stringify({ businessDate }),
+  });
+  if (!result.ok) { setStatus(result.json?.error || 'Could not open shift.'); return; }
+  await loadShift();
 });
 
 const session = await api("/v1/session/me");

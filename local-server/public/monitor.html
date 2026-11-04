@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>GTCT Order Monitor — TEST</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/monitor.css" />
+</head>
+<body>
+  <section class="view login-view" id="login-view" hidden>
+    <div class="login-card">
+      <p class="brand">GTCT Restaurant</p>
+      <h1>Order Monitor</h1>
+      <p class="hint">Sign in as an authorized Admin or Cashier.</p>
+      <div class="login-form">
+        <div class="field"><label for="login-username">Username</label><input id="login-username" autocomplete="username" /></div>
+        <div class="field"><label for="login-password">Password</label><input id="login-password" type="password" autocomplete="current-password" /></div>
+        <button id="login-btn" type="button" class="btn primary">Sign in</button>
+        <p class="error" id="login-error" role="alert" hidden></p>
+      </div>
+    </div>
+  </section>
+  <section class="view" id="main-view" hidden>
+    <header class="topbar">
+      <div class="topbar-brand"><p class="brand-inline">GTCT</p><h1>Order Monitor <span class="monitor-test">TEST</span></h1></div>
+      <div class="topbar-actions">
+        <span class="pill" id="session-role"></span>
+        <nav class="monitor-topnav" aria-label="Main navigation">
+          <a class="nav-link" href="/">Sales</a>
+          <a class="nav-link" href="/orders.html">Orders</a>
+          <a class="nav-link" href="/monitor.html" aria-current="page">Monitor</a>
+          <a class="nav-link" href="/delivery-cash.html">Rider Cash</a>
+          <a class="nav-link" href="/prep.html">Preparation</a>
+          <button type="button" class="nav-link" id="logout-btn">Sign Out</button>
+        </nav>
+      </div>
+    </header>
+    <main class="monitor-page">
+      <div class="monitor-controls">
+        <label for="behavior">Order type
+          <select id="behavior">
+            <option value="">All</option>
+            <option value="DELIVERY">Delivery</option>
+            <option value="COUNTER">Counter</option>
+            <option value="TAKEAWAY">Takeaway</option>
+            <option value="TABLE">Dine-in</option>
+            <option value="CAR_HOP">Car-hop</option>
+          </select>
+        </label>
+        <label for="order-date">Date <input id="order-date" type="date" /></label>
+        <label for="order-search">Search <input id="order-search" type="search" placeholder="Invoice, token, customer, address" /></label>
+        <div class="monitor-view-switch" role="group" aria-label="Order view">
+          <button type="button" id="view-grid" class="monitor-switch-btn" aria-pressed="true" aria-label="Grid view">▦</button>
+          <button type="button" id="view-list" class="monitor-switch-btn" aria-pressed="false" aria-label="List view">☷</button>
+        </div>
+        <button type="button" id="refresh-btn" class="btn ghost monitor-refresh">Refresh</button>
+      </div>
+      <p id="monitor-status" aria-live="polite" class="hint">Loading…</p>
+      <section id="monitor-list" class="monitor-list" aria-label="Orders"></section>
+      <div class="monitor-pager">
+        <button type="button" id="prev-page" class="btn ghost">Previous</button>
+        <span id="page-label"></span>
+        <button type="button" id="next-page" class="btn ghost">Next</button>
+      </div>
+    </main>
+  </section>
+  <script type="module" src="/monitor.js"></script>
+</body>
+</html>

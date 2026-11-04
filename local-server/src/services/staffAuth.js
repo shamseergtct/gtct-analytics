@@ -5,9 +5,13 @@ import { newId } from "../util/ids.js";
 
 const ADMIN_ROLE_ID = "role_admin";
 const CASHIER_ROLE_ID = "role_cashier";
+const KITCHEN_ROLE_ID = "role_kitchen";
+const DELIVERY_ROLE_ID = "role_delivery";
 const SESSION_ROLE = {
   [ADMIN_ROLE_ID]: "admin",
   [CASHIER_ROLE_ID]: "cashier",
+  [KITCHEN_ROLE_ID]: "kitchen",
+  [DELIVERY_ROLE_ID]: "delivery",
 };
 
 const DEVICE_PERMISSIONS = new Set([
@@ -252,16 +256,28 @@ function lookupStaffUser(shopId, normalized) {
          ON r.user_id = u.user_id
         AND r.shop_id = u.shop_id
         AND r.revoked_at IS NULL
-        AND r.role_id IN (?, ?)
+        AND r.role_id IN (?, ?, ?, ?)
        WHERE u.shop_id = ? AND u.username_normalized = ?
        ORDER BY CASE WHEN r.role_id = ? THEN 0 ELSE 1 END
        LIMIT 1`
     )
-    .get(ADMIN_ROLE_ID, CASHIER_ROLE_ID, shopId, normalized, ADMIN_ROLE_ID);
+    .get(ADMIN_ROLE_ID, CASHIER_ROLE_ID, KITCHEN_ROLE_ID, DELIVERY_ROLE_ID, shopId, normalized, ADMIN_ROLE_ID);
 }
 
 export function loadStaffPermissions(shopId, userId, roleId) {
   if (!shopId || !userId || !roleId) return [];
+  if (roleId === DELIVERY_ROLE_ID) {
+    const grants = getDb().prepare(`SELECT permission_code FROM staff_role_permissions
+      WHERE role_id = ? AND permission_code IN ('delivery.pool.view', 'delivery.pool.accept', 'delivery.payment.report', 'delivery.status.update')
+        AND revoked_at IS NULL`).all(DELIVERY_ROLE_ID);
+    return grants.map(row => row.permission_code);
+  }
+  if (roleId === KITCHEN_ROLE_ID) {
+    const grant = getDb().prepare(`SELECT 1 FROM staff_role_permissions
+      WHERE role_id = ? AND permission_code = 'prep.station.work' AND revoked_at IS NULL`)
+      .get(KITCHEN_ROLE_ID);
+    return grant ? ["prep.station.work"] : [];
+  }
   return getDb()
     .prepare(
       `SELECT permission_code FROM staff_role_permissions
@@ -398,12 +414,12 @@ export function takeStaffSession(rawToken, shopId) {
          ON r.user_id = u.user_id
         AND r.shop_id = u.shop_id
         AND r.revoked_at IS NULL
-        AND r.role_id IN (?, ?)
+        AND r.role_id IN (?, ?, ?, ?)
        WHERE s.token_hash = ? AND s.shop_id = ?
        ORDER BY CASE WHEN r.role_id = ? THEN 0 ELSE 1 END
        LIMIT 1`
     )
-    .get(ADMIN_ROLE_ID, CASHIER_ROLE_ID, tokenHash, shopId, ADMIN_ROLE_ID);
+    .get(ADMIN_ROLE_ID, CASHIER_ROLE_ID, KITCHEN_ROLE_ID, DELIVERY_ROLE_ID, tokenHash, shopId, ADMIN_ROLE_ID);
   if (!row) return null;
 
   const now = Date.now();

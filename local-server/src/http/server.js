@@ -10,6 +10,8 @@ import {
   createStaffUser,
   updateStaffUser,
   resetStaffPassword,
+  listAssignablePrepStations,
+  listKitchenStationIds,
 } from "../services/staffUsers.js";
 import {
   loginWithToken,
@@ -100,7 +102,22 @@ import {
   clearTestOrders,
 } from "../services/orders.js";
 import { listOrderRegister, getOrderRegisterDetail } from "../services/orderRegister.js";
+import { voidUnpaidTestOrder } from "../services/orderVoid.js";
+import { getBusinessShift, openBusinessShift, closeBusinessShift } from "../services/businessShifts.js";
 import { listPrepBoard, setPrepStatus } from "../services/prepBoard.js";
+import { listOrderMonitor, getOrderMonitorDetail, markOrderReadyForDelivery } from "../services/orderMonitor.js";
+import { listAvailableDeliveries, listMyDeliveries, acceptAvailableDelivery, listRouteSuggestions } from "../services/deliveryPool.js";
+import { markDeliveryPayment } from '../services/deliveryPaymentReports.js';
+import { listDeliveryCashHandovers, confirmDeliveryCashHandover }
+  from '../services/deliveryCashHandover.js';
+import { listCommissionSettings, saveCommissionSetting, commissionPreview }
+  from '../services/deliveryCommissionSettings.js';
+import { previewCommissionAccrual, listCommissionAccruals, approveCommissionAccrual }
+  from '../services/deliveryCommissionAccruals.js';
+import { listRiderNetSettlements, confirmRiderNetSettlement, correctRiderSettlementTender }
+  from '../services/deliveryRiderNetSettlement.js';
+import { markDeliveryLifecycle, shopReviewDeliveryCancellation, reviewDeliveryCredit, shopSetDirectCredit }
+  from '../services/deliveryLifecycle.js';
 import { listPrintJobs, getPrintJob, applyCashierCategories } from "../services/printQueue.js";
 import {
   processAllPending,
@@ -110,6 +127,7 @@ import {
 import { renderTicketText } from "../print/ticketFormat.js";
 import { runPrinterTest, previewPrinterTicket } from "../services/printerTest.js";
 import { recordAudit, listAuditEvents } from "../services/audit.js";
+import { recordPaymentAllocation, listPaymentAllocations } from '../services/paymentAllocations.js';
 import {
   settleCashPayment,
   getOrderPayment,
@@ -125,6 +143,7 @@ import {
 } from "../services/bankAccounts.js";
 import { tryServeStatic } from "./static.js";
 import { log } from "../util/logger.js";
+import { getTestBackupHealth } from "../backup/testBackupManagement.js";
 
 function sendJson(res, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
@@ -301,6 +320,10 @@ export function createServer(config) {
             sendJson(res, 200, { users: listStaffUsers(config.testTenantId) });
             return;
           }
+          if (method === "GET" && path === "/v1/staff-users/stations") {
+            sendJson(res, 200, { stations: listAssignablePrepStations() });
+            return;
+          }
           if (method === "POST" && path === "/v1/staff-users") {
             const body = await readBody(req);
             if (body.shopId && body.shopId !== config.testTenantId) {
@@ -338,6 +361,13 @@ export function createServer(config) {
         } catch (err) {
           sendJson(res, err.status || 400, { error: err.message || "Could not update staff." });
         }
+        return;
+      }
+
+      // P2-C3: only a signed-in staff Admin can read backup health. Never expose filesystem paths.
+      if (method === "GET" && path === "/v1/admin/backup-health") {
+        if (!requireStaffAdmin(req, res, config)) return;
+        sendJson(res, 200, getTestBackupHealth());
         return;
       }
 
@@ -1773,6 +1803,39 @@ export function createServer(config) {
         return;
       }
 
+      // P2-E1.1 TEST-only shift/date + token identity. No financial day-end.
+      if (path === '/v1/business-shift' && method === 'GET') {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth, 'sales.orders.view')) {
+          sendJson(res, 403, { error: 'Orders permission required.' });
+          return;
+        }
+        try { sendJson(res, 200, getBusinessShift(config.testTenantId)); }
+        catch (err) { sendJson(res, err.status || 400, { error: err.message, code: err.code }); }
+        return;
+      }
+      if (path === '/v1/business-shift/open' && method === 'POST') {
+        const auth = requireAuth(req, res, config, ['admin']);
+        if (!auth) return;
+        if (!auth.userId) { sendJson(res, 403, { error: 'Admin login required.' }); return; }
+        try {
+          const body = await readBody(req);
+          sendJson(res, 201, { shift: openBusinessShift(config.testTenantId, body.businessDate, auth) });
+        } catch (err) { sendJson(res, err.status || 400, { error: err.message, code: err.code }); }
+        return;
+      }
+      if (path === '/v1/business-shift/close' && method === 'POST') {
+        const auth = requireAuth(req, res, config, ['admin']);
+        if (!auth) return;
+        if (!auth.userId) { sendJson(res, 403, { error: 'Admin login required.' }); return; }
+        try {
+          const body = await readBody(req);
+          sendJson(res, 200, { shift: closeBusinessShift(config.testTenantId, body.shiftId, auth, body.confirm === true) });
+        } catch (err) { sendJson(res, err.status || 400, { error: err.message, code: err.code }); }
+        return;
+      }
+
       if (method === "GET" && (path === "/v1/order-register" || path.startsWith("/v1/order-register/"))) {
         const auth = requireAuth(req, res, config);
         if (!auth) return;
@@ -1797,12 +1860,195 @@ export function createServer(config) {
         return;
       }
 
-      if (method === "GET" && path === "/v1/prep-board") {
+      // P2-E2A: Authenticated TEST Delivery Boy pool; no cloud exposure or money writes.
+      if (path === '/v1/delivery-pool' && method === 'GET') {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.pool.view')) return;
+        try {
+          sendJson(res, 200, listAvailableDeliveries(config.testTenantId, auth, {
+            block: url.searchParams.get('block') || '', road: url.searchParams.get('road') || '',
+          }));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
+        }
+        return;
+      }
+      if (path === '/v1/delivery-pool/mine' && method === 'GET') {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.pool.view')) return;
+        try { sendJson(res, 200, listMyDeliveries(config.testTenantId, auth)); }
+        catch (err) { sendJson(res, err.status || 400, { error: err.message, code: err.code }); }
+        return;
+      }
+      // P2-E2B: suggestions require an already-claimed order owned by this driver.
+      if (path === '/v1/delivery-pool/suggestions' && method === 'GET') {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.pool.view')) return;
+        try {
+          sendJson(res, 200, listRouteSuggestions(
+            config.testTenantId, auth, url.searchParams.get('orderId') || ''));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
+        }
+        return;
+      }
+      const acceptDeliveryMatch = path.match(/^\/v1\/delivery-pool\/([^/]+)\/accept$/);
+      if (method === 'POST' && acceptDeliveryMatch) {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.pool.accept')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res, 403, { error: 'Shop mismatch.', code: 'SHOP_MISMATCH' }); return;
+          }
+          const id = decodeURIComponent(acceptDeliveryMatch[1]);
+          sendJson(res, 200, acceptAvailableDelivery(
+            config.testTenantId, id, body.expectedRevision, auth));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
+        }
+        return;
+      }
+
+      // P2-E2C0: Rider payment OBSERVATION only. No shop ledger or credit posting.
+      const deliveryPayMatch = path.match(/^\/v1\/delivery-pool\/([^/]+)\/payment-report$/);
+      if (method === 'POST' && deliveryPayMatch) {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.payment.report')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res, 403, { error: 'Shop mismatch.', code: 'SHOP_MISMATCH' }); return;
+          }
+          const id = decodeURIComponent(deliveryPayMatch[1]);
+          sendJson(res, 200, markDeliveryPayment(
+            config.testTenantId, id, body.reportType, body.expectedVersion, auth));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
+        }
+        return;
+      }
+
+      // P2-E2C1: Delivery status and shop credit decisions. No accounting writes.
+      const deliveryStatusMatch = path.match(/^\/v1\/delivery-pool\/([^/]+)\/status$/);
+      if (method === 'POST' && deliveryStatusMatch) {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.status.update')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res, 403, {error:'Shop mismatch.',code:'SHOP_MISMATCH'}); return;
+          }
+          sendJson(res, 200, markDeliveryLifecycle(config.testTenantId,
+            decodeURIComponent(deliveryStatusMatch[1]), body.action,
+            body.expectedVersion, body.reason || '', auth));
+        } catch(err) { sendJson(res, err.status || 400, {error:err.message,code:err.code}); }
+        return;
+      }
+      const deliveryCancelMatch = path.match(/^\/v1\/delivery-review\/([^/]+)\/cancellation$/);
+      if (method === 'POST' && deliveryCancelMatch) {
+        const auth = requireAuth(req, res, config, ['admin','cashier']);
+        if (!auth || forbidUnless(auth, res, 'sales.orders.view')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;
+          }
+          sendJson(res,200,shopReviewDeliveryCancellation(config.testTenantId,
+            decodeURIComponent(deliveryCancelMatch[1]),body.action,body.expectedVersion,auth));
+        } catch(err) { sendJson(res,err.status || 400,{error:err.message,code:err.code}); }
+        return;
+      }
+      const deliveryCreditMatch = path.match(/^\/v1\/delivery-review\/([^/]+)\/credit$/);
+      if (method === 'POST' && deliveryCreditMatch) {
+        const auth = requireAuth(req, res, config, ['admin','cashier']);
+        if (!auth || forbidUnless(auth, res, 'sales.orders.view')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;
+          }
+          sendJson(res,200,reviewDeliveryCredit(config.testTenantId,
+            decodeURIComponent(deliveryCreditMatch[1]),body.reportVersion,
+            body.decision,body.note || '',auth));
+        } catch(err) { sendJson(res,err.status || 400,{error:err.message,code:err.code}); }
+        return;
+      }
+
+      // P2-E2C2: Cashier/Admin originated credit: authoritative status, not ledger posting.
+      const shopDirectCreditMatch = path.match(/^\/v1\/delivery-review\/([^/]+)\/shop-credit$/);
+      if (method === 'POST' && shopDirectCreditMatch) {
+        const auth = requireAuth(req, res, config, ['admin','cashier']);
+        if (!auth || forbidUnless(auth,res,'sales.orders.view')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'}); return;
+          }
+          sendJson(res,200,shopSetDirectCredit(config.testTenantId,
+            decodeURIComponent(shopDirectCreditMatch[1]),body.action,
+            body.expectedVersion,body.note || '',auth));
+        } catch(err) {sendJson(res,err.status || 400,{error:err.message,code:err.code});}
+        return;
+      }
+
+      // P2-E1: TEST-only order status monitoring; no delivery cash ledger writes.
+      if (method === 'GET' && (path === '/v1/order-monitor' || path.startsWith('/v1/order-monitor/'))) {
         const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth, 'sales.orders.view')) {
+          sendJson(res, 403, { error: 'Order monitoring permission required.' });
+          return;
+        }
+        try {
+          if (path === '/v1/order-monitor') {
+            sendJson(res, 200, listOrderMonitor(config.testTenantId, url.searchParams));
+          } else {
+            const id = decodeURIComponent(path.slice('/v1/order-monitor/'.length));
+            if (!id || id.includes('/')) {
+              sendJson(res, 404, { error: 'Order not found.' });
+              return;
+            }
+            sendJson(res, 200, { order: getOrderMonitorDetail(config.testTenantId, id) });
+          }
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+        }
+        return;
+      }
+
+      const readyMatch = path.match(/^\/v1\/order-monitor\/([^/]+)\/ready$/);
+      if (method === 'POST' && readyMatch) {
+        const auth = requireAuth(req, res, config, ['admin', 'cashier']);
+        if (!auth) return;
+        if (!auth.userId || forbidUnless(auth, res, 'sales.orders.dispatch')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res, 403, { error: 'Shop mismatch.' });
+            return;
+          }
+          const id = decodeURIComponent(readyMatch[1]);
+          sendJson(res, 200, markOrderReadyForDelivery(config.testTenantId, id, body.expectedRevision, auth));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/prep-board") {
+        const auth = requireAuth(req, res, config, ["admin", "cashier", "kitchen"]);
         if (!auth || forbidUnless(auth, res, "prep.station.work")) return;
         try {
           const url = new URL(req.url, "http://127.0.0.1");
-          sendJson(res, 200, listPrepBoard(config.testTenantId, url.searchParams.get("stationId") || ""));
+          const stationIds = auth.role === "kitchen"
+            ? listKitchenStationIds(config.testTenantId, auth.userId) : null;
+          const stationId = url.searchParams.get("stationId") || "";
+          if (stationIds && stationId && !stationIds.includes(stationId)) {
+            sendJson(res, 403, { error: "This preparation station is not assigned to you." });
+            return;
+          }
+          sendJson(res, 200, listPrepBoard(config.testTenantId, stationId, stationIds));
         } catch (err) {
           sendJson(res, err.status || 400, {
             error: err.message,
@@ -1816,16 +2062,24 @@ export function createServer(config) {
         method === "POST" &&
         (path === "/v1/prep-board/accept" || path === "/v1/prep-board/finish")
       ) {
-        const auth = requireAuth(req, res, config);
+        const auth = requireAuth(req, res, config, ["admin", "cashier", "kitchen"]);
         if (!auth || forbidUnless(auth, res, "prep.station.work")) return;
         try {
           const body = await readBody(req);
+          if (auth.role === "kitchen" &&
+              !listKitchenStationIds(config.testTenantId, auth.userId).includes(body.stationId)) {
+            sendJson(res, 403, { error: "This preparation station is not assigned to you." });
+            return;
+          }
           const result = setPrepStatus(
             config.testTenantId,
             body.orderId,
             body.stationId,
             path.endsWith("/finish") ? "FINISHED" : "ACCEPTED",
-            auth.userId || ""
+            auth.userId || "",
+            body.expectedStatus,
+            body.expectedRevision,
+            auth.role || ""
           );
           sendJson(res, 200, result);
         } catch (err) {
@@ -1852,6 +2106,180 @@ export function createServer(config) {
             error: err.message,
             ...(err.code ? { code: err.code } : {}),
           });
+        }
+        return;
+      }
+
+      // P2-E3C1: TEST ONLY rider policy configuration and provisional READ-ONLY daily estimate.
+      // Only Staff Admin; no commission payout, accrual or adjustment to cash allocation.
+      if (path === '/v1/delivery-commissions' && method === 'GET') {
+        if (config.operatingMode !== 'TEST') { sendJson(res,403,{error:'TEST only.'});return; }
+        const auth=requireStaffAdmin(req,res,config); if(!auth)return;
+        try {sendJson(res,200,listCommissionSettings(config.testTenantId,auth));}
+        catch(err){sendJson(res,err.status||400,{error:err.message,code:err.code});}
+        return;
+      }
+      const commissionPolicyRoute=path.match(/^\/v1\/delivery-commissions\/([^/]+)\/policy$/);
+      if(commissionPolicyRoute && method==='POST') {
+        if(config.operatingMode!=='TEST'){sendJson(res,403,{error:'TEST only.'});return;}
+        const auth=requireStaffAdmin(req,res,config);if(!auth)return;
+        try {
+          const body=await readBody(req);
+          if(body.shopId && body.shopId!==config.testTenantId) {sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;}
+          const result=saveCommissionSetting(config.testTenantId,decodeURIComponent(commissionPolicyRoute[1]),body,auth);
+          sendJson(res,result.replayed?200:201,result);
+        }catch(err){sendJson(res,err.status||400,{error:err.message,code:err.code});}
+        return;
+      }
+      const commissionPreviewRoute=path.match(/^\/v1\/delivery-commissions\/([^/]+)\/preview$/);
+      if(commissionPreviewRoute && method==='GET') {
+        if(config.operatingMode!=='TEST'){sendJson(res,403,{error:'TEST only.'});return;}
+        const auth=requireStaffAdmin(req,res,config);if(!auth)return;
+        try {
+          sendJson(res,200,commissionPreview(config.testTenantId,decodeURIComponent(commissionPreviewRoute[1]),
+            url.searchParams.get('businessDate')||'',auth));
+        }catch(err){sendJson(res,err.status||400,{error:err.message,code:err.code});}
+        return;
+      }
+
+      // P2-E3C3: separate TEST-only commission accrual subledger. NEVER shop cash or POS sales.
+      const commissionAccountingRoute = path.match(/^\/v1\/delivery-commissions\/([^/]+)\/(closing-preview|accruals)$/);
+      if (commissionAccountingRoute && ['GET','POST'].includes(method)) {
+        if (config.operatingMode !== 'TEST') { sendJson(res,403,{error:'TEST only.',code:'TEST_ONLY'});return; }
+        const auth=requireStaffAdmin(req,res,config); if(!auth)return;
+        try {
+          const rider=decodeURIComponent(commissionAccountingRoute[1]);
+          const action=commissionAccountingRoute[2];
+          if(action==='closing-preview'&&method==='GET'){
+            sendJson(res,200,previewCommissionAccrual(config.testTenantId,rider,
+              url.searchParams.get('businessDate')||'',auth));
+          }else if(action==='accruals'&&method==='GET'){
+            sendJson(res,200,listCommissionAccruals(config.testTenantId,rider,auth));
+          }else if(action==='accruals'&&method==='POST'){
+            const body=await readBody(req);
+            if(body.shopId&&body.shopId!==config.testTenantId){
+              sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;
+            }
+            const result=approveCommissionAccrual(config.testTenantId,rider,body,auth);
+            sendJson(res,result.replayed?200:201,result);
+          }else {sendJson(res,405,{error:'Method not allowed.'});}
+        }catch(err){sendJson(res,err.status||400,{error:err.message,code:err.code});}
+        return;
+      }
+
+      // P2-E3D1 TEST-only: append-only correction of cash/bank classification.
+      const tenderCorrectionRoute=path.match(/^\/v1\/delivery-rider-settlements\/([^/]+)\/correct-tender$/);
+      if (tenderCorrectionRoute && method==='POST') {
+        if(config.operatingMode!=='TEST'){
+          sendJson(res,403,{error:'TEST only.',code:'TEST_ONLY'});return;
+        }
+        const auth=requireStaffAdmin(req,res,config);if(!auth)return;
+        if(!auth.permissions?.includes('sales.payment.receive')){
+          sendJson(res,403,{error:'Payment permission required.',code:'FORBIDDEN'});return;
+        }
+        try {
+          const id=decodeURIComponent(tenderCorrectionRoute[1]);
+          const body=await readBody(req);
+          if(body.shopId&&body.shopId!==config.testTenantId){
+            sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;
+          }
+          const response=correctRiderSettlementTender(config.testTenantId,id,body,auth);
+          sendJson(res,response.replayed?200:201,response);
+        }catch(err){
+          const safe=toPublicSettlementError(err);
+          sendJson(res,safe.status||400,{error:safe.message,code:safe.code||'TENDER_CORRECTION_ERROR'});
+        }
+        return;
+      }
+
+      // P2-E3C4 TEST-only: gross customer cash vs net physical rider settlement.
+      if (path === '/v1/delivery-rider-settlements' && ['GET','POST'].includes(method)) {
+        if (config.operatingMode !== 'TEST') {
+          sendJson(res,403,{error:'TEST only.',code:'TEST_ONLY'});return;
+        }
+        const auth=requireStaffAdmin(req,res,config);if(!auth)return;
+        if(!auth.permissions?.includes('sales.payment.receive')){
+          sendJson(res,403,{error:'Payment permission required.',code:'FORBIDDEN'});return;
+        }
+        try {
+          if(method==='GET'){
+            sendJson(res,200,listRiderNetSettlements(config.testTenantId,auth,
+              url.searchParams.get('riderUserId')||'',url.searchParams.get('businessDate')||''));
+          }else{
+            const body=await readBody(req);
+            if(body.shopId && body.shopId!==config.testTenantId){
+              sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;
+            }
+            const result=confirmRiderNetSettlement(config.testTenantId,body,auth);
+            sendJson(res,result.replayed?200:201,result);
+          }
+        }catch(err){
+          const safe=toPublicSettlementError(err);
+          sendJson(res,safe.status||400,{error:safe.message,code:safe.code||'SETTLEMENT_ERROR'});
+        }
+        return;
+      }
+
+      // P2-E3B: cashier-confirmed full cash handover from rider custody (TEST ONLY).
+      if (path === '/v1/delivery-cash-handovers' && method === 'GET') {
+        if (config.operatingMode !== 'TEST') {
+          sendJson(res,403,{error:'Delivery cash handover is TEST-only.'}); return;
+        }
+        const auth = requireAuth(req,res,config,['admin','cashier']);
+        if (!auth || forbidUnless(auth,res,'sales.payment.receive')) return;
+        try {
+          sendJson(res,200,listDeliveryCashHandovers(config.testTenantId,auth));
+        } catch(err) {
+          const safe=toPublicSettlementError(err);
+          sendJson(res,safe.status || 400,{error:safe.message,...(safe.code?{code:safe.code}:{})});
+        }
+        return;
+      }
+      const riderHandoverMatch = path.match(/^\/v1\/delivery-cash-handovers\/([^/]+)\/confirm$/);
+      if (riderHandoverMatch && method === 'POST') {
+        if (config.operatingMode !== 'TEST') {
+          sendJson(res,403,{error:'Delivery cash handover is TEST-only.'}); return;
+        }
+        const auth = requireAuth(req,res,config,['admin','cashier']);
+        if (!auth || forbidUnless(auth,res,'sales.payment.receive')) return;
+        try {
+          const body=await readBody(req);
+          if (body.shopId && body.shopId!==config.testTenantId) {
+            sendJson(res,403,{error:'Shop mismatch.',code:'SHOP_MISMATCH'});return;
+          }
+          const result=confirmDeliveryCashHandover(config.testTenantId,
+            decodeURIComponent(riderHandoverMatch[1]),body,auth);
+          sendJson(res,result.created?201:200,result);
+        } catch(err) {
+          const safe=toPublicSettlementError(err);
+          sendJson(res,safe.status || 400,{error:safe.message,...(safe.code?{code:safe.code}:{})});
+        }
+        return;
+      }
+
+      // P2-E2C3A TEST-only split cash/bank/credit allocation.
+      const allocationRoute = path.match(/^\/v1\/orders\/([^/]+)\/payment-allocations$/);
+      if (allocationRoute && (method === 'GET' || method === 'POST')) {
+        if (config.operatingMode !== 'TEST') {
+          sendJson(res,403,{error:'Split allocations are currently TEST-only.'});return;
+        }
+        const auth = requireAuth(req,res,config);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth,'sales.payment.receive') ||
+          !['admin','cashier'].includes(auth.role)) {
+          sendJson(res,403,{error:'Cashier/Admin payment permission required.'});return;
+        }
+        const orderId=decodeURIComponent(allocationRoute[1]);
+        try {
+          if (method==='GET') sendJson(res,200,listPaymentAllocations(config.testTenantId,orderId));
+          else {
+            const body=await readBody(req);
+            const result=recordPaymentAllocation(config.testTenantId,orderId,body,auth);
+            sendJson(res,result.created?201:200,result);
+          }
+        } catch(err) {
+          const safe=toPublicSettlementError(err);
+          sendJson(res,safe.status || 400,{error:safe.message,...(safe.code?{code:safe.code}:{})});
         }
         return;
       }
@@ -1917,6 +2345,26 @@ export function createServer(config) {
             error: safe.message,
             ...(safe.code ? { code: safe.code } : {}),
           });
+        }
+        return;
+      }
+
+      // P2-E2E: ADMIN-only TEST invoice void, not delivery cancellation or a refund.
+      const invoiceVoidMatch = path.match(/^\/v1\/orders\/([^/]+)\/void$/);
+      if (method === 'POST' && invoiceVoidMatch) {
+        const auth = requireAuth(req, res, config, ['admin']);
+        if (!auth) return;
+        if (!auth.userId || auth.role !== 'admin' || !authAllows(auth, 'sales.orders.view')) {
+          sendJson(res, 403, { error: 'Admin permission required to void invoices.' });
+          return;
+        }
+        try {
+          const body = await readBody(req);
+          const orderId = decodeURIComponent(invoiceVoidMatch[1]);
+          sendJson(res, 200, voidUnpaidTestOrder(config.testTenantId, orderId, body, auth));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message || 'Could not void invoice.',
+            ...(err.code ? { code: err.code } : {}) });
         }
         return;
       }
@@ -2050,6 +2498,25 @@ export function createServer(config) {
           sendJson(res, err.status || 400, { error: err.message });
         }
         return;
+      }
+
+      // P2-B2.1: A Kitchen session may load only the Preparation document.
+      // The client-side navigation is advisory; enforce the page boundary here
+      // as well, including direct URL entry, refresh and other browser tabs.
+      if ((method === "GET" || method === "HEAD") &&
+          (path === "/" || path.endsWith(".html"))) {
+        const viewer = authenticateRequest(req, config);
+        const restrictedPage = viewer.ok && (viewer.role === 'kitchen' || viewer.role === 'delivery');
+        const landing = viewer.role === 'delivery' ? '/delivery-pool.html' : '/prep.html';
+        if (restrictedPage && path !== landing) {
+          res.writeHead(302, {
+            Location: landing,
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+          });
+          res.end();
+          return;
+        }
       }
 
       if (tryServeStatic(req, res, path)) return;

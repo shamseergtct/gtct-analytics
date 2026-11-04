@@ -55,7 +55,10 @@ function counts(orderId) {
 
 function cloneOrder(sourceId, patch) {
   const row = getDb().prepare(`SELECT * FROM orders WHERE order_id = ?`).get(sourceId);
-  const next = { ...row, ...patch };
+  // Artificial fixture represents a historical order, not a newly issued shift token.
+  // Never duplicate a live shift token into a second order row.
+  const next = { ...row, business_shift_id: null, business_date: null,
+    token_number: null, ...patch };
   const cols = Object.keys(next);
   getDb()
     .prepare(`INSERT INTO orders (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`)

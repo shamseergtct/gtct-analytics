@@ -14,6 +14,7 @@ import readline from "node:readline";
 import { pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { loadConfig, ensureDataDirs } from "../config.js";
+import { inspectExistingTestDatabase, stampMigratedTestDatabase } from "../db/testStartup.js";
 import { openDatabase, runMigrations, closeDatabase, getDb } from "../db/db.js";
 import { createFirstAdmin, StaffAuthError } from "../services/staffAuth.js";
 
@@ -87,6 +88,7 @@ async function main() {
   }
 
   const config = loadConfig({ mode: "script" });
+  inspectExistingTestDatabase(config);
   ensureDataDirs(config);
   const existed = fs.existsSync(config.dbPath);
   if (existed) {
@@ -108,6 +110,7 @@ async function main() {
   openDatabase(config.dbPath);
   try {
     await runMigrations(getDb());
+    stampMigratedTestDatabase(getDb(), config);
     const fullName = (await askVisible("Administrator name: ")).trim();
     const username = (await askVisible("Username: ")).trim();
     let password = await askHidden("Password: ");

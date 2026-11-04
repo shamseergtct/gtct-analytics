@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>GTCT — Delivery Pool (TEST)</title>
+  <link rel="stylesheet" href="/delivery-pool.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="brand"><small>GTCT</small><strong>Delivery</strong></div>
+    <span class="test-pill">TEST</span>
+    <button type="button" id="sign-out" hidden>Sign out</button>
+  </header>
+  <main>
+    <section id="login-section" class="login-panel" hidden>
+      <h1>Delivery sign in</h1>
+      <label>Username<input id="username" autocomplete="username" /></label>
+      <label>Password<input id="password" type="password" autocomplete="current-password" /></label>
+      <button type="button" class="primary" id="sign-in">Sign in</button>
+      <p id="login-error" class="error" role="alert" hidden></p>
+    </section>
+    <section id="pool-section" hidden>
+      <div class="intro"><h1 id="hello">Available deliveries</h1><p>TEST only · Local Server</p></div>
+      <div class="tabs" role="group" aria-label="Delivery views">
+        <button type="button" id="available-tab" class="active" aria-pressed="true">Available</button>
+        <button type="button" id="mine-tab" aria-pressed="false">My orders</button>
+      </div>
+      <div id="filters" class="filters">
+        <label>Block
+          <select id="block"><option value="">All blocks</option></select>
+        </label>
+        <label>Road
+          <input id="road" type="search" placeholder="Any road" inputmode="numeric" maxlength="30" />
+        </label>
+        <button type="button" id="refresh" class="outline">Refresh</button>
+      </div>
+      <p id="message" class="message" aria-live="polite"></p>
+      <section id="suggestions" class="suggestions" hidden aria-live="polite"></section>
+      <section id="cash-summary" class="cash-summary" hidden aria-live="polite"></section>
+      <div id="delivery-list" class="list" aria-live="polite"></div>
+    </section>
+  </main>
+  <script type="module" src="/delivery-pool.js"></script>
+</body>
+</html>

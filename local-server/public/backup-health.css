@@ -1,0 +1,36 @@
+/* P2-C3.1: status-specific colors for the Admin TEST backup health banner only.
+   Leave the shared red settings-banner (access-denied/errors) untouched. */
+#backup-health-box.backup-health {
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  line-height: 1.5;
+}
+#backup-health-box.backup-health[data-health-tone="ok"] {
+  background: #ecfdf3;
+  color: #067647;
+  border-color: #abefc6;
+}
+#backup-health-box.backup-health[data-health-tone="warning"] {
+  background: #fffaeb;
+  color: #92400e;
+  border-color: #fedf89;
+}
+#backup-health-box.backup-health[data-health-tone="error"] {
+  background: #fef3f2;
+  color: #b42318;
+  border-color: #fecdca;
+}
+#backup-health-box.backup-health[hidden] {
+  display: none !important;
+}
+#backup-health-box .btn {
+  margin-inline-start: 0.55rem;
+}
+@media (max-width: 600px) {
+  #backup-health-box .btn {
+    display: block;
+    margin: 0.6rem 0 0;
+    max-width: 100%;
+  }
+}

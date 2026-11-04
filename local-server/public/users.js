@@ -3,8 +3,11 @@ const state = {
   staff: false,
   permissions: [],
   users: [],
+  stations: [],
   mode: "",
   userId: "",
+  commissionCurrencyCode: null,
+  commissionDecimals: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -96,7 +99,7 @@ async function login() {
     }
     applySession(me.json);
     showMain();
-    if (canManage()) await loadUsers();
+    if (canManage()) await loadStaffSetup();
   } finally {
     btn.disabled = false;
     btn.textContent = "Sign in";
@@ -109,6 +112,7 @@ async function logout() {
   state.staff = false;
   state.permissions = [];
   state.users = [];
+  $("backup-health-box").hidden = true;
   showLogin();
 }
 
@@ -120,12 +124,14 @@ async function ensureSession() {
   }
   applySession(me.json);
   showMain();
-  if (canManage()) await loadUsers();
+  if (canManage()) await loadStaffSetup();
 }
 
 function roleLabel(role) {
   if (role === "admin") return "Admin";
   if (role === "cashier") return "Cashier";
+  if (role === "kitchen") return "Kitchen Staff";
+  if (role === "delivery") return "Delivery Boy";
   return "None";
 }
 
@@ -158,7 +164,7 @@ function renderUsers() {
     actions.className = "user-actions";
     actions.append(
       actionButton("Edit", () => openDialog("edit", user)),
-      actionButton("Permissions", () => openDialog("permissions", user)),
+      ...(["kitchen", "delivery"].includes(user.role) ? [] : [actionButton("Permissions", () => openDialog("permissions", user))]),
       actionButton("Reset password", () => openDialog("password", user))
     );
     body.appendChild(tr);
@@ -180,6 +186,145 @@ function escapeHtml(value) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+async function loadBackupHealth() {
+  const box = $("backup-health-box");
+  if (!canManage()) { box.hidden = true; return; }
+  box.hidden = false;
+  const label = $("backup-health-message");
+  // The shared settings-banner defaults to red; explicitly reset on every refresh.
+  box.dataset.healthTone = "neutral";
+  label.textContent = "Checking…";
+  try {
+    const result = await api("/v1/admin/backup-health");
+    if (!result.ok) {
+      box.dataset.healthTone = "error";
+      label.textContent = "Status unavailable — check server logs.";
+      return;
+    }
+    const status = result.json || {};
+    switch (status.state) {
+      case "OK": box.dataset.healthTone = "ok"; break;
+      case "STALE": box.dataset.healthTone = "warning"; break;
+      case "DISABLED": box.dataset.healthTone = "neutral"; break;
+      default: box.dataset.healthTone = "error"; break;
+    }
+    const detail = status.latestBackup?.createdAt
+      ? ` Last verified: ${new Date(status.latestBackup.createdAt).toLocaleString()}.`
+      : "";
+    label.textContent = `${status.state || "UNKNOWN"} — ${status.message || "Status unavailable."}${detail}`;
+  } catch {
+    box.dataset.healthTone = "error";
+    label.textContent = "Status unavailable — check server logs.";
+  }
+}
+
+async function loadStaffSetup() {
+  const stations = await api("/v1/staff-users/stations");
+  if (stations.ok) state.stations = stations.json?.stations || [];
+  else setStatus(stations.json?.error || "Could not load stations.", false);
+  const rules = await api('/v1/delivery-commissions');
+  state.commissionCurrencyCode = rules.ok ? rules.json?.currencyCode : null;
+  state.commissionDecimals = rules.ok ? rules.json?.currencyDecimals : null;
+  if(!rules.ok) setStatus('Rider commission setup unavailable: '+(rules.json?.error||'Check commission service.'),false);
+  await loadUsers();
+  await loadBackupHealth();
+}
+
+function selectedStationIds() {
+  return [...$("user-stations").querySelectorAll('input[type="checkbox"]:checked')]
+    .map((input) => input.value);
+}
+
+function renderAssignedStations(ids = []) {
+  const host = $("user-stations");
+  host.replaceChildren();
+  if (!state.stations.length) {
+    host.textContent = "No active preparation stations available.";
+    return;
+  }
+  for (const station of state.stations) {
+    const label = document.createElement("label");
+    label.className = "check-row";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = station.stationId;
+    input.checked = ids.includes(station.stationId);
+    const name = document.createElement("span");
+    name.textContent = station.name;
+    label.append(input, name);
+    host.append(label);
+  }
+}
+
+function minorToInput(n) {
+  const d=state.commissionDecimals;
+  return (Number(n||0) / (10**d)).toFixed(d);
+}
+function inputMinor(value) {
+  const d=state.commissionDecimals;
+  const v=String(value||'').trim();
+  const match=v.match(/^(\d{1,10})(?:\.(\d+))?$/);
+  if(!match||(match[2]||'').length>d)throw Error(`Use an amount with at most ${d} decimals.`);
+  const n=Number(match[1])*10**d + Number((match[2]||'').padEnd(d,'0')||0);
+  if(!Number.isSafeInteger(n))throw Error('Amount too large.');
+  return n;
+}
+function commissionVisibility() {
+  const show=(state.mode==='add'||state.mode==='edit') && $('user-role').value==='delivery';
+  $('rider-commission-field').hidden=!show;
+  const m=$('staff-commission-method').value;
+  $('staff-commission-amount-row').hidden=!show||!['FIXED_PER_DELIVERY','MANUAL'].includes(m);
+  $('staff-commission-basis-row').hidden=!show||!['TIERED_FIXED','PERCENTAGE'].includes(m);
+  $('staff-commission-rate-row').hidden=!show||m!=='PERCENTAGE';
+  $('staff-commission-tiers-row').hidden=!show||m!=='TIERED_FIXED';
+  $('staff-commission-status').textContent=!show?'':!state.commissionCurrencyCode?
+    'Commission settings unavailable. Cannot save a Rider without currency configuration.':
+    `Currency ${state.commissionCurrencyCode} · daily policy · configured once, used automatically at collection.`;
+  for(const node of document.querySelectorAll('.staff-commission-currency'))
+    node.textContent=state.commissionCurrencyCode||'—';
+}
+function loadCommissionRule(rule) {
+  const p=rule?.policy||{method:'NONE'};
+  $('staff-commission-method').value=p.method||'NONE';
+  $('staff-commission-basis').value=p.basis||'TOTAL_BILL';
+  $('staff-commission-amount').value=minorToInput(p.amountMinor);
+  $('staff-commission-rate').value=((p.rateBps||0)/100).toFixed(2);
+  $('staff-commission-tiers').value=(p.tiers||[{thresholdMinor:50*10**state.commissionDecimals,rewardMinor:.5*10**state.commissionDecimals},
+    {thresholdMinor:80*10**state.commissionDecimals,rewardMinor:1*10**state.commissionDecimals}]).map(t=>
+    `${minorToInput(t.thresholdMinor)} = ${minorToInput(t.rewardMinor)}`).join('\n');
+  commissionVisibility();
+}
+function buildCommissionRule() {
+  if(!state.commissionCurrencyCode||!Number.isInteger(state.commissionDecimals))
+    throw Error('Commission currency is unavailable. Refresh User Management.');
+  const method=$('staff-commission-method').value;
+  const p={method,period:'DAILY'};
+  if(['FIXED_PER_DELIVERY','MANUAL'].includes(method))p.amountMinor=inputMinor($('staff-commission-amount').value);
+  if(['TIERED_FIXED','PERCENTAGE'].includes(method))p.basis=$('staff-commission-basis').value;
+  if(method==='PERCENTAGE'){
+    const r=String($('staff-commission-rate').value).trim().match(/^(\d{1,3})(?:\.(\d{1,2}))?$/);
+    if(!r)throw Error('Enter a percentage with up to 2 decimals.');
+    p.rateBps=Number(r[1])*100+Number((r[2]||'').padEnd(2,'0')||0);
+    if(p.rateBps>10000)throw Error('Percentage cannot exceed 100%.');
+  }
+  if(method==='TIERED_FIXED'){
+    const lines=$('staff-commission-tiers').value.split('\n').map(v=>v.trim()).filter(Boolean);
+    if(!lines.length||lines.length>20)throw Error('Enter 1–20 target slabs.');
+    p.tiers=lines.map(line=>{
+      const x=line.split('=');
+      if(x.length!==2)throw Error('Use Target = Commission, one per line.');
+      return {thresholdMinor:inputMinor(x[0]),rewardMinor:inputMinor(x[1])};
+    });
+    for(let i=1;i<p.tiers.length;i++)if(p.tiers[i].thresholdMinor<=p.tiers[i-1].thresholdMinor)
+      throw Error('Target amounts must increase from top to bottom.');
+  }
+  return p;
+}
+function updateStationVisibility() {
+  $("stations-field").hidden = !(state.mode === "add" || state.mode === "edit") || $("user-role").value !== "kitchen";
+  commissionVisibility();
 }
 
 async function loadUsers() {
@@ -209,6 +354,7 @@ function showFields(mode) {
   show("role-field", mode === "add" || mode === "edit");
   show("active-field", mode === "add" || mode === "edit");
   show("permission-fields", mode === "permissions");
+  updateStationVisibility();
   $("password-label").textContent = mode === "password" ? "New password" : "Password";
   $("user-name").required = mode === "add" || mode === "edit";
   $("user-username").required = mode === "add";
@@ -224,7 +370,9 @@ function openDialog(mode, user = null) {
   $("user-username").value = mode === "add" ? "" : user?.username || "";
   $("user-password").value = "";
   $("user-confirm").value = "";
-  $("user-role").value = user?.role === "admin" ? "admin" : "cashier";
+  $("user-role").value = user?.role || "cashier";
+  renderAssignedStations(user?.stationIds || []);
+  loadCommissionRule(user?.commissionRule);
   $("user-active").checked = user ? Boolean(user.isActive) : true;
   const grants = user?.permissions || [];
   $("perm-price").checked = grants.includes("sales.price_override");
@@ -275,6 +423,8 @@ async function saveUser(event) {
   const btn = $("user-save");
   btn.disabled = true;
   try {
+    const commissionPolicy = (['add','edit'].includes(state.mode) && $('user-role').value==='delivery')
+      ? buildCommissionRule() : undefined;
     let res;
     if (state.mode === "add") {
       res = await api("/v1/staff-users", {
@@ -287,6 +437,8 @@ async function saveUser(event) {
           role: $("user-role").value,
           isActive: $("user-active").checked,
           permissions: [],
+          stationIds: $("user-role").value === "kitchen" ? selectedStationIds() : [],
+          ...(commissionPolicy ? {commissionPolicy}: {}),
         }),
       });
     } else if (state.mode === "edit") {
@@ -296,6 +448,8 @@ async function saveUser(event) {
           fullName: $("user-name").value.trim(),
           role: $("user-role").value,
           isActive: $("user-active").checked,
+          stationIds: $("user-role").value === "kitchen" ? selectedStationIds() : [],
+          ...(commissionPolicy ? {commissionPolicy}: {}),
         }),
       });
     } else if (state.mode === "permissions") {
@@ -324,11 +478,15 @@ async function saveUser(event) {
     closeDialog();
     setStatus("Saved.");
     await loadUsers();
+  } catch(error) {
+    setDialogError(error.message||'Commission policy is invalid.');
   } finally {
     btn.disabled = false;
   }
 }
 
+$("staff-commission-method").addEventListener('change',commissionVisibility);
+$("user-role").addEventListener("change", updateStationVisibility);
 $("login-btn").addEventListener("click", login);
 $("toggle-password-btn").addEventListener("click", () => {
   const input = $("login-password");
@@ -349,3 +507,5 @@ $("user-dialog").addEventListener("click", (event) => {
 });
 
 ensureSession();
+
+$("backup-health-refresh").addEventListener("click", loadBackupHealth);

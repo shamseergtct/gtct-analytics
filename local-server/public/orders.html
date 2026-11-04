@@ -42,6 +42,7 @@
           <nav id="app-nav" class="app-nav" aria-label="Main">
             <a class="nav-link" href="/">Sales</a>
             <a class="nav-link" href="/orders.html" aria-current="page">Orders</a>
+            <a class="nav-link" href="/monitor.html">Order Monitor</a>
             <a id="prep-link" class="nav-link" href="/prep.html" hidden>Preparation</a>
             <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
           </nav>
@@ -51,9 +52,17 @@
       <main class="orders-page">
         <p id="orders-denied" class="error" hidden>You do not have permission to view orders.</p>
         <div id="orders-shell">
+          <section class="shift-bar" aria-label="Business shift" id="shift-bar">
+            <p id="shift-info" class="hint" aria-live="polite">Loading business shift…</p>
+            <div class="shift-actions" id="shift-actions" hidden>
+              <input id="shift-next-date" type="date" aria-label="Business date for next shift" hidden />
+              <button type="button" id="shift-open" class="btn ghost" hidden>Open Shift</button>
+              <button type="button" id="shift-close" class="btn ghost" hidden>Close Shift</button>
+            </div>
+          </section>
           <div id="type-tabs" class="chips chip-scroll" role="tablist" aria-label="Order types"></div>
           <div class="orders-tools">
-            <input id="order-search" type="search" placeholder="Order, customer, phone, block, road, building" aria-label="Search orders" />
+            <input id="order-search" type="search" placeholder="Search invoice, token, customer" aria-label="Search invoice, token or customer" />
             <input id="order-date" type="date" aria-label="Order date" />
             <button type="button" id="clear-filters" class="btn ghost">Clear</button>
           </div>

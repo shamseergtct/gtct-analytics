@@ -1,0 +1,91 @@
+.monitor-page { width: min(1200px, 100%); margin: 0 auto; padding: 16px; }
+.monitor-test { font-size: 0.75rem; padding: 2px 7px; border-radius: 8px; background: #fff4d9; color: #8b5700; vertical-align: middle; }
+.monitor-info { background: #fff7e6; border: 1px solid #ecd5a6; padding: 11px 13px; border-radius: 10px; line-height: 1.45; }
+.monitor-topnav { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.monitor-controls { display: flex; align-items: end; gap: 10px; flex-wrap: wrap; padding: 12px 0; }
+.monitor-controls label { display: grid; gap: 5px; flex: 1 1 160px; font-size: 0.9rem; font-weight: 600; }
+.monitor-controls input, .monitor-controls select { min-height: 44px; min-width: 0; background: white; border: 1px solid var(--line); border-radius: 9px; padding: 9px; }
+.monitor-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.monitor-order { background: white; border: 1px solid var(--line); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); }
+.monitor-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; margin-bottom: 12px; }
+.monitor-head h2 { margin: 0; font-size: 1.1rem; overflow-wrap: anywhere; }
+.monitor-meta { font-size: 0.9rem; color: var(--muted); margin: 7px 0; overflow-wrap: anywhere; }
+.monitor-progress { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.monitor-pill { display: inline-flex; padding: 5px 9px; border-radius: 100px; background: #eff3f8; color: #294967; font-size: 0.78rem; font-weight: 700; }
+.monitor-pill.finished, .monitor-pill.ready { background: #dff6eb; color: #05603a; }
+.monitor-pill.preparing, .monitor-pill.waiting { background: #fff1cf; color: #945a06; }
+.monitor-pill.recheck { background: #fee4e2; color: #b42318; }
+.monitor-action { width: 100%; margin-top: 12px; min-height: 44px; }
+.monitor-pager { margin: 14px 0 30px; display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.monitor-station-list { margin: 8px 0; padding-left: 20px; font-size: 0.88rem; }
+.monitor-station-list li { margin: 4px 0; }
+@media (max-width: 680px) {
+  .topbar { flex-wrap: wrap; }
+  .monitor-topnav { overflow-x: auto; max-width: 100%; }
+  .monitor-controls label { flex-basis: 100%; }
+  .monitor-page { padding: 10px; }
+}
+
+/* P2-E1.2 — compact monitoring display; actions and safety conditions unchanged. */
+.monitor-page { width: min(1240px, 100%); padding: 16px clamp(12px, 2.5vw, 28px); }
+.monitor-info { background: transparent; border: 0; padding: 2px 0 9px; margin: 0; color: #7a8998; font-size: .78rem; }
+.monitor-controls { padding: 6px 0 15px; gap: 10px; }
+.monitor-controls label { font-size: .8rem; color: #63748a; font-weight: 680; }
+.monitor-controls input, .monitor-controls select { border-radius: 10px; min-height: 43px; }
+.monitor-list { gap: 14px; }
+.monitor-order { padding: 16px; border-radius: 13px; box-shadow: 0 1px 4px rgba(20,32,51,.04); }
+.monitor-head { margin-bottom: 9px; }
+.monitor-head h2 { font-size: 1.02rem; }
+.monitor-meta { font-size: .8rem; margin: 6px 0; }
+.monitor-station-list { font-size: .82rem; color: #647589; padding-left: 18px; }
+.monitor-progress { gap: 5px; }
+.monitor-pill { font-size: .71rem; padding: 4px 8px; }
+.monitor-action { border-radius: 9px; font-size: .86rem; }
+
+.monitor-review-actions {display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.monitor-review-actions .btn {flex:1 1 180px;min-height:44px}
+
+
+/* P2-E2D Compact Monitor — presentation only; old review/actions remain in Details. */
+.monitor-page { width: min(1540px, 100%); padding: 18px clamp(12px, 2.2vw, 30px) 40px; }
+.monitor-controls { background: #fff; border: 1px solid #e2e9f2; border-radius: 14px; padding: 12px; margin-bottom: 14px; align-items: end; gap: 12px; }
+.monitor-controls label { font-size: .78rem; font-weight: 700; color: #596c85; }
+.monitor-controls input, .monitor-controls select { border: 1px solid #d8e3f0; min-height: 44px; border-radius: 10px; }
+.monitor-controls label:nth-child(3) { flex: 2 1 270px; }
+.monitor-view-switch { display: flex; border: 1px solid #dae4f0; border-radius: 10px; padding: 3px; gap: 3px; height: 44px; }
+.monitor-switch-btn { appearance: none; background: transparent; border: 0; color: #526987; font-weight: 750; border-radius: 8px; min-height: 36px; min-width: 39px; cursor: pointer; font-size: 1.22rem; }
+.monitor-switch-btn[aria-pressed="true"] { background: #e5f0ff; color: #0958b3; }
+.monitor-refresh { min-height: 44px; }
+.monitor-list { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+.monitor-list.is-list { grid-template-columns: 1fr; }
+.monitor-order { border: 1px solid #dce6f2; border-radius: 14px; background: #fff; box-shadow: 0 5px 17px rgba(29, 51, 86, .045); padding: 16px 17px 13px; min-width: 0; }
+.monitor-card-head { display: flex; gap: 9px; align-items: center; justify-content: space-between; }
+.monitor-card-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; min-width: 0; }
+.monitor-number { color: #0c2144; font-size: .98rem; font-weight: 800; line-height: 1.3; margin: 0; overflow-wrap: anywhere; }
+.monitor-token { background: #eff4fa; color: #58718f; font-size: .76rem; padding: 4px 9px; border-radius: 8px; font-weight: 700; white-space: nowrap; }
+.monitor-type { flex: 0 0 auto; color: #0853ae; background: #e7f1ff; font-size: .68rem; font-weight: 800; padding: 5px 9px; border-radius: 99px; max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.monitor-card-meta { margin: 12px 0 10px; display: flex; flex-direction: column; gap: 3px; min-height: 28px; }
+.monitor-customer { color: #1f3c60; font-size: .84rem; font-weight: 620; overflow-wrap: anywhere; }
+.monitor-address { font-size: .79rem; color: #637791; overflow-wrap: anywhere; }
+.monitor-card-statuses { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 27px; margin-bottom: 10px; }
+.monitor-card-statuses .monitor-pill { border-radius: 99px; padding: 6px 11px; font-size: .7rem; line-height: 1.05; letter-spacing: .005em; }
+.monitor-pill.is-success { background: #d9f8e9; color: #036641; }
+.monitor-pill.is-neutral { background: #fff0c7; color: #8a540c; }
+.monitor-pill.is-progress { background: #ffe3d5; color: #a44018; }
+.monitor-pill.is-credit { background: #efe4ff; color: #712dc2; }
+.monitor-pill.is-danger { background: #ffe1e1; color: #a32e2e; }
+.monitor-card-footer { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 20px; }
+.monitor-rider { color: #61748b; font-size: .78rem; overflow-wrap: anywhere; }
+.monitor-footer-spacer { flex: 1; }
+.monitor-ready { font-size: .77rem; font-weight: 700; min-height: 34px; padding: 6px 12px; line-height: 1.15; width: auto; border-radius: 8px; white-space: normal; }
+.monitor-detail { border-top: 1px solid #ebf0f6; margin-top: 11px; }
+.monitor-detail-trigger { color: #175baf; font-size: .78rem; font-weight: 730; list-style: none; text-align: right; padding: 9px 0 1px; cursor: pointer; }
+.monitor-detail-trigger::-webkit-details-marker { display:none; }
+.monitor-detail-trigger::after { content: '  ›'; font-size: 1.1rem; }
+.monitor-detail[open] .monitor-detail-trigger::after { content: '  ⌄'; }
+.monitor-detail-body { margin-top: 10px; border-top: 1px solid #edf1f6; padding-top: 10px; }
+.monitor-review-actions { margin-top: 10px; }
+.monitor-review-actions .btn { padding: 9px 12px; font-size: .8rem; min-height: 38px; }
+.monitor-station-list { margin: 7px 0; padding-left: 17px; font-size: .78rem; }
+@media (max-width: 1100px) { .monitor-list { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+@media (max-width: 690px) { .monitor-list { grid-template-columns: 1fr; gap: 10px; } .monitor-page { padding: 12px 10px 32px; } .monitor-order { padding: 13px 14px 10px; } .monitor-controls { gap: 9px; } .monitor-controls label { flex: 1 1 100%; } .monitor-controls label:nth-child(3) { flex-basis: 100%; } .monitor-card-meta { margin: 10px 0 8px; } }

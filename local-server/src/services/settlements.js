@@ -8,6 +8,7 @@ import { getDb } from "../db/db.js";
 import { newId } from "../util/ids.js";
 import { nowIso } from "../util/time.js";
 import { recordAudit } from "./audit.js";
+import { readAllocationSummary } from "./paymentAllocations.js";
 
 export function toPublicSettlementError(err) {
   const code = String(err?.code || "");
@@ -253,6 +254,20 @@ export function settleCashPayment(input, config, actor = {}) {
       );
     }
 
+    // Prevent a separate legacy cash/bank settlement while rider custody is open.
+    // Only the atomic rider cash handover flow may resolve CASH_WITH_BOY.
+    if (order.fulfillment_behavior === 'DELIVERY' &&
+      db.prepare(`SELECT 1 FROM delivery_order_payment_reports
+        WHERE shop_id=? AND order_id=? AND report_type='CASH_WITH_BOY'`)
+        .get(shopId,orderId)) {
+      throw fail(409,'Cash is reported in rider custody. Confirm handover before posting shop payment.',
+        'RIDER_CASH_CUSTODY',reject('RIDER_CASH_CUSTODY'));
+    }
+
+    const split = db.prepare(`SELECT 1 FROM order_payment_allocations WHERE shop_id=? AND order_id=?`)
+      .get(shopId,orderId);
+    if (split) throw fail(409, 'Split payment exists. Use Orders split-payment form.',
+      'SPLIT_PAYMENT_EXISTS', reject('SPLIT_PAYMENT_EXISTS'));
     const balance = loadBalance(db, shopId, orderId);
     const remaining = balance ? Number(balance.balance_cents) : orderTotal;
     if (balance?.payment_status === "PAID" || remaining <= 0) {
@@ -412,6 +427,13 @@ export function settleCashPayment(input, config, actor = {}) {
 }
 
 function paymentView(order, balance, settlement) {
+  const db = getDb();
+  const allocations = readAllocationSummary(db,order.tenant_id,order.order_id,order.total_cents);
+  const creditOwner = db.prepare(`SELECT c.customer_id, c.name, c.phone
+    FROM order_payment_allocations a
+    JOIN shop_customers c ON c.customer_id=a.credit_customer_id AND c.shop_id=a.shop_id
+    WHERE a.shop_id=? AND a.order_id=? AND a.credit_cents>0
+    ORDER BY a.created_at,a.allocation_id LIMIT 1`).get(order.tenant_id,order.order_id);
   const orderTotal = Number(order.total_cents || 0);
   const paid = balance ? Number(balance.paid_cents) : 0;
   const due = balance ? Number(balance.balance_cents) : orderTotal;
@@ -420,14 +442,23 @@ function paymentView(order, balance, settlement) {
     orderNumber: order.order_number,
     customerName: order.customer_name || "",
     customerPhone: order.customer_phone || "",
+    customerId: order.customer_id || "",
+    creditCustomerId: creditOwner?.customer_id || "",
+    creditCustomerName: creditOwner?.name || "",
+    creditCustomerPhone: creditOwner?.phone || "",
     orderStatus: order.status,
     currencyCode: order.currency_code || "",
     currencyLabel: order.currency_label || order.currency_code || "",
     currencyDecimals: Number(order.currency_decimals != null ? order.currency_decimals : 2),
     orderTotalCents: orderTotal,
-    paidCents: paid,
-    balanceCents: due,
-    paymentStatus: balance?.payment_status || "UNPAID",
+    paidCents: allocations.paidCents,
+    balanceCents: allocations.balanceCents,
+    cashCents: allocations.cashCents,
+    bankCents: allocations.bankCents,
+    creditCents: allocations.creditCents,
+    unallocatedCents: allocations.unallocatedCents,
+    hasAllocations: allocations.hasAllocations,
+    paymentStatus: allocations.paymentStatus,
     settlement: settlement
       ? {
           settlementId: settlement.settlement_id,
@@ -483,7 +514,9 @@ export function listPendingPayments(shopId) {
        ORDER BY o.created_at ASC, o.order_number ASC`
     )
     .all(shopId);
-  return rows.map((row) => ({
+  return rows.filter(row => {
+    return readAllocationSummary(db,shopId,row.order_id,row.total_cents).unallocatedCents > 0;
+  }).map((row) => ({
     orderId: row.order_id,
     orderNumber: row.order_number,
     customerName: row.customer_name || "",

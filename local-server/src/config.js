@@ -141,6 +141,22 @@ function readTlsMaterial(errors) {
   };
 }
 
+function pathWithin(candidate, parent) {
+  const a = path.resolve(candidate);
+  const b = path.resolve(parent);
+  const relative = path.relative(b, a);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function reservedProductionDir() {
+  const explicit = String(process.env.GTCT_PRODUCTION_DATA_DIR || "").trim();
+  if (explicit) return path.resolve(explicit);
+  if (process.platform === "win32") {
+    return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local"), "GTCT", "RestaurantProductionServer");
+  }
+  return path.join(ROOT, "data-production");
+}
+
 function envFlag(name) {
   return String(process.env[name] || "").toLowerCase() === "true";
 }
@@ -167,6 +183,7 @@ function envFlag(name) {
 export function loadConfig(options = {}) {
   const mode = options.mode || "http";
   const dataDir = resolveDataDir();
+  const requestedOperatingMode = String(process.env.GTCT_OPERATING_MODE || "TEST").trim().toUpperCase();
   const port = Number(process.env.GTCT_LOCAL_PORT || 8787);
   const host = String(process.env.GTCT_LOCAL_HOST || "127.0.0.1");
   const physicalPrintEnabled = envFlag("GTCT_ENABLE_PHYSICAL_PRINT");
@@ -183,6 +200,34 @@ export function loadConfig(options = {}) {
   const warnings = [];
   const errors = [];
   const tlsMaterial = readTlsMaterial(errors);
+
+  // Production execution is deliberately unavailable in Phase P2-A1, including
+  // CLI seed/migrate paths. Never treat a UI flag as production authorization.
+  if (requestedOperatingMode !== "TEST") {
+    errors.push("Only TEST operating mode is implemented. Real restaurant startup is blocked.");
+  }
+
+  // Prevent TEST scripts and servers from targeting the reserved REAL data dir.
+  // Compare resolved paths; reject symlink aliases to an existing reserved dir.
+  const productionDir = reservedProductionDir();
+  const canonical = (p) => {
+    // Resolve symlinked existing ancestors even when the final data folder
+    // has not been created yet (a common first-start scenario).
+    let current = path.resolve(p);
+    const missing = [];
+    while (!fs.existsSync(current)) {
+      const parent = path.dirname(current);
+      if (parent === current) break;
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+    try { return path.join(fs.realpathSync(current), ...missing); }
+    catch { return path.resolve(p); }
+  };
+  if (pathWithin(canonical(dataDir), canonical(productionDir)) ||
+      pathWithin(dataDir, productionDir)) {
+    errors.push("TEST cannot use the reserved production data directory.");
+  }
 
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     errors.push(`Invalid GTCT_LOCAL_PORT: ${port}`);
@@ -301,6 +346,7 @@ export function loadConfig(options = {}) {
     allowDevToken,
     physicalPrintEnabled,
     allowTcpProbe,
+    operatingMode: requestedOperatingMode,
     testTenantId: "test-tenant-phase1",
     restaurantDisplayName: "GTCT RESTAURANT — KITCHEN TEST",
     apiToken,

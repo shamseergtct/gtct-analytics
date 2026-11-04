@@ -3,6 +3,7 @@ import { getShopSettings } from "./shopSettings.js";
 import { listOrderTypes } from "./orderSetup.js";
 import { getOrder } from "./orders.js";
 import { getOrderPayment } from "./settlements.js";
+import { readOrderOperationalState } from "./orderOperationalState.js";
 
 const BEHAVIORS = new Set(["COUNTER", "TAKEAWAY", "DELIVERY", "TABLE", "CAR_HOP"]);
 const DEFAULT_PAGE_SIZE = 40;
@@ -18,6 +19,26 @@ function clean(value, max) {
 
 function likePattern(value) {
   return `%${clean(value, 80).replace(/[\\%_]/g, "\\$&")}%`;
+}
+
+/**
+ * Tokens reset per business shift and are stored as integers. UI displays 001,
+ * while SQLite stores 1; CAST(token_number AS TEXT) LIKE '%001%' misses it.
+ * An explicit "Token 001" / "#001" query searches only the token field.
+ * A bare "001" also matches the exact token, alongside existing text search.
+ */
+function tokenSearch(query) {
+  const q = clean(query, 80);
+  const tagged = /^(?:token(?:\s*(?:number|no\.?))?\s*[:#-]?\s*|#)(\d+)$/i.exec(q);
+  const bare = /^\d+$/.test(q);
+  if (!tagged && !bare) return { explicit: false, number: null };
+  const digits = tagged ? tagged[1] : q;
+  // Reject invalid/unsafe numbers instead of silently rounding a token.
+  const number = Number(digits);
+  return {
+    explicit: !!tagged,
+    number: Number.isSafeInteger(number) && number > 0 ? number : null,
+  };
 }
 
 function dayRange(dateStr, timeZone) {
@@ -72,7 +93,13 @@ function summary(row) {
   return {
     orderId: row.order_id,
     orderNumber: row.order_number,
+    // Existing unique shop sequence is the permanent TEST invoice reference.
+    invoiceNumber: row.order_number,
+    businessDate: row.business_date || "",
+    businessShiftId: row.business_shift_id || "",
+    tokenNumber: row.token_number == null ? null : Number(row.token_number),
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
     orderTypeName: row.order_type_name || row.order_type || "",
     orderTypeCode: row.order_type || "",
     fulfillmentBehavior: row.fulfillment_behavior || "",
@@ -168,6 +195,7 @@ function filtersFrom(shopId, query) {
     page,
     pageSize,
     range,
+    businessDate: date,
   };
 }
 
@@ -199,20 +227,38 @@ function whereClause(shopId, filters) {
     params.push(filters.addressLabel);
   }
   if (filters.range) {
-    clauses.push("o.created_at >= ? AND o.created_at < ?");
-    params.push(filters.range.start, filters.range.end);
+    // New orders belong to the opening shift business date even after midnight.
+    // Historical pre-shift orders remain searchable by their creation date.
+    clauses.push("(o.business_date = ? OR (o.business_date IS NULL AND o.created_at >= ? AND o.created_at < ?))");
+    const shiftBusinessDate = filters.businessDate;
+    params.push(shiftBusinessDate, filters.range.start, filters.range.end);
   }
   if (filters.q) {
-    const pattern = likePattern(filters.q);
-    clauses.push(`(
-      o.order_number LIKE ? ESCAPE '\\' OR
-      o.customer_name LIKE ? ESCAPE '\\' OR
-      o.customer_phone LIKE ? ESCAPE '\\' OR
-      o.block_number LIKE ? ESCAPE '\\' OR
-      o.road_number LIKE ? ESCAPE '\\' OR
-      o.building_number LIKE ? ESCAPE '\\'
-    )`);
-    params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    const token = tokenSearch(filters.q);
+    if (token.explicit) {
+      // Exact shift token search, including padded input such as "Token 001".
+      clauses.push(token.number == null ? "1 = 0" : "o.token_number = ?");
+      if (token.number != null) params.push(token.number);
+    } else {
+      // Keep invoice/customer/phone/address search intact. Bare digits also
+      // match the EXACT token; "001" correctly finds token_number = 1.
+      const pattern = likePattern(filters.q);
+      const textMatch = `(
+        o.order_number LIKE ? ESCAPE '\\' OR
+        o.customer_name LIKE ? ESCAPE '\\' OR
+        o.customer_phone LIKE ? ESCAPE '\\' OR
+        o.block_number LIKE ? ESCAPE '\\' OR
+        o.road_number LIKE ? ESCAPE '\\' OR
+        o.building_number LIKE ? ESCAPE '\\'
+      )`;
+      if (token.number != null) {
+        clauses.push(`(o.token_number = ? OR ${textMatch})`);
+        params.push(token.number);
+      } else {
+        clauses.push(textMatch);
+      }
+      params.push(pattern, pattern, pattern, pattern, pattern, pattern);
+    }
   }
   return { sql: clauses.join(" AND "), params };
 }
@@ -257,7 +303,16 @@ export function listOrderRegister(shopId, query) {
       `${LIST_SELECT} ${LIST_FROM} WHERE ${where.sql} ORDER BY ${orderBy} LIMIT ? OFFSET ?`
     )
     .all(...where.params, filters.pageSize, offset)
-    .map(summary);
+    .map((row) => {
+      const stage = readOrderOperationalState(db, shopId, row);
+      const payment = getOrderPayment(row.order_id,shopId);
+      return { ...summary(row), paymentStatus:payment.paymentStatus,
+        cashCents:payment.cashCents, bankCents:payment.bankCents,
+        creditCents:payment.creditCents, unallocatedCents:payment.unallocatedCents,
+        hasAllocations:payment.hasAllocations, operationalStatus: stage.operationalStatus,
+        kitchenStatus: stage.kitchenStatus, dispatchStatus: stage.dispatchStatus,
+        deliveryBoyName: stage.deliveryBoyName, deliveryPaymentReport: stage.deliveryPaymentReport };
+    });
   const labels = db
     .prepare(
       `SELECT DISTINCT address_label AS label
@@ -298,6 +353,11 @@ export function getOrderRegisterDetail(shopId, orderId) {
   const payment = getOrderPayment(row.order_id, shopId);
   return {
     ...summary(row),
+    ...(() => {
+      const stage = readOrderOperationalState(db, shopId, row);
+      return { operationalStatus: stage.operationalStatus, kitchenStatus: stage.kitchenStatus,
+        dispatchStatus: stage.dispatchStatus, deliveryBoyName: stage.deliveryBoyName, deliveryPaymentReport: stage.deliveryPaymentReport };
+    })(),
     goodsCents: Number(order.goods_cents || 0),
     taxCents: Number(order.tax_cents || 0),
     taxName: order.tax_name || "",
@@ -305,6 +365,11 @@ export function getOrderRegisterDetail(shopId, orderId) {
     paymentStatus: payment.paymentStatus,
     paidCents: payment.paidCents,
     balanceCents: payment.balanceCents,
+    cashCents: payment.cashCents,
+    bankCents: payment.bankCents,
+    creditCents: payment.creditCents,
+    unallocatedCents: payment.unallocatedCents,
+    hasAllocations: payment.hasAllocations,
     paymentTender: payment.settlement?.tender || "",
     bankAccountLabel: payment.settlement?.bankAccountLabel || "",
     lines: (order.lines || []).map((line) => ({

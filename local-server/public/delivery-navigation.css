@@ -1,0 +1,24 @@
+/* P2-E3C2: shared light-theme navigation. No accounting or API changes. */
+.delivery-nav-group { position: relative; flex: 0 0 auto; min-width: 0; }
+.delivery-nav-group[hidden], .delivery-sub-link[hidden], .delivery-sub-unavailable[hidden] { display: none !important; }
+.delivery-nav-summary { list-style: none; gap: 8px; user-select: none; }
+.delivery-nav-summary::-webkit-details-marker { display: none; }
+.delivery-nav-summary::after { content: ''; width: 6px; height: 6px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(45deg) translateY(-2px); margin-left: 3px; opacity: .65; }
+.delivery-nav-group[open] .delivery-nav-summary { background: #eaf3ff; border-color: #b5d2f5; }
+.delivery-nav-group[open] .delivery-nav-summary::after { transform: rotate(225deg) translate(-1px, -1px); }
+.delivery-nav-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 90; width: 244px; max-width: min(320px, calc(100vw - 20px)); display: grid; gap: 3px; padding: 8px; border: 1px solid #d7e3f0; border-radius: 12px; background: #fff; box-shadow: 0 16px 38px rgba(21, 44, 78, .15); }
+.delivery-sub-link, .delivery-sub-unavailable { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; min-height: 42px; border-radius: 8px; font-size: .85rem; text-decoration: none; line-height: 1.25; font-weight: 700; color: #0b539e; }
+.delivery-sub-link:hover, .delivery-sub-link:focus-visible { background: #edf5ff; outline: none; }
+.delivery-sub-link[aria-current="page"] { background: #e7f1ff; color: #0b539e; }
+.delivery-sub-unavailable { color: #7a899a; font-weight: 650; cursor: not-allowed; }
+.delivery-sub-unavailable small { font-size: .7rem; font-weight: 500; }
+.delivery-nav-group:focus-within { z-index: 90; }
+.cash-topnav .delivery-nav-summary, .commission-nav .delivery-nav-summary { min-height: 36px; }
+@media (max-width: 1023px) {
+  #app-nav .delivery-nav-group { width: 100%; }
+  #app-nav .delivery-nav-summary { width: 100%; min-height: 44px; justify-content: space-between; }
+  #app-nav .delivery-nav-menu { position: static; width: 100%; max-width: none; margin-top: 4px; box-shadow: none; border: 1px solid #e3edf8; background: #f7faff; }
+}
+@media (max-width: 560px) {
+  .cash-topnav .delivery-nav-menu, .commission-nav .delivery-nav-menu { right: 0; left: auto; }
+}

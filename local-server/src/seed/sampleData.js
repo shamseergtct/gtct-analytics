@@ -10,6 +10,7 @@ import { log } from "../util/logger.js";
  * Never resets existing data.
  */
 export function seedIfEmpty(config) {
+  if (config.operatingMode !== "TEST") throw new Error("Sample data is TEST-only.");
   const db = getDb();
   const stationCount = db.prepare(`SELECT COUNT(*) AS c FROM stations`).get().c;
   if (stationCount > 0) {
@@ -20,6 +21,7 @@ export function seedIfEmpty(config) {
 }
 
 export function seedSampleData(config) {
+  if (config.operatingMode !== "TEST") throw new Error("Sample data is TEST-only.");
   const ts = nowIso();
   const db = getDb();
 

@@ -6,6 +6,7 @@
     <meta name="color-scheme" content="light" />
     <title>GTCT Restaurant</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/delivery-navigation.css" />
   </head>
   <body class="sales-app">
     <div id="app">
@@ -86,11 +87,22 @@
             <nav id="app-nav" class="app-nav" aria-label="Main">
               <a class="nav-link" href="/" aria-current="page">Sales</a>
               <a id="orders-link" class="nav-link" href="/orders.html" hidden>Orders</a>
+              <a id="monitor-link" class="nav-link" href="/monitor.html" hidden>Order Monitor</a>
               <a id="prep-link" class="nav-link" href="/prep.html" hidden>Preparation</a>
               <a id="menu-setup-link" class="nav-link" href="/menu.html" hidden>Menu Setup</a>
               <a id="shop-settings-link" class="nav-link" href="/shop-settings.html" hidden>Shop Settings</a>
               <a id="settings-link" class="nav-link" href="/settings.html" hidden>Printer Settings</a>
               <a id="users-link" class="nav-link" href="/users.html" hidden>User Management</a>
+              <!-- P2-E3C2 DELIVERY MANAGEMENT NAV -->
+              <details id="delivery-management" class="delivery-nav-group" hidden>
+                <summary class="nav-link delivery-nav-summary">Delivery Management</summary>
+                <div class="delivery-nav-menu" aria-label="Delivery Management links">
+                  <a class="delivery-sub-link" href="/delivery-cash.html">Rider Cash</a>
+                  <a id="delivery-commission-link" class="delivery-sub-link" data-installed="yes" href="/delivery-commission.html" hidden>Commission Setup</a>
+                  <span id="delivery-commission-unavailable" class="delivery-sub-unavailable" hidden>Commission Setup<small>Install P2-E3C1 first</small></span>
+                  <span class="delivery-sub-unavailable" aria-disabled="true">Commission Reports<small>Coming soon — not yet implemented</small></span>
+                </div>
+              </details>
               <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
             </nav>
           </div>
@@ -127,10 +139,10 @@
                   <span id="order-number-label">Draft #</span>
                   <input id="order-number" type="text" readonly title="" />
                 </label>
-                <label class="field">
-                  <span>Type</span>
-                  <select id="order-type"></select>
-                </label>
+                <div class="field order-type-field">
+                  <label for="order-type">Order type</label>
+                  <select id="order-type" aria-label="Order type"></select>
+                </div>
                 <div id="fulfillment-fields" class="fulfillment-fields"></div>
               </div>
               <div id="split-bar" class="split-bar" hidden></div>
@@ -138,6 +150,7 @@
               <div class="cart-footer sticky-cart-footer">
                 <div id="cart-tax-summary" class="cart-tax-summary" aria-live="polite"></div>
                 <p id="send-status" class="status-line" hidden></p>
+                <button type="button" id="cart-add-more-items" class="btn ghost cart-add-more-items">← Add more items</button>
                 <div class="cart-actions">
                   <button type="button" id="clear-cart-btn" class="btn ghost">Clear</button>
                   <button type="button" id="review-btn" class="btn primary">Review &amp; Send</button>
@@ -541,26 +554,54 @@
         <div class="payment-body">
           <dl class="payment-facts">
             <div><dt>Order total</dt><dd id="payment-total">—</dd></div>
-            <div><dt>Already paid</dt><dd id="payment-paid">—</dd></div>
-            <div><dt>Balance due</dt><dd id="payment-due">—</dd></div>
+            <div><dt>Received at shop</dt><dd id="payment-paid">—</dd></div>
+            <div><dt>Customer credit</dt><dd id="payment-credit-total">—</dd></div>
+            <div class="payment-facts-balance"><dt>To allocate</dt><dd id="payment-due">—</dd></div>
             <div><dt>Status</dt><dd id="payment-status" class="pay-status">—</dd></div>
-            <div><dt>Method</dt><dd id="payment-method">Cash</dd></div>
           </dl>
           <div id="payment-choice" class="payment-choice">
-            <div id="payment-method-picker" class="payment-method-picker" role="radiogroup" aria-label="Payment method">
-              <label class="payment-method-option">
-                <input type="radio" name="pay-method" value="CASH" checked />
-                Cash
+            <div id="payment-mode-picker" class="payment-entry-modes" role="radiogroup" aria-label="Payment mode">
+              <label class="payment-entry-mode"><input type="radio" name="pay-entry-mode" value="CASH" checked />Cash</label>
+              <label class="payment-entry-mode"><input type="radio" name="pay-entry-mode" value="BANK" />Bank</label>
+              <label class="payment-entry-mode"><input type="radio" name="pay-entry-mode" value="CREDIT" />Credit</label>
+              <label class="payment-entry-mode"><input type="radio" name="pay-entry-mode" value="SPLIT" />Split</label>
+            </div>
+            <div id="payment-entry-fields" class="payment-entry-fields">
+              <label id="payment-cash-field" class="payment-entry-field" for="payment-cash-input">
+                <span>Cash</span><input id="payment-cash-input" inputmode="decimal" autocomplete="off" spellcheck="false" value="0" />
               </label>
-              <label class="payment-method-option">
-                <input type="radio" name="pay-method" value="BANK" />
-                Bank
+              <label id="payment-bank-field" class="payment-entry-field" for="payment-bank-input" hidden>
+                <span>Bank</span><input id="payment-bank-input" inputmode="decimal" autocomplete="off" spellcheck="false" value="0" />
+              </label>
+              <label id="payment-credit-field" class="payment-entry-field" for="payment-credit-input" hidden>
+                <span>Credit</span><input id="payment-credit-input" inputmode="decimal" autocomplete="off" spellcheck="false" value="0" />
               </label>
             </div>
+            <div id="payment-credit-customer-wrap" class="payment-credit-customer" hidden>
+              <label class="payment-credit-label" for="payment-credit-search">Credit customer</label>
+              <div id="payment-credit-selected" class="payment-credit-selected" hidden>
+                <span id="payment-credit-selected-name"></span>
+                <button type="button" id="payment-credit-change" class="btn ghost payment-credit-small">Change</button>
+              </div>
+              <div id="payment-credit-lookup">
+                <input id="payment-credit-search" type="search" autocomplete="off" placeholder="Search name or phone" />
+                <div id="payment-credit-results" class="payment-credit-results" hidden></div>
+                <button type="button" id="payment-credit-create-toggle" class="btn ghost payment-credit-small">Add new customer</button>
+                <div id="payment-credit-create" class="payment-credit-create" hidden>
+                  <input id="payment-credit-new-name" type="text" maxlength="120" autocomplete="name" placeholder="Customer name" aria-label="Customer name" />
+                  <input id="payment-credit-new-phone" type="tel" maxlength="30" autocomplete="tel" placeholder="Phone number" aria-label="Customer phone" />
+                  <button type="button" id="payment-credit-create-save" class="btn ghost payment-credit-small">Save customer</button>
+                </div>
+              </div>
+              <p id="payment-credit-customer-error" class="error" hidden></p>
+            </div>
             <div id="payment-bank-fields" class="payment-bank-fields" hidden>
-              <label class="payment-bank-label" for="payment-bank-account">Operational account</label>
+              <label class="payment-bank-label" for="payment-bank-account">Operational bank account</label>
               <select id="payment-bank-account" class="payment-bank-select"></select>
-              <p id="payment-bank-empty" class="error" hidden>No active operational bank account is set up. An administrator can add one in Shop Settings.</p>
+              <p id="payment-bank-empty" class="error" hidden>No operational bank account available.</p>
+            </div>
+            <div id="payment-allocation-preview" class="payment-allocation-preview" aria-live="polite">
+              <span>Remaining after entry</span><strong id="payment-remaining">—</strong>
             </div>
           </div>
           <p id="payment-error" class="error" hidden></p>
@@ -569,7 +610,7 @@
           <button type="button" id="payment-edit" class="btn ghost">Edit order</button>
           <button type="button" id="payment-back" class="btn ghost">Back to Sales</button>
           <button type="button" id="payment-renew" class="btn ghost" hidden>Prepare a new confirmation</button>
-          <button type="button" id="payment-confirm" class="btn primary payment-confirm">Confirm Payment</button>
+          <button type="button" id="payment-confirm" class="btn primary payment-confirm">Record Payment</button>
         </div>
       </div>
     </dialog>
@@ -584,6 +625,7 @@
       </div>
     </dialog>
 
+    <script defer src="/delivery-navigation.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

@@ -1,6 +1,6 @@
 import { formatTicketTime } from "../util/time.js";
 import { formatMoneyMinor } from "../util/money.js";
-import { formatTaxPercentFromBps } from "../services/tax.js";
+import { computeOrderTaxFromBuckets, splitUnitTaxBuckets, formatTaxPercentFromBps } from "../services/tax.js";
 
 function wrapWidth(paperWidthMm) {
   return paperWidthMm <= 58 ? 32 : 42;
@@ -128,14 +128,36 @@ function pushCustomerTotal(lines, fmt, payload) {
  * Render kitchen ticket text (thermal-friendly plain text).
  * Prioritizes preparation clarity — instructions then add-ons, no prices.
  */
+function renderStationSlip(payload, width) {
+  const pair = (left, right) => left + ' '.repeat(Math.max(1, width - left.length - right.length)) + right;
+  const when = new Date(payload.createdAt);
+  const date = when.toLocaleDateString('en-GB', { timeZone: 'Asia/Bahrain' });
+  const time = when.toLocaleTimeString('en-GB', { timeZone: 'Asia/Bahrain', hour: '2-digit', minute: '2-digit' });
+  const stamp = when.toLocaleTimeString('en-US', { timeZone: 'Asia/Bahrain' });
+  const lines = [payload.stationName, pair('Order ' + payload.orderNumber, payload.orderTypeName),
+    pair('Server ' + payload.serverName, payload.terminalName), pair(date, time),
+    payload.customerName, payload.customerPhone, payload.addressNote, '', line('-', width)];
+  for (const item of payload.items) {
+    lines.push(pair(item.quantity + ' ' + item.name, formatMoneyMinor(item.lineTotalCents, moneyShop(payload)).replace(/[^0-9.,-]/g, '').trim()));
+    if (item.variantName) lines.push('        ' + item.variantName);
+    for (const note of item.instructions || []) lines.push('        ' + note);
+  }
+  lines.push('', 'Reference#' + payload.tokenNumber, '', center('Printed On ' + date + ' ' + stamp, width),
+    center('TEST TICKET', width));
+  return lines.join('\n');
+}
+
 export function renderKitchenTicket(payload, options = {}) {
   const width = wrapWidth(options.paperWidthMm || 80);
+  if (options.layout === "station-slip") return renderStationSlip(payload, width);
   const lines = [];
   lines.push(center(headerName(payload), width));
   lines.push(center("KITCHEN TEST", width));
   lines.push(line("-", width));
   lines.push(`STATION: ${String(payload.stationName || "").toUpperCase()}`);
-  lines.push(`ORDER: ${payload.orderNumber}`);
+  lines.push(`INVOICE: ${payload.orderNumber}`);
+  if (payload.tokenNumber != null) lines.push(`TOKEN: ${String(payload.tokenNumber).padStart(3, "0")}`);
+  if (payload.businessDate) lines.push(`BUSINESS DATE: ${payload.businessDate}`);
   lines.push(`TICKET: ${payload.ticketId}`);
   lines.push(`TYPE: ${typeLabel(payload)}`);
   if (payload.destination) {
@@ -192,6 +214,37 @@ export function renderKitchenTicket(payload, options = {}) {
  * Render cashier receipt (complete order, synthetic TEST DATA only).
  * Uses order-time billing snapshots when present on the payload.
  */
+function receiptColumns(left, right, width) {
+  if (!right) return left;
+  if (left.length + right.length >= width) return left + '\n' + right.padStart(width);
+  return left + ' '.repeat(width - left.length - right.length) + right;
+}
+
+function appendDeliveryAddress(lines, payload, width) {
+  lines.push(line("-", width), center("DELIVERY ADDRESS", width));
+  const add = (label, value) => {
+    if (!value?.trim()) return;
+    let text = label + value.trim().replace(/\s+/g, " ");
+    while (text.length > width) {
+      const space = text.lastIndexOf(" ", width);
+      const end = space > 0 ? space : width;
+      lines.push(text.slice(0, end));
+      text = text.slice(end).trimStart();
+    }
+    lines.push(text);
+  };
+  add("Customer: ", payload.customerName);
+  add("Phone: ", payload.customerPhone);
+  add("Building: ", payload.buildingNumber);
+  add("Road: ", payload.roadNumber);
+  add("Block: ", payload.blockNumber);
+  add("Address note: ", payload.addressNote);
+  if (![payload.buildingNumber, payload.roadNumber, payload.blockNumber, payload.addressNote].some(v => v?.trim())) {
+    if (payload.destination?.trim()) add("Destination: ", payload.destination);
+    else lines.push("Delivery address not recorded");
+  }
+}
+
 export function renderCashierReceipt(payload, options = {}) {
   const width = wrapWidth(options.paperWidthMm || 80);
   const shop = moneyShop(payload);
@@ -201,25 +254,24 @@ export function renderCashierReceipt(payload, options = {}) {
     payload.totalCents != null;
   const fmt = (minor) =>
     hasMoney ? formatMoneyMinor(minor, shop) : String(minor ?? "");
+  const itemFmt = minor => formatMoneyMinor(minor, { currency_decimals: shop.currency_decimals });
   const receipt = payload.receipt || {};
+  const supplierLine = value => {
+    for (const part of String(value).split(/\r?\n/)) {
+      for (let start = 0; start < part.length; start += width) lines.push(center(part.slice(start, start + width), width));
+    }
+  };
 
   const lines = [];
   if (receipt.showDisplayName !== false) {
     lines.push(center(headerName(payload), width));
   }
-  if (receipt.showLegalName && payload.shopLegalName) {
-    lines.push(center(String(payload.shopLegalName), width));
+  if ((payload.taxEnabled || receipt.showLegalName) && payload.shopLegalName) {
+    supplierLine(payload.shopLegalName);
   }
-  lines.push(center("CASHIER TEST RECEIPT", width));
-  if (receipt.showAddress && payload.addressText) {
-    for (const part of String(payload.addressText).split(/\n+/)) {
-      const t = part.trim();
-      if (t) lines.push(center(t, width));
-    }
-  }
-  if (receipt.showPhone && payload.phone) {
-    lines.push(center(`Tel: ${payload.phone}`, width));
-  }
+  lines.push(center(payload.taxEnabled ? "TEST VAT INVOICE" : "CASHIER TEST RECEIPT", width));
+  if (payload.addressText) supplierLine(payload.addressText);
+  if (payload.phone) supplierLine(`Tel: ${payload.phone}`);
   if (receipt.showWhatsapp !== false && payload.whatsapp) {
     lines.push(center(`WhatsApp: ${payload.whatsapp}`, width));
   }
@@ -227,73 +279,110 @@ export function renderCashierReceipt(payload, options = {}) {
     lines.push(center(`CR: ${payload.registrationNumber}`, width));
   }
   if (
-    receipt.showTaxNumber &&
     payload.taxEnabled &&
     payload.taxRegistrationNumber
   ) {
-    lines.push(center(`Tax No: ${payload.taxRegistrationNumber}`, width));
+    supplierLine(`VAT Account No: ${payload.taxRegistrationNumber}`);
   }
-  lines.push(line("=", width));
-  lines.push(`ORDER: ${payload.orderNumber}`);
-  lines.push(`TYPE: ${typeLabel(payload)}`);
-  if (payload.destination) {
-    lines.push(`DESTINATION: ${String(payload.destination).toUpperCase()}`);
+  lines.push(receiptColumns(`Order ${payload.orderNumber}`, typeLabel(payload), width));
+  if (payload.serverName || payload.terminalName) {
+    lines.push(receiptColumns(payload.serverName ? `Server ${payload.serverName}` : "", payload.terminalName || "", width));
   }
-  appendServiceLines(lines, payload);
-  lines.push(`TIME: ${formatTicketTime(payload.orderEdited && payload.updatedAt ? payload.updatedAt : payload.createdAt)}`);
-  lines.push(`REV: ${payload.ticketRevision || 1}`);
+  const stamp = formatTicketTime(payload.createdAt);
+  const [date, time] = stamp.split(" ");
+  lines.push(receiptColumns("Issued " + date, time || "", width));
+  if (payload.businessDate && payload.businessDate !== date) lines.push(`Business date: ${payload.businessDate}`);
+  if ((payload.fulfillmentBehavior || payload.orderType || "").toUpperCase() === "DELIVERY") {
+    appendDeliveryAddress(lines, payload, width);
+  } else {
+    if (payload.destination) lines.push(`Destination: ${payload.destination}`);
+    appendServiceLines(lines, payload);
+  }
+  if (payload.ticketRevision > 1 || payload.orderEdited) lines.push(`REV: ${payload.ticketRevision || 1}`);
   if (payload.orderEdited) {
     lines.push(center("*** ORDER UPDATED ***", width));
   }
   if (payload.isReprint) {
-    lines.push(center("*** REPRINT ***", width));
+    lines.push(center("Duplicate of original", width));
   }
   lines.push(line("-", width));
 
   let lastCategory = null;
   let lastSplit = null;
-  for (const item of sortBillItems(payload.items || [])) {
+  const sortedItems = sortBillItems(payload.items || []);
+  const grouped = new Set(sortedItems.map(billSplitNo).filter(Boolean)).size > 1;
+  // Allocate the order-level tax by cumulative buckets so rounding is not
+  // repeated per split. Delivery remains a single bill-level charge.
+  const splitTotals = new Map();
+  if (grouped && hasMoney) {
+    let taxableCents = 0;
+    let nontaxableCents = 0;
+    let previousTax = 0;
+    for (const split of new Set(sortedItems.map(billSplitNo))) {
+      const items = sortedItems.filter(item => billSplitNo(item) === split);
+      let goods = 0;
+      for (const item of items) {
+        const amount = Number(item.lineTotalCents || 0);
+        goods += amount;
+        const buckets = item.unitBasePriceCents != null
+          ? splitUnitTaxBuckets(item.unitBasePriceCents, item.taxApplicable !== false, item.addons || [])
+          : { taxableUnitCents: item.taxApplicable !== false ? amount : 0 };
+        const taxable = item.unitBasePriceCents != null
+          ? buckets.taxableUnitCents * Number(item.quantity || 0)
+          : buckets.taxableUnitCents;
+        taxableCents += taxable;
+        nontaxableCents += amount - taxable;
+      }
+      const cumulative = computeOrderTaxFromBuckets({ taxableCents, nontaxableCents }, payload);
+      const tax = cumulative.taxCents - previousTax;
+      previousTax = cumulative.taxCents;
+      splitTotals.set(split, { tax, payable: goods + (payload.taxEnabled && payload.taxMode === "exclusive" ? tax : 0) });
+    }
+  }
+  for (const item of sortedItems) {
     const split = billSplitNo(item);
     const category = String(item.category || "").trim();
     if (split !== lastSplit) {
+      if (grouped && lastSplit !== null) lines.push(line("-", width));
       lastCategory = null;
       lastSplit = split;
+      if (grouped && split) {
+        const totals = splitTotals.get(split);
+        lines.push(receiptColumns(`Order ${split}`, totals ? fmt(totals.payable) : "", width));
+      }
     }
     if (category && category !== lastCategory) {
       lines.push(category.toUpperCase());
       lastCategory = category;
     }
     const lineTotal = item.lineTotalCents;
-    const displayName = item.variantName
-      ? `${item.name} — ${item.variantName}`
-      : item.name;
-    const head =
-      lineTotal != null && hasMoney
-        ? `${item.quantity} × ${displayName}  ${fmt(lineTotal)}`
-        : `${item.quantity} × ${displayName}`;
-    lines.push(head);
+    lines.push(receiptColumns(`${item.quantity} × ${item.name}`,
+      lineTotal != null && hasMoney ? itemFmt(lineTotal) : "", width));
+    if (item.variantName) lines.push(`        ${item.variantName}`);
     if (item.unitBasePriceCents != null && hasMoney) {
       lines.push(
         item.variantName
-          ? `  Unit ${fmt(item.unitBasePriceCents)}`
-          : `  Base ${fmt(item.unitBasePriceCents)}`
+          ? `        Unit ${itemFmt(item.unitBasePriceCents)}`
+          : `        Base ${itemFmt(item.unitBasePriceCents)}`
       );
     }
-    for (const note of item.instructions || []) {
-      lines.push(`  - ${note}`);
+    const notes = item.instructions || [];
+    for (const note of grouped && split ? notes.slice(1) : notes) {
+      lines.push(`        ${note}`);
     }
     for (const addon of item.addons || []) {
       const price = Number(addon.linePriceCents || 0);
       const label =
         price === 0
-          ? `${addon.name}  ${fmt(0)}`
-          : `${addon.name}  ${formatSignedMoney(price, shop, fmt)}`;
-      lines.push(`  ${label}`);
+          ? `${addon.name}  ${itemFmt(0)}`
+          : `${addon.name}  ${formatSignedMoney(price, shop, itemFmt)}`;
+      lines.push(`        ${label}`);
     }
   }
 
   lines.push(line("-", width));
   if (hasMoney) {
+    const totalsStart = lines.length;
     const goods =
       payload.goodsCents != null ? payload.goodsCents : payload.totalCents;
     const taxEnabled = Boolean(payload.taxEnabled);
@@ -340,9 +429,17 @@ export function renderCashierReceipt(payload, options = {}) {
       lines.push(`Subtotal  ${fmt(goods)}`);
       pushCustomerTotal(lines, fmt, payload);
     }
+    for (let i = totalsStart; i < lines.length; i++) {
+      const split = lines[i].lastIndexOf("  ");
+      if (split >= 0) lines[i] = receiptColumns(lines[i].slice(0, split), lines[i].slice(split + 2), width);
+    }
+    if (taxEnabled && mode === "inclusive" && !showDelivery(payload)) {
+      lines.push(receiptColumns("TOTAL", payload.totalFormatted || fmt(payload.totalCents), width));
+    }
     lines.push(line("-", width));
   }
 
+  if (payload.tokenNumber != null) lines.push(center(`Reference# ${payload.tokenNumber}`, width));
   if (payload.receiptFooter) {
     lines.push(center(String(payload.receiptFooter), width));
   }
