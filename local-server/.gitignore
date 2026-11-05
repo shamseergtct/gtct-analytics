@@ -11,6 +11,10 @@ npm-debug.log*
 yarn-error.log*
 .DS_Store
 
+# Windows pilot packaging outputs / machine-local env
+windows-pilot/dist/
+windows-pilot/env.pilot.cmd
+
 # Codex merge leftovers / patch tooling
 _p2e*/
 p2e2*.py
