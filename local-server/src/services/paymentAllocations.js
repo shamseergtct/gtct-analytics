@@ -8,6 +8,8 @@ import { getDb } from '../db/db.js';
 import { newId } from '../util/ids.js';
 import { nowIso } from '../util/time.js';
 import { recordAudit } from './audit.js';
+import { enqueueCashierReceiptAfterPayment } from './printQueue.js';
+import { log } from '../util/logger.js';
 
 function fail(status, message, code) {
   throw Object.assign(new Error(message), { status, code });
@@ -163,7 +165,44 @@ export function recordPaymentAllocation(shopId, orderId, input, actor) {
         creditCents:credit,bankAccountId:bankAccountId||null,creditCustomerId:creditCustomerId||null,
         unallocatedBeforeCents:before.unallocatedCents,unallocatedAfterCents:after.unallocatedCents,
         note:'TEST_ONLY_CREDIT_NOT_RECEIVABLE_POSTED'}});
-    return {...listPaymentAllocations(shopId,orderId),created:true,replayed:false};
+    return {...listPaymentAllocations(shopId,orderId),created:true,replayed:false,
+      _paymentSummary:after};
   });
-  return tx.immediate();
+  const result = tx.immediate();
+  // Print only when the bill is fully finalized (paid or fully credited).
+  let cashierPrint = null;
+  const wantCashierPrint = input?.printCashier !== false;
+  if (result.created && wantCashierPrint && result._paymentSummary &&
+      (result._paymentSummary.paymentStatus === 'PAID' ||
+       result._paymentSummary.paymentStatus === 'CREDIT')) {
+    try {
+      const job = enqueueCashierReceiptAfterPayment(orderId, {
+        paymentStatus: result._paymentSummary.paymentStatus,
+        paidCents: result._paymentSummary.paidCents,
+        creditCents: result._paymentSummary.creditCents,
+        cashCents: result._paymentSummary.cashCents,
+        bankCents: result._paymentSummary.bankCents,
+      }, { testTenantId: shopId });
+      cashierPrint = {
+        ok: true,
+        jobId: job.job_id,
+        printerId: job.printer_id,
+        status: job.status,
+      };
+    } catch (err) {
+      log.error('Cashier receipt enqueue after allocation failed', {
+        orderId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      cashierPrint = {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        code: err?.code || 'CASHIER_PRINT_FAILED',
+      };
+    }
+  } else if (result.created && !wantCashierPrint) {
+    cashierPrint = { ok: true, skipped: true, reason: 'screen_only' };
+  }
+  if (result._paymentSummary) delete result._paymentSummary;
+  return { ...result, cashierPrint };
 }

@@ -8,6 +8,14 @@ import { getOrderPrepProgress } from './prepBoard.js';
 import { readDeliveryPaymentReport } from './deliveryPaymentReports.js';
 import { readDeliveryLifecycle } from './deliveryLifecycle.js';
 
+/**
+ * Stage-1 temporary: prep station screens are not in daily use yet.
+ * When false, Monitor may confirm packing / ready-for-delivery without
+ * every preparation station marking FINISHED. Set back to true when
+ * kitchen prep boards go live.
+ */
+export const REQUIRE_PREP_FINISHED_FOR_DISPATCH = false;
+
 function revisionFor(order, prep) {
   return createHash('sha256').update(JSON.stringify([
     order.order_id, order.updated_at, prep.unassignedLineCount,
@@ -39,12 +47,18 @@ export function readOrderOperationalState(db, shopId, order) {
   const deliveryLifecycle = isDelivery && deliveryClaim
     ? readDeliveryLifecycle(db, shopId, order.order_id) : null;
   const isOpenTest = order.status === 'OPEN' && Number(order.is_test) === 1;
-  const ready = Boolean(confirmed && confirmed.prep_revision === revision
-    && prep.allFinished && isOpenTest);
+  const kitchenOkForDispatch =
+    !REQUIRE_PREP_FINISHED_FOR_DISPATCH || prep.allFinished;
+  const ready = Boolean(
+    confirmed &&
+      confirmed.prep_revision === revision &&
+      kitchenOkForDispatch &&
+      isOpenTest
+  );
   const dispatchStatus = !isDelivery ? 'NOT_APPLICABLE'
     : ready ? 'READY_FOR_DELIVERY'
     : confirmed ? 'PACKING_RECHECK_REQUIRED'
-    : prep.allFinished ? 'AWAITING_PACKING_CONFIRMATION'
+    : kitchenOkForDispatch ? 'AWAITING_PACKING_CONFIRMATION'
     : 'WAITING_FOR_KITCHEN';
   const status = order.status !== 'OPEN' ? order.status
     : isDelivery && deliveryClaim && deliveryLifecycle?.status !== 'PENDING'
@@ -53,7 +67,7 @@ export function readOrderOperationalState(db, shopId, order) {
     : isDelivery && deliveryClaim ? 'ACCEPTED_BY_DELIVERY_BOY'
     : isDelivery && ready ? 'READY_FOR_DELIVERY'
     : isDelivery && confirmed ? 'PACKING_RECHECK_REQUIRED'
-    : isDelivery && prep.allFinished ? 'AWAITING_PACKING_CONFIRMATION'
+    : isDelivery && kitchenOkForDispatch ? 'AWAITING_PACKING_CONFIRMATION'
     : prep.stage;
   return {
     operationalStatus: status,
@@ -69,9 +83,12 @@ export function readOrderOperationalState(db, shopId, order) {
     dispatch: {
       status: dispatchStatus,
       ready,
-      canMarkReady: isDelivery && prep.allFinished && !ready && isOpenTest,
+      canMarkReady: isDelivery && kitchenOkForDispatch && !ready && isOpenTest,
+      // Shop may reverse packing confirmation until a rider claims the order.
+      canUnmarkReady: isDelivery && ready && !deliveryClaim && isOpenTest,
       confirmedAt: ready ? confirmed.confirmed_at : null,
       revision,
+      requirePrepFinished: REQUIRE_PREP_FINISHED_FOR_DISPATCH,
     },
   };
 }

@@ -247,6 +247,22 @@
         { "fieldPath": "businessDate", "order": "ASCENDING" },
         { "fieldPath": "createdAtMs", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "restaurant_delivery_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "restaurant_delivery_orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientId", "order": "ASCENDING" },
+        { "fieldPath": "claimedByDeliveryBoyId", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

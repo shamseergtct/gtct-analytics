@@ -36,6 +36,11 @@ import {
   resolveMenuImagePath,
 } from "../services/menuMappings.js";
 import {
+  exportMenuItemsCsv,
+  exportMenuItemsTemplateCsv,
+  importMenuItemsCsv,
+} from "../services/menuBulk.js";
+import {
   listCategories,
   upsertCategory,
   upsertSubcategory,
@@ -105,8 +110,17 @@ import { listOrderRegister, getOrderRegisterDetail } from "../services/orderRegi
 import { voidUnpaidTestOrder } from "../services/orderVoid.js";
 import { getBusinessShift, openBusinessShift, closeBusinessShift } from "../services/businessShifts.js";
 import { listPrepBoard, setPrepStatus } from "../services/prepBoard.js";
-import { listOrderMonitor, getOrderMonitorDetail, markOrderReadyForDelivery } from "../services/orderMonitor.js";
-import { listAvailableDeliveries, listMyDeliveries, acceptAvailableDelivery, listRouteSuggestions } from "../services/deliveryPool.js";
+import {
+  listOrderMonitor,
+  getOrderMonitorDetail,
+  markOrderReadyForDelivery,
+  unmarkOrderReadyForDelivery,
+} from "../services/orderMonitor.js";
+import { listAvailableDeliveries, listMyDeliveries, acceptAvailableDelivery, listRouteSuggestions, getDeliveryBill } from "../services/deliveryPool.js";
+import {
+  syncCloudDeliveryBridge,
+  resetCloudBridgeBackoff,
+} from "../services/cloudDeliveryBridge.js";
 import { markDeliveryPayment } from '../services/deliveryPaymentReports.js';
 import { listDeliveryCashHandovers, confirmDeliveryCashHandover }
   from '../services/deliveryCashHandover.js';
@@ -118,7 +132,12 @@ import { listRiderNetSettlements, confirmRiderNetSettlement, correctRiderSettlem
   from '../services/deliveryRiderNetSettlement.js';
 import { markDeliveryLifecycle, shopReviewDeliveryCancellation, reviewDeliveryCredit, shopSetDirectCredit }
   from '../services/deliveryLifecycle.js';
-import { listPrintJobs, getPrintJob, applyCashierCategories } from "../services/printQueue.js";
+import {
+  listPrintJobs,
+  getPrintJob,
+  applyCashierCategories,
+  clearPrintJobHistory,
+} from "../services/printQueue.js";
 import {
   processAllPending,
   confirmJob,
@@ -144,6 +163,24 @@ import {
 import { tryServeStatic } from "./static.js";
 import { log } from "../util/logger.js";
 import { getTestBackupHealth } from "../backup/testBackupManagement.js";
+import { getPilotSetupStatus, bootstrapPilotSetup } from "../services/pilotSetup.js";
+import {
+  getPrintSettings,
+  updatePrintSettings,
+  isPhysicalPrintEffectivelyEnabled,
+  envPhysicalPrintOverride,
+} from "../services/printSettings.js";
+import { getShopReports, listReportShifts } from "../services/reports.js";
+import {
+  listTerminals,
+  upsertTerminal,
+  createPairingCode,
+  revokeTerminalPairing,
+  pairTerminalWithCode,
+  resolvePairedTerminal,
+  terminalCookieHeader,
+  lanTerminalStatus,
+} from "../services/terminals.js";
 
 function sendJson(res, status, body, extraHeaders = {}) {
   const payload = JSON.stringify(body);
@@ -208,6 +245,8 @@ function sessionPayload(auth) {
     userId: auth.userId || "",
     username: auth.username || "",
     fullName: auth.fullName || "",
+    terminalId: auth.terminalId || "",
+    terminalName: auth.terminalName || "",
     permissions: auth.staff ? auth.permissions || [] : [],
     canAdjustAddonPrices: authAllows(auth, "sales.addon_price_override"),
     canAdjustBasePrices: authAllows(auth, "sales.price_override"),
@@ -279,6 +318,33 @@ export function createServer(config) {
         return;
       }
 
+      // --- First-run TEST PILOT setup (no admin yet; loopback only) ---
+      if (method === "GET" && path === "/v1/setup/status") {
+        if (!config.loopback) {
+          sendJson(res, 403, { error: "Setup status is only available on this computer." });
+          return;
+        }
+        sendJson(res, 200, getPilotSetupStatus(config));
+        return;
+      }
+      if (method === "POST" && path === "/v1/setup/bootstrap") {
+        if (!config.loopback) {
+          sendJson(res, 403, { error: "First-run setup is only allowed on this computer." });
+          return;
+        }
+        try {
+          const body = await readBody(req);
+          const result = bootstrapPilotSetup(config, body && typeof body === "object" ? body : {});
+          sendJson(res, 201, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message || "Setup could not be completed.",
+            code: err.code || undefined,
+          });
+        }
+        return;
+      }
+
       // --- Loopback UI session (no tokens embedded in static assets) ---
       if (method === "POST" && path === "/v1/session/login") {
         const body = await readBody(req);
@@ -299,7 +365,13 @@ export function createServer(config) {
         sendJson(
           res,
           200,
-          { ok: true, role: result.role, deviceId: result.deviceId },
+          {
+            ok: true,
+            role: result.role,
+            deviceId: result.deviceId,
+            terminalId: result.terminalId || "",
+            terminalName: result.terminalName || "",
+          },
           { "Set-Cookie": result.cookie }
         );
         return;
@@ -309,6 +381,123 @@ export function createServer(config) {
         const result = logoutRequest(req, config);
         sendJson(res, 200, { ok: true }, { "Set-Cookie": result.cookie });
         return;
+      }
+
+      if (method === "GET" && path === "/v1/terminals/status") {
+        const auth = requireAuth(req, res, config, ["admin", "cashier", "kitchen", "delivery"]);
+        if (!auth) return;
+        const paired = resolvePairedTerminal(config.testTenantId, req);
+        sendJson(res, 200, {
+          lan: lanTerminalStatus(config),
+          pairedTerminal: paired,
+        });
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/terminals/pair") {
+        if (!isTrustedBrowserOrigin(req, config)) {
+          sendJson(res, 403, {
+            error: "Pairing must come from this shop’s restaurant page.",
+          });
+          return;
+        }
+        try {
+          const body = await readBody(req);
+          const paired = pairTerminalWithCode(
+            config.testTenantId,
+            body?.code || body?.pairingCode || ""
+          );
+          sendJson(
+            res,
+            200,
+            { ok: true, terminal: paired.terminal },
+            {
+              "Set-Cookie": terminalCookieHeader(paired.token, {
+                secure: Boolean(req.socket?.encrypted),
+              }),
+            }
+          );
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/terminals/me") {
+        const paired = resolvePairedTerminal(config.testTenantId, req);
+        sendJson(res, 200, { terminal: paired });
+        return;
+      }
+
+      if (path === "/v1/terminals" || path.startsWith("/v1/terminals/")) {
+        if (method === "GET" && path === "/v1/terminals") {
+          const auth = requireStaffAdmin(req, res, config);
+          if (!auth) return;
+          sendJson(res, 200, {
+            terminals: listTerminals(config.testTenantId),
+            lan: lanTerminalStatus(config),
+          });
+          return;
+        }
+        if (method === "PUT" && path === "/v1/terminals") {
+          const auth = requireStaffAdmin(req, res, config);
+          if (!auth) return;
+          try {
+            const body = await readBody(req);
+            const terminal = upsertTerminal(config.testTenantId, body, {
+              role: auth.role,
+              userId: auth.userId || "",
+            });
+            sendJson(res, 200, { terminal });
+          } catch (err) {
+            sendJson(res, err.status || 400, {
+              error: err.message,
+              ...(err.code ? { code: err.code } : {}),
+            });
+          }
+          return;
+        }
+        const pairMatch = /^\/v1\/terminals\/([^/]+)\/pairing-code$/.exec(path);
+        if (method === "POST" && pairMatch) {
+          const auth = requireStaffAdmin(req, res, config);
+          if (!auth) return;
+          try {
+            const issued = createPairingCode(
+              config.testTenantId,
+              decodeURIComponent(pairMatch[1]),
+              { role: auth.role, userId: auth.userId || "" }
+            );
+            sendJson(res, 200, issued);
+          } catch (err) {
+            sendJson(res, err.status || 400, {
+              error: err.message,
+              ...(err.code ? { code: err.code } : {}),
+            });
+          }
+          return;
+        }
+        const revokeMatch = /^\/v1\/terminals\/([^/]+)\/revoke$/.exec(path);
+        if (method === "POST" && revokeMatch) {
+          const auth = requireStaffAdmin(req, res, config);
+          if (!auth) return;
+          try {
+            const terminal = revokeTerminalPairing(
+              config.testTenantId,
+              decodeURIComponent(revokeMatch[1]),
+              { role: auth.role, userId: auth.userId || "" }
+            );
+            sendJson(res, 200, { terminal });
+          } catch (err) {
+            sendJson(res, err.status || 400, {
+              error: err.message,
+              ...(err.code ? { code: err.code } : {}),
+            });
+          }
+          return;
+        }
       }
 
       if (path === "/v1/staff-users" || path.startsWith("/v1/staff-users/")) {
@@ -388,10 +577,13 @@ export function createServer(config) {
           getShopSettings(config.testTenantId),
           config
         );
+        const printSettings = getPrintSettings();
         sendJson(res, 200, {
           testTenantId: config.testTenantId,
           restaurantDisplayName: shop.displayName || config.restaurantDisplayName,
-          physicalPrintEnabled: config.physicalPrintEnabled,
+          physicalPrintEnabled: isPhysicalPrintEffectivelyEnabled(config),
+          physicalPrintEnvOverride: envPhysicalPrintOverride(),
+          printSettings,
           allowTcpProbe: config.allowTcpProbe,
           lanAccessReady: config.lanAccessReady === true,
           tlsReady: config.tlsReady === true,
@@ -456,6 +648,27 @@ export function createServer(config) {
           sendJson(res, 200, { shop });
         } catch (err) {
           sendJson(res, err.status || 400, {
+            error: err.message,
+            code: err.code,
+          });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/cloud-delivery-bridge/sync") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          // Manual Sync now bypasses background cooldown and clears backoff on success.
+          resetCloudBridgeBackoff();
+          const result = await syncCloudDeliveryBridge(
+            config.testTenantId,
+            config
+          );
+          if (!result.skipped) resetCloudBridgeBackoff();
+          sendJson(res, 200, { result });
+        } catch (err) {
+          sendJson(res, err.status || 500, {
             error: err.message,
             code: err.code,
           });
@@ -1294,6 +1507,37 @@ export function createServer(config) {
         return;
       }
 
+      if (method === "GET" && path === "/v1/print-settings") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        sendJson(res, 200, {
+          settings: getPrintSettings(),
+          physicalPrintEnabled: isPhysicalPrintEffectivelyEnabled(config),
+          envOverride: envPhysicalPrintOverride(),
+        });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/print-settings") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const settings = updatePrintSettings(body || {}, {
+            role: auth.role,
+            userId: auth.userId || "",
+          });
+          sendJson(res, 200, {
+            settings,
+            physicalPrintEnabled: isPhysicalPrintEffectivelyEnabled(config),
+            envOverride: envPhysicalPrintOverride(),
+          });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
       if (method === "GET" && path === "/v1/printers") {
         const auth = requireAuth(req, res, config);
         if (!auth) return;
@@ -1465,6 +1709,83 @@ export function createServer(config) {
           url.searchParams.get("includeInactive") !== "false";
         const menuItems = listMenuItems({ includeInactive });
         sendJson(res, 200, { menuItems });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/menu-items/export.csv") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const csv = exportMenuItemsCsv();
+          const filename = `menu-items-${new Date()
+            .toISOString()
+            .slice(0, 10)}.csv`;
+          res.writeHead(200, {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+            "Content-Length": Buffer.byteLength(csv),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+          });
+          res.end(csv);
+        } catch (err) {
+          sendJson(res, err.status || 500, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/menu-items/import-template.csv") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const csv = exportMenuItemsTemplateCsv();
+          res.writeHead(200, {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition":
+              'attachment; filename="menu-items-template.csv"',
+            "Content-Length": Buffer.byteLength(csv),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "no-store",
+          });
+          res.end(csv);
+        } catch (err) {
+          sendJson(res, err.status || 500, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/menu-items/import") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req, { maxBytes: 4_000_000 });
+          const csv = body.csv != null ? String(body.csv) : "";
+          if (!csv.trim()) {
+            sendJson(res, 400, { error: "csv text is required" });
+            return;
+          }
+          const summary = importMenuItemsCsv(csv);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.bulk_import",
+            entityType: "menu_items",
+            entityId: "bulk",
+            detail: {
+              created: summary.created,
+              updated: summary.updated,
+              variants: summary.variants,
+              errorCount: summary.errors.length,
+            },
+          });
+          sendJson(res, summary.errors.length ? 207 : 200, { summary });
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            errors: err.errors,
+            summary: err.summary,
+          });
+        }
         return;
       }
 
@@ -1689,6 +2010,8 @@ export function createServer(config) {
             deviceId: auth.deviceId || "",
             userId: auth.userId || "",
             permissions: auth.staff ? auth.permissions || [] : null,
+            terminalId: auth.terminalId || "",
+            terminalName: auth.terminalName || "",
           });
           sendJson(res, result.created ? 201 : 200, result);
         } catch (err) {
@@ -1892,6 +2215,18 @@ export function createServer(config) {
         }
         return;
       }
+      const deliveryBillMatch = path.match(/^\/v1\/delivery-pool\/([^/]+)\/bill$/);
+      if (method === 'GET' && deliveryBillMatch) {
+        const auth = requireAuth(req, res, config, ['delivery']);
+        if (!auth || forbidUnless(auth, res, 'delivery.pool.view')) return;
+        try {
+          const id = decodeURIComponent(deliveryBillMatch[1]);
+          sendJson(res, 200, { bill: getDeliveryBill(config.testTenantId, id, auth) });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
+        }
+        return;
+      }
       const acceptDeliveryMatch = path.match(/^\/v1\/delivery-pool\/([^/]+)\/accept$/);
       if (method === 'POST' && acceptDeliveryMatch) {
         const auth = requireAuth(req, res, config, ['delivery']);
@@ -2030,6 +2365,25 @@ export function createServer(config) {
           }
           const id = decodeURIComponent(readyMatch[1]);
           sendJson(res, 200, markOrderReadyForDelivery(config.testTenantId, id, body.expectedRevision, auth));
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, ...(err.code ? { code: err.code } : {}) });
+        }
+        return;
+      }
+
+      const unreadyMatch = path.match(/^\/v1\/order-monitor\/([^/]+)\/unready$/);
+      if (method === 'POST' && unreadyMatch) {
+        const auth = requireAuth(req, res, config, ['admin', 'cashier']);
+        if (!auth) return;
+        if (!auth.userId || forbidUnless(auth, res, 'sales.orders.dispatch')) return;
+        try {
+          const body = await readBody(req);
+          if (body.shopId && body.shopId !== config.testTenantId) {
+            sendJson(res, 403, { error: 'Shop mismatch.' });
+            return;
+          }
+          const id = decodeURIComponent(unreadyMatch[1]);
+          sendJson(res, 200, unmarkOrderReadyForDelivery(config.testTenantId, id, body.expectedRevision, auth));
         } catch (err) {
           sendJson(res, err.status || 400, { error: err.message, ...(err.code ? { code: err.code } : {}) });
         }
@@ -2295,6 +2649,65 @@ export function createServer(config) {
         return;
       }
 
+      if (method === "GET" && path === "/v1/reports/shifts") {
+        const auth = requireAuth(req, res, config, ["admin", "cashier"]);
+        if (!auth) return;
+        if (
+          !auth.staff ||
+          !(
+            auth.role === "admin" ||
+            authAllows(auth, "sales.orders.view") ||
+            authAllows(auth, "sales.payment.receive")
+          )
+        ) {
+          sendJson(res, 403, { error: "You do not have permission for reports." });
+          return;
+        }
+        sendJson(res, 200, { shifts: listReportShifts(config.testTenantId) });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/reports/summary") {
+        const auth = requireAuth(req, res, config, ["admin", "cashier"]);
+        if (!auth) return;
+        if (
+          !auth.staff ||
+          !(
+            auth.role === "admin" ||
+            authAllows(auth, "sales.orders.view") ||
+            authAllows(auth, "sales.payment.receive")
+          )
+        ) {
+          sendJson(res, 403, { error: "You do not have permission for reports." });
+          return;
+        }
+        try {
+          const report = getShopReports(config.testTenantId, {
+            from: url.searchParams.get("from") || "",
+            to: url.searchParams.get("to") || "",
+            shiftId: url.searchParams.get("shiftId") || "",
+          });
+          if (auth.role !== "admin") {
+            delete report.items;
+            delete report.categories;
+            delete report.byOrderType;
+            delete report.stations;
+            delete report.hourly;
+            delete report.opsAudit;
+            delete report.riderCash;
+            delete report.commission;
+            delete report.deliveryMix;
+          }
+          sendJson(res, 200, { report });
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
       if (
         (method === "GET" || method === "POST") &&
         path.startsWith("/v1/orders/") &&
@@ -2392,6 +2805,26 @@ export function createServer(config) {
           orderId: url.searchParams.get("orderId") || undefined,
         }).filter((j) => j.tenant_id === config.testTenantId);
         sendJson(res, 200, { jobs });
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/print-jobs/clear-history") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const result = clearPrintJobHistory(config.testTenantId);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "print.jobs.clear_history",
+            entityType: "print_jobs",
+            entityId: config.testTenantId,
+            detail: { cleared: result.cleared },
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
         return;
       }
 

@@ -41,15 +41,38 @@
             <h1>Menu Setup</h1>
             <p class="page-desc">Manage items, categories, and kitchen notes for this restaurant.</p>
           </div>
-          <div class="topbar-meta">
-            <span class="banner compact">TEST MODE</span>
-            <span id="session-role" class="pill"></span>
+          <div class="topbar-actions">
+            <span class="banner compact test-badge">TEST</span>
             <span id="currency-pill" class="pill"></span>
-            <a class="btn ghost small" href="/">Sales</a>
-            <a class="btn ghost small" href="/shop-settings.html">Shop Settings</a>
-            <a class="btn ghost small" href="/settings.html">Printers</a>
-            <a class="btn ghost small" href="/users.html">Users</a>
-            <button type="button" id="logout-btn" class="btn ghost small">Sign out</button>
+            <nav id="app-nav" class="app-nav" aria-label="Main">
+              <div class="nav-primary" role="group" aria-label="Floor">
+                <a class="nav-link" href="/">Sales</a>
+              </div>
+              <details id="settings-menu" class="nav-pop">
+                <summary class="nav-icon-btn" aria-label="Settings">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+                  </svg>
+                </summary>
+                <div class="nav-dropdown" role="menu">
+                  <p class="nav-dropdown-heading">Setup</p>
+                  <a class="nav-dropdown-link" href="/menu.html" aria-current="page">Menu Setup</a>
+                  <a class="nav-dropdown-link" href="/shop-settings.html">Shop Settings</a>
+                  <a class="nav-dropdown-link" href="/settings.html">Printer Settings</a>
+                  <a class="nav-dropdown-link" href="/reports.html">Reports</a>
+                  <a class="nav-dropdown-link" href="/users.html">User Management</a>
+                  <a class="nav-dropdown-link" href="/terminals.html">Terminals</a>
+                </div>
+              </details>
+              <details id="account-menu" class="nav-pop">
+                <summary class="nav-account-btn" aria-label="Account">
+                  <span id="session-role" class="nav-account-name"></span>
+                </summary>
+                <div class="nav-dropdown nav-dropdown-account" role="menu">
+                  <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+                </div>
+              </details>
+            </nav>
           </div>
         </header>
 
@@ -71,8 +94,16 @@
               <div class="list-pane ms-card">
                 <div class="ms-toolbar">
                   <input id="menu-search" class="ms-search" type="search" placeholder="Search name, SKU, code…" />
+                  <button type="button" id="export-items-btn" class="btn ghost small" title="Download Excel CSV">Export</button>
+                  <button type="button" id="import-items-btn" class="btn ghost small" title="Upload Excel CSV">Import</button>
+                  <button type="button" id="import-template-btn" class="btn ghost small" title="Download blank template">Template</button>
+                  <input id="import-items-file" class="visually-hidden-file" type="file" accept=".csv,text/csv,text/plain" />
                   <button type="button" id="new-item-btn" class="btn primary small desktop-add">+ New menu item</button>
                 </div>
+                <p id="bulk-hint" class="muted bulk-hint">
+                  Bulk edit in Excel: Export → edit item ID, name, category, subcategory, variant, price, preparation center → Import.
+                  Kitchen instructions stay on shop defaults for new rows.
+                </p>
                 <div id="avail-filters" class="ms-chips" style="margin-bottom:12px"></div>
                 <div class="ms-toolbar" style="margin-top:0">
                   <select id="filter-category" class="ms-select" aria-label="Category filter">
@@ -141,11 +172,17 @@
                     <div class="form-grid-2">
                       <label class="field">
                         <span>Category <em class="req">*</em></span>
-                        <select id="f-category" required></select>
+                        <div class="select-with-add">
+                          <select id="f-category" required></select>
+                          <button type="button" id="f-add-category-btn" class="btn ghost small" title="Add new category">+ New</button>
+                        </div>
                       </label>
                       <label class="field">
                         <span>Subcategory <span class="opt">(optional)</span></span>
-                        <select id="f-subcategory"></select>
+                        <div class="select-with-add">
+                          <select id="f-subcategory"></select>
+                          <button type="button" id="f-add-subcategory-btn" class="btn ghost small" title="Add new subcategory">+ New</button>
+                        </div>
                       </label>
                     </div>
                   </div>

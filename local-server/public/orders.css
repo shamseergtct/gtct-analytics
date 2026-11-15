@@ -155,7 +155,6 @@
 }
 .order-ref { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .order-ref .hint { font-size: 0.82rem; }
-.order-token { font-weight: 800; color: var(--blue-dark); }
 .order-delivery-boy { font-size: 0.83rem; margin-top: 5px; }
 .current-status { font-size: 0.76rem; line-height: 1.4; }
 
@@ -183,7 +182,15 @@
 .orders-table .orders-edit, .order-card .orders-edit { border: 1px solid #d5e0ec; background: #fff; padding: 2px 9px; border-radius: 8px; color: #48627e; font-size: 0.73rem; font-weight: 700; margin-left: 1px; }
 .orders-table .orders-edit:hover, .order-card .orders-edit:hover { background: #f0f5fb; }
 .order-subline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 5px; }
-.order-token { font-size: 0.75rem; font-weight: 720; color: #335f8f; background: #edf4fc; border-radius: 6px; padding: 2px 6px; }
+.order-token {
+  font-size: 0.82rem;
+  font-weight: 800;
+  color: #fff;
+  background: #0b539e;
+  border-radius: 8px;
+  padding: 3px 8px;
+  letter-spacing: 0.03em;
+}
 .order-secondary { font-size: 0.8rem; line-height: 1.45; color: #718092; }
 .order-place { max-width: 280px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; margin-top: 5px; }
 .order-type { font-size: 0.9rem; font-weight: 650; }

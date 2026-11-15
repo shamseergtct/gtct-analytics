@@ -9,6 +9,7 @@ import { recordAudit } from './audit.js';
 import { readOrderOperationalState } from './orderOperationalState.js';
 import { readDeliveryPaymentReport } from './deliveryPaymentReports.js';
 import { readDeliveryLifecycle } from './deliveryLifecycle.js';
+import { getOrder } from './orders.js';
 
 function fail(status, message, code) {
   throw Object.assign(new Error(message), { status, code });
@@ -162,6 +163,115 @@ export function acceptAvailableDelivery(shopId, orderId, expectedRevision, actor
     result.sameBlockSuggestions = suggestions.orders;
   } else result.sameBlockSuggestions = [];
   return result;
+}
+
+function mapDeliveryBill(full, { claimedByMe = false } = {}) {
+  return {
+    orderId: full.order_id,
+    orderNumber: full.order_number,
+    tokenNumber:
+      full.token_number == null ? null : Number(full.token_number),
+    businessDate: full.business_date || '',
+    customerName: full.customer_name || '',
+    customerPhone: full.customer_phone || '',
+    blockNumber: full.block_number || '',
+    roadNumber: full.road_number || '',
+    buildingNumber: full.building_number || '',
+    addressNote: full.address_note || '',
+    currencyCode: full.currency_code || '',
+    currencyLabel: full.currency_label || full.currency_code || '',
+    currencyDecimals: Number(full.currency_decimals ?? 2),
+    goodsCents: Number(full.goods_cents || 0),
+    deliveryChargeCents: Number(full.delivery_charge_cents || 0),
+    taxCents: Number(full.tax_cents || 0),
+    taxName: full.tax_name || '',
+    taxEnabled: Boolean(full.tax_enabled),
+    totalCents: Number(full.total_cents || 0),
+    claimedByMe: Boolean(claimedByMe),
+    lines: (full.lines || []).map((line) => ({
+      lineId: line.line_id,
+      name: line.item_name || '',
+      variantName: line.variant_name || '',
+      quantity: Number(line.quantity || 0),
+      unitTotalCents: Number(line.unit_total_cents || 0),
+      lineTotalCents: Number(line.line_total_cents || 0),
+      instructions: Array.isArray(line.instructions) ? line.instructions : [],
+      addons: (line.addons || []).map((a) => ({
+        name: a.name || a.addon_name || '',
+        quantity: Number(a.quantity || 1),
+        linePriceCents: Number(
+          a.linePriceCents ?? a.line_price_cents ?? a.unit_price_cents ?? 0
+        ),
+      })),
+    })),
+  };
+}
+
+/** Internal bill snapshot for cloud bridge (no rider session). */
+export function getDeliveryBillSnapshot(shopId, orderId) {
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(String(orderId || ''))) {
+    fail(404, 'Order not found.', 'ORDER_NOT_FOUND');
+  }
+  const db = getDb();
+  const order = db
+    .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND order_id = ?`)
+    .get(shopId, orderId);
+  if (!order || Number(order.is_test) !== 1) {
+    fail(404, 'Order not found.', 'ORDER_NOT_FOUND');
+  }
+  if (order.fulfillment_behavior !== 'DELIVERY') {
+    fail(400, 'Not a delivery order.', 'NOT_DELIVERY');
+  }
+  const full = getOrder(orderId);
+  if (!full) fail(404, 'Order not found.', 'ORDER_NOT_FOUND');
+  return mapDeliveryBill(full, { claimedByMe: false });
+}
+
+/**
+ * Read-only bill for Delivery Boys: available pool orders or their own claims.
+ * Does not expose unrelated shop orders.
+ */
+export function getDeliveryBill(shopId, orderId, actor) {
+  if (!/^[a-zA-Z0-9_-]{1,120}$/.test(String(orderId || ''))) {
+    fail(404, 'Order not found.', 'ORDER_NOT_FOUND');
+  }
+  const db = getDb();
+  driverGuard(db, shopId, actor, 'delivery.pool.view');
+  const order = db
+    .prepare(`SELECT * FROM orders WHERE tenant_id = ? AND order_id = ?`)
+    .get(shopId, orderId);
+  if (!order || Number(order.is_test) !== 1) {
+    fail(404, 'Order not found.', 'ORDER_NOT_FOUND');
+  }
+  if (order.fulfillment_behavior !== 'DELIVERY') {
+    fail(400, 'Not a delivery order.', 'NOT_DELIVERY');
+  }
+
+  const claim = db
+    .prepare(
+      `SELECT driver_user_id FROM order_delivery_claims
+       WHERE shop_id = ? AND order_id = ?`
+    )
+    .get(shopId, orderId);
+
+  if (claim) {
+    if (claim.driver_user_id !== actor.userId) {
+      fail(403, 'This delivery belongs to another rider.', 'NOT_YOUR_ORDER');
+    }
+  } else {
+    // Unclaimed: only show when still open and ready for the shared pool.
+    if (order.status !== 'OPEN') {
+      fail(409, 'Order is no longer available.', 'ORDER_NOT_OPEN');
+    }
+    const state = readOrderOperationalState(db, shopId, order);
+    if (!state.dispatch.ready) {
+      fail(409, 'Order is not ready for delivery.', 'NOT_READY');
+    }
+  }
+
+  const full = getOrder(orderId);
+  if (!full) fail(404, 'Order not found.', 'ORDER_NOT_FOUND');
+  return mapDeliveryBill(full, { claimedByMe: Boolean(claim) });
 }
 
 /**

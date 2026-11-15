@@ -72,6 +72,100 @@ function amountText(o, amountCents = o.totalCents) {
   const decimals = Math.min(Math.max(Number(o.currencyDecimals) || 2, 0), 4);
   return `${(Number(amountCents || 0) / 10 ** decimals).toFixed(decimals)} ${o.currencyCode || ''}`.trim();
 }
+function moneyBill(bill, cents) {
+  return amountText(bill, cents);
+}
+function closeBillDialog() {
+  const dialog = $('bill-dialog');
+  if (dialog?.open) dialog.close();
+}
+function renderBillBody(bill) {
+  const body = $('bill-body');
+  body.replaceChildren();
+  const address = [
+    bill.blockNumber && `Block ${bill.blockNumber}`,
+    bill.roadNumber && `Road ${bill.roadNumber}`,
+    bill.buildingNumber && `Building ${bill.buildingNumber}`,
+  ].filter(Boolean).join(' · ') || 'Address not entered';
+  body.append(el('div', 'bill-address', address));
+  if (bill.addressNote) body.append(el('div', 'bill-note', bill.addressNote));
+  const customer = [bill.customerName, bill.customerPhone].filter(Boolean).join(' · ');
+  if (customer) body.append(el('div', 'bill-customer', customer));
+
+  const linesHost = el('ul', 'bill-lines');
+  for (const line of bill.lines || []) {
+    const row = el('li', 'bill-line');
+    const top = el('div', 'bill-line-top');
+    const title = [line.name, line.variantName].filter(Boolean).join(' — ');
+    top.append(
+      el('span', 'bill-line-name', `${line.quantity}× ${title}`),
+      el('span', 'bill-line-amt', moneyBill(bill, line.lineTotalCents))
+    );
+    row.append(top);
+    for (const addon of line.addons || []) {
+      const addonRow = el('div', 'bill-addon');
+      addonRow.append(
+        el('span', '', `+ ${addon.name}${addon.quantity > 1 ? ` ×${addon.quantity}` : ''}`),
+        el('span', '', moneyBill(bill, addon.linePriceCents))
+      );
+      row.append(addonRow);
+    }
+    if (line.instructions?.length) {
+      row.append(el('div', 'bill-instr', line.instructions.join(' · ')));
+    }
+    linesHost.append(row);
+  }
+  if (!(bill.lines || []).length) {
+    linesHost.append(el('li', 'bill-empty', 'No line items on this bill.'));
+  }
+  body.append(linesHost);
+
+  const totals = el('div', 'bill-totals');
+  const addTotal = (label, cents, strong = false) => {
+    const row = el('div', strong ? 'bill-total-row grand' : 'bill-total-row');
+    row.append(el('span', '', label), el('span', '', moneyBill(bill, cents)));
+    totals.append(row);
+  };
+  addTotal('Items', bill.goodsCents);
+  if (Number(bill.deliveryChargeCents) > 0) {
+    addTotal('Delivery charge', bill.deliveryChargeCents);
+  }
+  if (bill.taxEnabled && Number(bill.taxCents) > 0) {
+    addTotal(bill.taxName || 'Tax', bill.taxCents);
+  }
+  addTotal('Total', bill.totalCents, true);
+  body.append(totals);
+}
+async function openBill(order) {
+  const dialog = $('bill-dialog');
+  const body = $('bill-body');
+  if (!dialog || !body) return;
+  $('bill-title').textContent = 'Bill details';
+  $('bill-subtitle').textContent = order.orderNumber || '';
+  body.replaceChildren(el('p', 'bill-loading', 'Loading bill…'));
+  if (!dialog.open) dialog.showModal();
+  try {
+    const r = await api(`/v1/delivery-pool/${encodeURIComponent(order.orderId)}/bill`);
+    if (r.status === 401) {
+      closeBillDialog();
+      loginView('Session expired. Sign in again.');
+      return;
+    }
+    if (!r.ok || !r.json.bill) {
+      body.replaceChildren(el('p', 'error', r.json.error || 'Could not load bill.'));
+      return;
+    }
+    const bill = r.json.bill;
+    $('bill-title').textContent = bill.orderNumber || 'Bill details';
+    $('bill-subtitle').textContent = [
+      bill.tokenNumber != null ? `Token ${String(bill.tokenNumber).padStart(3, '0')}` : '',
+      moneyBill(bill, bill.totalCents),
+    ].filter(Boolean).join(' · ');
+    renderBillBody(bill);
+  } catch {
+    body.replaceChildren(el('p', 'error', 'Connection lost. Try again.'));
+  }
+}
 function paymentControls(o) {
   const pay = o.paymentReport || { status: 'UNMARKED', version: 0, canMark: true };
   const area = el('section', 'payment-mark');
@@ -232,7 +326,13 @@ function drawOrder(o, mine = false) {
     card.append(el('div','order-total', amountText(o)));
     card.append(deliveryControls(o));
     card.append(paymentControls(o));
+  } else {
+    card.append(el('div','order-total', amountText(o)));
   }
+  const billBtn = el('button','outline bill-btn','View bill');
+  billBtn.type = 'button';
+  billBtn.addEventListener('click', () => void openBill(o));
+  card.append(billBtn);
   if (!mine) {
     const button = el('button','primary','Accept delivery');
     button.type = 'button';

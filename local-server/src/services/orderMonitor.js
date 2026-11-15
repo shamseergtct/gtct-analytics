@@ -7,7 +7,10 @@
 import { getDb } from '../db/db.js';
 import { nowIso } from '../util/time.js';
 import { recordAudit } from './audit.js';
-import { readOrderOperationalState } from './orderOperationalState.js';
+import {
+  REQUIRE_PREP_FINISHED_FOR_DISPATCH,
+  readOrderOperationalState,
+} from './orderOperationalState.js';
 import { getOrderRegisterDetail, listOrderRegister } from './orderRegister.js';
 
 function fail(status, message, code) {
@@ -64,7 +67,7 @@ export function markOrderReadyForDelivery(shopId, orderId, expectedRevision, act
     if (monitor.dispatch.revision !== expectedRevision) {
       fail(409, 'Order or kitchen status changed. Refresh and review again.', 'MONITOR_STALE');
     }
-    if (!monitor.preparation.allFinished) {
+    if (REQUIRE_PREP_FINISHED_FOR_DISPATCH && !monitor.preparation.allFinished) {
       fail(409, 'All preparation stations must finish before packing confirmation.', 'KITCHEN_NOT_FINISHED');
     }
     if (monitor.dispatch.ready) {
@@ -89,6 +92,49 @@ export function markOrderReadyForDelivery(shopId, orderId, expectedRevision, act
       detail: { shopId, orderId: order.order_id, from: monitor.dispatch.status, to: 'READY_FOR_DELIVERY' },
     });
     return { orderId: order.order_id, status: 'READY_FOR_DELIVERY', alreadyReady: false };
+  });
+  return transaction.immediate();
+}
+
+/** Revert packing confirmation so the order returns to Pending on Monitor.
+ * Blocked after a Delivery Boy claims the order.
+ */
+export function unmarkOrderReadyForDelivery(shopId, orderId, expectedRevision, actor) {
+  if (!/^[a-f0-9]{64}$/.test(String(expectedRevision || ''))) {
+    fail(400, 'Refresh the order monitor before changing status.', 'MONITOR_REVISION_REQUIRED');
+  }
+  if (!actor?.userId || !['admin', 'cashier'].includes(actor.role)) {
+    fail(403, 'Cashier or Admin privileges required.', 'DISPATCH_FORBIDDEN');
+  }
+  const db = getDb();
+  const transaction = db.transaction(() => {
+    const order = orderRow(db, shopId, orderId);
+    if (Number(order.is_test) !== 1) fail(403, 'Only TEST orders are supported.', 'REAL_ORDER_DISABLED');
+    if (order.status !== 'OPEN') fail(409, 'Order is no longer open.', 'ORDER_NOT_OPEN');
+    if (order.fulfillment_behavior !== 'DELIVERY') {
+      fail(400, 'Ready status applies only to delivery orders.', 'NOT_DELIVERY');
+    }
+    const monitor = readOrderOperationalState(db, shopId, order);
+    if (monitor.dispatch.revision !== expectedRevision) {
+      fail(409, 'Order or kitchen status changed. Refresh and review again.', 'MONITOR_STALE');
+    }
+    if (monitor.deliveryBoyName) {
+      fail(409, 'A delivery rider already accepted this order.', 'ALREADY_CLAIMED');
+    }
+    if (!monitor.dispatch.ready) {
+      return { orderId: order.order_id, status: monitor.dispatch.status, alreadyUnmarked: true };
+    }
+    db.prepare(`DELETE FROM order_dispatch_readiness WHERE shop_id = ? AND order_id = ?`)
+      .run(shopId, order.order_id);
+    recordAudit({
+      actorRole: actor.role,
+      actorUserId: actor.userId,
+      action: 'order.dispatch.unready',
+      entityType: 'order_dispatch_readiness',
+      entityId: order.order_id,
+      detail: { shopId, orderId: order.order_id, from: 'READY_FOR_DELIVERY', to: 'AWAITING_PACKING_CONFIRMATION' },
+    });
+    return { orderId: order.order_id, status: 'AWAITING_PACKING_CONFIRMATION', alreadyUnmarked: false };
   });
   return transaction.immediate();
 }

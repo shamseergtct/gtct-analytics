@@ -1,4 +1,30 @@
-/** Sort helpers for Restaurant Sales menu layout (inventory.menuSortOrder). */
+/** Sort helpers + menu taxonomy for Restaurant Sales (inventory fields). */
+
+export const MENU_LABEL_MAX = 60;
+
+export function normalizeMenuLabel(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MENU_LABEL_MAX);
+}
+
+/** POS filter label: menuCategory, else legacy subCategory. */
+export function getMenuCategoryLabel(item) {
+  return (
+    normalizeMenuLabel(item?.menuCategory) ||
+    normalizeMenuLabel(item?.subCategory)
+  );
+}
+
+export function listDistinctMenuLabels(items = [], getter) {
+  const set = new Set();
+  for (const item of items) {
+    const value = normalizeMenuLabel(getter(item));
+    if (value) set.add(value);
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
 
 export function getMenuSortOrder(item) {
   const n = Number(item?.menuSortOrder);

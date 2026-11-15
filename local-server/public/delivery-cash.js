@@ -1,11 +1,22 @@
 /* P2-E3B UI1: read-only delivery roster + rider-scoped handover display.
  * The existing server validates all amounts, assignments, permissions and idempotency.
  */
+import {
+  buildRiderCashPrintHtml,
+  openRiderCashPrint,
+  moneyPreview,
+  formatPrintToken,
+} from './delivery-cash-print.js';
+
 const $ = (id) => document.getElementById(id);
 let refreshBusy = false;
 let selectedRiderId = null; // No rider selected; no cash confirmation in overview.
+let expandedBoyId = null;
 let snapshot = { riders: [], pending: [], history: [] };
 const submissions = new Map(); // Preserve an uncertain network retry's submission ID.
+let shopDisplayName = 'Shop';
+let printPreview = null;
+let printMode = 'THERMAL';
 
 function element(tag, className, text) {
   const item = document.createElement(tag);
@@ -28,6 +39,14 @@ function notice(message, type = '') {
 function money(v, dec = 3, cc = 'BHD') {
   const digits = Number.isInteger(Number(dec)) && Number(dec) >= 0 && Number(dec) <= 3 ? Number(dec) : 3;
   return `${(Number(v) / 10 ** digits).toFixed(digits)} ${cc}`;
+}
+function moneyAmount(v, dec = 3) {
+  const digits = Number.isInteger(Number(dec)) && Number(dec) >= 0 && Number(dec) <= 3 ? Number(dec) : 3;
+  return (Number(v) / 10 ** digits).toFixed(digits);
+}
+/** Collect-page style: "BHD 1.200" */
+function moneyLabel(v, dec = 3, cc = 'BHD') {
+  return `${String(cc || 'BHD').trim()} ${moneyAmount(v, dec)}`;
 }
 function totals(items) {
   const map = new Map();
@@ -69,21 +88,504 @@ function btnRider(rider, title, subtitle, count, initials, active) {
   if (!active) btn.title = 'Inactive rider; history remains visible';
   return btn;
 }
+function selectRider(riderId) {
+  selectedRiderId = riderId || null;
+  if (riderId) expandedBoyId = riderId;
+  selectPendingDayForRider();
+  render();
+  resetBatchDecision();
+  void loadBatch();
+}
+function billsForRider(riderId) {
+  const preview = batchSnapshot?.preview;
+  if (
+    preview?.riderUserId === riderId &&
+    Array.isArray(preview.orders) &&
+    preview.orders.length
+  ) {
+    return preview.orders.map((o) => ({
+      orderNumber: o.orderNumber,
+      tokenNumber: o.tokenNumber,
+      amountMinor: Number(o.amountMinor || 0),
+      commissionMinor: Number.isSafeInteger(o.commissionMinor) ? o.commissionMinor : 0,
+      customerName: o.customerName || '',
+      businessDate: preview.businessDate || '',
+      currencyCode: preview.currencyCode || 'BHD',
+      currencyDecimals: preview.currencyDecimals ?? 3,
+    }));
+  }
+  return pendingFor(riderId).map((o) => ({
+    orderNumber: o.orderNumber,
+    tokenNumber: o.tokenNumber,
+    amountMinor: Number(o.amountCents || 0),
+    commissionMinor: Number.isSafeInteger(o.commissionMinor) ? o.commissionMinor : 0,
+    customerName: o.customerName || '',
+    businessDate: o.businessDate || '',
+    currencyCode: o.currencyCode || 'BHD',
+    currencyDecimals: o.currencyDecimals ?? 3,
+  }));
+}
+function formatBillToken(token) {
+  if (token == null || token === '') return '—';
+  const n = Number(token);
+  if (Number.isFinite(n) && Number.isInteger(n) && n >= 0) {
+    return String(n).padStart(3, '0');
+  }
+  return String(token);
+}
+function buildBillGroups(bills) {
+  const groups = new Map();
+  for (const bill of bills) {
+    const key = bill.businessDate || 'Bills';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(bill);
+  }
+  return [...groups.entries()].sort(([a], [b]) => String(a).localeCompare(String(b)));
+}
+function renderBillDetails(riderId) {
+  const wrap = element('div', 'cash-bill-groups');
+  const bills = billsForRider(riderId);
+  const rider = getRiders().find((r) => r.userId === riderId);
+  const pending = pendingFor(riderId);
+  const overview =
+    batchSnapshot?.preview?.riderUserId === riderId
+      ? batchSnapshot.preview.overview
+      : null;
+  const available = batchAvailable(batchSnapshot?.preview);
+  const sample = bills[0] || pending[0];
+  const dec = sample?.currencyDecimals ?? 3;
+  const cc = sample?.currencyCode || 'BHD';
+  const totalMinor = overview
+    ? Number(overview.totalDeliveredMinor || 0)
+    : pending.reduce((s, o) => s + Number(o.amountCents || 0), 0);
+  const shopPaid = overview ? Number(overview.directShopPaidMinor || 0) : 0;
+  const credit = overview ? Number(overview.customerCreditAllocatedMinor || 0) : 0;
+  const commission =
+    Number.isSafeInteger(available?.amount) ? available.amount : 0;
+  const balance = pending.reduce((s, o) => s + Number(o.amountCents || 0), 0);
+
+  const shell = element('div', 'cash-expand-shell');
+  const shellHead = element('div', 'cash-expand-shell-head');
+  shellHead.append(
+    element('strong', '', rider?.fullName || 'Delivery Boy'),
+    element(
+      'span',
+      '',
+      `${bills.length || pending.length} bill${(bills.length || pending.length) === 1 ? '' : 's'} · ${moneyLabel(totalMinor, dec, cc)}`
+    )
+  );
+  shell.append(shellHead);
+
+  const groupsHost = element('div', 'cash-bill-groups-inner');
+  if (!bills.length) {
+    groupsHost.append(element('p', 'cash-empty', 'No pending bills for this rider.'));
+  } else {
+    for (const [groupName, rows] of buildBillGroups(bills)) {
+      const groupTotal = rows.reduce((s, r) => s + Number(r.amountMinor || 0), 0);
+      const groupComm = rows.reduce((s, r) => s + Number(r.commissionMinor || 0), 0);
+      const group = element('div', 'cash-bill-group');
+      const head = element('div', 'cash-bill-group-head');
+      head.append(
+        element('strong', '', groupName || 'Bills'),
+        element(
+          'span',
+          '',
+          `${rows.length} bill${rows.length === 1 ? '' : 's'} · ${moneyLabel(groupTotal, dec, cc)}`
+        )
+      );
+      group.append(head);
+      const scroll = element('div', 'cash-bills-scroll');
+      const table = document.createElement('table');
+      table.className = 'cash-bills-table';
+      table.innerHTML = `<colgroup>
+        <col class="col-bill">
+        <col class="col-token">
+        <col class="col-amount">
+        <col class="col-commission">
+        <col class="col-customer">
+      </colgroup>
+      <thead><tr>
+        <th scope="col" class="col-bill">Bill No.</th>
+        <th scope="col" class="col-token">Token</th>
+        <th scope="col" class="num col-amount">Amount</th>
+        <th scope="col" class="num col-commission">Commission</th>
+        <th scope="col" class="col-customer">Customer</th>
+      </tr></thead>`;
+      const tbody = document.createElement('tbody');
+      for (const bill of rows) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td class="col-bill"></td><td class="col-token"></td><td class="num col-amount"></td><td class="num col-commission"></td><td class="col-customer"></td>`;
+        tr.children[0].textContent = bill.orderNumber || '—';
+        tr.children[1].textContent = formatBillToken(bill.tokenNumber);
+        const commissionMinor = Number.isSafeInteger(Number(bill.commissionMinor))
+          ? Number(bill.commissionMinor)
+          : 0;
+        tr.children[2].textContent = moneyLabel(Number(bill.amountMinor) || 0, dec, cc);
+        tr.children[3].textContent = moneyLabel(commissionMinor, dec, cc);
+        const customer = String(bill.customerName ?? '').trim();
+        tr.children[4].textContent = customer && customer !== '—' ? customer : '—';
+        tbody.append(tr);
+      }
+      table.append(tbody);
+      const tfoot = document.createElement('tfoot');
+      tfoot.innerHTML = `<tr>
+        <td class="col-bill">Total</td>
+        <td class="col-token"></td>
+        <td class="num col-amount"></td>
+        <td class="num col-commission"></td>
+        <td class="col-customer"></td>
+      </tr>`;
+      const footCells = tfoot.querySelectorAll('td');
+      footCells[2].textContent = moneyLabel(groupTotal, dec, cc);
+      footCells[3].textContent = moneyLabel(groupComm, dec, cc);
+      table.append(tfoot);
+      scroll.append(table);
+      group.append(scroll);
+      groupsHost.append(group);
+    }
+  }
+  shell.append(groupsHost);
+
+  const foot = element('div', 'cash-expand-foot');
+  const metrics = [
+    ['Bills', String(bills.length || pending.length)],
+    ['Total Amount', moneyLabel(totalMinor, dec, cc)],
+    ['Shop Paid', moneyLabel(shopPaid, dec, cc), 'shop'],
+    ['Credit', moneyLabel(credit, dec, cc), 'credit'],
+    ['Commission', moneyLabel(commission, dec, cc), 'comm'],
+    ['Payable', moneyLabel(balance, dec, cc), 'pay'],
+  ];
+  for (const [label, value, tone] of metrics) {
+    const cell = element('div', `cash-expand-metric${tone ? ` is-${tone}` : ''}`);
+    cell.append(element('span', '', label), element('strong', '', value));
+    foot.append(cell);
+  }
+  shell.append(foot);
+
+  const actions = element('div', 'cash-expand-actions');
+  const printBtn = element('button', 'btn ghost small', 'Print');
+  printBtn.type = 'button';
+  printBtn.disabled = !bills.length;
+  printBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openPrintPreview({
+      riderId,
+      boyName: rider?.fullName || 'Delivery Boy',
+      bills,
+      businessDate: $('batch-day')?.value || bills[0]?.businessDate || '',
+      currency: cc,
+      currencyDecimals: dec,
+      summary: {
+        bills: bills.length || pending.length,
+        totalAmountMinor: totalMinor,
+        shopPaidMinor: shopPaid,
+        creditMinor: credit,
+        commissionMinor: commission,
+        payableMinor: balance,
+      },
+    });
+  });
+  actions.append(printBtn);
+  shell.append(actions);
+
+  wrap.append(shell);
+  return wrap;
+}
+
+function closePrintPreview() {
+  printPreview = null;
+  const modal = $('cash-print-modal');
+  if (modal) modal.hidden = true;
+}
+
+function openPrintPreview(payload) {
+  if (!payload?.bills?.length) {
+    notice('No bills to print for this rider.', 'bad');
+    return;
+  }
+  printPreview = payload;
+  printMode = 'THERMAL';
+  const modal = $('cash-print-modal');
+  if (!modal) return;
+  modal.hidden = false;
+  $('cash-print-subtitle').textContent =
+    `${payload.boyName} · ${payload.businessDate || '—'}`;
+  renderPrintPreview();
+}
+
+function renderPrintPreview() {
+  const host = $('cash-print-preview');
+  if (!host || !printPreview) return;
+  const thermalBtn = $('cash-print-mode-thermal');
+  const a4Btn = $('cash-print-mode-a4');
+  if (thermalBtn) thermalBtn.classList.toggle('is-active', printMode === 'THERMAL');
+  if (a4Btn) a4Btn.classList.toggle('is-active', printMode === 'A4');
+
+  const bills = [...(printPreview.bills || [])].sort((a, b) =>
+    String(a.orderNumber || '').localeCompare(String(b.orderNumber || ''), undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    })
+  );
+  const groups = new Map();
+  for (const bill of bills) {
+    const key = bill.businessDate || 'Bills';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(bill);
+  }
+  const dateGroups = [...groups.entries()].sort(([a], [b]) => String(a).localeCompare(String(b)));
+  const dec = printPreview.currencyDecimals ?? 3;
+  const cc = printPreview.currency || 'BHD';
+  const slip = element('div', `cash-print-slip ${printMode === 'THERMAL' ? 'is-thermal' : 'is-a4'}`);
+  slip.append(element('div', 'shop', shopDisplayName || 'Shop'));
+  const meta = element('div', 'meta');
+  meta.append(
+    element('div', '', printPreview.boyName || 'Delivery Boy'),
+    element('div', '', printPreview.businessDate || '—')
+  );
+  slip.append(meta, element('div', 'line'));
+
+  if (!dateGroups.length) {
+    slip.append(element('p', 'empty', 'No bills to print for this delivery boy.'));
+  } else {
+    for (const [date, rows] of dateGroups) {
+      const amountTotal = rows.reduce((s, r) => s + Number(r.amountMinor || 0), 0);
+      const commTotal = rows.reduce(
+        (s, r) => s + (Number.isSafeInteger(Number(r.commissionMinor)) ? Number(r.commissionMinor) : 0),
+        0
+      );
+      const head = element('div', 'group-h');
+      head.append(
+        element('span', '', date),
+        element('span', '', `${rows.length} · ${moneyPreview(amountTotal, dec, cc)}`)
+      );
+      slip.append(head);
+      const table = document.createElement('table');
+      if (printMode === 'THERMAL') {
+        table.innerHTML = `<thead><tr>
+          <th>Bill</th><th class="tok">Token</th><th>Customer</th><th class="num">Amount</th>
+        </tr></thead>`;
+      } else {
+        table.innerHTML = `<thead><tr>
+          <th>Bill No.</th><th>Token</th><th>Customer</th><th class="num">Amount</th><th class="num">Commission</th>
+        </tr></thead>`;
+      }
+      const tbody = document.createElement('tbody');
+      for (const bill of rows) {
+        const tr = document.createElement('tr');
+        if (printMode === 'THERMAL') {
+          tr.innerHTML = `<td></td><td class="tok"></td><td></td><td class="num"></td>`;
+          tr.children[0].textContent = bill.orderNumber || '—';
+          tr.children[1].textContent = formatPrintToken(bill.tokenNumber);
+          tr.children[2].textContent = String(bill.customerName || '').trim() || '—';
+          tr.children[3].textContent = moneyPreview(bill.amountMinor, dec, cc);
+        } else {
+          tr.innerHTML = `<td></td><td></td><td></td><td class="num"></td><td class="num"></td>`;
+          tr.children[0].textContent = bill.orderNumber || '—';
+          tr.children[1].textContent = formatPrintToken(bill.tokenNumber);
+          tr.children[2].textContent = String(bill.customerName || '').trim() || '—';
+          tr.children[3].textContent = moneyPreview(bill.amountMinor, dec, cc);
+          tr.children[4].textContent = moneyPreview(
+            Number.isSafeInteger(Number(bill.commissionMinor)) ? Number(bill.commissionMinor) : 0,
+            dec,
+            cc
+          );
+        }
+        tbody.append(tr);
+      }
+      table.append(tbody);
+      const tfoot = document.createElement('tfoot');
+      if (printMode === 'THERMAL') {
+        tfoot.innerHTML = `<tr><td colspan="3"><b>Total</b></td><td class="num"></td></tr>`;
+        tfoot.querySelector('.num').textContent = moneyPreview(amountTotal, dec, cc);
+      } else {
+        tfoot.innerHTML = `<tr><td colspan="3"><b>Total</b></td><td class="num"></td><td class="num"></td></tr>`;
+        const nums = tfoot.querySelectorAll('.num');
+        nums[0].textContent = moneyPreview(amountTotal, dec, cc);
+        nums[1].textContent = moneyPreview(commTotal, dec, cc);
+      }
+      table.append(tfoot);
+      slip.append(table);
+    }
+  }
+
+  slip.append(element('div', 'line'));
+  const summary = element('div', 'summary');
+  const s = printPreview.summary || {};
+  const summaryRows = [
+    ['Bills', String(s.bills || 0)],
+    ['Total Amount', moneyPreview(s.totalAmountMinor, dec, cc)],
+    ['Shop Paid', moneyPreview(s.shopPaidMinor, dec, cc)],
+    ['Credit', moneyPreview(s.creditMinor, dec, cc)],
+    ['Commission', moneyPreview(s.commissionMinor, dec, cc)],
+    ['Payable', moneyPreview(s.payableMinor, dec, cc)],
+  ];
+  for (const [label, value] of summaryRows) {
+    const cell = document.createElement('div');
+    if (printMode === 'THERMAL') {
+      cell.append(element('span', '', label), element('span', '', value));
+    } else {
+      cell.append(element('div', 'label', label), element('div', 'value', value));
+    }
+    summary.append(cell);
+  }
+  slip.append(summary);
+  host.replaceChildren(slip);
+  const confirm = $('cash-print-confirm');
+  if (confirm) confirm.disabled = !bills.length;
+}
+
+function confirmPrintPreview() {
+  if (!printPreview?.bills?.length) return;
+  try {
+    const html = buildRiderCashPrintHtml({
+      mode: printMode,
+      shopName: shopDisplayName || 'Shop',
+      boyName: printPreview.boyName,
+      businessDate: printPreview.businessDate,
+      bills: printPreview.bills,
+      summary: printPreview.summary,
+      currency: printPreview.currency,
+      currencyDecimals: printPreview.currencyDecimals,
+    });
+    openRiderCashPrint(html);
+    closePrintPreview();
+  } catch (err) {
+    notice(err?.message || 'Failed to open print preview.', 'bad');
+  }
+}
+
+async function loadShopName() {
+  try {
+    const res = await api('/v1/shop-settings');
+    if (res.ok) {
+      const name = String(res.json?.shop?.displayName || '').trim();
+      if (name) shopDisplayName = name;
+    }
+  } catch {
+    /* keep default */
+  }
+}
 function showRiders() {
-  const host = $('rider-list'); host.replaceChildren();
+  const host = $('rider-list');
+  if (host) host.replaceChildren();
   const riders = getRiders();
-  $('rider-total').textContent = `${riders.length} riders`;
-  host.append(btnRider(null, 'All riders', 'Overview · select a rider to settle', snapshot.pending.length, 'ALL', true));
-  const q = $('rider-search').value.trim().toLocaleLowerCase();
+  if ($('rider-total')) $('rider-total').textContent = `${riders.length} riders`;
+  if (host) {
+    host.append(btnRider(null, 'All riders', 'Overview · select a rider to settle', snapshot.pending.length, 'ALL', true));
+  }
+  const q = ($('rider-search')?.value || '').trim().toLocaleLowerCase();
   const matching = riders.filter(r => String(r.fullName).toLocaleLowerCase().includes(q));
   for (const r of matching) {
     const count = pendingFor(r.userId).length;
     const sub = `${r.isActive ? 'Active' : 'Inactive'} · ${count} pending invoice${count === 1 ? '' : 's'}`;
     const initials = (r.fullName || '?').split(/\s+/).filter(Boolean).slice(0, 2)
       .map(w => w[0]).join('').toUpperCase();
-    host.append(btnRider(r.userId, r.fullName, sub, count, initials, r.isActive));
+    if (host) host.append(btnRider(r.userId, r.fullName, sub, count, initials, r.isActive));
   }
-  if (!matching.length) host.append(element('p', 'cash-empty', 'No delivery boy matches your search.'));
+  if (host && !matching.length) host.append(element('p', 'cash-empty', 'No delivery boy matches your search.'));
+
+  const body = $('boy-summary-body');
+  if (body) {
+    body.replaceChildren();
+    if (!matching.length) {
+      const empty = document.createElement('tr');
+      empty.innerHTML = '<td colspan="7" class="cash-empty-cell">No delivery boys found.</td>';
+      body.append(empty);
+    } else {
+      for (const r of matching) {
+        const pending = pendingFor(r.userId);
+        const pendingMinor = pending.reduce((sum, o) => sum + Number(o.amountCents || 0), 0);
+        const sample = pending[0] || historyFor(r.userId)[0];
+        const dec = sample?.currencyDecimals ?? 3;
+        const cc = sample?.currencyCode || 'BHD';
+        const selected = selectedRiderId === r.userId;
+        const expanded = expandedBoyId === r.userId;
+        const overview =
+          selected && batchSnapshot?.preview?.riderUserId === r.userId
+            ? batchSnapshot.preview.overview
+            : null;
+        const available = selected ? batchAvailable(batchSnapshot?.preview) : null;
+        const tr = document.createElement('tr');
+        tr.className = 'cash-summary-row';
+        if (selected) tr.classList.add('is-selected');
+        if (expanded) tr.classList.add('is-expanded');
+        tr.innerHTML = `
+          <td><button type="button" class="boy-name"></button></td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="num"></td>
+          <td class="chev"><span class="cash-chevron" aria-hidden="true">▾</span></td>`;
+        tr.querySelector('.boy-name').textContent = r.fullName || 'Delivery Boy';
+        tr.children[1].textContent = overview
+          ? moneyLabel(overview.totalDeliveredMinor, dec, cc)
+          : pending.length
+            ? moneyLabel(pendingMinor, dec, cc)
+            : '—';
+        tr.children[2].textContent = overview
+          ? moneyLabel(overview.directShopPaidMinor, dec, cc)
+          : '—';
+        tr.children[3].textContent = overview
+          ? moneyLabel(overview.customerCreditAllocatedMinor, dec, cc)
+          : '—';
+        tr.children[4].textContent =
+          selected && available && Number.isSafeInteger(available.amount)
+            ? moneyLabel(available.amount, dec, cc)
+            : '—';
+        tr.children[5].textContent = pending.length
+          ? moneyLabel(pendingMinor, dec, cc)
+          : '—';
+        tr.addEventListener('click', (e) => {
+          e.preventDefault();
+          if (expandedBoyId === r.userId && selectedRiderId === r.userId) {
+            expandedBoyId = null;
+            showRiders();
+            return;
+          }
+          expandedBoyId = r.userId;
+          if (selectedRiderId !== r.userId) selectRider(r.userId);
+          else showRiders();
+        });
+        body.append(tr);
+        if (expanded) {
+          const detail = document.createElement('tr');
+          detail.className = 'cash-detail-row';
+          const td = document.createElement('td');
+          td.colSpan = 7;
+          td.append(renderBillDetails(r.userId));
+          detail.append(td);
+          body.append(detail);
+        }
+      }
+    }
+  }
+
+  const select = $('collect-rider');
+  if (select) {
+    const previous = select.value;
+    select.replaceChildren();
+    select.append(new Option('Select delivery boy…', ''));
+    for (const r of riders) {
+      select.append(
+        new Option(
+          `${r.fullName || 'Delivery Boy'}${r.isActive === false ? ' (inactive)' : ''}`,
+          r.userId
+        )
+      );
+    }
+    select.value = selectedRiderId || previous || '';
+    if (selectedRiderId) select.value = selectedRiderId;
+  }
+
+  if ($('collections-count')) {
+    const n = selectedRiderId
+      ? (batchSnapshot?.history || []).filter((x) => x.riderUserId === selectedRiderId).length
+      : 0;
+    $('collections-count').textContent = String(n);
+  }
 }
 // Invoice details are display-only; commission on a daily target is never
 // allocated to individual orders without an explicit allocation in accounting.
@@ -168,8 +670,12 @@ function render() {
   $('selected-rider-hint').textContent = rider
     ? 'Only this rider’s deliveries and confirmed cash handovers are shown.'
     : 'Choose a rider to review invoices and confirm cash handover.';
-  $('selected-status').hidden = !rider;
-  if (rider) $('selected-status').textContent = rider.isActive ? 'Active rider' : 'Inactive rider';
+  // Keep compatibility node updated but never surface it in the page layout.
+  if ($('selected-status')) {
+    $('selected-status').textContent = rider
+      ? (rider.isActive ? 'Active rider' : 'Inactive rider')
+      : '';
+  }
   $('pending-context').textContent = rider
     ? 'Delivered, eligible invoices held by this rider.'
     : 'Rider selection required before cashier confirmation.';
@@ -241,6 +747,7 @@ void (async () => {
     $('batch-history-panel').hidden = !isCommissionAdmin;
     $('shift-panel').hidden = !isCommissionAdmin;
     if (isCommissionAdmin) { batchDayDefault(); await loadTenderBanks(); void loadShiftStatus(); }
+    await loadShopName();
     await refresh();
   } catch { notice('Could not verify your session.', 'bad'); }
 })();
@@ -281,11 +788,11 @@ function riderPendingDays(riderId) {
 function renderRiderDates() {
   const host=$('batch-pending-days'); if (!host) return;
   host.replaceChildren();
-  if (!selectedRiderId) {host.textContent='Choose a rider to see their pending business dates.';return;}
+  if (!selectedRiderId) { host.hidden = true; return; }
   const days=riderPendingDays(selectedRiderId);
-  if (!days.length) {host.textContent='No pending dates in recent invoice list. You can still select a date manually.';return;}
+  host.hidden = days.length === 0;
   for (const [date,count] of days) {
-    const b=element('button','cash-day-chip',`${date} · ${count} bill${count===1?'':'s'}`);
+    const b=element('button','cash-day-chip',`${date} · ${count}`);
     b.type='button';b.setAttribute('aria-pressed',String(date===$('batch-day').value));
     b.addEventListener('click',()=>{$('batch-day').value=date;resetBatchDecision();void loadBatch();});
     host.append(b);
@@ -338,8 +845,13 @@ async function changeShift(action){
 }
 function batchNotice(message, kind = '') {
   const box = $('batch-note');
-  box.className = `cash-subnotice${kind ? ' ' + kind : ''}`;
-  box.textContent = message;
+  if (!box) return;
+  const text = String(message || '').trim();
+  // Keep the form quiet — only surface errors/warnings and success confirms.
+  const show = Boolean(text) && (kind === 'bad' || kind === 'caution' || kind === 'good');
+  box.hidden = !show;
+  box.className = `cash-subnotice${kind ? ` ${kind}` : ''}`;
+  box.textContent = show ? text : '';
 }
 async function batchRequest(path, method = 'GET', payload) {
   const res = await fetch(path, {method, credentials:'same-origin',
@@ -350,10 +862,19 @@ async function batchRequest(path, method = 'GET', payload) {
     {status:res.status});
   return body;
 }
-function setBatchText(id, value) { $(id).textContent = String(value); }
+function setBatchText(id, value) {
+  const el = $(id);
+  if (!el) return;
+  const text = String(value);
+  if ('value' in el && (el.tagName === 'INPUT' || el.tagName === 'SELECT' || el.tagName === 'TEXTAREA')) {
+    el.value = text;
+  } else {
+    el.textContent = text;
+  }
+}
 function batchMoney(n, p = batchSnapshot?.preview) {
   if (n == null || !p || !p.currencyCode) return '—';
-  return money(n, p.currencyDecimals, p.currencyCode);
+  return moneyLabel(n, p.currencyDecimals, p.currencyCode);
 }
 function minorInputValue(n,p) {
   const decimals=Number(p?.currencyDecimals??3);
@@ -413,12 +934,24 @@ function renderTender(p,net) {
   if(document.activeElement!==$('batch-tender-note'))$('batch-tender-note').value=d?.note||'';
   setBatchText('batch-summary-cash',batchMoney(d?.cashMinor,p));
   setBatchText('batch-summary-bank',batchMoney(d?.bankMinor,p));
+  const remainingEl = $('batch-tender-remaining');
+  if (remainingEl) {
+    if (!d || !Number.isSafeInteger(net)) remainingEl.value = '—';
+    else {
+      const rem = net - Number(d.cashMinor || 0) - Number(d.bankMinor || 0);
+      remainingEl.value = batchMoney(rem, p);
+    }
+  }
   const valid=tenderMatchesForm(d,p,net);
   const el=$('batch-tender-status');
-  el.className='cash-tender-info'+(!valid&&d?' is-error':'');
-  el.textContent=!d?'Choose rider and date to edit payment methods.':!valid
-    ?'Choose a valid Operational bank account; Cash + Bank must equal net collection.'
-    :`Collection split balanced: ${batchMoney(d.cashMinor,p)} cash + ${batchMoney(d.bankMinor,p)} bank.`;
+  if (el) {
+    const err = Boolean(d) && !valid;
+    el.hidden = !err;
+    el.className = 'cash-tender-info' + (err ? ' is-error' : '');
+    el.textContent = err
+      ? 'Cash + Bank must equal Balance. Select a bank account when bank amount is used.'
+      : '';
+  }
   return valid;
 }
 function handleTenderField(type) {
@@ -430,8 +963,12 @@ function handleTenderField(type) {
     const field=$(`batch-tender-${type}`);
     const value=parseMinorInput(field.value,p);
     if(value===null||value>net){
-      $('batch-tender-status').textContent='Enter a valid amount not greater than net collection.';
-      $('batch-tender-status').className='cash-tender-info is-error';
+      const st=$('batch-tender-status');
+      if (st) {
+        st.hidden=false;
+        st.textContent='Enter a valid amount not greater than Balance.';
+        st.className='cash-tender-info is-error';
+      }
       $('batch-confirm').disabled=true;return;
     }
     if(type==='cash'){batchTenderDraft.cashMinor=value;batchTenderDraft.bankMinor=net-value;}
@@ -549,7 +1086,14 @@ function renderBatch() {
   setBatchText('batch-gross',p ? batchMoney(p.grossMinor,p) : '—');
   const available = batchAvailable(p);
   setBatchText('batch-commission',p ? batchMoney(available.amount,p) : '—');
-  setBatchText('batch-commission-detail',available.explanation);
+  {
+    const detail = $('batch-commission-detail');
+    if (detail) {
+      const show = Boolean(p) && available.amount <= 0 && available.explanation;
+      detail.hidden = !show;
+      detail.textContent = show ? available.explanation : '';
+    }
+  }
   const opt = $('batch-pay-commission');
   opt.disabled = !p?.invoiceCount || !Number.isSafeInteger(available.amount) ||
     available.amount <= 0 || available.amount > p.grossMinor || batchConfirmBusy;
@@ -577,36 +1121,57 @@ function renderBatch() {
   }
   const history = $('batch-history'); history.replaceChildren();
   const items = (batchSnapshot?.history || []).filter(x=>x.riderUserId === selectedRiderId).slice(0,100);
-  if (!items.length) history.append(element('p','cash-empty',selectedRiderId ? 'No batch settlements for this rider.' : 'Select a rider to view batch history.'));
+  if ($('collections-count')) $('collections-count').textContent = String(items.length);
+  if (!items.length) {
+    history.append(element('p','cash-empty',selectedRiderId ? 'No collections for this rider yet.' : 'Select a rider to view collections.'));
+  }
+  const riderName = getRiders().find((r) => r.userId === selectedRiderId)?.fullName || 'Rider';
   for (const entry of items) {
-    const row = element('div','cash-history-item');
-    const label = element('div');
-    label.append(element('strong','',`${entry.businessDate} · ${entry.invoiceCount} bills`),
-      element('span','cash-ref',`Gross ${money(entry.grossMinor,entry.currencyDecimals,entry.currencyCode)} · Commission ${money(entry.commissionMinor,entry.currencyDecimals,entry.currencyCode)}`));
-    row.append(label,element('strong','cash-history-amount',money(entry.shopCashMinor,entry.currencyDecimals,entry.currencyCode)));
+    const tender=entry.tender||{cashMinor:entry.shopCashMinor,bankMinor:0,bankAccountId:null,version:0,note:''};
+    const card = element('article', 'cash-collection-card');
+    const head = element('div', 'cash-collection-card-head');
+    head.append(
+      element('strong', '', `${riderName} · ${entry.businessDate}`),
+      element('time', '', `${entry.invoiceCount} bill${entry.invoiceCount === 1 ? '' : 's'}`)
+    );
+    card.append(head);
+    const metrics = element('div', 'cash-collection-metrics');
+    const cells = [
+      ['Payable', moneyLabel(entry.grossMinor, entry.currencyDecimals, entry.currencyCode),
+        Number(entry.commissionMinor) > 0
+          ? `Comm. ${moneyLabel(entry.commissionMinor, entry.currencyDecimals, entry.currencyCode)}`
+          : ''],
+      ['Cash', moneyLabel(tender.cashMinor, entry.currencyDecimals, entry.currencyCode), ''],
+      ['Bank', moneyLabel(tender.bankMinor, entry.currencyDecimals, entry.currencyCode),
+        tender.note || ''],
+      ['Remaining', moneyLabel(0, entry.currencyDecimals, entry.currencyCode), 'Settled'],
+    ];
+    for (const [label, value, note] of cells) {
+      const cell = element('div', 'cash-metric');
+      cell.append(element('span', '', label), element('strong', '', value));
+      if (note) cell.append(element('small', '', note));
+      metrics.append(cell);
+    }
+    card.append(metrics);
     const breakdown=element('details','cash-history-breakdown');
-    const summary=element('summary','',`View ${entry.invoiceCount} invoice details`);
-    breakdown.append(summary);
-    const note=element('p','cash-bill-footnote',entry.commissionAllocationNote ||
-      'Commission is recorded at settlement level; no invoice split is assumed.');
-    breakdown.append(note);
+    breakdown.append(element('summary','',`View ${entry.invoiceCount} invoice details`));
+    breakdown.append(element('p','cash-bill-footnote',entry.commissionAllocationNote ||
+      'Commission is recorded at settlement level; no invoice split is assumed.'));
     for(const inv of entry.orders || []) {
       const invoice=element('div','cash-bill-line');
-      const head=element('div','cash-bill-line-head');
-      head.append(element('strong','',inv.orderNumber),element('strong','',
+      const billHead=element('div','cash-bill-line-head');
+      billHead.append(element('strong','',inv.orderNumber),element('strong','',
         money(inv.amountMinor,entry.currencyDecimals,entry.currencyCode)));
-      invoice.append(head,invoiceDetails(inv,entry.currencyCode,entry.currencyDecimals,true));
+      invoice.append(billHead,invoiceDetails(inv,entry.currencyCode,entry.currencyDecimals,true));
       breakdown.append(invoice);
     }
     if (!Array.isArray(entry.orders)) breakdown.append(element('p','cash-bill-footnote','Invoice details unavailable for this older history record.'));
-    const tender=entry.tender||{cashMinor:entry.shopCashMinor,bankMinor:0,bankAccountId:null,version:0,note:''};
-    row.append(element('div','cash-history-tender',
-      `Shop received: Cash ${money(tender.cashMinor,entry.currencyDecimals,entry.currencyCode)} · Bank ${money(tender.bankMinor,entry.currencyDecimals,entry.currencyCode)}${tender.note?' · '+tender.note:''}`));
-    const wrap=element('div','cash-history-entry');
-    wrap.append(row,breakdown);
-    wrap.append(makeTenderCorrectionEditor(entry,tender));
-    history.append(wrap);
+    card.append(breakdown);
+    card.append(makeTenderCorrectionEditor(entry,tender));
+    history.append(card);
   }
+  // Keep summary table in sync when preview loads.
+  showRiders();
   // Fail closed when a configured commission is positive but cannot yet be
   // accrued/paid: accepting gross cash would lose the intended rider offset.
   // A missing/error commission preview is also not a reason to post zero.
@@ -627,7 +1192,7 @@ async function loadBatch() {
   const date = $('batch-day').value;
   batchSnapshot = null; batchClosing = null;
   renderBatch();
-  batchNotice(rider ? 'Loading rider collection…' : 'Select a rider from the list to review collections.');
+  batchNotice('');
   try {
     const query = rider && date ? `?riderUserId=${encodeURIComponent(rider)}&businessDate=${encodeURIComponent(date)}` : '';
     const result = await batchRequest(BATCH_API + query);
@@ -656,14 +1221,13 @@ async function loadBatch() {
     const oldShiftStillOpen=Boolean(batchClosing?.shopCalendarBusinessDate &&
       batchClosing?.activeShiftBusinessDate===date &&
       batchClosing.shopCalendarBusinessDate>date);
-    const warning=oldShiftStillOpen
-      ? ` WARNING: POS shift still uses ${date} for NEW sales. If more deliveries are created on this date after commission is finalized, further collections will be blocked for reconciliation. Open the correct new POS shift before new sales.` : '';
-    batchNotice((!result.preview ? 'Select a rider to begin.' : commissionBlocked
-      ? `Collection is paused: ${available.explanation}`
-      : available.amount > 0
-        ? 'Saved rider commission is available. Review the net cash and confirm.'
-        : 'No unpaid commission to deduct. Review the displayed breakdown before confirming.') + warning,
-      commissionBlocked ? 'bad' : oldShiftStillOpen ? 'caution' : 'good');
+    if (commissionBlocked) {
+      batchNotice(`Collection paused: ${available.explanation}`, 'bad');
+    } else if (oldShiftStillOpen) {
+      batchNotice(`POS shift still on ${date}. Open the correct shift before new sales.`, 'caution');
+    } else {
+      batchNotice('');
+    }
   } catch(error) {
     if (epoch !== batchLoadEpoch) return;
     batchSnapshot = null; batchClosing = null;
@@ -722,8 +1286,29 @@ $('shift-open').addEventListener('click',()=>void changeShift('open'));
 $('batch-refresh').addEventListener('click', () => {resetBatchDecision();void refresh();});
 $('batch-pay-commission').addEventListener('change', () => {batchRetryBody=null;renderBatch();});
 $('batch-confirm').addEventListener('click', () => void confirmBatch());
+$('collect-rider')?.addEventListener('change', () => {
+  selectRider($('collect-rider').value || null);
+});
 
 $('batch-tender-cash').addEventListener('input',()=>handleTenderField('cash'));
 $('batch-tender-bank').addEventListener('input',()=>handleTenderField('bank'));
 $('batch-tender-bank-account').addEventListener('change',()=>handleTenderField('account'));
 $('batch-tender-note').addEventListener('change',()=>handleTenderField('note'));
+
+$('cash-print-close')?.addEventListener('click', () => closePrintPreview());
+$('cash-print-cancel')?.addEventListener('click', () => closePrintPreview());
+$('cash-print-confirm')?.addEventListener('click', () => confirmPrintPreview());
+$('cash-print-mode-thermal')?.addEventListener('click', () => {
+  printMode = 'THERMAL';
+  renderPrintPreview();
+});
+$('cash-print-mode-a4')?.addEventListener('click', () => {
+  printMode = 'A4';
+  renderPrintPreview();
+});
+$('cash-print-modal')?.addEventListener('click', (e) => {
+  if (e.target === $('cash-print-modal')) closePrintPreview();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && printPreview) closePrintPreview();
+});

@@ -1,7 +1,8 @@
 /**
  * Full cash or bank settlement for one open shop order.
  * The order total, tax snapshot, and fulfillment status are not changed.
- * A settlement does not create kitchen or cashier tickets.
+ * Kitchen tickets are created at order acceptance; cashier receipts enqueue
+ * only after this payment commits successfully.
  */
 import { createHash } from "node:crypto";
 import { getDb } from "../db/db.js";
@@ -9,6 +10,30 @@ import { newId } from "../util/ids.js";
 import { nowIso } from "../util/time.js";
 import { recordAudit } from "./audit.js";
 import { readAllocationSummary } from "./paymentAllocations.js";
+import { enqueueCashierReceiptAfterPayment } from "./printQueue.js";
+import { log } from "../util/logger.js";
+
+function tryEnqueuePaidCashierReceipt(orderId, paymentSummary, config) {
+  try {
+    const job = enqueueCashierReceiptAfterPayment(orderId, paymentSummary, config);
+    return {
+      ok: true,
+      jobId: job.job_id,
+      printerId: job.printer_id,
+      status: job.status,
+    };
+  } catch (err) {
+    log.error("Cashier receipt enqueue after payment failed", {
+      orderId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      code: err?.code || "CASHIER_PRINT_FAILED",
+    };
+  }
+}
 
 export function toPublicSettlementError(err) {
   const code = String(err?.code || "");
@@ -390,7 +415,20 @@ export function settleCashPayment(input, config, actor = {}) {
     const row = loadSettlement(db, shopId, submissionId);
     const posted = loadBalance(db, shopId, orderId);
     db.exec("COMMIT");
-    return { ...settlementView(row, posted), created: true };
+    const result = { ...settlementView(row, posted), created: true };
+    if (input?.printCashier === false) {
+      result.cashierPrint = { ok: true, skipped: true, reason: "screen_only" };
+    } else {
+      result.cashierPrint = tryEnqueuePaidCashierReceipt(orderId, {
+        paymentStatus: "PAID",
+        paidCents: orderTotal,
+        creditCents: 0,
+        cashCents: tender === "CASH" ? orderTotal : 0,
+        bankCents: tender === "BANK" ? orderTotal : 0,
+        tender,
+      }, config);
+    }
+    return result;
   } catch (err) {
     rollback(db);
     if (isUnique(err)) {

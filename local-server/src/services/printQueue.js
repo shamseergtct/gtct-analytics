@@ -6,6 +6,20 @@ import { getShopSettings } from "./shopSettings.js";
 import { formatMoneyMinor } from "../util/money.js";
 
 function serviceFields(order) {
+  let serverName = "";
+  if (order.created_by_user_id) {
+    try {
+      const user = getDb()
+        .prepare(
+          `SELECT full_name, username FROM staff_users
+           WHERE user_id = ? AND shop_id = ?`
+        )
+        .get(order.created_by_user_id, order.tenant_id);
+      serverName = user?.full_name || user?.username || "";
+    } catch {
+      serverName = "";
+    }
+  }
   return {
     orderTypeName: order.order_type_name || "",
     fulfillmentBehavior: order.fulfillment_behavior || "",
@@ -20,6 +34,19 @@ function serviceFields(order) {
     parkingLocation: order.parking_location || "",
     deliveryChargeCents: Number(order.delivery_charge_cents || 0),
     deliveryFeeTaxTreatment: order.delivery_fee_tax_treatment || "",
+    serverName,
+    terminalName: order.created_by_terminal_name || "",
+  };
+}
+
+function kitchenMoneyFields(order, shop) {
+  return {
+    currencyCode: order.currency_code || shop?.currencyCode || "",
+    currencyLabel: order.currency_label || shop?.currencyLabel || "",
+    currencyDecimals:
+      order.currency_decimals != null && order.currency_decimals !== ""
+        ? Number(order.currency_decimals)
+        : Number(shop?.currencyDecimals ?? 2),
   };
 }
 
@@ -89,6 +116,31 @@ function stationPrinter(db, stationId) {
     .get(stationId);
 }
 
+/** Prefer CASHIER station printer; fall back so receipts still print in single-printer shops. */
+function resolveCashierPrinter(db) {
+  const assigned = stationPrinter(db, "station_cashier");
+  if (assigned) return { printer: assigned, source: "station_cashier" };
+  const preferred = db
+    .prepare(
+      `SELECT p.* FROM printers p
+       WHERE p.is_active = 1 AND p.connection_type = 'NETWORK_TCP'
+       ORDER BY p.updated_at DESC, p.display_name
+       LIMIT 1`
+    )
+    .get();
+  if (preferred) return { printer: preferred, source: "fallback_network_tcp" };
+  const anyActive = db
+    .prepare(
+      `SELECT p.* FROM printers p
+       WHERE p.is_active = 1
+       ORDER BY p.updated_at DESC, p.display_name
+       LIMIT 1`
+    )
+    .get();
+  if (anyActive) return { printer: anyActive, source: "fallback_active" };
+  return { printer: null, source: "none" };
+}
+
 function ticketLineSignature(line) {
   const name = line.item_name || line.name || "";
   const variant = line.variant_name || line.variantName || "";
@@ -120,9 +172,13 @@ function removedTicketLines(previous, current) {
 }
 
 /**
- * Enqueue kitchen jobs per station + one cashier job.
+ * Enqueue kitchen jobs per station and/or an unpaid cashier bill.
+ * Paid cashier receipts are enqueued after payment via enqueueCashierReceiptAfterPayment.
  * Unmapped kitchen lines produce a NEEDS_REVIEW placeholder job on cashier printer
  * so items are never silently discarded.
+ *
+ * options.includeKitchen — default true
+ * options.includeCashier — default false (set true to print bill before payment)
  */
 export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, options = {}) {
   const db = getDb();
@@ -131,12 +187,14 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
   if (!order) throw new Error(`Order not found: ${orderId}`);
 
   let shopDisplayName = order.shop_display_name || cfg.restaurantDisplayName;
+  let shopSettings = null;
   try {
-    const liveShop = getShopSettings(order.tenant_id);
-    if (!order.shop_display_name) shopDisplayName = liveShop.displayName;
+    shopSettings = getShopSettings(order.tenant_id);
+    if (!order.shop_display_name) shopDisplayName = shopSettings.displayName;
   } catch {
     /* ignore */
   }
+  const moneyFields = kitchenMoneyFields(order, shopSettings);
 
   const lines = db
     .prepare(`SELECT * FROM order_lines WHERE order_id = ? ORDER BY line_index`)
@@ -215,7 +273,11 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
     return fulfillmentChanged || before !== after;
   }
 
+  const includeKitchen = options.includeKitchen !== false;
+  const includeCashier = options.includeCashier === true;
+
   const tx = db.transaction(() => {
+    if (includeKitchen) {
     for (const [stationId, stationLines] of byStation.entries()) {
       if (!stationChanged(stationId)) continue;
       const station = stationStmt.get(stationId);
@@ -242,6 +304,7 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
           orderType: order.order_type,
           destination: order.destination,
           ...serviceFields(order),
+          ...moneyFields,
           createdAt: order.created_at,
           updatedAt: order.updated_at,
           ticketRevision,
@@ -300,6 +363,7 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
         orderType: order.order_type,
         destination: order.destination,
         ...serviceFields(order),
+        ...moneyFields,
         createdAt: order.created_at,
         updatedAt: order.updated_at,
         ticketRevision,
@@ -351,6 +415,7 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
           orderType: order.order_type,
           destination: order.destination,
           ...serviceFields(order),
+          ...moneyFields,
           createdAt: order.created_at,
           updatedAt: order.updated_at,
           ticketRevision,
@@ -401,6 +466,7 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
           orderType: order.order_type,
           destination: order.destination,
           ...serviceFields(order),
+          ...moneyFields,
           createdAt: order.created_at,
           ticketRevision,
           isReprint: false,
@@ -442,144 +508,249 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
         );
       }
     }
+    } // includeKitchen
 
-    // Cashier complete receipt
-    const cashierStation = stationStmt.get("station_cashier");
-    const cashierPrinter = stationPrinter(db, "station_cashier");
-    if (!cashierPrinter) {
-      throw new Error("Cashier station has no printer assigned");
+    // Unpaid cashier bill (before payment). Paid receipts use enqueueCashierReceiptAfterPayment.
+    if (includeCashier) {
+      const cashierJob = insertCashierJob(db, {
+        order,
+        shopDisplayName,
+        decorated,
+        unmappedMeta: options.unmapped || [],
+        billMetaStmt,
+        stationStmt,
+        ticketRevision,
+        orderEdited,
+        paymentSummary: null,
+      });
+      results.push(cashierJob);
     }
-
-    const cashierPayload = {
-      restaurantDisplayName: shopDisplayName,
-      shopDisplayName,
-      orderNumber: order.order_number,
-          tokenNumber: order.token_number == null ? null : Number(order.token_number),
-          businessDate: order.business_date || null,
-      ticketId: `${order.order_number}-CASHIER-r${ticketRevision}`,
-      stationName: cashierStation?.name || "CASHIER",
-      orderType: order.order_type,
-      destination: order.destination,
-      ...serviceFields(order),
-      createdAt: order.created_at,
-      updatedAt: order.updated_at,
-      ticketRevision,
-      isReprint: false,
-      orderEdited,
-      totalCents: Number(order.total_cents || 0),
-      goodsCents: Number(order.goods_cents ?? order.total_cents ?? 0),
-      taxableGoodsCents: Number(
-        order.taxable_goods_cents ?? order.goods_cents ?? order.total_cents ?? 0
-      ),
-      nontaxableGoodsCents: Number(order.nontaxable_goods_cents || 0),
-      netCents: Number(order.net_cents ?? order.total_cents ?? 0),
-      taxCents: Number(order.tax_cents || 0),
-      taxEnabled: Boolean(order.tax_enabled),
-      taxMode: order.tax_mode || "",
-      taxRateBps: Number(order.tax_rate_bps || 0),
-      taxName: order.tax_name || "",
-      taxRegistrationNumber: order.tax_registration_number || "",
-      shopDisplayName: order.shop_display_name || "",
-      shopLegalName: order.shop_legal_name || "",
-      items: decorated.map((l) => {
-        const isProblem = unmappedMeta.some((u) => u.itemId === l.item_id);
-        let stationName = "No Preparation";
-        if (l.station?.name) stationName = l.station.name;
-        else if (l.station_id) stationName = l.station_id;
-        else if (isProblem) stationName = "UNMAPPED";
-        const meta = billMetaStmt.get(l.item_id) || {};
-        return {
-          name: l.item_name,
-          quantity: l.quantity,
-          instructions: l.instructions,
-          addons: l.addons,
-          category: meta.category || "",
-          subcategory: meta.subcategory || "",
-          categorySort: Number.isFinite(meta.category_sort)
-            ? Number(meta.category_sort)
-            : undefined,
-          subcategorySort: Number.isFinite(meta.subcategory_sort)
-            ? Number(meta.subcategory_sort)
-            : undefined,
-          itemSort: Number(meta.item_sort || 0),
-          variantId: l.variant_id || null,
-          variantName: l.variant_name || "",
-          unitBasePriceCents: Number(l.unit_base_price_cents || 0),
-          unitAddonsCents: Number(l.unit_addons_cents || 0),
-          unitTotalCents: Number(l.unit_total_cents || 0),
-          lineTotalCents: Number(l.line_total_cents || 0),
-          taxApplicable:
-            l.tax_applicable == null
-              ? true
-              : Boolean(Number(l.tax_applicable)),
-          stationName,
-        };
-      }),
-    };
-    try {
-      const shop = getShopSettings(order.tenant_id);
-      // Prefer order-time currency snapshot when present (historical freeze).
-      const moneyShop = {
-        currency_code:
-          order.currency_code || shop.currencyCode,
-        currency_label:
-          order.currency_label || shop.currencyLabel,
-        currency_decimals:
-          order.currency_decimals != null && order.currency_decimals !== ""
-            ? Number(order.currency_decimals)
-            : shop.currencyDecimals,
-      };
-      cashierPayload.currencyCode = moneyShop.currency_code;
-      cashierPayload.currencyLabel = moneyShop.currency_label;
-      cashierPayload.currencyDecimals = moneyShop.currency_decimals;
-      cashierPayload.shopDisplayName =
-        order.shop_display_name || shop.displayName;
-      cashierPayload.shopLegalName =
-        order.shop_legal_name || shop.legalName || "";
-      cashierPayload.addressText = shop.addressText || "";
-      cashierPayload.phone = shop.phone || "";
-      cashierPayload.whatsapp = shop.whatsapp || "";
-      cashierPayload.registrationNumber = shop.registrationNumber || "";
-      cashierPayload.receipt = shop.receipt;
-      cashierPayload.receiptFooter = shop.receipt?.footer || "";
-      cashierPayload.totalFormatted = formatMoneyMinor(
-        cashierPayload.totalCents,
-        moneyShop
-      );
-      // Kitchen-facing display name preference
-      for (const job of results) {
-        /* kitchen payloads already inserted; cashier only here */
-      }
-    } catch {
-      /* shop settings optional for older DBs mid-migrate */
-    }
-
-    const cashierKey = buildIdempotencyKey({
-      tenantId: order.tenant_id,
-      orderId,
-      stationId: "station_cashier",
-      jobType: "CASHIER",
-      ticketRevision,
-      printerId: cashierPrinter.printer_id,
-    });
-
-    const { job: cashierJob } = insertJob(db, {
-      jobId: newId("job"),
-      tenantId: order.tenant_id,
-      orderId,
-      stationId: "station_cashier",
-      printerId: cashierPrinter.printer_id,
-      ticketRevision,
-      jobType: "CASHIER",
-      idempotencyKey: cashierKey,
-      payloadSnapshot: JSON.stringify(cashierPayload),
-      note: "Cashier receipt enqueued",
-    });
-    results.push(cashierJob);
   });
 
   tx();
   return results;
+}
+
+function insertCashierJob(db, ctx) {
+  const {
+    order,
+    shopDisplayName,
+    decorated,
+    unmappedMeta,
+    billMetaStmt,
+    stationStmt,
+    ticketRevision,
+    orderEdited,
+    paymentSummary,
+  } = ctx;
+  const cashierStation = stationStmt.get("station_cashier");
+  const { printer: cashierPrinter, source: printerSource } = resolveCashierPrinter(db);
+  if (!cashierPrinter) {
+    throw Object.assign(
+      new Error(
+        "No cashier printer available. Assign a printer to the CASHIER station (or keep at least one active printer)."
+      ),
+      { status: 409, code: "CASHIER_PRINTER_MISSING" }
+    );
+  }
+
+  const cashierPayload = {
+    restaurantDisplayName: shopDisplayName,
+    shopDisplayName,
+    orderNumber: order.order_number,
+    tokenNumber: order.token_number == null ? null : Number(order.token_number),
+    businessDate: order.business_date || null,
+    ticketId: `${order.order_number}-CASHIER-r${ticketRevision}`,
+    stationName: cashierStation?.name || "CASHIER",
+    orderType: order.order_type,
+    destination: order.destination,
+    ...serviceFields(order),
+    createdAt: order.created_at,
+    updatedAt: order.updated_at,
+    ticketRevision,
+    isReprint: false,
+    orderEdited,
+    paymentConfirmed: Boolean(paymentSummary),
+    paymentSummary: paymentSummary || null,
+    totalCents: Number(order.total_cents || 0),
+    goodsCents: Number(order.goods_cents ?? order.total_cents ?? 0),
+    taxableGoodsCents: Number(
+      order.taxable_goods_cents ?? order.goods_cents ?? order.total_cents ?? 0
+    ),
+    nontaxableGoodsCents: Number(order.nontaxable_goods_cents || 0),
+    netCents: Number(order.net_cents ?? order.total_cents ?? 0),
+    taxCents: Number(order.tax_cents || 0),
+    taxEnabled: Boolean(order.tax_enabled),
+    taxMode: order.tax_mode || "",
+    taxRateBps: Number(order.tax_rate_bps || 0),
+    taxName: order.tax_name || "",
+    taxRegistrationNumber: order.tax_registration_number || "",
+    shopLegalName: order.shop_legal_name || "",
+    items: decorated.map((l) => {
+      const isProblem = unmappedMeta.some((u) => u.itemId === l.item_id);
+      let stationName = "No Preparation";
+      if (l.station?.name) stationName = l.station.name;
+      else if (l.station_id) stationName = l.station_id;
+      else if (isProblem) stationName = "UNMAPPED";
+      const meta = billMetaStmt.get(l.item_id) || {};
+      return {
+        name: l.item_name,
+        quantity: l.quantity,
+        instructions: l.instructions,
+        addons: l.addons,
+        category: meta.category || "",
+        subcategory: meta.subcategory || "",
+        categorySort: Number.isFinite(meta.category_sort)
+          ? Number(meta.category_sort)
+          : undefined,
+        subcategorySort: Number.isFinite(meta.subcategory_sort)
+          ? Number(meta.subcategory_sort)
+          : undefined,
+        itemSort: Number(meta.item_sort || 0),
+        variantId: l.variant_id || null,
+        variantName: l.variant_name || "",
+        unitBasePriceCents: Number(l.unit_base_price_cents || 0),
+        unitAddonsCents: Number(l.unit_addons_cents || 0),
+        unitTotalCents: Number(l.unit_total_cents || 0),
+        lineTotalCents: Number(l.line_total_cents || 0),
+        taxApplicable:
+          l.tax_applicable == null ? true : Boolean(Number(l.tax_applicable)),
+        stationName,
+      };
+    }),
+  };
+  try {
+    const shop = getShopSettings(order.tenant_id);
+    const moneyShop = {
+      currency_code: order.currency_code || shop.currencyCode,
+      currency_label: order.currency_label || shop.currencyLabel,
+      currency_decimals:
+        order.currency_decimals != null && order.currency_decimals !== ""
+          ? Number(order.currency_decimals)
+          : shop.currencyDecimals,
+    };
+    cashierPayload.currencyCode = moneyShop.currency_code;
+    cashierPayload.currencyLabel = moneyShop.currency_label;
+    cashierPayload.currencyDecimals = moneyShop.currency_decimals;
+    cashierPayload.shopDisplayName = order.shop_display_name || shop.displayName;
+    cashierPayload.shopLegalName = order.shop_legal_name || shop.legalName || "";
+    cashierPayload.addressText = shop.addressText || "";
+    cashierPayload.phone = shop.phone || "";
+    cashierPayload.whatsapp = shop.whatsapp || "";
+    cashierPayload.registrationNumber = shop.registrationNumber || "";
+    cashierPayload.receipt = shop.receipt;
+    cashierPayload.receiptFooter = shop.receipt?.footer || "";
+    cashierPayload.totalFormatted = formatMoneyMinor(
+      cashierPayload.totalCents,
+      moneyShop
+    );
+  } catch {
+    /* shop settings optional for older DBs mid-migrate */
+  }
+
+  const paidSuffix = paymentSummary
+    ? `::paid::${paymentSummary.paymentStatus}::${paymentSummary.paidCents}::${paymentSummary.creditCents}`
+    : "";
+  const cashierKey =
+    buildIdempotencyKey({
+      tenantId: order.tenant_id,
+      orderId: order.order_id,
+      stationId: "station_cashier",
+      jobType: "CASHIER",
+      ticketRevision,
+      printerId: cashierPrinter.printer_id,
+    }) + paidSuffix;
+
+  const { job: cashierJob } = insertJob(db, {
+    jobId: newId("job"),
+    tenantId: order.tenant_id,
+    orderId: order.order_id,
+    stationId: "station_cashier",
+    printerId: cashierPrinter.printer_id,
+    ticketRevision,
+    jobType: "CASHIER",
+    idempotencyKey: cashierKey,
+    payloadSnapshot: JSON.stringify(cashierPayload),
+    note: paymentSummary
+      ? `Cashier receipt enqueued after payment confirmation (${printerSource})`
+      : `Cashier receipt enqueued (${printerSource})`,
+  });
+  return cashierJob;
+}
+
+/**
+ * Enqueue one cashier receipt only after payment/credit is fully confirmed.
+ * Idempotent for the same paid/credit totals.
+ */
+export function enqueueCashierReceiptAfterPayment(orderId, paymentSummary, config) {
+  const db = getDb();
+  const cfg = config || loadConfig({ mode: "script" });
+  const order = db.prepare(`SELECT * FROM orders WHERE order_id = ?`).get(orderId);
+  if (!order) throw new Error(`Order not found: ${orderId}`);
+
+  let shopDisplayName = order.shop_display_name || cfg.restaurantDisplayName;
+  try {
+    const liveShop = getShopSettings(order.tenant_id);
+    if (!order.shop_display_name) shopDisplayName = liveShop.displayName;
+  } catch {
+    /* ignore */
+  }
+
+  const lines = db
+    .prepare(`SELECT * FROM order_lines WHERE order_id = ? ORDER BY line_index`)
+    .all(orderId);
+  const instrStmt = db.prepare(
+    `SELECT label FROM order_line_instructions WHERE line_id = ? ORDER BY sort_index`
+  );
+  const addonStmt = db.prepare(
+    `SELECT addon_name, quantity, unit_price_cents, line_price_cents
+     FROM order_line_addons WHERE line_id = ? ORDER BY sort_index`
+  );
+  const stationStmt = db.prepare(`SELECT * FROM stations WHERE station_id = ?`);
+  const billMetaStmt = db.prepare(
+    `SELECT mi.sort_order AS item_sort,
+            mi.category AS category,
+            mi.subcategory AS subcategory,
+            c.sort_order AS category_sort,
+            s.sort_order AS subcategory_sort
+     FROM menu_items mi
+     LEFT JOIN menu_categories c ON c.category_id = mi.category_id
+     LEFT JOIN menu_subcategories s ON s.subcategory_id = mi.subcategory_id
+     WHERE mi.item_id = ?`
+  );
+  const decorated = lines.map((line) => ({
+    ...line,
+    instructions: instrStmt.all(line.line_id).map((r) => r.label),
+    addons: addonStmt.all(line.line_id).map((r) => ({
+      name: r.addon_name,
+      quantity: Number(r.quantity),
+      unitPriceCents: Number(r.unit_price_cents),
+      linePriceCents: Number(r.line_price_cents),
+    })),
+    station: line.station_id ? stationStmt.get(line.station_id) : null,
+  }));
+  const ticketRevision =
+    Number(
+      db
+        .prepare(
+          `SELECT COALESCE(MAX(ticket_revision), 0) AS n FROM print_jobs WHERE order_id = ?`
+        )
+        .get(orderId)?.n || 0
+    ) || 1;
+
+  return db.transaction(() =>
+    insertCashierJob(db, {
+      order,
+      shopDisplayName,
+      decorated,
+      unmappedMeta: [],
+      billMetaStmt,
+      stationStmt,
+      ticketRevision,
+      orderEdited: false,
+      paymentSummary,
+    })
+  )();
 }
 
 export function listPrintJobs(filters = {}) {
@@ -601,6 +772,46 @@ export function listPrintJobs(filters = {}) {
   return db
     .prepare(`SELECT * FROM print_jobs ORDER BY created_at DESC LIMIT 200`)
     .all();
+}
+
+const CLEARABLE_JOB_STATUSES = [
+  "DISPATCHED",
+  "FAILED",
+  "UNKNOWN",
+  "NEEDS_REVIEW",
+  "CONFIRMED",
+];
+
+/**
+ * Admin-only history cleanup. Never deletes PENDING/DISPATCHING work-in-flight.
+ * Does not reprint or re-queue anything.
+ */
+export function clearPrintJobHistory(tenantId) {
+  const shopId = String(tenantId || "").trim();
+  if (!shopId) {
+    throw Object.assign(new Error("Shop is required."), { status: 400 });
+  }
+  const db = getDb();
+  const placeholders = CLEARABLE_JOB_STATUSES.map(() => "?").join(",");
+  const jobs = db
+    .prepare(
+      `SELECT job_id FROM print_jobs
+       WHERE tenant_id = ? AND status IN (${placeholders})`
+    )
+    .all(shopId, ...CLEARABLE_JOB_STATUSES);
+  const ids = jobs.map((j) => j.job_id);
+  if (!ids.length) return { cleared: 0 };
+  const tx = db.transaction(() => {
+    const delEvents = db.prepare(`DELETE FROM print_job_events WHERE job_id = ?`);
+    const delJob = db.prepare(`DELETE FROM print_jobs WHERE job_id = ? AND tenant_id = ?`);
+    let cleared = 0;
+    for (const jobId of ids) {
+      delEvents.run(jobId);
+      cleared += delJob.run(jobId, shopId).changes;
+    }
+    return cleared;
+  });
+  return { cleared: tx() };
 }
 
 /** Fill category labels on older cashier payloads so the bill can group by category. */

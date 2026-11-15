@@ -37,7 +37,14 @@ import {
   cartLineHasKitchenNotes,
   normalizeKitchenCartLine,
 } from "../utils/kitchenInstructions.js";
-import { compareMenuItems } from "../utils/restaurantMenu.js";
+import {
+  compareMenuItems,
+  getMenuCategoryLabel,
+} from "../utils/restaurantMenu.js";
+import {
+  loadMenuImageUrlMap,
+  revokeMenuImageUrlMap,
+} from "../utils/menuImageStore.js";
 import KitchenInstructionsPicker from "../components/restaurant/KitchenInstructionsPicker.jsx";
 import { Link } from "react-router-dom";
 
@@ -82,6 +89,8 @@ export default function RestaurantSales() {
 
   const [items, setItems] = useState([]);
   const [loadingItems, setLoadingItems] = useState(true);
+  const [localImageUrls, setLocalImageUrls] = useState({});
+  const localImageUrlsRef = useRef({});
   const [category, setCategory] = useState(() => draft.category ?? "");
   const [search, setSearch] = useState(() => draft.search ?? "");
   const [orderType, setOrderType] = useState(
@@ -201,10 +210,43 @@ export default function RestaurantSales() {
     );
   }, [activeClientId, shopOk]);
 
+  const itemIdsKey = items.map((row) => row.id).join("|");
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLocal() {
+      revokeMenuImageUrlMap(localImageUrlsRef.current);
+      localImageUrlsRef.current = {};
+      if (!activeClientId || !itemIdsKey) {
+        setLocalImageUrls({});
+        return;
+      }
+      try {
+        const urls = await loadMenuImageUrlMap(
+          activeClientId,
+          itemIdsKey.split("|").filter(Boolean)
+        );
+        if (cancelled) {
+          revokeMenuImageUrlMap(urls);
+          return;
+        }
+        localImageUrlsRef.current = urls;
+        setLocalImageUrls(urls);
+      } catch {
+        if (!cancelled) setLocalImageUrls({});
+      }
+    }
+    loadLocal();
+    return () => {
+      cancelled = true;
+      revokeMenuImageUrlMap(localImageUrlsRef.current);
+      localImageUrlsRef.current = {};
+    };
+  }, [activeClientId, itemIdsKey]);
+
   const categories = useMemo(() => {
     const set = new Set();
     for (const it of items) {
-      const c = String(it.category || "").trim();
+      const c = getMenuCategoryLabel(it);
       if (c) set.add(c);
     }
     return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -214,9 +256,9 @@ export default function RestaurantSales() {
     const q = search.trim().toLowerCase();
     return items
       .filter((it) => {
-        if (category && String(it.category || "") !== category) return false;
+        if (category && getMenuCategoryLabel(it) !== category) return false;
         if (!q) return true;
-        return `${getItemBaseCode(it)} ${it.itemName || ""} ${it.subCategory || ""}`
+        return `${getItemBaseCode(it)} ${it.itemName || ""} ${it.menuCategory || ""} ${it.subCategory || ""} ${it.preparationCenter || ""}`
           .toLowerCase()
           .includes(q);
       })
@@ -830,9 +872,9 @@ export default function RestaurantSales() {
                     onClick={() => addItem(it)}
                     className="flex min-h-[96px] flex-col overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 text-left transition-colors hover:border-amber-500/50 active:scale-[0.98]"
                   >
-                    {it.imageUrl ? (
+                    {localImageUrls[it.id] || it.imageUrl ? (
                       <img
-                        src={it.imageUrl}
+                        src={localImageUrls[it.id] || it.imageUrl}
                         alt=""
                         className="h-20 w-full object-cover"
                       />

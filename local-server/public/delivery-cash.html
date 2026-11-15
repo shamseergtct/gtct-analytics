@@ -3,124 +3,246 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>GTCT — Delivery Cash Handover (TEST)</title>
+  <title>GTCT — Rider Cash (TEST)</title>
   <link rel="stylesheet" href="/styles.css">
-  <link rel="stylesheet" href="/delivery-cash.css">
+  <link rel="stylesheet" href="/delivery-cash.css?v=print1">
   <link rel="stylesheet" href="/delivery-navigation.css">
 </head>
 <body class="cash-page">
   <header class="topbar cash-topbar">
     <div class="topbar-brand">
       <p class="brand-inline">GTCT</p>
-      <h1>Delivery Cash <span class="cash-test-badge">TEST</span></h1>
+      <h1>Rider Cash <span class="cash-test-badge">TEST</span></h1>
     </div>
-    <div class="topbar-actions cash-topnav" aria-label="Main navigation">
-      <a class="btn ghost small" href="/">Sales</a>
-      <a class="btn ghost small" href="/orders.html">Orders</a>
-      <a class="btn ghost small" href="/monitor.html">Monitor</a>
-      <!-- P2-E3C2 DELIVERY MANAGEMENT NAV -->
-              <details id="delivery-management" class="delivery-nav-group">
-                <summary class="nav-link delivery-nav-summary">Delivery Management</summary>
-                <div class="delivery-nav-menu" aria-label="Delivery Management links">
-                  <a class="delivery-sub-link" href="/delivery-cash.html" aria-current="page">Rider Cash</a>
-                  <a id="delivery-commission-link" class="delivery-sub-link" data-installed="yes" href="/delivery-commission.html">Commission Setup</a>
-                  <span id="delivery-commission-unavailable" class="delivery-sub-unavailable" hidden>Commission Setup<small>Install P2-E3C1 first</small></span>
-                  <span class="delivery-sub-unavailable" aria-disabled="true">Commission Reports<small>Coming soon — not yet implemented</small></span>
-                </div>
-              </details>
+    <div class="topbar-actions cash-topnav">
+      <nav id="app-nav" class="app-nav" aria-label="Main">
+        <div class="nav-primary" role="group" aria-label="Floor">
+          <a class="nav-link" href="/">Sales</a>
+          <a class="nav-link" href="/orders.html">Orders</a>
+          <a class="nav-link" href="/monitor.html">Monitor</a>
+        </div>
+        <details id="settings-menu" class="nav-pop">
+          <summary class="nav-icon-btn" aria-label="Settings">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+              <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+            </svg>
+          </summary>
+          <div class="nav-dropdown" role="menu">
+            <div id="delivery-management" class="nav-dropdown-section">
+              <p class="nav-dropdown-heading">Delivery</p>
+              <a class="nav-dropdown-link" href="/delivery-cash.html" aria-current="page">Rider Cash</a>
+              <a id="delivery-commission-link" class="nav-dropdown-link" data-installed="yes" href="/delivery-commission.html">Commission Setup</a>
+              <span id="delivery-commission-unavailable" class="nav-dropdown-muted" hidden>Commission Setup · install first</span>
+              <span class="nav-dropdown-muted" aria-disabled="true">Commission Reports · soon</span>
+            </div>
+          </div>
+        </details>
+      </nav>
     </div>
   </header>
+
   <main class="cash-shell">
     <section class="cash-heading">
-      <div><p class="cash-kicker">CASH COLLECTIONS / TEST ONLY</p><h2>Rider cash settlement</h2><p class="hint">Choose a rider, review daily collections and commission, then confirm net cash — all on this page.</p></div>
-      
-      <button type="button" class="btn ghost" id="refresh">↻ Refresh</button>
+      <div>
+        <p class="cash-kicker">COLLECT · TEST</p>
+        <h2>Rider cash collection</h2>
+      </div>
+      <div class="cash-heading-right">
+        <label class="cash-date-pill">
+          <span>Business date</span>
+          <input id="batch-day" type="date">
+        </label>
+        <button type="button" class="btn ghost" id="refresh">↻ Refresh</button>
+      </div>
     </section>
+
     <div id="notification" class="cash-notice" role="status" aria-live="polite">Checking your session…</div>
+
     <details class="card-panel cash-shift-admin" id="shift-panel" hidden>
-      <summary>POS Business Shift · Admin controls (separate from rider collection)</summary>
+      <summary>POS Business Shift · Admin controls</summary>
       <div class="cash-shift-inner">
         <p id="shift-state">Loading POS shift…</p>
-        <p class="cash-shift-warning">Closing a POS shift does not settle cash or commission, and may prevent editing older orders. Collection date can be different from the open POS shift date.</p>
-        <div class="cash-shift-actions"><button type="button" id="shift-close" class="btn ghost" disabled>Close active shift</button>
+        <p class="cash-shift-warning">Closing a POS shift does not settle cash or commission.</p>
+        <div class="cash-shift-actions">
+          <button type="button" id="shift-close" class="btn ghost" disabled>Close active shift</button>
           <label>Next POS business date <input type="date" id="shift-next-date"></label>
-          <button type="button" id="shift-open" class="btn ghost" disabled>Open new shift</button></div>
+          <button type="button" id="shift-open" class="btn ghost" disabled>Open new shift</button>
+        </div>
         <p id="shift-feedback" role="status" aria-live="polite"></p>
       </div>
     </details>
-    <section class="cash-layout" aria-label="Rider cash settlement">
-      <aside class="cash-roster card-panel" aria-label="Select delivery boy">
-        <div class="cash-section-head"><div><h3>Select rider</h3><p>Delivery team</p></div><span id="rider-total" class="cash-pill">—</span></div>
-        <label class="cash-search-label" for="rider-search">Find a rider</label>
-        <input id="rider-search" type="search" placeholder="Search by rider name" autocomplete="off">
-        <div id="rider-list" class="cash-rider-list" role="group" aria-label="Rider selection"><p class="cash-empty">Loading delivery boys…</p></div>
-      </aside>
-      <div class="cash-main">
-        <div class="cash-selected-header">
-          <div><p class="cash-kicker">CURRENT VIEW</p><h3 id="selected-rider-name">All riders overview</h3><p id="selected-rider-hint" class="hint">Select a rider on the left to review and confirm cash.</p></div>
-          <span id="selected-status" class="cash-status-tag" hidden></span>
-        </div>
-        <section class="cash-stats" aria-label="Selected rider summary">
-          <div class="cash-stat"><span>Pending cash</span><strong id="pending-amount">—</strong><small>From eligible deliveries</small></div>
-          <div class="cash-stat"><span>Pending invoices</span><strong id="pending-count">—</strong><small>Awaiting cashier handover</small></div>
-          <div class="cash-stat"><span>Confirmed handovers</span><strong id="settled-count">—</strong><small>Latest 100 overall records</small></div>
-        </section>
-        <section class="card-panel cash-batch" id="batch-panel" hidden aria-label="Daily rider collection and commission">
-          <div class="cash-section-head"><div><h3>New Collection · Cash &amp; Commission</h3><p>Choose any pending business date. Commission is calculated for that date only; POS shift changes are not required to receive older cash.</p></div><span class="cash-pill">ADMIN</span></div>
-          <div class="cash-collection-controls"><label for="batch-day">Business date<input id="batch-day" type="date"></label><button id="batch-refresh" type="button" class="btn ghost">Refresh Collection</button></div>
-          <div class="cash-pending-dates"><strong>Pending dates for this rider</strong><div id="batch-pending-days" class="cash-days" aria-label="Pending collection dates">Choose a rider to see dates.</div></div>
-          <div id="batch-note" class="cash-subnotice" role="status" aria-live="polite">Choose a rider to load the collection.</div>
-          <div class="cash-batch-overview">
-            <div><span>Delivered bills</span><strong id="batch-total-bills">—</strong></div>
-            <div><span>Total delivery amount</span><strong id="batch-total">—</strong></div>
-            <div><span>Direct shop paid</span><strong id="batch-shop-paid">—</strong></div>
-            <div><span>Customer credit</span><strong id="batch-credit">—</strong></div>
-          </div>
-          <div class="cash-batch-stats">
-            <div><span>Pending rider bills</span><strong id="batch-count">—</strong></div>
-            <div><span>Gross customer cash with rider</span><strong id="batch-gross">—</strong></div>
-            <div><span>Commission available</span><strong id="batch-commission">—</strong></div>
-            <div class="cash-net-stat"><span>Net to hand over (cash + bank)</span><strong id="batch-net">—</strong></div>
-          </div>
-          <div class="cash-commission-toggle"><label><input type="checkbox" id="batch-pay-commission"> <strong>Pay Commission &amp; Record Expense</strong></label><p id="batch-commission-detail">Choose a rider and date.</p>
-          </div>
-          <section class="cash-tender-form" id="batch-tender-form" aria-label="Editable rider payment collection details">
-            <div class="cash-section-head"><div><h3>Payment collection details</h3><p>Edit Cash / Bank split before confirming. Total must equal net rider collection.</p></div></div>
-            <div class="cash-tender-grid">
-              <label>Cash received by shop <input id="batch-tender-cash" type="text" inputmode="decimal" autocomplete="off" aria-label="Cash received"></label>
-              <label>Bank received by shop <input id="batch-tender-bank" type="text" inputmode="decimal" autocomplete="off" aria-label="Bank received"></label>
-              <label>Operational bank account <select id="batch-tender-bank-account" aria-label="Bank account"><option value="">Select account</option></select></label>
-              <label>Reference / notes <input id="batch-tender-note" type="text" maxlength="200" placeholder="Optional bank reference or collection note"></label>
-            </div>
-            <p class="cash-tender-info" id="batch-tender-status">Choose a rider and date before editing payment amounts.</p>
-          </section>
-          <div class="cash-financial-summary">
-            <div><span>Gross customer cash</span><b id="batch-summary-gross">—</b></div>
-            <div><span>Less: Commission retained by rider</span><b id="batch-summary-commission">—</b></div>
-            <div><span>Cash physically received by shop</span><b id="batch-summary-cash">—</b></div>
-            <div><span>Bank received by shop</span><b id="batch-summary-bank">—</b></div>
-            <div class="cash-summary-net"><span>Total received by shop (cash + bank)</span><b id="batch-summary-net">—</b></div>
-          </div>
-          <details class="cash-line-details"><summary>Pending invoice details <span id="batch-lines-count">0 bills</span></summary><div id="batch-lines" class="cash-batch-lines">Select a rider.</div></details>
-          <div class="cash-batch-actions"><button id="batch-confirm" type="button" class="btn primary" disabled>Confirm Collection</button><p>Full eligible daily collection only · Cash and Bank may be combined · Invoice payment is gross; shop receipts are net.</p></div>
-        </section>
-        <details class="card-panel cash-legacy"><summary>Individual invoice handover <span class="cash-legacy-tag">Legacy / Cashier</span></summary><section class="cash-invoices">
-          <div class="cash-section-head"><div><h3>Pending handovers</h3><p id="pending-context">Select a rider to see invoices awaiting handover.</p></div><span class="cash-pill cash-pill-amber">CASH WITH RIDER</span></div>
-          <div id="pending" class="cash-invoice-grid"></div>
-        </section>
-        </details>
-        <section class="card-panel cash-history-panel">
-          <div class="cash-section-head"><div><h3>Individual handovers</h3><p>Read-only history of earlier invoice-level cashier receipts</p></div></div>
-          <div id="history" class="cash-history"></div>
-        </section>
-        <section class="card-panel cash-history-panel" id="batch-history-panel" hidden>
-          <div class="cash-section-head"><div><h3>Collection history</h3><p>Confirmed collections · cash / bank allocations · audited payment-method corrections</p></div></div>
-          <div id="batch-history" class="cash-history"></div>
-        </section>
+
+    <section class="card-panel cash-summary-panel" aria-label="Delivery boy summary">
+      <div class="cash-panel-title">Delivery Boy Summary</div>
+      <div class="cash-table-wrap">
+        <table class="cash-summary-table">
+          <thead>
+            <tr>
+              <th>Delivery Boy</th>
+              <th class="num">Total Amount</th>
+              <th class="num">Shop Paid</th>
+              <th class="num">Credit</th>
+              <th class="num">Commission</th>
+              <th class="num">Balance</th>
+              <th class="chev" aria-hidden="true"></th>
+            </tr>
+          </thead>
+          <tbody id="boy-summary-body">
+            <tr><td colspan="7" class="cash-empty-cell">Loading riders…</td></tr>
+          </tbody>
+        </table>
       </div>
     </section>
-    <p class="cash-footnote">Cash is posted only after confirmation. Commission expense is not duplicated when already accrued. No new sales are created. TEST only; commission subledger is not the external general ledger.</p>
+
+    <section class="card-panel cash-collections-panel" aria-label="Collections">
+      <div class="cash-panel-title-row">
+        <div class="cash-panel-title">Collections</div>
+        <span id="collections-count" class="cash-pill">0</span>
+      </div>
+      <div id="batch-history" class="cash-collection-cards">
+        <p class="cash-empty">Select a rider to view confirmed collections.</p>
+      </div>
+    </section>
+
+    <section class="card-panel cash-batch" id="batch-panel" hidden aria-label="New collection">
+      <div class="cash-panel-title-row">
+        <div class="cash-panel-title">New Collection</div>
+        <button id="batch-refresh" type="button" class="btn ghost small">Refresh</button>
+      </div>
+
+      <div id="batch-note" class="cash-subnotice" role="status" aria-live="polite" hidden></div>
+      <div id="batch-pending-days" class="cash-days cash-days-inline" aria-label="Pending collection dates" hidden></div>
+
+      <div class="cash-collect-grid cash-form-grid">
+        <label class="cash-field">
+          <span>Delivery Boy</span>
+          <select id="collect-rider" aria-label="Delivery boy">
+            <option value="">Select delivery boy…</option>
+          </select>
+        </label>
+        <label class="cash-field">
+          <span>Total Bills</span>
+          <input id="batch-total-bills" type="text" readonly tabindex="-1" value="—">
+        </label>
+        <label class="cash-field">
+          <span>Total Amount</span>
+          <input id="batch-total" type="text" readonly tabindex="-1" value="—">
+        </label>
+
+        <label class="cash-field">
+          <span>Shop Paid</span>
+          <input id="batch-shop-paid" type="text" readonly tabindex="-1" value="—">
+        </label>
+        <label class="cash-field">
+          <span>Credit</span>
+          <input id="batch-credit" type="text" readonly tabindex="-1" value="—">
+        </label>
+        <label class="cash-field cash-field-net">
+          <span>Balance</span>
+          <input id="batch-net" type="text" readonly tabindex="-1" value="—">
+        </label>
+
+        <label class="cash-field">
+          <span>Pay by Cash</span>
+          <input id="batch-tender-cash" type="text" inputmode="decimal" autocomplete="off" aria-label="Pay by cash">
+        </label>
+        <label class="cash-field">
+          <span>Pay by Bank</span>
+          <input id="batch-tender-bank" type="text" inputmode="decimal" autocomplete="off" aria-label="Pay by bank">
+        </label>
+        <label class="cash-field">
+          <span>Remaining</span>
+          <input id="batch-tender-remaining" type="text" readonly tabindex="-1" value="—">
+        </label>
+
+        <label class="cash-field">
+          <span>Bank account</span>
+          <select id="batch-tender-bank-account" aria-label="Bank account"><option value="">Select account</option></select>
+        </label>
+        <label class="cash-field">
+          <span>Commission</span>
+          <input id="batch-commission" type="text" readonly tabindex="-1" value="—">
+        </label>
+        <div class="cash-field cash-check-field">
+          <span>Pay commission</span>
+          <label class="cash-inline-check" for="batch-pay-commission">
+            <input type="checkbox" id="batch-pay-commission">
+            <span class="cash-check-text">Deduct &amp; record expense</span>
+          </label>
+        </div>
+
+        <label class="cash-field cash-field-wide">
+          <span>Notes</span>
+          <input id="batch-tender-note" type="text" maxlength="200" placeholder="Optional">
+        </label>
+      </div>
+
+      <p id="batch-commission-detail" class="cash-form-note" hidden></p>
+      <p class="cash-tender-info cash-form-note" id="batch-tender-status" hidden></p>
+
+      <!-- Hidden fields kept for JS compatibility -->
+      <input id="batch-count" type="hidden" value="—">
+      <input id="batch-gross" type="hidden" value="—">
+      <div class="cash-financial-summary" hidden>
+        <div><span>Gross</span><b id="batch-summary-gross">—</b></div>
+        <div><span>Commission</span><b id="batch-summary-commission">—</b></div>
+        <div><span>Cash</span><b id="batch-summary-cash">—</b></div>
+        <div><span>Bank</span><b id="batch-summary-bank">—</b></div>
+        <div><span>Net</span><b id="batch-summary-net">—</b></div>
+      </div>
+      <div id="batch-lines" hidden></div>
+      <span id="batch-lines-count" hidden>0 bills</span>
+      <div id="batch-tender-form" hidden></div>
+
+      <div class="cash-batch-actions">
+        <button id="batch-confirm" type="button" class="btn primary" disabled>Save Collection</button>
+      </div>
+    </section>
+
+    <div class="cash-sr-only" aria-hidden="true">
+      <div id="rider-list"></div>
+      <input id="rider-search" type="search" tabindex="-1">
+      <span id="rider-total"></span>
+      <span id="selected-rider-name"></span>
+      <span id="selected-rider-hint"></span>
+      <span id="selected-status"></span>
+      <span id="pending-amount">—</span>
+      <span id="pending-count">—</span>
+      <span id="settled-count">—</span>
+      <span id="pending-context"></span>
+      <div id="history"></div>
+      <div id="batch-history-panel"></div>
+    </div>
+    <details class="card-panel cash-legacy">
+      <summary>Individual invoice handover <span class="cash-legacy-tag">Legacy</span></summary>
+      <section class="cash-invoices">
+        <div id="pending" class="cash-invoice-grid"></div>
+      </section>
+    </details>
   </main>
+
+  <div id="cash-print-modal" class="cash-print-modal" hidden>
+    <div class="cash-print-dialog" role="dialog" aria-modal="true" aria-labelledby="cash-print-title">
+      <div class="cash-print-head">
+        <div>
+          <h3 id="cash-print-title">Print Preview</h3>
+          <p id="cash-print-subtitle" class="cash-print-sub">—</p>
+        </div>
+        <button type="button" id="cash-print-close" class="btn ghost small">Close</button>
+      </div>
+      <div class="cash-print-modes" role="group" aria-label="Printer">
+        <span class="cash-print-modes-label">Printer</span>
+        <button type="button" id="cash-print-mode-thermal" class="cash-print-mode is-active" data-mode="THERMAL">Thermal</button>
+        <button type="button" id="cash-print-mode-a4" class="cash-print-mode" data-mode="A4">Other / A4</button>
+      </div>
+      <div id="cash-print-preview" class="cash-print-preview"></div>
+      <div class="cash-print-actions">
+        <button type="button" id="cash-print-cancel" class="btn ghost">Cancel</button>
+        <button type="button" id="cash-print-confirm" class="btn primary">Print</button>
+      </div>
+    </div>
+  </div>
+
   <script defer src="/delivery-navigation.js"></script>
   <script type="module" src="/delivery-cash.js"></script>
 </body>

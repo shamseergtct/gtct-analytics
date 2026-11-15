@@ -7,6 +7,7 @@ import { startDispatchLoop } from "./print/dispatcher.js";
 import { seedIfEmpty } from "./seed/sampleData.js";
 import { startTestAutoBackups } from "./backup/testBackup.js";
 import { recordTestBackupAttempt } from "./backup/testBackupManagement.js";
+import { startCloudDeliveryBridgeLoop } from "./services/cloudDeliveryBridge.js";
 
 async function boot() {
   const config = loadConfig({ mode: "http" });
@@ -31,6 +32,7 @@ async function boot() {
 
   const server = createServer(config);
   const dispatcher = startDispatchLoop(config);
+  const cloudBridge = startCloudDeliveryBridgeLoop(config);
 
   await new Promise((resolve, reject) => {
     server.listen(config.port, config.host, (err) => {
@@ -55,6 +57,7 @@ async function boot() {
     shuttingDown = true;
     log.info("Shutting down", { signal });
     dispatcher.stop();
+    cloudBridge.stop();
     testBackups.stop();
     server.close(() => {
       closeDatabase();

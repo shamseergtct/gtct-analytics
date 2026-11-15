@@ -119,11 +119,15 @@ async function main() {
     assert(missing.status === 400 && missing.json.code === 'MONITOR_REVISION_REQUIRED', 'missing revision');
     pass('packing-requires-client-revision');
 
-    const tooSoon = await httpJson(PORT, 'POST', `/v1/order-monitor/${id}/ready`, cashier, {
-      expectedRevision: initial.json.order.dispatch.revision,
-    });
-    assert(tooSoon.status === 409 && tooSoon.json.code === 'KITCHEN_NOT_FINISHED', 'premature dispatch');
-    pass('cannot-mark-ready-before-all-stations-finish');
+    // Stage-1 temporary: prep screens optional — packing may proceed before stations finish.
+    // When REQUIRE_PREP_FINISHED_FOR_DISPATCH is re-enabled, restore the KITCHEN_NOT_FINISHED gate checks.
+    assert(
+      initial.json.order.dispatch.requirePrepFinished === false &&
+        initial.json.order.dispatch.canMarkReady === true &&
+        initial.json.order.dispatch.status === 'AWAITING_PACKING_CONFIRMATION',
+      'stage-1 must allow packing without kitchen finish'
+    );
+    pass('stage1-dispatch-without-prep-finish');
 
     async function finishStation(stationId) {
       const open = await httpJson(PORT, 'GET', `/v1/prep-board?stationId=${stationId}`, cashier);
@@ -145,8 +149,8 @@ async function main() {
     await finishStation('station_juice');
     const partial = await httpJson(PORT, 'GET', `/v1/order-monitor/${id}`, admin);
     assert(partial.json.order.preparation.finishedCount === 1 &&
-      partial.json.order.dispatch.canMarkReady === false, 'one station should not unlock dispatch');
-    pass('multiple-stations-must-finish');
+      partial.json.order.dispatch.canMarkReady === true, 'stage-1 still allows dispatch after partial prep');
+    pass('stage1-partial-prep-still-dispatchable');
 
     await finishStation('station_shawarma');
     const prepared = await httpJson(PORT, 'GET', `/v1/order-monitor/${id}`, cashier);

@@ -3,8 +3,14 @@ import { useNavigate } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
 
+function pathForRole(role) {
+  if (role === "delivery_boy") return "/delivery";
+  if (role === "staff") return "/staff-inventory";
+  return "/dashboard";
+}
+
 export default function Login() {
-  const { login, register } = useAuth(); // ✅ only depend on real auth functions
+  const { login, register, reloadProfile } = useAuth();
   const nav = useNavigate();
 
   const [mode, setMode] = useState("login"); // login | register
@@ -29,7 +35,9 @@ export default function Login() {
         await register(email, password);
       }
 
-      nav("/dashboard", { replace: true });
+      // Wait for Firestore profile so delivery boys are not sent to Analytics.
+      const profile = await reloadProfile();
+      nav(pathForRole(profile?.role), { replace: true });
     } catch (err) {
       setAuthError(err?.message || "Auth failed");
     } finally {

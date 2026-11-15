@@ -77,16 +77,21 @@ function certificateDnsNames(cert) {
   try {
     parsed = new X509Certificate(cert);
   } catch {
-    return { names: [], expired: true };
+    return { names: [], ips: [], expired: true };
   }
   const names = [];
+  const ips = [];
   for (const part of String(parsed.subjectAltName || "").split(",")) {
-    const match = /^DNS:(.+)$/i.exec(part.trim());
-    if (match) names.push(match[1].trim().toLowerCase());
+    const trimmed = part.trim();
+    const dns = /^DNS:(.+)$/i.exec(trimmed);
+    if (dns) names.push(dns[1].trim().toLowerCase());
+    const ip = /^IP(?: Address)?:(.+)$/i.exec(trimmed);
+    if (ip) ips.push(ip[1].trim());
   }
   const expires = new Date(parsed.validTo);
   return {
     names,
+    ips,
     expired: Number.isNaN(expires.getTime()) || expires.getTime() <= Date.now(),
   };
 }
@@ -292,9 +297,7 @@ export function loadConfig(options = {}) {
           "The database must stay on this computer. A network folder is not allowed."
         );
       }
-      if (physicalPrintEnabled) {
-        errors.push("Physical printing stays off for the LAN test.");
-      }
+      // Physical print may stay on for Mac/LAN terminal testing when explicitly enabled.
       if (!lanHostname) {
         errors.push(
           "LAN access requires GTCT_LAN_HOSTNAME to be one private name such as gtct-pos."
@@ -304,6 +307,12 @@ export function loadConfig(options = {}) {
         if (san.expired || !san.names.includes(lanHostname)) {
           errors.push(
             `The HTTPS certificate must name DNS:${lanHostname} and must not be expired.`
+          );
+        }
+        // Phones cannot edit hosts files; cert must also cover this Mac's LAN IP.
+        if (isPrivateLanIpv4(host) && !san.ips.includes(host)) {
+          errors.push(
+            `The HTTPS certificate must also include IP:${host} so phones can open https://${host} without DNS.`
           );
         }
       }

@@ -51,6 +51,11 @@ export default function ProtectedRoute({ children, requireClient = false }) {
     );
   }
 
+  // Delivery Entry accounts must not use the Analytics shell.
+  if (role === "delivery_boy") {
+    return <Navigate to="/delivery" replace />;
+  }
+
   if (requireClient) {
     if (loadingClients) {
       return (

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b539e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="GTCT" />
+    <title>Pair terminal · GTCT</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <section class="view login-view">
+      <div class="login-card">
+        <p class="brand">GTCT Restaurant</p>
+        <h1>Pair this device</h1>
+        <p class="hint">Ask Admin for a pairing code from Terminals, then sign in with your staff username.</p>
+        <div id="paired-view" hidden>
+          <p class="status-line ok" id="paired-label"></p>
+          <p class="hint">This tablet/PC is ready. Open Sales or Monitor and sign in.</p>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem">
+            <a class="btn primary" href="/">Open Sales</a>
+            <a class="btn ghost" href="/monitor.html">Open Monitor</a>
+          </div>
+        </div>
+        <div id="pair-form" class="login-form">
+          <div class="field">
+            <label for="pair-code">Pairing code</label>
+            <input id="pair-code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="characters" placeholder="ABC-123" maxlength="7" />
+          </div>
+          <button type="button" id="pair-btn" class="btn primary">Pair device</button>
+          <p id="pair-error" class="error" hidden></p>
+        </div>
+      </div>
+    </section>
+    <script type="module" src="/pair.js"></script>
+  </body>
+</html>

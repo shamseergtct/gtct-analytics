@@ -90,6 +90,9 @@ function collectForm() {
     currencyCode: $("f-currency-code").value,
     currencyLabel: $("f-currency-label").value,
     currencyDecimals: Number($("f-currency-decimals").value),
+    cloudBridgeEnabled: Boolean($("f-cloud-bridge-enabled")?.checked),
+    cloudClientId: $("f-cloud-client-id")?.value || "",
+    cloudBridgeUrl: $("f-cloud-bridge-url")?.value || "",
     taxEnabled: $("f-tax-enabled").checked,
     taxName: $("f-tax-name").value,
     taxRatePercent: $("f-tax-rate").value,
@@ -128,6 +131,11 @@ function fillForm(shop) {
   $("f-currency-code").value = shop.currencyCode || "";
   $("f-currency-label").value = shop.currencyLabel || "";
   $("f-currency-decimals").value = String(shop.currencyDecimals ?? 2);
+  if ($("f-cloud-bridge-enabled")) {
+    $("f-cloud-bridge-enabled").checked = Boolean(shop.cloudBridgeEnabled);
+  }
+  if ($("f-cloud-client-id")) $("f-cloud-client-id").value = shop.cloudClientId || "";
+  if ($("f-cloud-bridge-url")) $("f-cloud-bridge-url").value = shop.cloudBridgeUrl || "";
   $("f-timezone").value = shop.timezone || "UTC";
   $("f-date-format").value = shop.dateFormat || "YYYY-MM-DD";
 
@@ -261,6 +269,66 @@ async function clearTestOrders() {
   setStatus(
     `Cleared ${res.json.deleted || 0} test order(s). You can change currency now.`
   );
+}
+
+async function syncCloudBridge() {
+  const statusEl = $("cloud-bridge-sync-status");
+  const btn = $("cloud-bridge-sync-btn");
+  if (btn) btn.disabled = true;
+  if (statusEl) statusEl.textContent = "Syncing…";
+  try {
+    // Persist bridge fields first — sync reads saved shop settings, not the open form.
+    const draft = collectForm();
+    if (!draft.cloudBridgeEnabled || !String(draft.cloudClientId || "").trim()) {
+      const msg = "Enable the bridge and enter a clientId, then Save Changes.";
+      if (statusEl) statusEl.textContent = msg;
+      setStatus(msg, false);
+      return;
+    }
+    const saveRes = await api("/v1/shop-settings", {
+      method: "PUT",
+      body: JSON.stringify(draft),
+    });
+    if (!saveRes.ok) {
+      const msg = saveRes.json?.error || "Save bridge settings failed";
+      if (statusEl) statusEl.textContent = msg;
+      setStatus(msg, false);
+      return;
+    }
+    state.shop = saveRes.json.shop;
+    fillForm(state.shop);
+    state.savedSnapshot = snapshotForm();
+    markDirty();
+
+    const res = await api("/v1/cloud-delivery-bridge/sync", { method: "POST" });
+    if (!res.ok) {
+      const msg = res.json?.error || "Bridge sync failed";
+      if (statusEl) statusEl.textContent = msg;
+      setStatus(msg, false);
+      return;
+    }
+    const result = res.json?.result || {};
+    let msg;
+    if (result.skipped) {
+      const why = result.reason || "disabled";
+      msg =
+        why === "missing_secret"
+          ? "Bridge skipped — set GTCT_CLOUD_BRIDGE_SECRET (same as RESTAURANT_DELIVERY_BRIDGE_SECRET) and restart the server."
+          : why === "missing_client_id"
+            ? "Bridge skipped — clientId not saved."
+            : `Bridge skipped (${why})`;
+    } else {
+      msg = `Published ${result.published || 0} · claims ${result.claimsApplied || 0} · status ${result.statusesApplied || 0} · payment ${result.paymentsApplied || 0}`;
+    }
+    if (statusEl) statusEl.textContent = msg;
+    setStatus(msg, !result.skipped || result.reason === "disabled");
+  } catch (err) {
+    const msg = err?.message || "Bridge sync failed";
+    if (statusEl) statusEl.textContent = msg;
+    setStatus(msg, false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function saveShop(e) {
@@ -494,6 +562,7 @@ function bindUi() {
   $("upload-logo-btn").addEventListener("click", uploadLogo);
   $("clear-logo-btn").addEventListener("click", clearLogo);
   $("clear-orders-btn")?.addEventListener("click", clearTestOrders);
+  $("cloud-bridge-sync-btn")?.addEventListener("click", () => void syncCloudBridge());
 
   window.addEventListener("beforeunload", (e) => {
     if (!state.dirty) return;

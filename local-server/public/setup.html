@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTCT Restaurant Pilot — First Run Setup</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      .setup-shell {
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 2rem 1.25rem 3rem;
+      }
+      .setup-shell h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.6rem;
+      }
+      .setup-badge {
+        display: inline-block;
+        margin-bottom: 1rem;
+        padding: 0.2rem 0.55rem;
+        border-radius: 999px;
+        background: #fff4ce;
+        color: #7a4d00;
+        font-size: 0.8rem;
+        font-weight: 600;
+      }
+      .setup-card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 1.25rem;
+        box-shadow: var(--shadow);
+      }
+      .setup-card label {
+        display: block;
+        margin: 0.85rem 0 0.35rem;
+        font-weight: 600;
+      }
+      .setup-card input {
+        width: 100%;
+        padding: 0.55rem 0.65rem;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .setup-actions {
+        margin-top: 1.25rem;
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+      }
+      .setup-error {
+        margin-top: 0.75rem;
+        color: var(--danger);
+        white-space: pre-wrap;
+      }
+      .setup-hint {
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.45;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="setup-shell">
+      <span class="setup-badge">TEST PILOT — not live production billing</span>
+      <h1>First-run setup</h1>
+      <p class="setup-hint">
+        Create the shop profile and the first Administrator for this PC.
+        No default password is installed. Physical printing stays off until you
+        authorize a manual printer test later.
+      </p>
+      <form class="setup-card" id="setup-form" autocomplete="off">
+        <label for="shop-name">Shop name</label>
+        <input id="shop-name" name="shopName" required maxlength="80" />
+
+        <label for="shop-address">Address</label>
+        <input id="shop-address" name="addressText" maxlength="240" />
+
+        <label for="currency">Currency</label>
+        <input id="currency" value="BHD (Bahraini Dinar)" disabled />
+
+        <label for="admin-name">Administrator name</label>
+        <input id="admin-name" name="fullName" required maxlength="80" autocomplete="name" />
+
+        <label for="admin-username">Admin username</label>
+        <input id="admin-username" name="username" required maxlength="40" autocomplete="username" spellcheck="false" autocapitalize="off" />
+
+        <label for="admin-password">Admin password</label>
+        <input id="admin-password" name="password" type="password" required minlength="8" autocomplete="new-password" />
+
+        <label for="admin-confirm">Confirm password</label>
+        <input id="admin-confirm" name="confirmPassword" type="password" required minlength="8" autocomplete="new-password" />
+
+        <label for="backup-dir">Backup folder (absolute path on this PC)</label>
+        <input id="backup-dir" name="backupDir" required />
+        <p class="setup-hint">Must stay on this computer, outside the database folder. Network shares are refused.</p>
+
+        <div class="setup-actions">
+          <button type="submit" class="btn primary" id="setup-submit">Save and continue</button>
+        </div>
+        <p class="setup-error" id="setup-error" hidden></p>
+      </form>
+      <p class="setup-hint" id="setup-done" hidden>
+        Setup complete. Next: sign in, open Printer Settings, configure Kitchen/Cashier printers,
+        then run a manual test print before enabling automatic physical printing.
+      </p>
+    </main>
+    <script src="/setup.js" type="module"></script>
+  </body>
+</html>

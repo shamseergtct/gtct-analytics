@@ -341,6 +341,10 @@ function setDialogError(message = "") {
   const el = $("user-dialog-error");
   el.hidden = !message;
   el.textContent = message || "";
+  if (message) {
+    el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    $("user-dialog")?.scrollTo?.({ top: 0, behavior: "smooth" });
+  }
 }
 
 function showFields(mode) {
@@ -393,6 +397,8 @@ function openDialog(mode, user = null) {
   $("user-dialog-title").textContent = titles[mode] || "User";
   showFields(mode);
   $("user-dialog").hidden = false;
+  $("user-dialog").scrollTop = 0;
+  document.body.style.overflow = "hidden";
   const focus =
     mode === "password"
       ? $("user-password")
@@ -406,6 +412,7 @@ function closeDialog() {
   $("user-dialog").hidden = true;
   $("user-password").value = "";
   $("user-confirm").value = "";
+  document.body.style.overflow = "";
   state.mode = "";
   state.userId = "";
 }

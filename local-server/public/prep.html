@@ -3,9 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0b539e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="GTCT" />
     <title>GTCT Preparation</title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="stylesheet" href="/styles.css" />
-    <link rel="stylesheet" href="/prep.css" />
+    <link rel="stylesheet" href="/prep.css?v=prep-edit-m1" />
   </head>
   <body>
     <section id="login-view" class="view login-view" hidden>
@@ -35,15 +40,24 @@
           <h1 id="station-title">Preparation</h1>
         </div>
         <div class="topbar-actions">
-          <span id="session-role" class="pill"></span>
+          <span class="banner compact test-badge">TEST</span>
           <button type="button" id="nav-menu-btn" class="nav-menu-btn" aria-expanded="false" aria-controls="app-nav" aria-label="Open navigation menu">
             <span class="nav-menu-icon" aria-hidden="true"></span>
           </button>
           <nav id="app-nav" class="app-nav" aria-label="Main">
-            <a class="nav-link" href="/">Sales</a>
-            <a class="nav-link" href="/orders.html">Orders</a>
-            <a class="nav-link" href="/prep.html" aria-current="page">Preparation</a>
-            <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
+            <div class="nav-primary" role="group" aria-label="Floor">
+              <a class="nav-link" href="/">Sales</a>
+              <a class="nav-link" href="/orders.html">Orders</a>
+              <a class="nav-link" href="/prep.html" aria-current="page">Prep</a>
+            </div>
+            <details id="account-menu" class="nav-pop">
+              <summary class="nav-account-btn" aria-label="Account">
+                <span id="session-role" class="nav-account-name"></span>
+              </summary>
+              <div class="nav-dropdown nav-dropdown-account" role="menu">
+                <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+              </div>
+            </details>
           </nav>
         </div>
       </header>
@@ -52,6 +66,10 @@
         <div id="prep-shell">
           <div id="station-tabs" class="chips chip-scroll" role="tablist" aria-label="Preparation stations"></div>
           <div id="prep-alerts" class="prep-alerts" aria-live="assertive"></div>
+          <div id="prep-wake-banner" class="prep-wake-banner" hidden role="status" aria-live="assertive">
+            <strong id="prep-wake-text">New orders</strong>
+            <span>Tap to dismiss</span>
+          </div>
           <p id="prep-status" class="hint" aria-live="polite">Loading orders…</p>
           <div id="prep-board" class="prep-board">
             <div class="prep-active-layout">
@@ -83,6 +101,7 @@
           <header class="prep-focus-head">
             <div>
               <p class="prep-focus-kicker">PREPARING</p>
+              <p id="prep-focus-token" class="prep-focus-token" hidden></p>
               <h2 id="prep-focus-number">Order</h2>
               <div id="prep-focus-meta" class="prep-focus-meta"></div>
             </div>
@@ -96,6 +115,6 @@
         </section>
       </div>
     </section>
-    <script type="module" src="/prep.js"></script>
+    <script type="module" src="/prep.js?v=prep-edit-m1"></script>
   </body>
 </html>

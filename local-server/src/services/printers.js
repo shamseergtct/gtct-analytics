@@ -100,6 +100,7 @@ export function validatePrinterInput(input) {
   capabilities.physicalDispatchEnabled = Boolean(
     capabilities.physicalDispatchEnabled
   );
+  capabilities.beepOnPrint = Boolean(capabilities.beepOnPrint);
 
   if (connectionType === "MOCK") {
     host = null;

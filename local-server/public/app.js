@@ -4,8 +4,58 @@ import {
   estimateOrderTax,
   formatTaxPercentFromBps,
 } from "./money.js";
+import { registerPwa } from "./pwa.js";
 const DEFAULT_MODIFIERS = ["Less", "More", "No", "Extra"];
 const DEFAULT_TARGETS = ["Sugar", "Sauce", "Onion", "Salt", "Ice", "Cheese"];
+
+const SALES_VIEW_KEY_LEGACY = "gtct.salesView";
+const SALES_VIEW_KEY_MOBILE = "gtct.salesView.mobile";
+const SALES_VIEW_KEY_DESKTOP = "gtct.salesView.desktop";
+
+function isMobileSalesUi() {
+  return window.matchMedia("(max-width: 1023px)").matches;
+}
+
+function salesViewStorageKey() {
+  return isMobileSalesUi() ? SALES_VIEW_KEY_MOBILE : SALES_VIEW_KEY_DESKTOP;
+}
+
+function normalizeSalesViewPrefs(raw) {
+  return {
+    density: raw?.density === "compact" ? "compact" : "comfortable",
+    hidePhotos: Boolean(raw?.hidePhotos),
+  };
+}
+
+function readSalesViewPrefs() {
+  try {
+    const key = salesViewStorageKey();
+    let raw = JSON.parse(localStorage.getItem(key) || "null");
+    // Old single key was only used from the mobile controls — keep it on mobile only.
+    if (!raw && key === SALES_VIEW_KEY_MOBILE) {
+      raw = JSON.parse(localStorage.getItem(SALES_VIEW_KEY_LEGACY) || "null");
+    }
+    if (!raw) return { density: "comfortable", hidePhotos: false };
+    return normalizeSalesViewPrefs(raw);
+  } catch {
+    return { density: "comfortable", hidePhotos: false };
+  }
+}
+
+function writeSalesViewPrefs(prefs) {
+  const normalized = normalizeSalesViewPrefs(prefs);
+  localStorage.setItem(salesViewStorageKey(), JSON.stringify(normalized));
+}
+
+function syncSalesViewForViewport() {
+  const next = readSalesViewPrefs();
+  const changed =
+    next.density !== state.salesView.density ||
+    next.hidePhotos !== state.salesView.hidePhotos;
+  state.salesView = next;
+  applySalesView();
+  if (changed && $("menu-grid")) renderMenu();
+}
 
 const state = {
   role: null,
@@ -24,6 +74,7 @@ const state = {
   categories: [],
   subcategories: [],
   search: "",
+  salesView: readSalesViewPrefs(),
   cart: [],
   activeSplit: 1,
   orderNumber: "",
@@ -235,15 +286,24 @@ function showMain() {
   const shopSettingsLink = $("shop-settings-link");
   const menuLink = $("menu-setup-link");
   const usersLink = $("users-link");
+  const terminalsLink = $("terminals-link");
+  const reportsLink = $("reports-link");
   const ordersLink = $("orders-link");
   const monitorLink = $("monitor-link");
   const prepLink = $("prep-link");
   if (settingsLink) settingsLink.hidden = !isAdmin;
   if (shopSettingsLink) shopSettingsLink.hidden = !isAdmin;
   if (menuLink) menuLink.hidden = !isAdmin;
-  if (usersLink) {
-    usersLink.hidden = !(state.staff && state.permissions.includes("staff.manage"));
-  }
+  const canManageUsers = Boolean(state.staff && state.permissions.includes("staff.manage"));
+  if (usersLink) usersLink.hidden = !canManageUsers;
+  if (terminalsLink) terminalsLink.hidden = !canManageUsers;
+  const canViewReports = Boolean(
+    isAdmin ||
+      (state.staff &&
+        (state.permissions.includes("sales.orders.view") ||
+          state.permissions.includes("sales.payment.receive")))
+  );
+  if (reportsLink) reportsLink.hidden = !canViewReports;
   if (ordersLink) {
     ordersLink.hidden = !(state.staff && state.permissions.includes("sales.orders.view"));
   }
@@ -251,19 +311,26 @@ function showMain() {
   if (prepLink) {
     prepLink.hidden = !(state.role === "admin" || (state.staff && state.permissions.includes("prep.station.work")));
   }
-  // P2-E3C2: show the presentation-only Delivery Management menu only to
-  // authorized staff; API endpoints independently enforce their permissions.
+  // P2-E3C2: delivery links live under Settings; APIs still enforce permissions.
   const deliveryMenu = $("delivery-management");
   const canCash = state.staff && ["admin", "cashier"].includes(state.role) &&
     state.permissions.includes("sales.payment.receive");
   const canCommission = state.role === "admin" && state.staff &&
     state.permissions.includes("staff.manage");
-  if (deliveryMenu) deliveryMenu.hidden = !canCash && !canCommission;
+  const showDelivery = Boolean(canCash || canCommission);
+  if (deliveryMenu) deliveryMenu.hidden = !showDelivery;
   const commissionLink = $("delivery-commission-link");
   const commissionInstalled = commissionLink?.dataset.installed === "yes";
   if (commissionLink) commissionLink.hidden = !canCommission || !commissionInstalled;
   const commissionUnavailable = $("delivery-commission-unavailable");
   if (commissionUnavailable) commissionUnavailable.hidden = !canCommission || commissionInstalled;
+  const settingsMenu = $("settings-menu");
+  if (settingsMenu) {
+    settingsMenu.hidden = !(isAdmin || canManageUsers || showDelivery || canViewReports);
+    settingsMenu.open = false;
+  }
+  const accountMenu = $("account-menu");
+  if (accountMenu) accountMenu.open = false;
   setNavMenu(false);
   startDraftNumberSync();
   void refreshPendingCount();
@@ -947,7 +1014,7 @@ function itemDisplayPrice(item) {
     return {
       label:
         vars.length > 1
-          ? `From ${formatPrice(min)}`
+          ? `From ${formatPrice(min).replace(/^BD:\s*/i, "")}`
           : formatPrice(min),
       meta: vars.length > 1 ? `${vars.length} sizes` : vars[0]?.name || "",
     };
@@ -1002,12 +1069,7 @@ function renderMenu() {
     const price = itemDisplayPrice(item);
     const card = document.createElement("article");
     card.className = `menu-card${soldOut ? " sold-out" : ""}`;
-
-    const selectBtn = document.createElement("button");
-    selectBtn.type = "button";
-    selectBtn.className = "menu-card-select";
-    selectBtn.disabled = soldOut;
-    selectBtn.setAttribute(
+    card.setAttribute(
       "aria-label",
       soldOut
         ? `${item.name}, sold out`
@@ -1015,68 +1077,63 @@ function renderMenu() {
           ? `${item.name}, choose size`
           : `Add ${item.name}`
     );
-    selectBtn.innerHTML = `
-      <div class="menu-card-media">
+    if (!soldOut) {
+      card.tabIndex = 0;
+      card.setAttribute("role", "button");
+    }
+
+    const showPhotos = !state.salesView.hidePhotos;
+    const hasPhoto = Boolean(item.image_url) && showPhotos;
+    if (!showPhotos) {
+      card.classList.add("menu-card-text-only");
+    } else if (!item.image_url) {
+      card.classList.add("menu-card-no-image");
+    }
+
+    if (showPhotos) {
+      const media = document.createElement("div");
+      media.className = "menu-card-media";
+      media.innerHTML = `
         <div class="menu-card-fallback" aria-hidden="true">
-          <svg class="menu-card-ph" viewBox="0 0 48 48" width="28" height="28" fill="none">
+          <svg class="menu-card-ph" viewBox="0 0 48 48" width="36" height="36" fill="none">
             <ellipse cx="24" cy="30" rx="16" ry="5" stroke="currentColor" stroke-width="1.75"/>
             <path d="M10 28c0-8 6.5-14 14-14s14 6 14 14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
             <circle cx="24" cy="18" r="2.5" fill="currentColor" opacity="0.35"/>
           </svg>
         </div>
-      </div>
-      <div class="menu-card-body">
-        <strong class="menu-card-name">${escapeHtml(item.name)}</strong>
-        <span class="menu-card-price">${escapeHtml(price.label)}${
-          soldOut ? " · Sold out" : ""
-        }</span>
-        ${
-          price.meta && !soldOut
-            ? `<span class="menu-card-meta">${escapeHtml(price.meta)}</span>`
-            : ""
-        }
-      </div>
-    `;
-    if (item.image_url) {
-      const media = selectBtn.querySelector(".menu-card-media");
-      const img = document.createElement("img");
-      img.className = "menu-card-img";
-      img.alt = "";
-      img.loading = "lazy";
-      img.src = item.image_url;
-      img.addEventListener("error", () => {
-        img.remove();
-      });
-      img.addEventListener("load", () => {
-        const fallback = media.querySelector(".menu-card-fallback");
-        if (fallback) fallback.remove();
-      });
-      media.appendChild(img);
-    }
-    if (!soldOut) {
-      selectBtn.addEventListener("click", () => onMenuItemTap(item));
+      `;
+      if (hasPhoto) {
+        const img = document.createElement("img");
+        img.className = "menu-card-img";
+        img.alt = "";
+        img.loading = "lazy";
+        img.src = item.image_url;
+        img.addEventListener("error", () => {
+          img.remove();
+          card.classList.add("menu-card-no-image");
+        });
+        img.addEventListener("load", () => {
+          const fallback = media.querySelector(".menu-card-fallback");
+          if (fallback) fallback.remove();
+        });
+        media.appendChild(img);
+      }
+      card.appendChild(media);
     }
 
-    const infoBtn = document.createElement("button");
-    infoBtn.type = "button";
-    infoBtn.className = "menu-card-info";
-    infoBtn.setAttribute(
-      "aria-label",
-      `View information about ${item.name}`
-    );
-    infoBtn.innerHTML = `<span class="menu-card-info-icon" aria-hidden="true">ⓘ</span><span>Info</span>`;
-    infoBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openProductKnowledge(item);
-    });
+    const body = document.createElement("div");
+    body.className = "menu-card-body";
+    const titleRow = document.createElement("div");
+    titleRow.className = "menu-card-title-row";
+    const nameEl = document.createElement("strong");
+    nameEl.className = "menu-card-name";
+    nameEl.textContent = item.name;
+    titleRow.appendChild(nameEl);
 
-    card.appendChild(selectBtn);
-    card.appendChild(infoBtn);
     if (state.role === "admin" || state.permissions.includes("menu.sold_out.update")) {
       const soldBtn = document.createElement("button");
       soldBtn.type = "button";
-      soldBtn.className = "menu-card-soldout";
+      soldBtn.className = `menu-card-soldout${soldOut ? " is-sold" : ""}`;
       soldBtn.textContent = soldOut ? "Sold" : "Available";
       soldBtn.setAttribute(
         "aria-label",
@@ -1087,7 +1144,58 @@ function renderMenu() {
         e.stopPropagation();
         toggleSoldOut(item);
       });
-      card.appendChild(soldBtn);
+      if (showPhotos) {
+        card.appendChild(soldBtn);
+      } else {
+        soldBtn.classList.add("menu-card-soldout-inline");
+        titleRow.appendChild(soldBtn);
+      }
+    }
+
+    body.appendChild(titleRow);
+    if (price.meta && !soldOut) {
+      const meta = document.createElement("span");
+      meta.className = "menu-card-meta";
+      meta.textContent = price.meta;
+      body.appendChild(meta);
+    }
+
+    const footer = document.createElement("div");
+    footer.className = "menu-card-footer";
+    const priceEl = document.createElement("span");
+    priceEl.className = "menu-card-price";
+    priceEl.textContent = soldOut ? `${price.label} · Sold out` : price.label;
+    const infoBtn = document.createElement("button");
+    infoBtn.type = "button";
+    infoBtn.className = "menu-card-info";
+    infoBtn.setAttribute(
+      "aria-label",
+      `View information about ${item.name}`
+    );
+    infoBtn.innerHTML = `<span class="menu-card-info-icon" aria-hidden="true">ⓘ</span><span class="menu-card-info-label">Info</span>`;
+    infoBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openProductKnowledge(item);
+    });
+    footer.appendChild(priceEl);
+    footer.appendChild(infoBtn);
+
+    card.appendChild(body);
+    card.appendChild(footer);
+
+    if (!soldOut) {
+      const addItem = () => onMenuItemTap(item);
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".menu-card-info, .menu-card-soldout")) return;
+        addItem();
+      });
+      card.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        if (e.target.closest(".menu-card-info, .menu-card-soldout")) return;
+        e.preventDefault();
+        addItem();
+      });
     }
     grid.appendChild(card);
   }
@@ -1141,6 +1249,10 @@ function onMenuItemTap(item) {
     openVariantPicker(item, vars);
     return;
   }
+  if (isMobileSalesUi()) {
+    addToCartForCustomize(item, null);
+    return;
+  }
   addToCart(item, null);
 }
 
@@ -1164,7 +1276,11 @@ function openVariantPicker(item, variants) {
       if (state.addingLock) return;
       state.addingLock = true;
       try {
-        addToCart(item, v);
+        if (isMobileSalesUi()) {
+          addToCartForCustomize(item, v);
+        } else {
+          addToCart(item, v);
+        }
         closeVariantPicker();
       } finally {
         setTimeout(() => {
@@ -1477,30 +1593,11 @@ function lineConfiguredPrice(line) {
   );
 }
 
-function addToCart(item, variant) {
-  if (!item.is_active) {
-    setStatus("That item is inactive.", false);
-    return;
-  }
-  if (item.is_sold_out) {
-    setStatus("That item is sold out.", false);
-    return;
-  }
-  if (variant) {
-    if (!variant.isActive || variant.isSoldOut) {
-      setStatus("That variant is unavailable.", false);
-      return;
-    }
-  } else if (item.hasVariants && salesVariants(item).length) {
-    openVariantPicker(item, salesVariants(item));
-    return;
-  }
-
+function buildCartCandidate(item, variant) {
   const priceCents = variant
     ? Number(variant.priceCents || 0)
     : Number(item.price_cents || 0);
-
-  const candidate = {
+  return {
     lineId: `line_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     itemId: item.item_id,
     name: item.name,
@@ -1522,7 +1619,28 @@ function addToCart(item, variant) {
     addons: [],
     splitNo: lineSplitNo({ splitNo: state.activeSplit }),
   };
+}
 
+function addToCart(item, variant) {
+  if (!item.is_active) {
+    setStatus("That item is inactive.", false);
+    return;
+  }
+  if (item.is_sold_out) {
+    setStatus("That item is sold out.", false);
+    return;
+  }
+  if (variant) {
+    if (!variant.isActive || variant.isSoldOut) {
+      setStatus("That variant is unavailable.", false);
+      return;
+    }
+  } else if (item.hasVariants && salesVariants(item).length) {
+    openVariantPicker(item, salesVariants(item));
+    return;
+  }
+
+  const candidate = buildCartCandidate(item, variant);
   const key = lineMergeKey(candidate);
   const existing = state.cart.find((l) => lineMergeKey(l) === key);
   if (existing) {
@@ -1539,6 +1657,36 @@ function addToCart(item, variant) {
   showToast(splitInUse() ? `Added ${label} to order ${lineSplitNo(candidate)}` : `Added ${label}`);
   setStatus("");
   void syncDraftNumber();
+}
+
+/** Mobile/small screens: create a draft line and open customize before confirming. */
+function addToCartForCustomize(item, variant) {
+  if (!item.is_active) {
+    setStatus("That item is inactive.", false);
+    return;
+  }
+  if (item.is_sold_out) {
+    setStatus("That item is sold out.", false);
+    return;
+  }
+  if (variant) {
+    if (!variant.isActive || variant.isSoldOut) {
+      setStatus("That variant is unavailable.", false);
+      return;
+    }
+  } else if (item.hasVariants && salesVariants(item).length) {
+    openVariantPicker(item, salesVariants(item));
+    return;
+  }
+
+  const candidate = buildCartCandidate(item, variant);
+  candidate._pendingCustomize = true;
+  state.cart.push(candidate);
+  renderCart();
+  setStatus("");
+  void syncDraftNumber();
+  state._customizeTrigger = document.activeElement;
+  openInstructions(candidate.lineId);
 }
 
 function focusCartLine(lineId, { follow = false } = {}) {
@@ -2091,6 +2239,12 @@ function openInstructions(lineId) {
   updatePriceSummary();
   $("addon-price-error").hidden = true;
   $("customize-price-error").hidden = true;
+  const applyBtn = $("customize-apply-btn");
+  if (applyBtn) {
+    applyBtn.textContent = state.customizeDraft.isNew
+      ? "Add to cart"
+      : "Apply Customization";
+  }
   document.body.classList.add("customize-open");
   $("instr-dialog").showModal();
 }
@@ -2847,11 +3001,24 @@ function applyCustomization() {
     priceAdjusted: Boolean(a.priceAdjusted) && !a.priceEnteredAtSale,
     taxApplicable: a.taxApplicable !== false,
   }));
+  const wasNew = Boolean(line._pendingCustomize);
   line._pendingCustomize = false;
   state.customizeDraft = null;
   closeCustomizeDialog();
   focusCartLine(line.lineId, { follow: true });
   renderCart();
+  if (wasNew) {
+    const label = line.variantName
+      ? `${line.name} — ${line.variantName}`
+      : line.name;
+    showToast(
+      splitInUse()
+        ? `Added ${label} to order ${lineSplitNo(line)}`
+        : `Added ${label}`
+    );
+  }
+  const applyBtn = $("customize-apply-btn");
+  if (applyBtn) applyBtn.textContent = "Apply Customization";
 }
 
 function closeCustomizeDialog() {
@@ -2889,6 +3056,8 @@ function cancelCustomization() {
   state.editingLineId = null;
   closeCustomizeDialog();
   renderCart();
+  const applyBtn = $("customize-apply-btn");
+  if (applyBtn) applyBtn.textContent = "Apply Customization";
 }
 
 function setStatus(message, ok = true) {
@@ -3927,6 +4096,81 @@ function syncReviewWithCart() {
   paintReview();
 }
 
+function printSettings() {
+  return state.config?.printSettings || {};
+}
+
+function syncOrderPrintChoice() {
+  const ps = printSettings();
+  const wrap = $("review-print-wrap");
+  const kitchen = $("review-print-kitchen");
+  const cashier = $("review-print-cashier");
+  if (!wrap || !kitchen || !cashier) return;
+  const allowKitchen = ps.kitchenAutoPrint !== false;
+  const allowCashier =
+    ps.cashierAutoPrint !== false && ps.cashierAutoPrintOnPayment !== false;
+  const ask = ps.askBeforePrint !== false;
+  wrap.hidden = !allowKitchen && !allowCashier;
+  kitchen.closest("label").hidden = !allowKitchen;
+  cashier.closest("label").hidden = !allowCashier;
+  if (!ask) {
+    kitchen.checked = allowKitchen;
+    cashier.checked = allowCashier;
+    kitchen.disabled = true;
+    cashier.disabled = true;
+    return;
+  }
+  kitchen.disabled = !allowKitchen;
+  cashier.disabled = !allowCashier;
+  if (!Object.prototype.hasOwnProperty.call(kitchen.dataset, "userTouched")) {
+    kitchen.checked = allowKitchen;
+  }
+  if (!Object.prototype.hasOwnProperty.call(cashier.dataset, "userTouched")) {
+    cashier.checked = allowCashier;
+  }
+}
+
+function syncPaymentPrintChoice() {
+  const ps = printSettings();
+  const wrap = $("payment-print-wrap");
+  const box = $("payment-print-cashier");
+  if (!wrap || !box) return;
+  const allow =
+    ps.cashierAutoPrint !== false && ps.cashierAutoPrintOnPayment !== false;
+  const ask = ps.askBeforePrint !== false;
+  wrap.hidden = !allow;
+  if (!ask) {
+    box.checked = allow;
+    box.disabled = true;
+    return;
+  }
+  box.disabled = false;
+  if (!Object.prototype.hasOwnProperty.call(box.dataset, "userTouched")) {
+    box.checked = allow;
+  }
+}
+
+function wantKitchenPrint() {
+  const ps = printSettings();
+  if (ps.kitchenAutoPrint === false) return false;
+  if (ps.askBeforePrint === false) return true;
+  return Boolean($("review-print-kitchen")?.checked);
+}
+
+function wantCashierBillAtOrder() {
+  const ps = printSettings();
+  if (ps.cashierAutoPrint === false) return false;
+  if (ps.askBeforePrint === false) return true;
+  return Boolean($("review-print-cashier")?.checked);
+}
+
+function wantCashierPrint() {
+  const ps = printSettings();
+  if (ps.cashierAutoPrint === false) return false;
+  if (ps.askBeforePrint === false) return true;
+  return Boolean($("payment-print-cashier")?.checked);
+}
+
 async function openReview() {
   if (!state.cart.length) {
     setStatus("Add at least one item before sending.", false);
@@ -3939,6 +4183,7 @@ async function openReview() {
   }
   await syncDraftNumber();
   paintReview();
+  syncOrderPrintChoice();
   const dialog = $("review-dialog");
   if (!dialog.open) dialog.showModal();
   watchReviewNumber();
@@ -3980,6 +4225,8 @@ async function sendTestOrder() {
     orderTypeId: type.orderTypeId,
     orderType: type.code,
     ticketRevision: 1,
+    printKitchen: wantKitchenPrint(),
+    printCashier: wantCashierBillAtOrder(),
     fulfillment: fulfillmentPayload(),
     lines: state.cart.map((l) => {
       const configured = lineConfiguredPrice(l);
@@ -4866,6 +5113,7 @@ function renderPayment(view) {
   $("payment-edit").hidden = remaining <= 0 || Boolean(view?.hasAllocations) ||
     !canEditOrders() || !(view?.orderId || state.payment.orderId);
   $("payment-renew").hidden = true;
+  syncPaymentPrintChoice();
   renderPaymentEntry();
 }
 
@@ -5016,7 +5264,8 @@ async function confirmUnifiedPayment() {
           cashCents: parts.cashCents, bankCents: parts.bankCents,
           creditCents: parts.creditCents, bankAccountId: bankAccountId || undefined,
           creditCustomerId: creditCustomerId || undefined,
-          currencyCode: view.currencyCode })
+          currencyCode: view.currencyCode,
+          printCashier: wantCashierPrint() })
       });
     } catch {
       // A timeout can mean the server already committed. Lock editing, allow only same-ID retry.
@@ -5032,6 +5281,12 @@ async function confirmUnifiedPayment() {
       return;
     }
     state.payment.unifiedSubmission = null;
+    const cashierPrint = result.json?.cashierPrint;
+    if (cashierPrint && cashierPrint.ok === false) {
+      showPaymentError(
+        `Payment recorded, but cashier receipt was not queued: ${cashierPrint.error || "printer missing"}. Assign a printer to CASHIER (or keep an active NETWORK printer).`
+      );
+    }
     const updated = await readServerPayment(orderId);
     if (!updated.ok || !updated.json) {
       state.payment.uncertain = true;
@@ -5041,7 +5296,7 @@ async function confirmUnifiedPayment() {
     renderPayment(updated.json);
     resetEntryMode("CASH");
     void refreshPendingCount();
-    showPaymentError("");
+    if (!(cashierPrint && cashierPrint.ok === false)) showPaymentError("");
   } finally {
     state.payment.confirming = false;
     if (state.payment.view) renderPaymentEntry();
@@ -5221,6 +5476,34 @@ function bindUi() {
     state.search = e.target.value;
     renderMenu();
   });
+  $("sales-density-btn")?.addEventListener("click", () => {
+    state.salesView.density =
+      state.salesView.density === "compact" ? "comfortable" : "compact";
+    writeSalesViewPrefs(state.salesView);
+    applySalesView();
+    renderMenu();
+    revealSalesMenuTop();
+  });
+  $("sales-photos-btn")?.addEventListener("click", () => {
+    state.salesView.hidePhotos = !state.salesView.hidePhotos;
+    writeSalesViewPrefs(state.salesView);
+    applySalesView();
+    renderMenu();
+    revealSalesMenuTop();
+  });
+  const salesViewportMq = window.matchMedia("(max-width: 1023px)");
+  const onSalesViewportChange = () => syncSalesViewForViewport();
+  if (salesViewportMq.addEventListener) {
+    salesViewportMq.addEventListener("change", onSalesViewportChange);
+  } else if (salesViewportMq.addListener) {
+    salesViewportMq.addListener(onSalesViewportChange);
+  }
+  $("nav-print-jobs-btn")?.addEventListener("click", () => {
+    setNavMenu(false);
+    const open = $("print-jobs-drawer")?.hidden !== false;
+    setPrintDrawer(open);
+    if (open) refreshJobs({ quiet: true });
+  });
   $("clear-cart-btn").addEventListener("click", () => {
     const wasEditing = Boolean(state.editingOrderId);
     if (!cartHasItems() && !wasEditing && !fulfillmentHasDetails()) return;
@@ -5252,6 +5535,15 @@ function bindUi() {
     if (e.target.closest("#review-change-customer")) {
       openAddressPicker("customer");
     }
+  });
+  $("review-print-kitchen")?.addEventListener("change", () => {
+    $("review-print-kitchen").dataset.userTouched = "1";
+  });
+  $("review-print-cashier")?.addEventListener("change", () => {
+    $("review-print-cashier").dataset.userTouched = "1";
+  });
+  $("payment-print-cashier")?.addEventListener("change", () => {
+    $("payment-print-cashier").dataset.userTouched = "1";
   });
   $("review-confirm").addEventListener("click", sendTestOrder);
   $("pending-payments-btn")?.addEventListener("click", () => {
@@ -5421,11 +5713,28 @@ function bindUi() {
     renderCart();
     persistActiveCart();
   });
-  document.querySelectorAll("#app-nav a.nav-link[href]").forEach((link) => {
+  document.querySelectorAll("#app-nav a.nav-link[href], #app-nav a.nav-dropdown-link[href]").forEach((link) => {
     link.addEventListener("click", () => {
       persistActiveCart();
       setNavMenu(false);
+      closeNavPops();
     });
+  });
+  document.querySelectorAll("#app-nav details.nav-pop").forEach((panel) => {
+    panel.addEventListener("toggle", () => {
+      if (!panel.open) return;
+      document.querySelectorAll("#app-nav details.nav-pop").forEach((other) => {
+        if (other !== panel) other.open = false;
+      });
+    });
+  });
+  document.addEventListener("pointerdown", (event) => {
+    const nav = $("app-nav");
+    if (!nav || nav.contains(event.target)) return;
+    closeNavPops();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeNavPops();
   });
   $("customize-qty-dec")?.addEventListener("click", () => changeCustomizeQty(-1));
   $("customize-qty-inc")?.addEventListener("click", () => changeCustomizeQty(1));
@@ -5602,6 +5911,12 @@ function syncScrollLock() {
   lockPageScroll(shouldLock);
 }
 
+function closeNavPops() {
+  document.querySelectorAll("#app-nav details.nav-pop").forEach((panel) => {
+    panel.open = false;
+  });
+}
+
 function setNavMenu(open) {
   const next = Boolean(open);
   const btn = $("nav-menu-btn");
@@ -5611,6 +5926,7 @@ function setNavMenu(open) {
   }
   state.navMenuOpen = next;
   document.body.classList.toggle("nav-menu-open", next);
+  if (!next) closeNavPops();
   if (btn) {
     btn.setAttribute("aria-expanded", next ? "true" : "false");
     btn.setAttribute("aria-label", next ? "Close navigation menu" : "Open navigation menu");
@@ -5618,7 +5934,9 @@ function setNavMenu(open) {
   if (backdrop) backdrop.hidden = !next;
   syncScrollLock();
   if (next) {
-    const first = $("app-nav")?.querySelector("a.nav-link:not([hidden]), button.nav-link");
+    const first = $("app-nav")?.querySelector(
+      ".nav-primary a.nav-link:not([hidden]), .nav-icon-btn, .nav-account-btn"
+    );
     first?.focus();
   } else if (state._navTrigger?.focus) {
     state._navTrigger.focus();
@@ -5646,7 +5964,43 @@ function setCartDrawer(open) {
   }
 }
 
+function revealSalesMenuTop() {
+  const grid = $("menu-grid");
+  if (grid) grid.scrollTop = 0;
+  const workspace = document.querySelector(".sales-app .workspace");
+  if (workspace) workspace.scrollTop = 0;
+  const pane = $("menu-pane");
+  if (pane) pane.scrollTop = 0;
+  requestAnimationFrame(() => {
+    if (grid) grid.scrollTop = 0;
+  });
+}
+
+function applySalesView() {
+  const compact = state.salesView.density === "compact";
+  document.body.classList.toggle("sales-density-compact", compact);
+  document.body.classList.toggle("sales-hide-photos", state.salesView.hidePhotos);
+  const densityBtn = $("sales-density-btn");
+  if (densityBtn) {
+    densityBtn.setAttribute("aria-pressed", compact ? "true" : "false");
+    densityBtn.textContent = compact ? "Comfortable" : "Compact";
+  }
+  const photosBtn = $("sales-photos-btn");
+  if (photosBtn) {
+    photosBtn.setAttribute(
+      "aria-pressed",
+      state.salesView.hidePhotos ? "true" : "false"
+    );
+    photosBtn.textContent = state.salesView.hidePhotos
+      ? "Show photos"
+      : "Hide photos";
+  }
+}
+
 async function init() {
+  registerPwa();
+  state.salesView = readSalesViewPrefs();
+  applySalesView();
   bindUi();
   const ok = await ensureSession();
   if (ok) await bootstrapData();

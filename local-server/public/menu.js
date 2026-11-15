@@ -89,7 +89,89 @@ function toast(message, isError = false) {
   clearTimeout(toast._t);
   toast._t = setTimeout(() => {
     el.hidden = true;
-  }, 3200);
+  }, isError ? 5200 : 3200);
+}
+
+async function downloadCsv(path, fallbackName) {
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers: { Accept: "text/csv,application/json" },
+  });
+  if (res.status === 401) {
+    showLogin("Session expired.");
+    return;
+  }
+  if (!res.ok) {
+    let message = "Download failed";
+    try {
+      const json = await res.json();
+      message = json.error || message;
+    } catch {
+      /* ignore */
+    }
+    toast(message, true);
+    return;
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = /filename="([^"]+)"/i.exec(disposition);
+  const filename = match?.[1] || fallbackName;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function exportMenuItems() {
+  await downloadCsv(
+    "/v1/menu-items/export.csv",
+    `menu-items-${new Date().toISOString().slice(0, 10)}.csv`
+  );
+}
+
+async function downloadImportTemplate() {
+  await downloadCsv(
+    "/v1/menu-items/import-template.csv",
+    "menu-items-template.csv"
+  );
+}
+
+async function importMenuItemsFile(file) {
+  if (!file) return;
+  const csv = await file.text();
+  if (!csv.trim()) {
+    toast("File is empty", true);
+    return;
+  }
+  const res = await api("/v1/menu-items/import", {
+    method: "POST",
+    body: JSON.stringify({ csv }),
+  });
+  if (res.status === 401) {
+    showLogin("Session expired.");
+    return;
+  }
+  const summary = res.json?.summary;
+  if (!res.ok && !summary) {
+    toast(res.json?.error || "Import failed", true);
+    return;
+  }
+  const created = summary?.created || 0;
+  const updated = summary?.updated || 0;
+  const errors = summary?.errors || res.json?.errors || [];
+  await loadAll();
+  if (errors.length) {
+    toast(
+      `Imported ${created} new, ${updated} updated. ${errors.length} row issue(s): ${errors[0]}`,
+      true
+    );
+  } else {
+    toast(`Imported ${created} new, updated ${updated}.`);
+  }
 }
 
 function stationLabel(item) {
@@ -1786,6 +1868,52 @@ async function addCategory() {
   toast(`Category “${res.json.category.name}” created`);
 }
 
+/** Create a category from the item editor and select it. */
+async function addCategoryFromItemForm() {
+  const name = window.prompt("New category name");
+  if (!name?.trim()) return;
+  const res = await api("/v1/menu-categories", {
+    method: "PUT",
+    body: JSON.stringify({ name: name.trim() }),
+  });
+  if (!res.ok) {
+    toast(res.json?.error || "Could not add category", true);
+    return;
+  }
+  const category = res.json.category;
+  await loadAll({ keepEditor: true });
+  renderCategorySelects(category.category_id, "");
+  markDirty();
+  toast(`Category “${category.name}” created`);
+  $("f-category")?.focus();
+}
+
+/** Create a subcategory under the selected category from the item editor. */
+async function addSubcategoryFromItemForm() {
+  const categoryId = $("f-category")?.value || "";
+  if (!categoryId) {
+    toast("Select or create a category first.", true);
+    $("f-category")?.focus();
+    return;
+  }
+  const name = window.prompt("New subcategory name");
+  if (!name?.trim()) return;
+  const res = await api("/v1/menu-subcategories", {
+    method: "PUT",
+    body: JSON.stringify({ categoryId, name: name.trim() }),
+  });
+  if (!res.ok) {
+    toast(res.json?.error || "Could not add subcategory", true);
+    return;
+  }
+  const subcategory = res.json.subcategory;
+  await loadAll({ keepEditor: true });
+  renderCategorySelects(categoryId, subcategory.subcategory_id);
+  markDirty();
+  toast(`Added “${subcategory.name}”`);
+  $("f-subcategory")?.focus();
+}
+
 async function saveKitchenNotes() {
   const res = await api("/v1/kitchen-notes", {
     method: "PUT",
@@ -1891,6 +2019,20 @@ function bindUi() {
     state._editorTrigger = e.currentTarget;
     openEditor();
   });
+  $("export-items-btn")?.addEventListener("click", () => {
+    void exportMenuItems();
+  });
+  $("import-template-btn")?.addEventListener("click", () => {
+    void downloadImportTemplate();
+  });
+  $("import-items-btn")?.addEventListener("click", () => {
+    $("import-items-file")?.click();
+  });
+  $("import-items-file")?.addEventListener("change", (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    void importMenuItemsFile(file);
+  });
   $("fab-add").addEventListener("click", (e) => {
     state._editorTrigger = e.currentTarget;
     openEditor();
@@ -1970,6 +2112,12 @@ function bindUi() {
   });
   $("clear-photo-btn").addEventListener("click", markPhotoRemoved);
   $("add-category-btn").addEventListener("click", addCategory);
+  $("f-add-category-btn")?.addEventListener("click", () => {
+    void addCategoryFromItemForm();
+  });
+  $("f-add-subcategory-btn")?.addEventListener("click", () => {
+    void addSubcategoryFromItemForm();
+  });
   $("show-inactive-cats").addEventListener("change", renderCategoriesTab);
 
   $("instr-use-defaults")?.addEventListener("click", () => {

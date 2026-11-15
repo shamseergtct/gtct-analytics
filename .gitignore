@@ -30,3 +30,8 @@ npm-debug.log*
 # Coverage / misc
 coverage/
 .cache/
+
+.env
+.env.*
+.vercel
+.env*

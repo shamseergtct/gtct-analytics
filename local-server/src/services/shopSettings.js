@@ -74,6 +74,10 @@ function mapRow(row) {
     currencyLabel: row.currency_label,
     currencyDecimals: Number(row.currency_decimals),
 
+    cloudClientId: row.cloud_client_id || "",
+    cloudBridgeEnabled: Boolean(Number(row.cloud_bridge_enabled || 0)),
+    cloudBridgeUrl: row.cloud_bridge_url || "",
+
     taxEnabled: flag(row, "tax_enabled", 0),
     taxName: row.tax_name || "VAT",
     taxRateBps,
@@ -476,6 +480,39 @@ export function updateShopSettings(shopId, input = {}, { role = "admin" } = {}) 
     ts,
     shopId
   );
+
+  if (
+    Object.prototype.hasOwnProperty.call(input, "cloudClientId") ||
+    Object.prototype.hasOwnProperty.call(input, "cloudBridgeEnabled") ||
+    Object.prototype.hasOwnProperty.call(input, "cloudBridgeUrl")
+  ) {
+    const cloudClientId =
+      input.cloudClientId != null
+        ? String(input.cloudClientId).trim()
+        : existing.cloudClientId || "";
+    const cloudBridgeEnabled =
+      input.cloudBridgeEnabled != null
+        ? boolInput(input.cloudBridgeEnabled, false)
+        : Boolean(existing.cloudBridgeEnabled);
+    const cloudBridgeUrl =
+      input.cloudBridgeUrl != null
+        ? String(input.cloudBridgeUrl).trim()
+        : existing.cloudBridgeUrl || "";
+    db.prepare(
+      `UPDATE shop_settings SET
+         cloud_client_id = ?,
+         cloud_bridge_enabled = ?,
+         cloud_bridge_url = ?,
+         updated_at = ?
+       WHERE shop_id = ?`
+    ).run(
+      cloudClientId,
+      cloudBridgeEnabled ? 1 : 0,
+      cloudBridgeUrl,
+      ts,
+      shopId
+    );
+  }
 
   return getShopSettings(shopId);
 }

@@ -131,13 +131,13 @@ service cloud.firestore {
     }
 
     function operationsShiftIdSetTo(clientId) {
+      // getAfter: open-shift creates the shift in the same transaction (exists/get are pre-write).
       return request.resource.data.diff(resource.data).affectedKeys().hasAny(['operationsShiftId'])
         && request.resource.data.keys().hasAny(['operationsShiftId'])
         && request.resource.data.operationsShiftId is string
         && request.resource.data.operationsShiftId.size() > 0
-        && exists(shiftDocPath(request.resource.data.operationsShiftId))
-        && get(shiftDocPath(request.resource.data.operationsShiftId)).data.clientId == clientId
-        && get(shiftDocPath(request.resource.data.operationsShiftId)).data.status == 'OPEN';
+        && getAfter(shiftDocPath(request.resource.data.operationsShiftId)).data.clientId == clientId
+        && getAfter(shiftDocPath(request.resource.data.operationsShiftId)).data.status == 'OPEN';
     }
 
     /**
@@ -813,6 +813,8 @@ service cloud.firestore {
           'directSale',
           'isActive',
           'menuSortOrder',
+          'menuCategory',
+          'preparationCenter',
           'attentionLowQty',
           'attentionUrgentQty',
           'attentionVeryUrgentQty',
@@ -846,6 +848,20 @@ service cloud.firestore {
           || (
             request.resource.data.subCategory is string
             && request.resource.data.subCategory.size() <= 60
+          )
+        )
+        && (
+          !('menuCategory' in request.resource.data)
+          || (
+            request.resource.data.menuCategory is string
+            && request.resource.data.menuCategory.size() <= 60
+          )
+        )
+        && (
+          !('preparationCenter' in request.resource.data)
+          || (
+            request.resource.data.preparationCenter is string
+            && request.resource.data.preparationCenter.size() <= 60
           )
         )
         && (
@@ -1714,7 +1730,13 @@ service cloud.firestore {
     }
 
     match /shifts/{shiftId} {
-      allow read: if canReadTenantResource();
+      // resource == null: open-shift / attach probes missing or stale shift ids.
+      allow get: if activeUser()
+        && (
+          resource == null
+          || canAccessClient(resource.data.clientId)
+        );
+      allow list: if canReadTenantResource();
 
       allow create: if canManageClient(request.resource.data.clientId)
         && request.resource.data.openedBy == request.auth.uid
@@ -2216,6 +2238,34 @@ service cloud.firestore {
         && request.resource.data.terminalId == resource.data.terminalId
         && validExternalTerminalBillRangeFields();
       allow delete: if isSuperAdmin();
+    }
+
+    /**
+     * Restaurant POS delivery pool (cellular Delivery Boys).
+     * Mutations go through Cloud Functions (Admin SDK). Boys may only read
+     * available orders for their shop, or orders they claimed.
+     */
+    match /restaurant_delivery_orders/{orderId} {
+      allow get: if canManageClient(resource.data.clientId)
+        || (
+          isDeliveryBoyForClient(resource.data.clientId)
+          && (
+            resource.data.status == 'AVAILABLE'
+            || resource.data.claimedByDeliveryBoyId == profile().deliveryBoyId
+          )
+        );
+      allow list: if resource != null
+        && (
+          canManageClient(resource.data.clientId)
+          || (
+            isDeliveryBoyForClient(resource.data.clientId)
+            && (
+              resource.data.status == 'AVAILABLE'
+              || resource.data.claimedByDeliveryBoyId == profile().deliveryBoyId
+            )
+          )
+        );
+      allow create, update, delete: if false;
     }
 
     match /{document=**} {

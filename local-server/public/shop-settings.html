@@ -42,15 +42,38 @@
             <h1>Shop Settings</h1>
             <p class="page-desc">Business profile, tax, currency, receipts, and order fulfillment for this restaurant.</p>
           </div>
-          <div class="topbar-meta">
-            <span class="banner compact">TEST MODE</span>
-            <span id="session-role" class="pill"></span>
+          <div class="topbar-actions">
+            <span class="banner compact test-badge">TEST</span>
             <span id="currency-pill" class="pill"></span>
-            <a class="btn ghost small" href="/">Sales</a>
-            <a class="btn ghost small" href="/menu.html">Menu Setup</a>
-            <a class="btn ghost small" href="/settings.html">Printers</a>
-            <a class="btn ghost small" href="/users.html">Users</a>
-            <button type="button" id="logout-btn" class="btn ghost small">Sign out</button>
+            <nav id="app-nav" class="app-nav" aria-label="Main">
+              <div class="nav-primary" role="group" aria-label="Floor">
+                <a class="nav-link" href="/">Sales</a>
+              </div>
+              <details id="settings-menu" class="nav-pop">
+                <summary class="nav-icon-btn" aria-label="Settings">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+                  </svg>
+                </summary>
+                <div class="nav-dropdown" role="menu">
+                  <p class="nav-dropdown-heading">Setup</p>
+                  <a class="nav-dropdown-link" href="/menu.html">Menu Setup</a>
+                  <a class="nav-dropdown-link" href="/shop-settings.html" aria-current="page">Shop Settings</a>
+                  <a class="nav-dropdown-link" href="/settings.html">Printer Settings</a>
+                  <a class="nav-dropdown-link" href="/reports.html">Reports</a>
+                  <a class="nav-dropdown-link" href="/users.html">User Management</a>
+                  <a class="nav-dropdown-link" href="/terminals.html">Terminals</a>
+                </div>
+              </details>
+              <details id="account-menu" class="nav-pop">
+                <summary class="nav-account-btn" aria-label="Account">
+                  <span id="session-role" class="nav-account-name"></span>
+                </summary>
+                <div class="nav-dropdown nav-dropdown-account" role="menu">
+                  <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+                </div>
+              </details>
+            </nav>
           </div>
         </header>
 
@@ -182,6 +205,29 @@
 
             <!-- CURRENCY -->
             <section id="panel-currency" class="ms-panel ss-panel" role="tabpanel" hidden>
+              <div class="ms-card ss-card">
+                <h2>Online delivery bridge (TEST)</h2>
+                <p class="muted">Publish ready restaurant deliveries to GTCT Analytics so Firebase Delivery Boys can accept on mobile data. External bill entry is unchanged. Analytics shop reports come later.</p>
+                <div class="ss-fields">
+                  <label class="check-row">
+                    <input id="f-cloud-bridge-enabled" type="checkbox" />
+                    <span>Enable cloud delivery bridge</span>
+                  </label>
+                  <label class="field">
+                    <span>GTCT Analytics shop / clientId</span>
+                    <input id="f-cloud-client-id" type="text" maxlength="120" placeholder="Firebase clientId for this restaurant" autocomplete="off" />
+                  </label>
+                  <label class="field">
+                    <span>Bridge URL (optional override)</span>
+                    <input id="f-cloud-bridge-url" type="url" maxlength="300" placeholder="Leave blank for default Cloud Function URL" autocomplete="off" />
+                  </label>
+                  <p class="hint">Local POS always works with the bridge off. When enabled, sync runs in the background and backs off if the cloud is unreachable so Sales stays responsive. Use <strong>Sync now</strong> to push/pull immediately. Set server env <code>GTCT_CLOUD_BRIDGE_SECRET</code> to the same value as Firebase secret <code>RESTAURANT_DELIVERY_BRIDGE_SECRET</code>.</p>
+                  <div class="ss-actions">
+                    <button type="button" id="cloud-bridge-sync-btn" class="btn ghost small">Sync now</button>
+                    <span id="cloud-bridge-sync-status" class="muted" aria-live="polite"></span>
+                  </div>
+                </div>
+              </div>
               <div class="ms-card ss-card">
                 <h2>Currency &amp; regional</h2>
                 <p class="muted">Changing currency code or decimal places does not convert amounts. While test orders exist, currency changes are blocked — clear them below first.</p>

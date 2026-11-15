@@ -4,16 +4,29 @@ import { log } from "../../util/logger.js";
 import { isValidIpv4OrHostname, isValidTcpPort } from "../../services/printers.js";
 
 /**
- * Build a plain-text payload for thermal printers.
- * Intentionally avoids ESC/POS init, cutter, cash-drawer, and reset sequences —
- * POS-80 variants differ and those commands are unsafe without device confirmation.
+ * ESC B n t — common POS-80 / Ethernet thermal beeper (n beeps, t duration units).
+ * Safe optional trailer; printers without a buzzer typically ignore it.
  */
-export function buildNetworkTcpPayload(renderedText, format = "TEXT") {
-  if (format === "MJ330_RASTER") return renderMj330Raster(renderedText);
-  if (format !== "TEXT") throw new Error("Unknown TCP printer format");
-  const text = String(renderedText || "").replace(/\r\n/g, "\n");
-  // LF feed only — no ESC/POS binary commands
-  return Buffer.from(`${text}\n\n\n`, "utf8");
+export const NETWORK_TCP_BEEP = Buffer.from([0x1b, 0x42, 0x03, 0x02]);
+
+/**
+ * Build a plain-text / MJ330 payload for thermal printers.
+ * Avoids ESC/POS init, cash-drawer, and reset sequences.
+ * Optional beep (capabilities.beepOnPrint) is appended after the ticket.
+ */
+export function buildNetworkTcpPayload(renderedText, format = "TEXT", options = {}) {
+  const beep = options.beepOnPrint === true;
+  let body;
+  if (format === "MJ330_RASTER") {
+    body = renderMj330Raster(renderedText);
+  } else if (format === "TEXT") {
+    const text = String(renderedText || "").replace(/\r\n/g, "\n");
+    // LF feed only — no ESC/POS binary commands in the body
+    body = Buffer.from(`${text}\n\n\n`, "utf8");
+  } else {
+    throw new Error("Unknown TCP printer format");
+  }
+  return beep ? Buffer.concat([body, NETWORK_TCP_BEEP]) : body;
 }
 
 function parseCaps(printer) {
@@ -70,15 +83,22 @@ export function probeNetworkTcp(printer, { timeoutMs = 3000 } = {}) {
 }
 
 /**
- * NETWORK_TCP adapter for raw text over TCP (typical port 9100).
+ * NETWORK_TCP adapter for raw ESC/POS / MJ330 raster over TCP (typical port 9100).
  *
  * Physical dispatch requires ALL of:
- * - process env GTCT_ENABLE_PHYSICAL_PRINT=true
+ * - effective physical master (env override or persistent auto-print setting)
  * - printer.capabilities.physicalDispatchEnabled
- * - options.allowPhysicalDispatch (caller authorization)
+ * - options.allowPhysicalDispatch (dispatcher authorization for this job)
  * - options.confirmedHost / confirmedPort matching printer destination
  *
- * TCP write success ≠ CONFIRMED print.
+ * Lifecycle (MJ330 / raw-9100):
+ * Many printers accept bytes and never send application data or a TCP FIN.
+ * Awaiting socket.end(callback) / remote EOF therefore idles until setTimeout
+ * fires UNKNOWN — even after the payload was fully written. After the write
+ * callback confirms the payload was accepted by the kernel socket buffer, we
+ * half-close locally (end, do not await peer FIN) and mark DISPATCHED.
+ *
+ * TCP write handoff = DISPATCHED only. Never CONFIRMED paper. No automatic retry.
  */
 export async function dispatchNetworkTcp(job, printer, renderedText, options = {}) {
   const caps = parseCaps(printer);
@@ -117,59 +137,150 @@ export async function dispatchNetworkTcp(job, printer, renderedText, options = {
     return { outcome: "FAILED", detail: "Printer is inactive" };
   }
 
-  const payload = buildNetworkTcpPayload(renderedText, options.format);
+  const beepOnPrint =
+    options.beepOnPrint === true ||
+    (options.beepOnPrint == null && caps.beepOnPrint === true);
+  const payload = buildNetworkTcpPayload(renderedText, options.format, { beepOnPrint });
+  const timeoutMs = Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 8000;
 
   return new Promise((resolve) => {
     const socket = new net.Socket();
     let settled = false;
-    const finish = (result) => {
-      if (settled) return;
-      settled = true;
+    /** @type {'connecting' | 'writing' | 'written'} */
+    let phase = "connecting";
+    let bytesAccepted = 0;
+    let cleanupTimer = null;
+
+    const cleanupSocket = ({ immediateDestroy = false } = {}) => {
       try {
-        socket.destroy();
+        socket.setTimeout(0);
       } catch {
         // ignore
       }
+      if (immediateDestroy) {
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      // After a successful write, prefer local half-close and a short grace
+      // period so the kernel can finish transmitting before destroy/RST.
+      try {
+        if (!socket.destroyed) socket.end();
+      } catch {
+        // ignore
+      }
+      cleanupTimer = setTimeout(() => {
+        try {
+          if (!socket.destroyed) socket.destroy();
+        } catch {
+          // ignore
+        }
+      }, 500);
+      if (typeof cleanupTimer.unref === "function") cleanupTimer.unref();
+    };
+
+    const finish = (result, { immediateDestroy = false } = {}) => {
+      if (settled) return;
+      settled = true;
+      if (cleanupTimer) {
+        clearTimeout(cleanupTimer);
+        cleanupTimer = null;
+      }
+      cleanupSocket({ immediateDestroy });
       resolve(result);
     };
 
-    socket.setTimeout(8000);
+    socket.setTimeout(timeoutMs);
     socket.once("timeout", () => {
-      finish({
-        outcome: "UNKNOWN",
-        detail:
-          "TCP timeout after connect/write attempt. Print may or may not have occurred — operator review required. No automatic retry.",
-      });
+      if (phase === "connecting") {
+        finish(
+          {
+            outcome: "FAILED",
+            detail: `TCP connect timeout to ${host}:${port} (no data sent). No automatic retry.`,
+          },
+          { immediateDestroy: true }
+        );
+        return;
+      }
+      if (phase === "writing") {
+        finish(
+          {
+            outcome: "UNKNOWN",
+            detail:
+              `TCP timeout while writing to ${host}:${port} after ${bytesAccepted}/${payload.length} bytes accepted by the socket. Print may or may not have occurred — operator review required. No automatic retry.`,
+          },
+          { immediateDestroy: true }
+        );
+        return;
+      }
+      finish(
+        {
+          outcome: "UNKNOWN",
+          detail:
+            "TCP timeout after write handoff. Print may or may not have occurred — operator review required. No automatic retry.",
+        },
+        { immediateDestroy: true }
+      );
     });
     socket.once("error", (err) => {
-      finish({
-        outcome: "FAILED",
-        detail: `TCP error: ${err.message}`,
-      });
+      if (phase === "connecting") {
+        finish(
+          {
+            outcome: "FAILED",
+            detail: `TCP connect/error before write: ${err.message} (no data sent)`,
+          },
+          { immediateDestroy: true }
+        );
+        return;
+      }
+      if (phase === "writing") {
+        finish(
+          {
+            outcome: "UNKNOWN",
+            detail: `TCP error during write after ${bytesAccepted}/${payload.length} bytes: ${err.message}`,
+          },
+          { immediateDestroy: true }
+        );
+        return;
+      }
+      // Post-handoff errors are ambiguous; job already resolved as DISPATCHED.
     });
 
     socket.connect(port, host, () => {
-      socket.write(payload, (writeErr) => {
+      phase = "writing";
+      const ok = socket.write(payload, (writeErr) => {
+        if (settled) return;
         if (writeErr) {
-          finish({
-            outcome: "UNKNOWN",
-            detail: `Write error after connect: ${writeErr.message}`,
-          });
+          finish(
+            {
+              outcome: "UNKNOWN",
+              detail: `Write error after connect (${bytesAccepted}/${payload.length} bytes): ${writeErr.message}`,
+            },
+            { immediateDestroy: true }
+          );
           return;
         }
-        socket.end(() => {
-          log.warn("NETWORK_TCP transmit completed without device confirmation", {
-            jobId: job.job_id,
-            host,
-            port,
-          });
-          finish({
-            outcome: "DISPATCHED",
-            detail:
-              "Plain text transmitted over TCP. Not CONFIRMED — no reliable printer ACK. No automatic retry.",
-          });
+        // Write callback = payload accepted by the kernel send buffer.
+        // Do NOT await socket.end(callback) / remote FIN: MJ330 raw-9100 printers
+        // often keep the session open, which previously caused inactivity UNKNOWN.
+        phase = "written";
+        bytesAccepted = payload.length;
+        log.warn("NETWORK_TCP write handoff completed without device confirmation", {
+          jobId: job.job_id,
+          host,
+          port,
+          bytes: payload.length,
+        });
+        finish({
+          outcome: "DISPATCHED",
+          detail:
+            `Payload handed to TCP socket (${payload.length} bytes) for ${host}:${port}. Not CONFIRMED — printers often keep the session open and send no ACK. No automatic retry.`,
         });
       });
+      if (ok) bytesAccepted = payload.length;
     });
   });
 }

@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>GTCT Reports</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="reports-page">
+    <div id="app">
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-card">
+          <p class="brand">GTCT Restaurant</p>
+          <h1>Reports</h1>
+          <p class="banner">TEST MODE — ANALYSIS ONLY</p>
+          <p class="hint">Sign in as Admin or Cashier to view shop reports.</p>
+          <div class="login-form">
+            <div class="field">
+              <label for="login-username">Username</label>
+              <input id="login-username" name="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off" />
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <div class="password-row">
+                <input id="login-password" name="password" type="password" autocomplete="current-password" />
+                <button type="button" id="toggle-password-btn" class="btn ghost password-toggle" aria-controls="login-password">Show</button>
+              </div>
+            </div>
+            <button type="button" id="login-btn" class="btn primary">Sign in</button>
+            <p id="login-error" class="error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="main-view" class="view main-view" hidden>
+        <header class="topbar">
+          <div class="topbar-brand">
+            <p class="brand-inline">GTCT</p>
+            <h1>Reports</h1>
+          </div>
+          <div class="topbar-actions">
+            <span class="banner compact test-badge">TEST</span>
+            <nav id="app-nav" class="app-nav" aria-label="Main">
+              <div class="nav-primary" role="group" aria-label="Floor">
+                <a class="nav-link" href="/">Sales</a>
+                <a class="nav-link" href="/orders.html">Orders</a>
+              </div>
+              <details id="settings-menu" class="nav-pop">
+                <summary class="nav-icon-btn" aria-label="Settings">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+                  </svg>
+                </summary>
+                <div class="nav-dropdown" role="menu">
+                  <p class="nav-dropdown-heading">Setup</p>
+                  <a id="menu-setup-link" class="nav-dropdown-link" href="/menu.html" hidden>Menu Setup</a>
+                  <a id="shop-settings-link" class="nav-dropdown-link" href="/shop-settings.html" hidden>Shop Settings</a>
+                  <a id="settings-link" class="nav-dropdown-link" href="/settings.html" hidden>Printer Settings</a>
+                  <a class="nav-dropdown-link" href="/reports.html" aria-current="page">Reports</a>
+                  <a id="users-link" class="nav-dropdown-link" href="/users.html" hidden>User Management</a>
+                  <a id="terminals-link" class="nav-dropdown-link" href="/terminals.html" hidden>Terminals</a>
+                </div>
+              </details>
+              <details id="account-menu" class="nav-pop">
+                <summary class="nav-account-btn" aria-label="Account">
+                  <span id="session-role" class="nav-account-name"></span>
+                </summary>
+                <div class="nav-dropdown nav-dropdown-account" role="menu">
+                  <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+                </div>
+              </details>
+            </nav>
+          </div>
+        </header>
+
+        <div id="denied-block" class="settings-banner" hidden>
+          You do not have permission to view reports.
+          <a href="/">Back to Sales</a>
+        </div>
+
+        <div id="reports-shell" class="reports-shell" hidden>
+          <header class="reports-hero">
+            <div>
+              <p class="reports-kicker">Shop analysis · TEST</p>
+              <h2 class="reports-hero-title">Sales &amp; payment reports</h2>
+              <p class="reports-hero-copy">
+                Filter by business date range or a single shift. Figures exclude voided invoices.
+                Credit is tracked separately from cash/bank received.
+              </p>
+            </div>
+            <div class="reports-hero-actions">
+              <button type="button" id="refresh-btn" class="btn ghost">Refresh</button>
+              <button type="button" id="export-btn" class="btn primary">Export CSV</button>
+              <button type="button" id="print-btn" class="btn ghost">Print</button>
+            </div>
+          </header>
+
+          <section class="reports-filters settings-card" aria-label="Report filters">
+            <label class="field">
+              <span>From</span>
+              <input id="filter-from" type="date" />
+            </label>
+            <label class="field">
+              <span>To</span>
+              <input id="filter-to" type="date" />
+            </label>
+            <label class="field">
+              <span>Shift (optional)</span>
+              <select id="filter-shift">
+                <option value="">All shifts in date range</option>
+              </select>
+            </label>
+            <div class="reports-filter-actions">
+              <button type="button" id="apply-filters-btn" class="btn primary">Apply</button>
+              <button type="button" id="today-btn" class="btn ghost">Today</button>
+            </div>
+            <p id="filter-status" class="status-line" hidden></p>
+          </section>
+
+          <section class="reports-kpis" id="kpi-grid" aria-label="Summary"></section>
+
+          <nav class="reports-tabs" role="tablist" aria-label="Report sections">
+            <button type="button" class="reports-tab active" data-tab="daily" role="tab" aria-selected="true">Daily</button>
+            <button type="button" class="reports-tab" data-tab="payments" role="tab" aria-selected="false">Payments</button>
+            <button type="button" class="reports-tab" data-tab="types" role="tab" aria-selected="false" id="tab-types">By type</button>
+            <button type="button" class="reports-tab" data-tab="items" role="tab" aria-selected="false" id="tab-items">Items</button>
+            <button type="button" class="reports-tab" data-tab="unpaid" role="tab" aria-selected="false">Unpaid &amp; credit</button>
+            <button type="button" class="reports-tab" data-tab="shift" role="tab" aria-selected="false">Shift</button>
+            <button type="button" class="reports-tab" data-tab="stations" role="tab" aria-selected="false" id="tab-stations">Stations</button>
+            <button type="button" class="reports-tab" data-tab="hourly" role="tab" aria-selected="false" id="tab-hourly">Busy hours</button>
+            <button type="button" class="reports-tab" data-tab="audit" role="tab" aria-selected="false" id="tab-audit">Voids &amp; edits</button>
+            <button type="button" class="reports-tab" data-tab="rider-cash" role="tab" aria-selected="false" id="tab-rider-cash">Rider cash</button>
+            <button type="button" class="reports-tab" data-tab="commission" role="tab" aria-selected="false" id="tab-commission">Commission</button>
+            <button type="button" class="reports-tab" data-tab="delivery-mix" role="tab" aria-selected="false" id="tab-delivery-mix">Delivery mix</button>
+          </nav>
+
+          <section class="settings-card reports-panel" id="panel-daily" data-panel="daily"></section>
+          <section class="settings-card reports-panel" id="panel-payments" data-panel="payments" hidden></section>
+          <section class="settings-card reports-panel" id="panel-types" data-panel="types" hidden></section>
+          <section class="settings-card reports-panel" id="panel-items" data-panel="items" hidden></section>
+          <section class="settings-card reports-panel" id="panel-unpaid" data-panel="unpaid" hidden></section>
+          <section class="settings-card reports-panel" id="panel-shift" data-panel="shift" hidden></section>
+          <section class="settings-card reports-panel" id="panel-stations" data-panel="stations" hidden></section>
+          <section class="settings-card reports-panel" id="panel-hourly" data-panel="hourly" hidden></section>
+          <section class="settings-card reports-panel" id="panel-audit" data-panel="audit" hidden></section>
+          <section class="settings-card reports-panel" id="panel-rider-cash" data-panel="rider-cash" hidden></section>
+          <section class="settings-card reports-panel" id="panel-commission" data-panel="commission" hidden></section>
+          <section class="settings-card reports-panel" id="panel-delivery-mix" data-panel="delivery-mix" hidden></section>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/reports.js"></script>
+  </body>
+</html>

@@ -82,10 +82,59 @@ function lineSignature(lines) {
     .join("\n");
 }
 
+function prepLineKey(line) {
+  return [
+    line.itemId || "",
+    line.variantName || "",
+    Number(line.quantity || 0),
+    (line.instructions || []).join(","),
+    (line.addons || []).map((addon) => `${addon.name}:${addon.quantity}`).join(","),
+  ].join("|");
+}
+
+function snapshotLines(lines) {
+  return (lines || []).map((line) => ({
+    itemId: line.itemId || "",
+    name: line.name || "",
+    quantity: Number(line.quantity || 0),
+    variantName: line.variantName || "",
+    instructions: Array.isArray(line.instructions) ? line.instructions : [],
+    addons: (line.addons || []).map((addon) => ({
+      name: addon.name || "",
+      quantity: Number(addon.quantity || 1),
+    })),
+  }));
+}
+
+function parseLinesSnapshot(raw) {
+  try {
+    const parsed = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? snapshotLines(parsed) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Previous station lines that disappeared after an order edit. */
+function removedPrepLines(previous, current) {
+  const remaining = (current || []).map(prepLineKey);
+  const removed = [];
+  for (const line of previous || []) {
+    const key = prepLineKey(line);
+    const index = remaining.indexOf(key);
+    if (index >= 0) {
+      remaining.splice(index, 1);
+    } else {
+      removed.push({ ...line, voided: true });
+    }
+  }
+  return removed;
+}
+
 function loadStationLines(db, shopId, stationId, orderId = "") {
   const rows = db
     .prepare(
-      `SELECT o.order_id, o.order_number, o.order_type_name, o.order_type,
+      `SELECT o.order_id, o.order_number, o.token_number, o.order_type_name, o.order_type,
               o.fulfillment_behavior, o.destination, o.customer_name, o.customer_phone,
               o.table_number, o.vehicle_number, o.parking_location,
               o.block_number, o.building_number, o.road_number, o.address_note,
@@ -110,6 +159,7 @@ function loadStationLines(db, shopId, stationId, orderId = "") {
       byOrder.set(row.order_id, {
         orderId: row.order_id,
         orderNumber: row.order_number,
+        tokenNumber: row.token_number == null ? null : Number(row.token_number),
         orderTypeName: row.order_type_name || row.order_type || "",
         fulfillmentBehavior: row.fulfillment_behavior || "",
         destination: row.destination || "",
@@ -146,6 +196,12 @@ function ticketView(order, stored) {
   const signature = lineSignature(order.lines);
   const changed = Boolean(stored && stored.line_signature && stored.line_signature !== signature);
   const status = !stored || changed ? "NEW" : stored.status;
+  const previous = parseLinesSnapshot(stored?.lines_snapshot_json);
+  const voidedLines = changed ? removedPrepLines(previous, order.lines) : [];
+  const lines = [
+    ...(order.lines || []).map((line) => ({ ...line, voided: false })),
+    ...voidedLines,
+  ];
   // The revision covers the immutable station line content AND order edits.
   // A stale browser must not finish an older recipe after Sales changes it.
   const revision = createHash("sha256")
@@ -155,12 +211,17 @@ function ticketView(order, stored) {
       signature,
       stored?.status || "NEW",
       stored?.updated_at || "",
+      voidedLines.map(prepLineKey),
     ]))
     .digest("hex");
+  const editHighlight =
+    changed || Number(stored?.edit_highlight || 0) === 1;
   return {
     ...order,
+    lines,
     status,
     updated: changed,
+    edited: editHighlight,
     signature,
     revision,
     finishedAt: changed ? "" : stored?.finished_at || "",
@@ -201,8 +262,34 @@ export function listPrepBoard(shopId, stationId, allowedStationIds = null) {
   if (openShift?.opened_at && (!dayStart || openShift.opened_at < dayStart)) {
     dayStart = openShift.opened_at;
   }
+  const backfill = db.prepare(
+    `UPDATE station_prep_tickets
+     SET lines_snapshot_json = ?
+     WHERE shop_id = ? AND order_id = ? AND station_id = ?
+       AND (lines_snapshot_json IS NULL OR lines_snapshot_json = '' OR lines_snapshot_json = '[]')`
+  );
   const tickets = orders
-    .map((order) => ticketView(order, stored.get(order.orderId)))
+    .map((order) => {
+      const row = stored.get(order.orderId);
+      const view = ticketView(order, row);
+      // Backfill snapshots for tickets accepted before this column existed,
+      // so the next edit can show voided (removed) lines.
+      if (
+        row &&
+        !view.updated &&
+        view.status !== "NEW" &&
+        !parseLinesSnapshot(row.lines_snapshot_json).length &&
+        order.lines?.length
+      ) {
+        backfill.run(
+          JSON.stringify(snapshotLines(order.lines)),
+          shopId,
+          order.orderId,
+          selected.station_id
+        );
+      }
+      return view;
+    })
     .filter((ticket) => ticket.status !== "FINISHED" || !ticket.finishedAt || ticket.finishedAt >= dayStart)
     .map(({ signature, finishedAt, ...ticket }) => ticket);
   return {
@@ -252,14 +339,25 @@ export function setPrepStatus(shopId, orderId, stationId, status, userId, expect
       fail(409, "Accept the current ticket before finishing it.", "PREP_INVALID_TRANSITION");
     }
     const ts = nowIso();
+    const linesSnapshot = JSON.stringify(snapshotLines(current.lines));
+    // Keep Edited visible in Preparing after Accept; clear only when Finished.
+    const editHighlight =
+      next === "FINISHED"
+        ? 0
+        : view.updated || Number(existing?.edit_highlight || 0) === 1
+          ? 1
+          : 0;
     db.prepare(
       `INSERT INTO station_prep_tickets (
          shop_id, order_id, station_id, status, line_signature,
+         lines_snapshot_json, edit_highlight,
          accepted_at, finished_at, updated_by_user_id, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (shop_id, order_id, station_id) DO UPDATE SET
          status = excluded.status,
          line_signature = excluded.line_signature,
+         lines_snapshot_json = excluded.lines_snapshot_json,
+         edit_highlight = excluded.edit_highlight,
          accepted_at = CASE
            WHEN excluded.status = 'ACCEPTED' THEN excluded.accepted_at
            ELSE station_prep_tickets.accepted_at
@@ -276,6 +374,8 @@ export function setPrepStatus(shopId, orderId, stationId, status, userId, expect
       station.station_id,
       next,
       view.signature,
+      linesSnapshot,
+      editHighlight,
       next === "ACCEPTED" ? ts : existing?.accepted_at || null,
       next === "FINISHED" ? ts : null,
       userId || null,

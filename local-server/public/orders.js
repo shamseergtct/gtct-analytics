@@ -1,4 +1,6 @@
 import { createMoneyFormatter } from "/money.js";
+import { registerPwa } from "./pwa.js";
+registerPwa();
 
 const state = {
   role: null,
@@ -121,7 +123,7 @@ function shortDate(iso) {
 function tokenMarkup(order) {
   return order.tokenNumber == null
     ? ''
-    : `<span class="order-token">Token ${escapeHtml(String(order.tokenNumber).padStart(3, '0'))}</span>`;
+    : `<span class="order-token">TOKEN ${escapeHtml(String(order.tokenNumber).padStart(3, '0'))}</span>`;
 }
 
 function customerLine(order) {

@@ -99,6 +99,20 @@ Admin-only: register printers/stations/menu items (incl. photos), reprint, confi
 | `GTCT_LAN_HOSTNAME` | unset | Private name on the certificate, such as `gtct-pos`. Browsers use this name, not the raw IP. |
 | `GTCT_ENABLE_PHYSICAL_PRINT` | unset/false | Enable TCP/spooler adapters |
 | `GTCT_DISPATCH_INTERVAL_MS` | `1500` | Dispatch poll |
+| `GTCT_CLOUD_BRIDGE_SECRET` | unset | Shared secret with Firebase `RESTAURANT_DELIVERY_BRIDGE_SECRET` (required to publish) |
+| `GTCT_CLOUD_BRIDGE_ENABLED` | unset | Optional force-enable (`1`/`true`); Shop Settings checkbox also enables |
+| `GTCT_CLOUD_CLIENT_ID` | unset | Optional default Analytics `clientId` if Shop Settings field is empty |
+| `GTCT_CLOUD_BRIDGE_URL` | asia-south1 function URL | Override bridge HTTP endpoint |
+| `GTCT_CLOUD_BRIDGE_INTERVAL_MS` | `8000` | Publish/claim sync interval |
+
+### Online delivery bridge (TEST, cellular Delivery Boys)
+
+Keeps the existing Delivery App **Bills** flow. Adds **Shop orders** for restaurant POS deliveries over mobile data.
+
+1. Firebase project must be on **Blaze** (Cloud Functions / Cloud Build). Deploy Firestore rules + Cloud Functions (`acceptRestaurantDeliveryOrder`, `updateRestaurantDeliveryStatus`, `reportRestaurantDeliveryPayment`, `restaurantDeliveryBridge`). Put the shared key in `functions/.env` as `RESTAURANT_DELIVERY_BRIDGE_SECRET=...` (gitignored).
+2. In Shop Settings → Currency panel → **Online delivery bridge**, set the Analytics **clientId** that your test Delivery Boys already belong to (`users.assignedShops` / `clientId`). Enable the bridge. Do **not** create a new Analytics shop yet — that is the next phase for reports.
+3. Export the same value as `GTCT_CLOUD_BRIDGE_SECRET` for the local server and restart.
+4. Ready local DELIVERY orders publish to `restaurant_delivery_orders`. Boys accept / mark delivered / payment in the Delivery App; the local POS applies claims and marks on the next sync tick.
 
 ## HTTPS on this computer
 
@@ -110,9 +124,17 @@ A self-signed certificate for a raw IP address is not trusted by other computers
 
 ## Prepared LAN test (not opened)
 
-The server still starts on `127.0.0.1` and does not listen on the restaurant network. A private-address listener is possible only when all of these are true: `GTCT_ALLOW_LAN_BIND=true`, `GTCT_ENABLE_LAN_LISTENER=true`, `GTCT_LOCAL_HOST` and `GTCT_LAN_BIND_ADDRESS` are the same private IPv4 address, HTTPS material loads, and the certificate includes `DNS:` plus `GTCT_LAN_HOSTNAME`. TLS 1.2 is the minimum. HTTP is not used as a fallback. Physical printing and a database on a network folder are refused in that mode.
+The server still starts on `127.0.0.1` and does not listen on the restaurant network. A private-address listener is possible only when all of these are true: `GTCT_ALLOW_LAN_BIND=true`, `GTCT_ENABLE_LAN_LISTENER=true`, `GTCT_LOCAL_HOST` and `GTCT_LAN_BIND_ADDRESS` are the same private IPv4 address, HTTPS material loads, and the certificate includes `DNS:` plus `GTCT_LAN_HOSTNAME`. TLS 1.2 is the minimum. HTTP is not used as a fallback. A database on a network folder is refused. Physical printing may stay on when `GTCT_ENABLE_PHYSICAL_PRINT=true` (Mac LAN terminal testing).
 
 The intended test name is `gtct-pos`. The browser URL is `https://gtct-pos:8787`. The certificate needs the Subject Alternative Name `DNS:gtct-pos`. Do not browse to the raw IP. Do not continue past a certificate warning.
+
+### Mac LAN terminals (TEST)
+
+1. `npm run cert:mac-lan` — creates a local `gtct-pos` certificate under Application Support.
+2. Add `<mac-lan-ip> gtct-pos` to `/etc/hosts` on this Mac and each tablet/PC; trust the cert.
+3. Admin → **Terminals** → add device → **Pair code**.
+4. On the tablet open `https://gtct-pos:8787/pair.html`, enter the code, then staff sign-in.
+5. Start LAN with `npm run start:mac-lan` (physical print defaults to on).
 
 Staff sign-in stays a username and password. The cookie is HttpOnly, Secure, and SameSite=Strict. Bearer tokens stay rejected. Only that HTTPS origin is accepted. This document does not change the firewall, the virtual-machine network, or any trust store. Those steps wait for approval. Do not forward the server through the router.
 

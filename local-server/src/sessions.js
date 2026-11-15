@@ -6,6 +6,10 @@ import {
   revokeStaffSessionToken,
   takeStaffSession,
 } from "./services/staffAuth.js";
+import {
+  attachTerminalToSession,
+  resolvePairedTerminal,
+} from "./services/terminals.js";
 
 /**
  * Staff sessions are stored in SQLite and survive a restart.
@@ -39,9 +43,12 @@ export function isTrustedBrowserOrigin(req, config) {
   const port = url.port || (url.protocol === "https:" ? "443" : "80");
   if (port !== String(config.port)) return false;
   if (config?.lanAccessReady) {
+    const host = url.hostname.toLowerCase();
+    const named = String(config.lanHostname || "").toLowerCase();
+    const bindIp = String(config.host || "");
     return (
       url.protocol === "https:" &&
-      url.hostname.toLowerCase() === String(config.lanHostname || "").toLowerCase()
+      (host === named || (bindIp && host === bindIp))
     );
   }
   return (
@@ -131,14 +138,23 @@ export function loginWithPassword(req, config, credentials) {
       error: "Sign-in must come from this computer’s restaurant page.",
     };
   }
-  const result = authenticateStaffPassword(req, config, credentials);
+  const paired = resolvePairedTerminal(config.testTenantId, req);
+  const result = authenticateStaffPassword(req, config, {
+    ...credentials,
+    terminalId: paired?.terminalId || null,
+  });
   if (!result.ok) return result;
   const token = result.token;
+  if (paired?.terminalId && result.sessionId) {
+    attachTerminalToSession(config.testTenantId, result.sessionId, paired.terminalId);
+  }
   return {
     ok: true,
     role: result.role,
     deviceId: result.deviceId,
     userId: result.userId,
+    terminalId: paired?.terminalId || result.terminalId || "",
+    terminalName: paired?.displayName || "",
     staff: true,
     cookie: sessionCookieHeader(token, { secure: Boolean(req.socket?.encrypted) }),
   };
@@ -164,6 +180,12 @@ export function authenticateSession(req, config) {
   const staff = takeStaffSession(raw, config.testTenantId);
   if (staff === "invalid") return null;
   if (!staff) return null;
+  const paired = resolvePairedTerminal(config.testTenantId, req);
+  if (paired?.terminalId && staff.sessionId && paired.terminalId !== staff.terminalId) {
+    attachTerminalToSession(config.testTenantId, staff.sessionId, paired.terminalId);
+  }
+  const terminalId = paired?.terminalId || staff.terminalId || "";
+  const terminalName = paired?.displayName || "";
   return {
     ok: true,
     role: staff.role,
@@ -172,6 +194,8 @@ export function authenticateSession(req, config) {
     username: staff.username,
     fullName: staff.fullName,
     permissions: staff.permissions || [],
+    terminalId,
+    terminalName,
     via: "session",
     staff: true,
   };

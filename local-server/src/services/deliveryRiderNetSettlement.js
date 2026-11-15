@@ -92,7 +92,7 @@ function checkRider(db,shopId,riderId){
 }
 /** Exact pending set for ONE rider+date; 500 max, fail closed on larger sets. */
 function cashOrders(db,shopId,riderId,day){
-  const rows=db.prepare(`SELECT o.order_id,o.order_number,o.business_date,o.total_cents,
+  const rows=db.prepare(`SELECT o.order_id,o.order_number,o.token_number,o.business_date,o.total_cents,
       o.currency_code,o.currency_decimals,o.customer_name,o.block_number,o.delivery_charge_cents,
       r.version AS report_version,r.amount_cents
     FROM delivery_order_payment_reports r
@@ -183,6 +183,7 @@ function quote(db,shopId,riderId,day){
     currencyCode:currencyCode||overview.currencyCode,currencyDecimals:currencyDecimals??overview.currencyDecimals,
     overview,invoiceCount:rows.length,grossMinor:gross,
     orders:receipt.map((line,i)=>({...line,
+      tokenNumber:rows[i].token_number==null?null:Number(rows[i].token_number),
       customerName:rows[i].customer_name||null,blockNumber:rows[i].block_number||null,
       deliveryChargeMinor:Number(rows[i].delivery_charge_cents||0),
       commissionMinor:null})),
@@ -199,7 +200,7 @@ export function listRiderNetSettlements(shopId,actor,riderId,day){
   // Daily/tier commission belongs to the SETTLEMENT, never an invented invoice split.
   const historyRows=db.prepare(`SELECT * FROM delivery_rider_net_settlements
     WHERE shop_id=? ORDER BY created_at DESC LIMIT 100`).all(shopId);
-  const invoiceLines=db.prepare(`SELECT l.order_id,o.order_number,o.customer_name,
+  const invoiceLines=db.prepare(`SELECT l.order_id,o.order_number,o.token_number,o.customer_name,
       o.block_number,o.delivery_charge_cents,l.gross_minor
     FROM delivery_rider_net_settlement_orders l
     JOIN orders o ON o.order_id=l.order_id AND o.tenant_id=l.shop_id
@@ -210,7 +211,9 @@ export function listRiderNetSettlements(shopId,actor,riderId,day){
     const lines=invoiceLines.all(shopId,row.settlement_id);
     // Avoid an ambiguous partial history if a settlement ever exceeds the cap.
     entry.orders=lines.length<=500?lines.map(inv=>({
-      orderId:inv.order_id,orderNumber:inv.order_number,amountMinor:inv.gross_minor,
+      orderId:inv.order_id,orderNumber:inv.order_number,
+      tokenNumber:inv.token_number==null?null:Number(inv.token_number),
+      amountMinor:inv.gross_minor,
       customerName:inv.customer_name||null,blockNumber:inv.block_number||null,
       deliveryChargeMinor:Number(inv.delivery_charge_cents||0),commissionMinor:null
     })):[];

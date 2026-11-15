@@ -17,6 +17,24 @@ function center(text, width) {
   return `${" ".repeat(pad)}${t}`;
 }
 
+function formatTokenLabel(tokenNumber) {
+  if (tokenNumber == null || tokenNumber === "") return "";
+  const n = Number(tokenNumber);
+  if (!Number.isFinite(n)) return String(tokenNumber);
+  return String(Math.trunc(n)).padStart(3, "0");
+}
+
+/** Large centered token block for kitchen tickets and cashier invoices. */
+function appendTokenBanner(lines, payload, width) {
+  const token = formatTokenLabel(payload.tokenNumber);
+  if (!token) return;
+  lines.push(line("=", width));
+  lines.push("");
+  lines.push(center(`TOKEN ${token}`, width));
+  lines.push("");
+  lines.push(line("=", width));
+}
+
 function moneyShop(payload) {
   return {
     currency_code: payload.currencyCode,
@@ -25,12 +43,24 @@ function moneyShop(payload) {
   };
 }
 
-function formatAddonKitchen(addon) {
+function pairColumns(left, right, width) {
+  const l = String(left || "");
+  const r = String(right || "");
+  if (!r) return l;
+  if (l.length + r.length >= width) return `${l}\n${r.padStart(width)}`;
+  return l + " ".repeat(width - l.length - r.length) + r;
+}
+
+function formatAddonKitchen(addon, fmt) {
   const qty = Number(addon.quantity || 1);
   const name = String(addon.name || "").toUpperCase();
-  const price = Number(addon.unitPriceCents ?? addon.linePriceCents ?? 0);
-  const prefix = price < 0 ? "-" : "+";
-  return qty > 1 ? `${prefix} ${qty}× ${name}` : `${prefix} ${name}`;
+  const linePrice = Number(
+    addon.linePriceCents ?? Number(addon.unitPriceCents || 0) * qty
+  );
+  const prefix = linePrice < 0 ? "-" : "+";
+  const label = qty > 1 ? `${prefix} ${qty}× ${name}` : `${prefix} ${name}`;
+  if (!fmt || !Number.isFinite(linePrice) || linePrice === 0) return label;
+  return `${label}  ${fmt(Math.abs(linePrice))}`;
 }
 
 function formatSignedMoney(minor, shop, fmt) {
@@ -125,77 +155,110 @@ function pushCustomerTotal(lines, fmt, payload) {
 }
 
 /**
- * Render kitchen ticket text (thermal-friendly plain text).
- * Prioritizes preparation clarity — instructions then add-ons, no prices.
+ * Compact station-slip layout (legacy / special printers).
  */
 function renderStationSlip(payload, width) {
-  const pair = (left, right) => left + ' '.repeat(Math.max(1, width - left.length - right.length)) + right;
   const when = new Date(payload.createdAt);
-  const date = when.toLocaleDateString('en-GB', { timeZone: 'Asia/Bahrain' });
-  const time = when.toLocaleTimeString('en-GB', { timeZone: 'Asia/Bahrain', hour: '2-digit', minute: '2-digit' });
-  const stamp = when.toLocaleTimeString('en-US', { timeZone: 'Asia/Bahrain' });
-  const lines = [payload.stationName, pair('Order ' + payload.orderNumber, payload.orderTypeName),
-    pair('Server ' + payload.serverName, payload.terminalName), pair(date, time),
-    payload.customerName, payload.customerPhone, payload.addressNote, '', line('-', width)];
-  for (const item of payload.items) {
-    lines.push(pair(item.quantity + ' ' + item.name, formatMoneyMinor(item.lineTotalCents, moneyShop(payload)).replace(/[^0-9.,-]/g, '').trim()));
-    if (item.variantName) lines.push('        ' + item.variantName);
-    for (const note of item.instructions || []) lines.push('        ' + note);
+  const date = when.toLocaleDateString("en-GB", { timeZone: "Asia/Bahrain" });
+  const time = when.toLocaleTimeString("en-GB", {
+    timeZone: "Asia/Bahrain",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  const stamp = when.toLocaleTimeString("en-US", { timeZone: "Asia/Bahrain" });
+  const fmt = (minor) => formatMoneyMinor(minor, moneyShop(payload));
+  const lines = [
+    payload.stationName,
+    pairColumns(`Order ${payload.orderNumber}`, typeLabel(payload), width),
+    pairColumns(`Server ${payload.serverName || ""}`, payload.terminalName || "", width),
+    pairColumns(date, time, width),
+    payload.customerName,
+    payload.customerPhone,
+    payload.addressNote,
+    "",
+    line("-", width),
+  ].filter((row, i, arr) => row || arr[i - 1] !== "");
+  for (const item of payload.items || []) {
+    lines.push(
+      pairColumns(
+        `${item.quantity} ${item.name}`,
+        fmt(item.lineTotalCents).replace(/[^0-9.,-]/g, "").trim(),
+        width
+      )
+    );
+    if (item.variantName) lines.push(`        ${item.variantName}`);
+    for (const note of item.instructions || []) lines.push(`        ${note}`);
   }
-  lines.push('', 'Reference#' + payload.tokenNumber, '', center('Printed On ' + date + ' ' + stamp, width),
-    center('TEST TICKET', width));
-  return lines.join('\n');
+  lines.push("");
+  appendTokenBanner(lines, payload, width);
+  lines.push(
+    "",
+    center(`Printed On ${date} ${stamp}`, width),
+    center("TEST TICKET", width)
+  );
+  return lines.join("\n");
 }
 
+/**
+ * Kitchen / preparation ticket — station title block, customer, priced lines.
+ */
 export function renderKitchenTicket(payload, options = {}) {
   const width = wrapWidth(options.paperWidthMm || 80);
   if (options.layout === "station-slip") return renderStationSlip(payload, width);
+
+  const shop = moneyShop(payload);
+  const fmt = (minor) => formatMoneyMinor(minor, shop);
+  const stampIso =
+    payload.orderEdited && payload.updatedAt ? payload.updatedAt : payload.createdAt;
+  const whenLabel = formatTicketTime(stampIso);
+  const station = String(payload.stationName || "STATION").trim().toUpperCase();
+  const type = typeLabel(payload) || "ORDER";
+  const customer = String(payload.customerName || "").trim();
+
   const lines = [];
   lines.push(center(headerName(payload), width));
-  lines.push(center("KITCHEN TEST", width));
-  lines.push(line("-", width));
-  lines.push(`STATION: ${String(payload.stationName || "").toUpperCase()}`);
-  lines.push(`INVOICE: ${payload.orderNumber}`);
-  if (payload.tokenNumber != null) lines.push(`TOKEN: ${String(payload.tokenNumber).padStart(3, "0")}`);
-  if (payload.businessDate) lines.push(`BUSINESS DATE: ${payload.businessDate}`);
-  lines.push(`TICKET: ${payload.ticketId}`);
-  lines.push(`TYPE: ${typeLabel(payload)}`);
-  if (payload.destination) {
-    lines.push(`DESTINATION: ${String(payload.destination).toUpperCase()}`);
+  lines.push(center(station, width));
+  lines.push(line("=", width));
+  lines.push(center(type, width));
+  appendTokenBanner(lines, payload, width);
+  lines.push(pairColumns("Invoice", String(payload.orderNumber || ""), width));
+  lines.push(pairColumns("Ticket", String(payload.ticketId || ""), width));
+  lines.push(pairColumns("When", whenLabel, width));
+  if (customer) {
+    lines.push(pairColumns("Customer", customer.toUpperCase(), width));
   }
-  appendServiceLines(lines, payload);
-  lines.push(`TIME: ${formatTicketTime(payload.orderEdited && payload.updatedAt ? payload.updatedAt : payload.createdAt)}`);
-  lines.push(`REV: ${payload.ticketRevision || 1}`);
-  if (payload.orderEdited) {
-    lines.push(center("*** ORDER UPDATED ***", width));
-  }
-  if (payload.isReprint) {
-    lines.push(center("*** REPRINT ***", width));
-  }
+  if (payload.orderEdited) lines.push(center("*** ORDER UPDATED ***", width));
+  if (payload.isReprint) lines.push(center("*** REPRINT ***", width));
   if (payload.warning) {
     lines.push(center(String(payload.warning).toUpperCase(), width));
   }
   lines.push(line("-", width));
 
   for (const item of payload.items || []) {
-    lines.push(`${item.quantity} × ${String(item.name || "").toUpperCase()}`);
+    const name = String(item.name || "").toUpperCase();
+    const left = `${item.quantity} × ${name}`;
+    lines.push(pairColumns(left, fmt(item.lineTotalCents), width));
     if (item.variantName) {
-      lines.push(`  SIZE: ${String(item.variantName).toUpperCase()}`);
+      lines.push(`  ${String(item.variantName).toUpperCase()}`);
     }
     for (const note of item.instructions || []) {
       lines.push(`  ${String(note).toUpperCase()}`);
     }
     for (const addon of item.addons || []) {
-      lines.push(`  ${formatAddonKitchen(addon)}`);
+      lines.push(`  ${formatAddonKitchen(addon, fmt)}`);
     }
     lines.push("");
   }
+
   if (payload.removedItems?.length) {
     lines.push(center("REMOVED — DO NOT PREPARE", width));
     for (const item of payload.removedItems) {
-      lines.push(`${item.quantity} × ${String(item.name || "").toUpperCase()}`);
+      const name = String(item.name || "").toUpperCase();
+      lines.push(
+        pairColumns(`${item.quantity} × ${name}`, fmt(item.lineTotalCents), width)
+      );
       if (item.variantName) {
-        lines.push(`  SIZE: ${String(item.variantName).toUpperCase()}`);
+        lines.push(`  ${String(item.variantName).toUpperCase()}`);
       }
       for (const note of item.instructions || []) {
         lines.push(`  ${String(note).toUpperCase()}`);
@@ -285,6 +348,7 @@ export function renderCashierReceipt(payload, options = {}) {
     supplierLine(`VAT Account No: ${payload.taxRegistrationNumber}`);
   }
   lines.push(receiptColumns(`Order ${payload.orderNumber}`, typeLabel(payload), width));
+  appendTokenBanner(lines, payload, width);
   if (payload.serverName || payload.terminalName) {
     lines.push(receiptColumns(payload.serverName ? `Server ${payload.serverName}` : "", payload.terminalName || "", width));
   }
@@ -439,12 +503,35 @@ export function renderCashierReceipt(payload, options = {}) {
     lines.push(line("-", width));
   }
 
-  if (payload.tokenNumber != null) lines.push(center(`Reference# ${payload.tokenNumber}`, width));
+  if (payload.paymentConfirmed && payload.paymentSummary && hasMoney) {
+    const pay = payload.paymentSummary;
+    lines.push(center("PAYMENT", width));
+    if (Number(pay.cashCents) > 0) {
+      lines.push(receiptColumns("Cash", fmt(pay.cashCents), width));
+    }
+    if (Number(pay.bankCents) > 0) {
+      lines.push(receiptColumns("Bank", fmt(pay.bankCents), width));
+    }
+    if (Number(pay.creditCents) > 0) {
+      lines.push(receiptColumns("Credit", fmt(pay.creditCents), width));
+    }
+    lines.push(
+      receiptColumns(
+        String(pay.paymentStatus || "PAID"),
+        fmt(Number(pay.paidCents || 0) + Number(pay.creditCents || 0)),
+        width
+      )
+    );
+    lines.push(line("-", width));
+  }
+
   if (payload.receiptFooter) {
     lines.push(center(String(payload.receiptFooter), width));
   }
   lines.push(center("TEST DATA — NOT A CUSTOMER BILL", width));
-  if (!payload.taxEnabled) {
+  if (payload.paymentConfirmed) {
+    lines.push(center("PAYMENT CONFIRMED", width));
+  } else if (!payload.taxEnabled) {
     lines.push(center("NO TAXES / PAYMENTS", width));
   } else {
     lines.push(center("NO PAYMENTS — TEST ONLY", width));

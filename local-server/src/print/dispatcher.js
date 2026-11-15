@@ -4,6 +4,10 @@ import { nowIso } from "../util/time.js";
 import { log } from "../util/logger.js";
 import { renderTicketText } from "./ticketFormat.js";
 import { applyCashierCategories } from "../services/printQueue.js";
+import {
+  getPrintSettings,
+  isPhysicalPrintEffectivelyEnabled,
+} from "../services/printSettings.js";
 import { dispatchMock } from "./adapters/mockAdapter.js";
 import { dispatchNetworkTcp } from "./adapters/networkTcpAdapter.js";
 import { dispatchWindowsSpooler } from "./adapters/windowsSpoolerAdapter.js";
@@ -58,22 +62,96 @@ export function updateJobStatus(db, job, toStatus, fields = {}) {
   return { ...job, status: toStatus, updated_at: updatedAt };
 }
 
+function printerCapabilities(printer) {
+  if (printer?.capabilities && typeof printer.capabilities === "object") {
+    return printer.capabilities;
+  }
+  try {
+    return JSON.parse(printer?.capabilities_json || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function authorizePhysicalDispatch(job, printer, config) {
+  const settings = getPrintSettings();
+  const master = isPhysicalPrintEffectivelyEnabled(config);
+  const caps = printerCapabilities(printer);
+  const printerAllowed = Boolean(caps.physicalDispatchEnabled);
+  if (!master) {
+    return {
+      allowed: false,
+      detail:
+        "Physical printing is disabled. Enable Automatic physical printing in Printer Settings (or set GTCT_ENABLE_PHYSICAL_PRINT=true).",
+    };
+  }
+  if (!printerAllowed || !printer.is_active) {
+    return {
+      allowed: false,
+      detail:
+        "This printer is not authorized for physical dispatch (inactive or physicalDispatchEnabled is off).",
+    };
+  }
+  if (job.job_type === "KITCHEN" && settings.kitchenAutoPrint === false) {
+    return {
+      allowed: false,
+      detail: "Kitchen automatic printing is disabled in print settings.",
+    };
+  }
+  const cashierEnabled =
+    settings.cashierAutoPrint !== false && settings.cashierAutoPrintOnPayment !== false;
+  if (job.job_type === "CASHIER" && !cashierEnabled) {
+    return {
+      allowed: false,
+      detail: "Cashier receipt printing is disabled in print settings.",
+    };
+  }
+  if (
+    settings.autoPhysicalPrintEnabledAt &&
+    job.created_at &&
+    String(job.created_at) < String(settings.autoPhysicalPrintEnabledAt)
+  ) {
+    return {
+      allowed: false,
+      hold: true,
+      detail:
+        "Held: job was created before automatic physical printing was enabled.",
+    };
+  }
+  return {
+    allowed: true,
+    format: caps.format || "TEXT",
+    confirmedHost: printer.host,
+    confirmedPort: printer.port ?? 9100,
+  };
+}
+
 async function dispatchToAdapter(job, printer, renderedText, config) {
   const type = printer.connection_type;
   if (type === "MOCK") {
     return dispatchMock(job, printer, renderedText, config.printOutputDir);
   }
   if (type === "NETWORK_TCP") {
-    // Queue dispatch never auto-sends physical data. Physical requires a
-    // future explicitly authorized path (allowPhysicalDispatch + host confirm).
+    const auth = authorizePhysicalDispatch(job, printer, config);
+    if (!auth.allowed) {
+      return {
+        outcome: auth.hold ? "NEEDS_REVIEW" : "FAILED",
+        detail: auth.detail,
+      };
+    }
+    // Automatic queue dispatch for authorized printers only.
+    // DISPATCHED = socket write finished — not confirmed paper output.
     return dispatchNetworkTcp(job, printer, renderedText, {
-      physicalPrintEnabled: config.physicalPrintEnabled,
-      allowPhysicalDispatch: false,
+      physicalPrintEnabled: true,
+      allowPhysicalDispatch: true,
+      confirmedHost: auth.confirmedHost,
+      confirmedPort: auth.confirmedPort,
+      format: auth.format,
     });
   }
   if (type === "WINDOWS_SPOOLER") {
     return dispatchWindowsSpooler(job, printer, renderedText, {
-      physicalPrintEnabled: config.physicalPrintEnabled,
+      physicalPrintEnabled: isPhysicalPrintEffectivelyEnabled(config),
     });
   }
   return { outcome: "FAILED", detail: `Unknown connection_type: ${type}` };

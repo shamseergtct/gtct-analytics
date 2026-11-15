@@ -34,18 +34,41 @@
 
       <section id="main-view" class="view main-view" hidden>
         <header class="topbar">
-          <div>
+          <div class="topbar-brand">
             <p class="brand-inline">GTCT</p>
             <h1>Printer Settings</h1>
           </div>
-          <div class="topbar-meta">
-            <span class="banner compact">PHYSICAL PRINT DEFAULT OFF</span>
-            <span id="session-role" class="pill"></span>
-            <a class="btn ghost" href="/">Sales Test</a>
-            <a class="btn ghost" href="/menu.html">Menu Setup</a>
-            <a class="btn ghost" href="/shop-settings.html">Shop Settings</a>
-            <a class="btn ghost" href="/users.html">Users</a>
-            <button type="button" id="logout-btn" class="btn ghost">Sign out</button>
+          <div class="topbar-actions">
+            <span class="banner compact test-badge">TEST</span>
+            <nav id="app-nav" class="app-nav" aria-label="Main">
+              <div class="nav-primary" role="group" aria-label="Floor">
+                <a class="nav-link" href="/">Sales</a>
+              </div>
+              <details id="settings-menu" class="nav-pop">
+                <summary class="nav-icon-btn" aria-label="Settings">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+                  </svg>
+                </summary>
+                <div class="nav-dropdown" role="menu">
+                  <p class="nav-dropdown-heading">Setup</p>
+                  <a class="nav-dropdown-link" href="/menu.html">Menu Setup</a>
+                  <a class="nav-dropdown-link" href="/shop-settings.html">Shop Settings</a>
+                  <a class="nav-dropdown-link" href="/settings.html" aria-current="page">Printer Settings</a>
+                  <a class="nav-dropdown-link" href="/reports.html">Reports</a>
+                  <a class="nav-dropdown-link" href="/users.html">User Management</a>
+                  <a class="nav-dropdown-link" href="/terminals.html">Terminals</a>
+                </div>
+              </details>
+              <details id="account-menu" class="nav-pop">
+                <summary class="nav-account-btn" aria-label="Account">
+                  <span id="session-role" class="nav-account-name"></span>
+                </summary>
+                <div class="nav-dropdown nav-dropdown-account" role="menu">
+                  <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+                </div>
+              </details>
+            </nav>
           </div>
         </header>
 
@@ -53,22 +76,127 @@
           Administrator role required. Sign in as an administrator to manage printers.
         </div>
 
-        <div class="settings-grid">
-          <section class="settings-card">
-            <div class="results-header">
-              <h2>Registered printers</h2>
-              <button type="button" id="new-printer-btn" class="btn primary small">Add printer</button>
+        <div class="printer-shell">
+          <header class="printer-hero">
+            <div>
+              <p class="printer-kicker">Kitchen &amp; cashier output</p>
+              <h2 class="printer-hero-title">Printing control</h2>
+              <p class="printer-hero-copy">
+                Configure automatic printing, register printers, and map them to stations.
+                Physical send requires both the master switch and each printer’s dispatch flag.
+              </p>
             </div>
-            <div id="printer-list" class="printer-list"></div>
-            <p id="config-flags" class="muted"></p>
+            <div class="printer-hero-status" aria-live="polite">
+              <span class="printer-status-chip" id="physical-status-chip">Physical · checking</span>
+              <p id="config-flags" class="printer-status-meta muted"></p>
+            </div>
+          </header>
+
+          <section class="settings-card printer-panel printer-panel-auto" aria-labelledby="auto-print-title">
+            <div class="printer-panel-head">
+              <div>
+                <h2 id="auto-print-title">Automatic physical printing</h2>
+                <p class="muted printer-panel-lead">
+                  Queue sends to authorized NETWORK_TCP printers. DISPATCHED means bytes were handed off — not confirmed paper.
+                </p>
+              </div>
+              <button type="button" id="save-print-settings-btn" class="btn primary">Save settings</button>
+            </div>
+            <div class="printer-toggle-grid">
+              <label class="printer-toggle">
+                <input id="auto-physical" type="checkbox" />
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Enable automatic physical printing</strong>
+                  <small>Master switch for live kitchen and cashier jobs</small>
+                </span>
+              </label>
+              <label class="printer-toggle">
+                <input id="auto-kitchen" type="checkbox" checked />
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Kitchen tickets</strong>
+                  <small>Allow KOT printing when an order is sent</small>
+                </span>
+              </label>
+              <label class="printer-toggle">
+                <input id="auto-cashier" type="checkbox" checked />
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Cashier bill &amp; receipt</strong>
+                  <small>Before payment (bill) and after payment (paid receipt)</small>
+                </span>
+              </label>
+              <label class="printer-toggle">
+                <input id="ask-before-print" type="checkbox" checked />
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Ask print or screen only</strong>
+                  <small>Confirm on each order and payment</small>
+                </span>
+              </label>
+            </div>
+            <p id="print-settings-status" class="status-line" hidden></p>
           </section>
 
-          <section class="settings-card">
-            <h2 id="editor-title">Printer editor</h2>
-            <div class="form-grid">
+          <section class="settings-card printer-panel" aria-labelledby="printers-title">
+            <div class="printer-panel-head">
+              <div>
+                <h2 id="printers-title">Printers</h2>
+                <p class="muted printer-panel-lead">Click a printer to edit. Use Add printer for a new device.</p>
+              </div>
+              <button type="button" id="new-printer-btn" class="btn primary small">Add printer</button>
+            </div>
+            <div id="printer-list" class="printer-list printer-list-grid"></div>
+          </section>
+
+          <section class="settings-card printer-panel" aria-labelledby="stations-title">
+            <div class="printer-panel-head">
+              <div>
+                <h2 id="stations-title">Station assignments</h2>
+                <p class="muted printer-panel-lead">Map each preparation station to a registered printer.</p>
+              </div>
+              <button type="button" id="save-stations-btn" class="btn primary">Save assignments</button>
+            </div>
+            <div id="station-list" class="station-list"></div>
+            <p id="station-status" class="status-line" hidden></p>
+          </section>
+
+          <section class="settings-card printer-panel" aria-labelledby="jobs-title">
+            <div class="printer-panel-head">
+              <div>
+                <h2 id="jobs-title">Print-job history</h2>
+                <p class="muted printer-panel-lead">Clear removes finished jobs. PENDING jobs stay.</p>
+              </div>
+              <div class="printer-editor-actions">
+                <button type="button" id="refresh-jobs-btn" class="btn ghost">Refresh</button>
+                <button type="button" id="clear-jobs-btn" class="btn ghost">Clear history</button>
+              </div>
+            </div>
+            <p id="jobs-status" class="status-line" hidden></p>
+            <div id="job-history" class="job-history"></div>
+          </section>
+        </div>
+      </section>
+    </div>
+
+    <dialog id="printer-editor-dialog" class="printer-editor-dialog" aria-labelledby="editor-title">
+      <div class="printer-editor-sheet" id="printer-editor-form">
+        <header class="printer-editor-head">
+          <div>
+            <h2 id="editor-title">Add printer</h2>
+            <p class="muted printer-panel-lead">Connection, paper, and dispatch options.</p>
+          </div>
+          <button type="button" id="editor-close-btn" class="btn ghost small" aria-label="Close">✕</button>
+        </header>
+
+        <div class="printer-editor-sections">
+          <fieldset class="printer-fieldset">
+            <legend>Identity</legend>
+            <div class="form-grid printer-form-grid">
               <label class="field">
                 <span>Display name</span>
-                <input id="f-name" type="text" />
+                <input id="f-name" type="text" placeholder="Kitchen · Juice" />
               </label>
               <label class="field">
                 <span>Connection type</span>
@@ -78,6 +206,12 @@
                   <option value="WINDOWS_SPOOLER">WINDOWS_SPOOLER</option>
                 </select>
               </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="printer-fieldset">
+            <legend>Connection</legend>
+            <div class="form-grid printer-form-grid">
               <label class="field">
                 <span>IP / hostname</span>
                 <input id="f-host" type="text" placeholder="192.168.0.110" />
@@ -86,7 +220,7 @@
                 <span>TCP port</span>
                 <input id="f-port" type="number" min="1" max="65535" value="9100" />
               </label>
-              <label class="field">
+              <label class="field wide">
                 <span>Windows queue name</span>
                 <input id="f-queue" type="text" placeholder="Only for WINDOWS_SPOOLER" />
               </label>
@@ -97,56 +231,71 @@
                   <option value="58">58 mm</option>
                 </select>
               </label>
-              <label class="check-row">
+              <label class="field">
+                <span>TCP ticket format</span>
+                <select id="f-format">
+                  <option value="TEXT">TEXT</option>
+                  <option value="MJ330_RASTER">MJ330_RASTER</option>
+                </select>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="printer-fieldset">
+            <legend>Options</legend>
+            <div class="printer-toggle-grid compact">
+              <label class="printer-toggle">
                 <input id="f-active" type="checkbox" checked />
-                <span>Printer active</span>
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Printer active</strong>
+                  <small>Inactive printers are skipped</small>
+                </span>
               </label>
-              <label class="check-row">
+              <label class="printer-toggle">
                 <input id="f-physical" type="checkbox" />
-                <span>Allow physical dispatch on this printer (still requires server env flag)</span>
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Allow physical dispatch</strong>
+                  <small>Also requires automatic printing ON</small>
+                </span>
+              </label>
+              <label class="printer-toggle">
+                <input id="f-beep" type="checkbox" checked />
+                <span class="printer-toggle-ui" aria-hidden="true"></span>
+                <span class="printer-toggle-copy">
+                  <strong>Printer sound</strong>
+                  <small>Beep when a ticket is sent</small>
+                </span>
               </label>
             </div>
-            <input type="hidden" id="f-id" />
-            <div class="cart-actions">
-              <button type="button" id="save-printer-btn" class="btn primary">Save printer</button>
-              <button type="button" id="preview-btn" class="btn ghost">Preview ticket</button>
-              <button type="button" id="test-btn" class="btn ghost">Safe test</button>
-            </div>
-            <section id="manual-kot" hidden>
-              <h3>Manual Test Print</h3>
-              <p>One synthetic kitchen ticket to MJ330 at 192.168.0.110:9100.</p>
-              <button type="button" id="manual-kot-btn" class="btn primary">Print Test KOT</button>
-              <p id="manual-kot-result" role="status"></p>
-            </section>
-            <section id="manual-receipt" hidden>
-              <h3>Manual Cashier Receipt</h3>
-              <p>One synthetic cashier receipt to MJ330 at 192.168.0.110:9100.</p>
-              <button type="button" id="manual-receipt-btn" class="btn primary">Print Test Cashier Receipt</button>
-              <p id="manual-receipt-result" role="status"></p>
-            </section>
-            <p id="editor-status" class="status-line" hidden></p>
-          </section>
-
-          <section class="settings-card">
-            <h2>Station assignments</h2>
-            <p class="muted">Assign a registered printer to each preparation station. Ticket templates do not hardcode printers.</p>
-            <div id="station-list" class="station-list"></div>
-            <button type="button" id="save-stations-btn" class="btn primary">Save assignments</button>
-            <p id="station-status" class="status-line" hidden></p>
-          </section>
-
-          <section class="settings-card wide">
-            <div class="results-header">
-              <h2>Print-job history</h2>
-              <button type="button" id="refresh-jobs-btn" class="btn ghost">Refresh</button>
-            </div>
-            <div id="job-history" class="job-history"></div>
-          </section>
+          </fieldset>
         </div>
-      </section>
-    </div>
 
-    <dialog id="preview-dialog">
+        <input type="hidden" id="f-id" />
+        <div class="printer-editor-actions">
+          <button type="button" id="save-printer-btn" class="btn primary">Save printer</button>
+          <button type="button" id="preview-btn" class="btn ghost">Preview ticket</button>
+          <button type="button" id="test-btn" class="btn ghost">Safe test</button>
+          <button type="button" id="editor-cancel-btn" class="btn ghost">Cancel</button>
+        </div>
+        <section id="manual-kot" class="printer-manual" hidden>
+          <h3>Manual Test Print</h3>
+          <p>One synthetic kitchen ticket to MJ330 at 192.168.0.110:9100.</p>
+          <button type="button" id="manual-kot-btn" class="btn primary">Print Test KOT</button>
+          <p id="manual-kot-result" role="status"></p>
+        </section>
+        <section id="manual-receipt" class="printer-manual" hidden>
+          <h3>Manual Cashier Receipt</h3>
+          <p>One synthetic cashier receipt to MJ330 at 192.168.0.110:9100.</p>
+          <button type="button" id="manual-receipt-btn" class="btn primary">Print Test Cashier Receipt</button>
+          <p id="manual-receipt-result" role="status"></p>
+        </section>
+        <p id="editor-status" class="status-line" hidden></p>
+      </div>
+    </dialog>
+
+    <dialog id="preview-dialog" class="printer-preview-dialog">
       <div class="preview-wrap">
         <h3 id="preview-title">Ticket preview</h3>
         <pre id="preview-text"></pre>

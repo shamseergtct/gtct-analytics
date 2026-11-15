@@ -1,3 +1,6 @@
+import { registerPwa } from "./pwa.js";
+registerPwa();
+
 const state = {
   role: null,
   staff: false,
@@ -64,23 +67,97 @@ function playNewOrderSound() {
 }
 
 function ticketKey(ticket) {
-  return `${ticket.orderId}:${ticket.updated ? "updated" : "new"}`;
+  return `${ticket.orderId}:${ticket.updated || ticket.edited ? "edited" : "new"}`;
+}
+
+let wakeLock = null;
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator) || document.hidden || $("main-view")?.hidden) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+    });
+  } catch {
+    wakeLock = null;
+  }
+}
+
+function countLabel(count, singular, plural) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function dismissWakeBanner() {
+  const banner = $("prep-wake-banner");
+  if (!banner) return;
+  banner.hidden = true;
+  document.body.classList.remove("prep-glow");
+}
+
+function showWakeBanner(text) {
+  const banner = $("prep-wake-banner");
+  if (!banner) return;
+  $("prep-wake-text").textContent = text;
+  banner.hidden = false;
+  document.body.classList.add("prep-glow");
+  window.clearTimeout(showWakeBanner._t);
+  showWakeBanner._t = window.setTimeout(() => dismissWakeBanner(), 25000);
+}
+
+function pushDesktopNotification(title, body) {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const note = new Notification(title, {
+      body,
+      tag: "gtct-prep-new",
+      renotify: true,
+    });
+    note.onclick = () => {
+      window.focus();
+      note.close();
+    };
+  } catch {
+    /* ignore unsupported environments */
+  }
+}
+
+function ensureNotificationPermission() {
+  if (!("Notification" in window) || Notification.permission !== "default") return;
+  try {
+    void Notification.requestPermission();
+  } catch {
+    /* ignore */
+  }
 }
 
 function showOrderNotices(arrivals) {
   const host = $("prep-alerts");
   if (!host) return;
-  for (const ticket of arrivals) {
-    const note = document.createElement("button");
-    note.type = "button";
-    note.className = ticket.updated ? "prep-alert updated" : "prep-alert";
-    const kind = ticket.updated ? "Order updated" : "New order";
-    const number = ticket.orderNumber || "";
-    note.setAttribute("aria-label", `Dismiss ${kind} ${number}`);
-    note.innerHTML = `<span>${escapeHtml(kind)}</span><strong>${escapeHtml(number)}</strong>`;
-    note.addEventListener("click", () => note.remove());
-    host.prepend(note);
-    window.setTimeout(() => note.remove(), 20000);
+  const fresh = arrivals.filter((ticket) => !(ticket.updated || ticket.edited));
+  const edited = arrivals.filter((ticket) => ticket.updated || ticket.edited);
+  const parts = [];
+  if (fresh.length) parts.push(countLabel(fresh.length, "new order", "new orders"));
+  if (edited.length) parts.push(countLabel(edited.length, "edited order", "edited orders"));
+  const summary = parts.join(" · ") || countLabel(arrivals.length, "new order", "new orders");
+
+  const note = document.createElement("button");
+  note.type = "button";
+  note.className = edited.length && !fresh.length ? "prep-alert updated" : "prep-alert";
+  note.setAttribute("aria-label", `Dismiss ${summary}`);
+  note.innerHTML = `<span>Incoming</span><strong>${escapeHtml(summary)}</strong>`;
+  note.addEventListener("click", () => note.remove());
+  host.prepend(note);
+  window.setTimeout(() => note.remove(), 25000);
+
+  showWakeBanner(summary);
+  pushDesktopNotification("GTCT Preparation", summary);
+  if (navigator.vibrate) {
+    try {
+      navigator.vibrate([180, 80, 180]);
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -92,6 +169,12 @@ function noticeNewOrders(tickets) {
     if (arrivals.length) {
       playNewOrderSound();
       showOrderNotices(arrivals);
+      // Try to bring the prep tab forward when the tablet was idle/backgrounded.
+      try {
+        window.focus();
+      } catch {
+        /* ignore */
+      }
     }
   }
   state.seenNew = incoming;
@@ -115,6 +198,19 @@ function when(iso) {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function formatToken(ticket) {
+  if (ticket?.tokenNumber == null || ticket.tokenNumber === "") return "";
+  const n = Number(ticket.tokenNumber);
+  if (!Number.isFinite(n)) return String(ticket.tokenNumber);
+  return String(Math.trunc(n)).padStart(3, "0");
+}
+
+function tokenBadgeHtml(ticket) {
+  const token = formatToken(ticket);
+  if (!token) return "";
+  return `<span class="prep-token" title="Token number">TOKEN ${escapeHtml(token)}</span>`;
 }
 
 function placeLine(ticket) {
@@ -148,8 +244,11 @@ function lineHtml(line) {
       addon.quantity > 1 ? `${addon.name} × ${addon.quantity}` : addon.name
     ),
   ].filter(Boolean);
-  return `<li>
-    <strong>${escapeHtml(qty(line.quantity))} × ${escapeHtml(line.name)}</strong>
+  const voided = Boolean(line.voided);
+  return `<li class="${voided ? "prep-line-voided" : ""}">
+    <strong>${escapeHtml(qty(line.quantity))} × ${escapeHtml(line.name)}${
+      voided ? ` <span class="prep-void-tag">Voided</span>` : ""
+    }</strong>
     ${notes.map((note) => `<div class="prep-note">${escapeHtml(note)}</div>`).join("")}
   </li>`;
 }
@@ -158,20 +257,25 @@ function cardHtml(ticket) {
   const place = placeLine(ticket);
   const isPreparing = ticket.status === "ACCEPTED";
   const isFinished = ticket.status === "FINISHED";
+  const isEdited = Boolean(ticket.updated || ticket.edited);
   const actions = ticket.status === "NEW"
     ? `<div class="prep-actions"><button type="button" class="btn primary" data-accept="${escapeHtml(ticket.orderId)}">Accept</button></div>`
     : "";
+  const token = formatToken(ticket);
   const top = isPreparing
-    ? `role="button" tabindex="0" data-focus="${escapeHtml(ticket.orderId)}" aria-label="Open preparing order ${escapeHtml(ticket.orderNumber)}"`
+    ? `role="button" tabindex="0" data-focus="${escapeHtml(ticket.orderId)}" aria-label="Open preparing order ${escapeHtml(ticket.orderNumber)}${token ? ` token ${token}` : ""}"`
     : "";
-  return `<article class="prep-card ${isFinished ? "finished" : ""} ${isPreparing ? "prep-card-openable" : ""} ${ticket.updated ? "updated" : ""}" ${top}>
+  return `<article class="prep-card ${isFinished ? "finished" : ""} ${isPreparing ? "prep-card-openable" : ""} ${isEdited ? "updated edited" : ""}" ${top}>
     <div class="prep-card-head">
-      <strong>${escapeHtml(ticket.orderNumber)}</strong>
+      <div class="prep-card-title">
+        ${tokenBadgeHtml(ticket)}
+        <strong>${escapeHtml(ticket.orderNumber)}</strong>
+      </div>
       <span class="prep-time">${escapeHtml(when(ticket.createdAt))}</span>
     </div>
     <div class="prep-card-meta">
       <span class="prep-order-type">${escapeHtml(ticket.orderTypeName || "")}</span>
-      ${ticket.updated ? `<span class="prep-updated">Updated</span>` : ""}
+      ${isEdited ? `<span class="prep-updated">Edited</span>` : ""}
     </div>
     ${place ? `<div class="prep-place" title="${escapeHtml(place)}">${escapeHtml(place)}</div>` : ""}
     <ul class="prep-lines">${(ticket.lines || []).map(lineHtml).join("")}</ul>
@@ -188,7 +292,7 @@ function updateHtml(id, html) {
 
 function searchText(ticket) {
   return [
-    ticket.orderNumber, ticket.orderTypeName, ticket.customerName,
+    ticket.orderNumber, formatToken(ticket), ticket.orderTypeName, ticket.customerName,
     ticket.customerPhone, ticket.blockNumber, ticket.buildingNumber,
     ticket.roadNumber, ...(ticket.lines || []).flatMap((line) => [
       line.name, line.variantName, ...(line.instructions || []),
@@ -232,6 +336,12 @@ function renderFocus(tickets) {
   }
   if (state.focusRevision === ticket.revision) return;
   state.focusRevision = ticket.revision;
+  const token = formatToken(ticket);
+  const tokenEl = $("prep-focus-token");
+  if (tokenEl) {
+    tokenEl.hidden = !token;
+    tokenEl.textContent = token ? `TOKEN ${token}` : "";
+  }
   $("prep-focus-number").textContent = ticket.orderNumber;
   $("prep-focus-meta").textContent = [ticket.orderTypeName, when(ticket.createdAt)].filter(Boolean).join(" · ");
   const place = placeLine(ticket);
@@ -372,7 +482,10 @@ function showMain() {
   }
   $("prep-denied").hidden = allowed;
   $("prep-shell").hidden = !allowed;
-  if (allowed) void loadBoard();
+  if (allowed) {
+    void loadBoard();
+    void requestWakeLock();
+  }
 }
 
 async function login() {
@@ -398,9 +511,15 @@ async function login() {
   showMain();
 }
 
-document.addEventListener("pointerdown", unlockAudio);
+document.addEventListener("pointerdown", () => {
+  unlockAudio();
+  ensureNotificationPermission();
+  void requestWakeLock();
+});
+$("prep-wake-banner")?.addEventListener("click", () => dismissWakeBanner());
 $("login-btn").addEventListener("click", () => {
   unlockAudio();
+  ensureNotificationPermission();
   void login();
 });
 $("nav-menu-btn").addEventListener("click", () => {
@@ -486,11 +605,14 @@ document.addEventListener("keydown", (event) => {
 });
 
 setInterval(() => {
-  if (document.hidden || $("main-view").hidden) return;
+  // Keep polling while backgrounded so new/edited orders can alert a kitchen tablet.
+  if ($("main-view").hidden || !canWork()) return;
   void loadBoard();
 }, 3000);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) void loadBoard();
+  if (document.hidden) return;
+  void requestWakeLock();
+  void loadBoard();
 });
 
 const session = await api("/v1/session/me");
@@ -500,6 +622,7 @@ if (session.ok && session.json?.authenticated) {
   state.permissions = session.json.permissions || [];
   state.fullName = session.json.fullName || "";
   showMain();
+  void requestWakeLock();
 } else {
   showLogin();
 }

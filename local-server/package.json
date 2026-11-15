@@ -1,6 +1,6 @@
 {
   "name": "gtct-restaurant-local-server",
-  "version": "0.1.3",
+  "version": "0.1.10",
   "private": true,
   "description": "Phase 1 isolated Windows local server + multi-printer kitchen prototype (test data only).",
   "type": "module",
@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "cert:mac-lan": "bash scripts/generate-mac-lan-cert.sh",
+    "start:mac-lan": "bash scripts/start-mac-lan.sh",
     "seed": "node src/scripts/seedSample.js",
     "demo:order": "node src/scripts/runSampleOrder.js",
     "dispatch": "node src/scripts/runDispatcherOnce.js",

@@ -4,8 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#0b539e" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="GTCT" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>GTCT Restaurant</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
+    <link rel="stylesheet" href="/styles.css?v=sales-m10" />
+    <meta http-equiv="Cache-Control" content="no-cache" />
     <link rel="stylesheet" href="/delivery-navigation.css" />
   </head>
   <body class="sales-app">
@@ -73,7 +82,6 @@
               <span id="print-jobs-count" class="print-jobs-count" hidden>0</span>
             </button>
             <span class="banner compact test-badge">TEST</span>
-            <span id="session-role" class="pill"></span>
             <button
               type="button"
               id="nav-menu-btn"
@@ -85,25 +93,47 @@
               <span class="nav-menu-icon" aria-hidden="true"></span>
             </button>
             <nav id="app-nav" class="app-nav" aria-label="Main">
-              <a class="nav-link" href="/" aria-current="page">Sales</a>
-              <a id="orders-link" class="nav-link" href="/orders.html" hidden>Orders</a>
-              <a id="monitor-link" class="nav-link" href="/monitor.html" hidden>Order Monitor</a>
-              <a id="prep-link" class="nav-link" href="/prep.html" hidden>Preparation</a>
-              <a id="menu-setup-link" class="nav-link" href="/menu.html" hidden>Menu Setup</a>
-              <a id="shop-settings-link" class="nav-link" href="/shop-settings.html" hidden>Shop Settings</a>
-              <a id="settings-link" class="nav-link" href="/settings.html" hidden>Printer Settings</a>
-              <a id="users-link" class="nav-link" href="/users.html" hidden>User Management</a>
-              <!-- P2-E3C2 DELIVERY MANAGEMENT NAV -->
-              <details id="delivery-management" class="delivery-nav-group" hidden>
-                <summary class="nav-link delivery-nav-summary">Delivery Management</summary>
-                <div class="delivery-nav-menu" aria-label="Delivery Management links">
-                  <a class="delivery-sub-link" href="/delivery-cash.html">Rider Cash</a>
-                  <a id="delivery-commission-link" class="delivery-sub-link" data-installed="yes" href="/delivery-commission.html" hidden>Commission Setup</a>
-                  <span id="delivery-commission-unavailable" class="delivery-sub-unavailable" hidden>Commission Setup<small>Install P2-E3C1 first</small></span>
-                  <span class="delivery-sub-unavailable" aria-disabled="true">Commission Reports<small>Coming soon — not yet implemented</small></span>
+              <div class="nav-mobile-tools" aria-label="Quick tools">
+                <button type="button" id="nav-print-jobs-btn" class="nav-link nav-mobile-tool" aria-controls="print-jobs-drawer">Print jobs</button>
+                <span class="nav-dropdown-muted nav-mobile-test">TEST mode</span>
+              </div>
+              <div class="nav-primary" role="group" aria-label="Floor">
+                <a class="nav-link" href="/" aria-current="page">Sales</a>
+                <a id="orders-link" class="nav-link" href="/orders.html" hidden>Orders</a>
+                <a id="monitor-link" class="nav-link" href="/monitor.html" hidden>Monitor</a>
+                <a id="prep-link" class="nav-link" href="/prep.html" hidden>Prep</a>
+              </div>
+              <details id="settings-menu" class="nav-pop" hidden>
+                <summary class="nav-icon-btn" aria-label="Settings">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+                  </svg>
+                </summary>
+                <div class="nav-dropdown" role="menu">
+                  <p class="nav-dropdown-heading">Setup</p>
+                  <a id="menu-setup-link" class="nav-dropdown-link" href="/menu.html" hidden>Menu Setup</a>
+                  <a id="shop-settings-link" class="nav-dropdown-link" href="/shop-settings.html" hidden>Shop Settings</a>
+                  <a id="settings-link" class="nav-dropdown-link" href="/settings.html" hidden>Printer Settings</a>
+                  <a id="reports-link" class="nav-dropdown-link" href="/reports.html" hidden>Reports</a>
+                  <a id="users-link" class="nav-dropdown-link" href="/users.html" hidden>User Management</a>
+                  <a id="terminals-link" class="nav-dropdown-link" href="/terminals.html" hidden>Terminals</a>
+                  <div id="delivery-management" class="nav-dropdown-section" hidden>
+                    <p class="nav-dropdown-heading">Delivery</p>
+                    <a class="nav-dropdown-link" href="/delivery-cash.html">Rider Cash</a>
+                    <a id="delivery-commission-link" class="nav-dropdown-link" data-installed="yes" href="/delivery-commission.html" hidden>Commission Setup</a>
+                    <span id="delivery-commission-unavailable" class="nav-dropdown-muted" hidden>Commission Setup · install first</span>
+                    <span class="nav-dropdown-muted" aria-disabled="true">Commission Reports · soon</span>
+                  </div>
                 </div>
               </details>
-              <button type="button" id="logout-btn" class="nav-link nav-logout">Sign Out</button>
+              <details id="account-menu" class="nav-pop">
+                <summary class="nav-account-btn" aria-label="Account">
+                  <span id="session-role" class="nav-account-name"></span>
+                </summary>
+                <div class="nav-dropdown nav-dropdown-account" role="menu">
+                  <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+                </div>
+              </details>
             </nav>
           </div>
         </header>
@@ -112,7 +142,13 @@
         <div class="workspace">
           <aside class="menu-pane" id="menu-pane">
             <div class="pane-toolbar sticky-tools">
-              <input id="menu-search" type="search" placeholder="Search menu…" enterkeyhint="search" aria-label="Search menu" />
+              <div class="sales-tools-row">
+                <input id="menu-search" type="search" placeholder="Search menu…" enterkeyhint="search" aria-label="Search menu" />
+                <div class="sales-view-controls" role="group" aria-label="Menu view">
+                  <button type="button" id="sales-density-btn" class="btn ghost small sales-view-btn" aria-pressed="false">Compact</button>
+                  <button type="button" id="sales-photos-btn" class="btn ghost small sales-view-btn" aria-pressed="false">Hide photos</button>
+                </div>
+              </div>
               <div id="category-filters" class="chips chip-scroll" role="tablist" aria-label="Categories"></div>
               <div id="subcategory-filters" class="chips chip-scroll subchips" hidden role="tablist" aria-label="Subcategories"></div>
             </div>
@@ -518,6 +554,17 @@
           <p id="review-meta" class="review-meta"></p>
         </header>
         <div id="review-body" class="review-body"></div>
+        <div id="review-print-wrap" class="review-print-choices">
+          <label class="check-row review-print-choice">
+            <input id="review-print-kitchen" type="checkbox" checked />
+            <span>Print kitchen tickets</span>
+          </label>
+          <label class="check-row review-print-choice">
+            <input id="review-print-cashier" type="checkbox" checked />
+            <span>Print cashier bill now (pay after)</span>
+          </label>
+          <p class="muted review-print-hint">Uncheck both for screen only. You can still take payment after sending.</p>
+        </div>
         <div class="dialog-actions review-footer">
           <button type="button" id="review-cancel" class="btn ghost">Back</button>
           <button type="button" id="review-confirm" class="btn primary">Confirm &amp; Send</button>
@@ -603,6 +650,10 @@
             <div id="payment-allocation-preview" class="payment-allocation-preview" aria-live="polite">
               <span>Remaining after entry</span><strong id="payment-remaining">—</strong>
             </div>
+            <label id="payment-print-wrap" class="check-row review-print-choice">
+              <input id="payment-print-cashier" type="checkbox" checked />
+              <span>Print paid cashier receipt</span>
+            </label>
           </div>
           <p id="payment-error" class="error" hidden></p>
         </div>
@@ -626,6 +677,6 @@
     </dialog>
 
     <script defer src="/delivery-navigation.js"></script>
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=sales-m10"></script>
   </body>
 </html>

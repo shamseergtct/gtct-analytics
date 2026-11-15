@@ -363,17 +363,24 @@ export function authenticateStaffPassword(req, config, credentials) {
   }
 
   loginFailures.delete(`${clientAddress(req)}|${normalized}`);
-  const issued = issueStaffSession({ shopId: config.testTenantId, userId: user.user_id });
+  // Multi-terminal: do not revoke other active sessions for this user.
+  const issued = issueStaffSession({
+    shopId: config.testTenantId,
+    userId: user.user_id,
+    terminalId: credentials?.terminalId || null,
+  });
   return {
     ok: true,
     role: sessionRole,
     deviceId: issued.deviceId,
     userId: issued.userId,
     token: issued.token,
+    sessionId: issued.sessionId,
+    terminalId: issued.terminalId || "",
   };
 }
 
-export function issueStaffSession({ shopId, userId }) {
+export function issueStaffSession({ shopId, userId, terminalId = null }) {
   const token = randomBytes(32).toString("base64url");
   const tokenHash = hashSessionToken(token);
   const now = new Date();
@@ -381,14 +388,31 @@ export function issueStaffSession({ shopId, userId }) {
   const absolute = new Date(now.getTime() + ABSOLUTE_MS).toISOString();
   const idle = new Date(now.getTime() + IDLE_MS).toISOString();
   const sessionId = newId("sess");
+  const boundTerminal = terminalId ? String(terminalId).trim() : null;
   const db = getDb();
   db.prepare(
     `INSERT INTO staff_sessions (
        session_id, shop_id, user_id, token_hash, created_at, last_activity_at,
-       absolute_expires_at, idle_expires_at, revoked_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
-  ).run(sessionId, shopId, userId, tokenHash, nowIso, nowIso, absolute, idle);
-  return { token, sessionId, userId, deviceId: `staff:${userId}` };
+       absolute_expires_at, idle_expires_at, revoked_at, terminal_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`
+  ).run(
+    sessionId,
+    shopId,
+    userId,
+    tokenHash,
+    nowIso,
+    nowIso,
+    absolute,
+    idle,
+    boundTerminal
+  );
+  return {
+    token,
+    sessionId,
+    userId,
+    terminalId: boundTerminal || "",
+    deviceId: `staff:${userId}`,
+  };
 }
 
 function isFuture(iso, nowMs) {
@@ -406,7 +430,7 @@ export function takeStaffSession(rawToken, shopId) {
   const db = getDb();
   const row = db
     .prepare(
-      `SELECT s.session_id, s.user_id, s.shop_id, s.absolute_expires_at, s.idle_expires_at,
+      `SELECT s.session_id, s.user_id, s.shop_id, s.terminal_id, s.absolute_expires_at, s.idle_expires_at,
               s.revoked_at, u.username, u.full_name, u.is_active, r.role_id
        FROM staff_sessions s
        JOIN staff_users u ON u.user_id = s.user_id AND u.shop_id = s.shop_id
@@ -453,10 +477,12 @@ export function takeStaffSession(rawToken, shopId) {
     .run(nowIso, idleExpires, row.session_id, nowIso, nowIso);
   if (updated.changes !== 1) return "invalid";
   return {
+    sessionId: row.session_id,
     userId: row.user_id,
     username: row.username,
     fullName: row.full_name,
     shopId: row.shop_id,
+    terminalId: row.terminal_id || "",
     role: sessionRole,
     roleId: row.role_id,
     permissions: loadStaffPermissions(row.shop_id, row.user_id, row.role_id),

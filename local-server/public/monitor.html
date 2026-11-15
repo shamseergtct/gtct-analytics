@@ -3,9 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0b539e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="GTCT" />
   <title>GTCT Order Monitor — TEST</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="/styles.css" />
-  <link rel="stylesheet" href="/monitor.css" />
+  <link rel="stylesheet" href="/monitor.css?v=board1" />
 </head>
 <body>
   <section class="view login-view" id="login-view" hidden>
@@ -25,14 +30,33 @@
     <header class="topbar">
       <div class="topbar-brand"><p class="brand-inline">GTCT</p><h1>Order Monitor <span class="monitor-test">TEST</span></h1></div>
       <div class="topbar-actions">
-        <span class="pill" id="session-role"></span>
-        <nav class="monitor-topnav" aria-label="Main navigation">
-          <a class="nav-link" href="/">Sales</a>
-          <a class="nav-link" href="/orders.html">Orders</a>
-          <a class="nav-link" href="/monitor.html" aria-current="page">Monitor</a>
-          <a class="nav-link" href="/delivery-cash.html">Rider Cash</a>
-          <a class="nav-link" href="/prep.html">Preparation</a>
-          <button type="button" class="nav-link" id="logout-btn">Sign Out</button>
+        <span class="banner compact test-badge">TEST</span>
+        <nav id="app-nav" class="app-nav" aria-label="Main">
+          <div class="nav-primary" role="group" aria-label="Floor">
+            <a class="nav-link" href="/">Sales</a>
+            <a class="nav-link" href="/orders.html">Orders</a>
+            <a class="nav-link" href="/monitor.html" aria-current="page">Monitor</a>
+            <a class="nav-link" href="/prep.html">Prep</a>
+          </div>
+          <details id="settings-menu" class="nav-pop">
+            <summary class="nav-icon-btn" aria-label="Settings">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+              </svg>
+            </summary>
+            <div class="nav-dropdown" role="menu">
+              <p class="nav-dropdown-heading">Delivery</p>
+              <a class="nav-dropdown-link" href="/delivery-cash.html">Rider Cash</a>
+            </div>
+          </details>
+          <details id="account-menu" class="nav-pop">
+            <summary class="nav-account-btn" aria-label="Account">
+              <span id="session-role" class="nav-account-name"></span>
+            </summary>
+            <div class="nav-dropdown nav-dropdown-account" role="menu">
+              <button type="button" class="nav-dropdown-link nav-logout" id="logout-btn">Sign Out</button>
+            </div>
+          </details>
         </nav>
       </div>
     </header>

@@ -92,7 +92,13 @@ export default function App() {
         <Route
           path="/dashboard"
           element={
-            isStaff ? <Navigate to="/staff-inventory" replace /> : <Dashboard />
+            isDeliveryBoy ? (
+              <Navigate to="/delivery" replace />
+            ) : isStaff ? (
+              <Navigate to="/staff-inventory" replace />
+            ) : (
+              <Dashboard />
+            )
           }
         />
 

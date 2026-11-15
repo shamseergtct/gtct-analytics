@@ -1,9 +1,17 @@
 /* functions/index.js */
 const admin = require("firebase-admin");
-const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onCall, onRequest, HttpsError } = require("firebase-functions/v2/https");
+const { defineString } = require("firebase-functions/params");
 
 admin.initializeApp();
 const db = admin.firestore();
+
+// TEST bridge shared key (defineString — avoids Secret Manager / Blaze requirement).
+// Set in functions/.env as RESTAURANT_DELIVERY_BRIDGE_SECRET=...
+const restaurantBridgeSecret = defineString("RESTAURANT_DELIVERY_BRIDGE_SECRET", {
+  default: "",
+});
+const RESTAURANT_DELIVERY_ORDERS = "restaurant_delivery_orders";
 
 /**
  * Verify caller is a valid super_admin from Firestore users/{uid}
@@ -319,3 +327,341 @@ exports.superSetUserActive = onCall({ region: "asia-south1" }, async (request) =
     throw new HttpsError("internal", e?.message || "Failed to update user status");
   }
 });
+
+async function assertDeliveryBoyCaller(request, clientId) {
+  if (!request.auth) {
+    throw new HttpsError("unauthenticated", "You must be logged in.");
+  }
+  const uid = request.auth.uid;
+  const snap = await db.collection("users").doc(uid).get();
+  if (!snap.exists) {
+    throw new HttpsError("permission-denied", "User profile missing.");
+  }
+  const profile = snap.data() || {};
+  if (profile.isActive === false) {
+    throw new HttpsError("permission-denied", "Account disabled.");
+  }
+  if (profile.role !== "delivery_boy") {
+    throw new HttpsError("permission-denied", "Delivery boy login required.");
+  }
+  const boyId = String(profile.deliveryBoyId || "").trim();
+  if (!boyId) {
+    throw new HttpsError("failed-precondition", "Delivery boy profile not linked.");
+  }
+  const shops = Array.isArray(profile.assignedShops) ? profile.assignedShops : [];
+  const shop = String(clientId || "").trim();
+  if (!shop || (!shops.includes(shop) && String(profile.clientId || "") !== shop)) {
+    throw new HttpsError("permission-denied", "Not assigned to this shop.");
+  }
+  const boySnap = await db.collection("delivery_boys").doc(boyId).get();
+  const boy = boySnap.exists ? boySnap.data() || {} : {};
+  return {
+    uid,
+    deliveryBoyId: boyId,
+    deliveryBoyName: String(boy.name || profile.email || "Delivery"),
+    profile,
+  };
+}
+
+function restaurantOrderRef(clientId, localOrderId) {
+  return db
+    .collection(RESTAURANT_DELIVERY_ORDERS)
+    .doc(`${String(clientId).trim()}_${String(localOrderId).trim()}`);
+}
+
+/** First-wins accept for cellular Delivery Boys. */
+exports.acceptRestaurantDeliveryOrder = onCall(
+  { region: "asia-south1" },
+  async (request) => {
+    const orderDocId = String(request.data?.orderDocId || "").trim();
+    const expectedRevision = String(request.data?.expectedRevision || "").trim();
+    if (!orderDocId) {
+      throw new HttpsError("invalid-argument", "orderDocId is required.");
+    }
+    const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(orderDocId);
+    const existing = await ref.get();
+    if (!existing.exists) {
+      throw new HttpsError("not-found", "Order not found.");
+    }
+    const actor = await assertDeliveryBoyCaller(
+      request,
+      existing.data()?.clientId
+    );
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) {
+        throw new HttpsError("not-found", "Order not found.");
+      }
+      const order = snap.data() || {};
+      if (order.status === "CLAIMED" && order.claimedByDeliveryBoyId === actor.deliveryBoyId) {
+        return { alreadyAccepted: true, orderId: order.localOrderId };
+      }
+      if (order.status !== "AVAILABLE") {
+        throw new HttpsError("failed-precondition", "Order is no longer available.");
+      }
+      if (expectedRevision && String(order.claimRevision || "") !== expectedRevision) {
+        throw new HttpsError("aborted", "Order changed. Refresh and try again.");
+      }
+      const now = Date.now();
+      tx.update(ref, {
+        status: "CLAIMED",
+        claimedByDeliveryBoyId: actor.deliveryBoyId,
+        claimedByName: actor.deliveryBoyName,
+        claimedByUid: actor.uid,
+        claimedAt: now,
+        claimRevision: `${String(order.claimRevision || "0")}:claimed:${now}`,
+        localClaimApplied: false,
+        updatedAt: now,
+        deliveryLifecycle: {
+          status: "PENDING",
+          version: Number(order.deliveryLifecycle?.version || 0),
+        },
+      });
+      return { alreadyAccepted: false, orderId: order.localOrderId };
+    });
+    return { ok: true, ...result };
+  }
+);
+
+exports.updateRestaurantDeliveryStatus = onCall(
+  { region: "asia-south1" },
+  async (request) => {
+    const orderDocId = String(request.data?.orderDocId || "").trim();
+    const action = String(request.data?.action || "").trim().toUpperCase();
+    const expectedVersion = Number(request.data?.expectedVersion || 0);
+    if (!orderDocId) {
+      throw new HttpsError("invalid-argument", "orderDocId is required.");
+    }
+    if (!["DELIVERED", "REQUEST_CANCEL"].includes(action)) {
+      throw new HttpsError("invalid-argument", "Unsupported action.");
+    }
+    const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(orderDocId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new HttpsError("not-found", "Order not found.");
+      const order = snap.data() || {};
+      const actor = await assertDeliveryBoyCaller(request, order.clientId);
+      if (order.claimedByDeliveryBoyId !== actor.deliveryBoyId) {
+        throw new HttpsError("permission-denied", "Not your delivery.");
+      }
+      if (order.status !== "CLAIMED") {
+        throw new HttpsError("failed-precondition", "Order is not in delivery.");
+      }
+      const life = order.deliveryLifecycle || { status: "PENDING", version: 0 };
+      if (Number(life.version || 0) !== expectedVersion) {
+        throw new HttpsError("aborted", "Status changed. Refresh and retry.");
+      }
+      const now = Date.now();
+      if (action === "DELIVERED") {
+        tx.update(ref, {
+          status: "DELIVERED",
+          deliveryLifecycle: { status: "DELIVERED", version: expectedVersion + 1, at: now },
+          updatedAt: now,
+          localStatusApplied: false,
+        });
+      } else {
+        tx.update(ref, {
+          status: "CANCEL_REQUESTED",
+          deliveryLifecycle: {
+            status: "CANCEL_REQUESTED",
+            version: expectedVersion + 1,
+            at: now,
+            reason: String(request.data?.reason || "").trim(),
+          },
+          updatedAt: now,
+          localStatusApplied: false,
+        });
+      }
+    });
+    return { ok: true };
+  }
+);
+
+exports.reportRestaurantDeliveryPayment = onCall(
+  { region: "asia-south1" },
+  async (request) => {
+    const orderDocId = String(request.data?.orderDocId || "").trim();
+    const reportType = String(request.data?.reportType || "").trim().toUpperCase();
+    const expectedVersion = Number(request.data?.expectedVersion || 0);
+    const allowed = [
+      "CASH_WITH_BOY",
+      "SHOP_PAID_REPORTED",
+      "CREDIT_REPORTED",
+      "PARTIAL_SHOP",
+    ];
+    if (!orderDocId) {
+      throw new HttpsError("invalid-argument", "orderDocId is required.");
+    }
+    if (!allowed.includes(reportType)) {
+      throw new HttpsError("invalid-argument", "Unsupported payment mark.");
+    }
+    const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(orderDocId);
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new HttpsError("not-found", "Order not found.");
+      const order = snap.data() || {};
+      const actor = await assertDeliveryBoyCaller(request, order.clientId);
+      if (order.claimedByDeliveryBoyId !== actor.deliveryBoyId) {
+        throw new HttpsError("permission-denied", "Not your delivery.");
+      }
+      if (!["CLAIMED", "DELIVERED"].includes(order.status)) {
+        throw new HttpsError("failed-precondition", "Accept the order first.");
+      }
+      const pay = order.paymentReport || { status: "UNMARKED", version: 0 };
+      if (Number(pay.version || 0) !== expectedVersion) {
+        throw new HttpsError("aborted", "Payment mark changed. Refresh and retry.");
+      }
+      const now = Date.now();
+      tx.update(ref, {
+        paymentReport: {
+          status: reportType,
+          version: expectedVersion + 1,
+          reportedAt: now,
+          reportedByDeliveryBoyId: actor.deliveryBoyId,
+        },
+        updatedAt: now,
+        localPaymentApplied: false,
+      });
+    });
+    return { ok: true };
+  }
+);
+
+/**
+ * Local POS bridge: publish ready orders + pull unapplied claims/status/payment.
+ * Auth: shared secret header X-GTCT-BRIDGE-SECRET (Functions secret).
+ */
+exports.restaurantDeliveryBridge = onRequest(
+  { region: "asia-south1" },
+  async (req, res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Access-Control-Allow-Headers", "Content-Type, X-GTCT-BRIDGE-SECRET");
+    if (req.method === "OPTIONS") {
+      res.status(204).send("");
+      return;
+    }
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "POST only" });
+      return;
+    }
+    const expected = String(restaurantBridgeSecret.value() || "").trim();
+    const provided = String(req.get("X-GTCT-BRIDGE-SECRET") || "").trim();
+    if (!expected || provided !== expected) {
+      res.status(401).json({ error: "Unauthorized bridge." });
+      return;
+    }
+    const body = req.body || {};
+    const clientId = String(body.clientId || "").trim();
+    if (!clientId) {
+      res.status(400).json({ error: "clientId is required." });
+      return;
+    }
+    const now = Date.now();
+    const published = [];
+    for (const order of Array.isArray(body.publishOrders) ? body.publishOrders : []) {
+      const localOrderId = String(order.localOrderId || "").trim();
+      if (!localOrderId) continue;
+      const ref = restaurantOrderRef(clientId, localOrderId);
+      const existing = await ref.get();
+      const prev = existing.exists ? existing.data() || {} : {};
+      // Never overwrite an active claim with AVAILABLE.
+      if (
+        existing.exists &&
+        ["CLAIMED", "DELIVERED", "CANCEL_REQUESTED", "CANCELLED"].includes(prev.status)
+      ) {
+        await ref.set(
+          {
+            ...order,
+            clientId,
+            localOrderId,
+            status: prev.status,
+            claimedByDeliveryBoyId: prev.claimedByDeliveryBoyId || "",
+            claimedByName: prev.claimedByName || "",
+            claimedByUid: prev.claimedByUid || "",
+            claimedAt: prev.claimedAt || null,
+            paymentReport: prev.paymentReport || order.paymentReport || null,
+            deliveryLifecycle: prev.deliveryLifecycle || order.deliveryLifecycle || null,
+            localClaimApplied: prev.localClaimApplied === true,
+            localStatusApplied: prev.localStatusApplied === true,
+            localPaymentApplied: prev.localPaymentApplied === true,
+            updatedAt: now,
+            publishedAt: prev.publishedAt || now,
+          },
+          { merge: true }
+        );
+      } else {
+        await ref.set(
+          {
+            ...order,
+            clientId,
+            localOrderId,
+            status: "AVAILABLE",
+            claimedByDeliveryBoyId: "",
+            claimedByName: "",
+            claimedByUid: "",
+            claimedAt: null,
+            paymentReport: order.paymentReport || {
+              status: "UNMARKED",
+              version: 0,
+            },
+            deliveryLifecycle: order.deliveryLifecycle || {
+              status: "PENDING",
+              version: 0,
+            },
+            localClaimApplied: false,
+            localStatusApplied: true,
+            localPaymentApplied: true,
+            updatedAt: now,
+            publishedAt: prev.publishedAt || now,
+          },
+          { merge: true }
+        );
+      }
+      published.push(localOrderId);
+    }
+
+    // Single client query (no composite index). Filter pending apply flags in memory.
+    const clientOrdersSnap = await db
+      .collection(RESTAURANT_DELIVERY_ORDERS)
+      .where("clientId", "==", clientId)
+      .limit(300)
+      .get();
+    const clientOrders = clientOrdersSnap.docs.map((docSnap) => ({
+      id: docSnap.id,
+      ...docSnap.data(),
+    }));
+    const pendingClaims = clientOrders.filter(
+      (row) =>
+        row.localClaimApplied === false &&
+        row.status !== "AVAILABLE" &&
+        row.claimedByDeliveryBoyId
+    );
+    const pendingStatuses = clientOrders.filter(
+      (row) => row.localStatusApplied === false
+    );
+    const pendingPayments = clientOrders.filter(
+      (row) => row.localPaymentApplied === false
+    );
+
+    for (const id of Array.isArray(body.ackClaimIds) ? body.ackClaimIds : []) {
+      const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
+      await ref.set({ localClaimApplied: true, updatedAt: now }, { merge: true });
+    }
+    for (const id of Array.isArray(body.ackStatusIds) ? body.ackStatusIds : []) {
+      const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
+      await ref.set({ localStatusApplied: true, updatedAt: now }, { merge: true });
+    }
+    for (const id of Array.isArray(body.ackPaymentIds) ? body.ackPaymentIds : []) {
+      const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
+      await ref.set({ localPaymentApplied: true, updatedAt: now }, { merge: true });
+    }
+
+    res.status(200).json({
+      ok: true,
+      publishedCount: published.length,
+      pendingClaims,
+      pendingStatuses,
+      pendingPayments,
+    });
+  }
+);

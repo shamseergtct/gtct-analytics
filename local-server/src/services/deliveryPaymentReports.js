@@ -9,7 +9,12 @@ import { nowIso } from '../util/time.js';
 import { recordAudit } from './audit.js';
 import { readAllocationSummary } from './paymentAllocations.js';
 
-const TYPES = new Set(['CASH_WITH_BOY', 'SHOP_PAID_REPORTED', 'CREDIT_REPORTED']);
+const TYPES = new Set([
+  'CASH_WITH_BOY',
+  'SHOP_PAID_REPORTED',
+  'CREDIT_REPORTED',
+  'PARTIAL_SHOP',
+]);
 const SHOP_PAYMENT = 'PAID_CONFIRMED';
 function fail(status, message, code) {
   throw Object.assign(new Error(message), { status, code });

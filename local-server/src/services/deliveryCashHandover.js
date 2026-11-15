@@ -45,7 +45,7 @@ function view(row, replayed = false) {
 export function listDeliveryCashHandovers(shopId, actor) {
   shopPermission(actor);
   const db = getDb();
-  const pending = db.prepare(`SELECT o.order_id, o.order_number, o.business_date, o.total_cents,
+  const pending = db.prepare(`SELECT o.order_id, o.order_number, o.token_number, o.business_date, o.total_cents,
       o.currency_code,o.currency_decimals,o.customer_name,o.block_number,o.delivery_charge_cents,r.driver_user_id,r.amount_cents,
       r.version AS report_version, r.reported_at,u.full_name AS driver_name
     FROM delivery_order_payment_reports r
@@ -94,7 +94,9 @@ export function listDeliveryCashHandovers(shopId, actor) {
     pending: pending.filter(r => Number(r.total_cents) > 0 &&
       Number(r.amount_cents) === Number(r.total_cents) &&
       Number.isSafeInteger(Number(r.total_cents)))
-      .map(r=>({orderId:r.order_id,orderNumber:r.order_number,businessDate:r.business_date,
+      .map(r=>({orderId:r.order_id,orderNumber:r.order_number,
+        tokenNumber:r.token_number==null?null:Number(r.token_number),
+        businessDate:r.business_date,
         driverUserId:r.driver_user_id,driverName:r.driver_name || 'Delivery Boy',
         amountCents:Number(r.amount_cents),currencyCode:r.currency_code,
         currencyDecimals:Number(r.currency_decimals ?? 3),

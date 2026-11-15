@@ -1,6 +1,8 @@
 /* TEST-only order monitor; no delivery payment / commission operations. */
+import { registerPwa } from "./pwa.js";
+registerPwa();
 const $ = id => document.getElementById(id);
-const state = { session: null, page: 1, pageSize: 30, busy: false, expandedOrderIds: new Set() };
+const state = { session: null, page: 1, pageSize: 60, busy: false, expandedOrderIds: new Set() };
 
 async function api(path, method = 'GET', body) {
   const response = await fetch(path, {
@@ -52,6 +54,91 @@ function statusClass(value) {
   if (['CREDIT','CREDIT_APPROVED'].includes(value)) return 'is-credit';
   return 'is-neutral';
 }
+const TYPE_ORDER = ['DELIVERY', 'TAKEAWAY', 'COUNTER', 'TABLE', 'CAR_HOP'];
+const LANE_ORDER = [
+  { key: 'pending', deliveryLabel: 'Pending', otherLabel: 'Pending' },
+  { key: 'ready', deliveryLabel: 'Ready for delivery', otherLabel: 'Ready' },
+  { key: 'out', deliveryLabel: 'Out for delivery', otherLabel: 'Out for delivery' },
+  { key: 'delivered', deliveryLabel: 'Delivered', otherLabel: 'Completed' },
+];
+function orderTypeKey(order) {
+  return String(order.fulfillmentBehavior || order.orderTypeName || 'OTHER').toUpperCase();
+}
+function boardLane(order) {
+  const life = order.deliveryLifecycle || {};
+  const dispatch = order.dispatch || {};
+  const prepRaw = order.preparation?.stage || 'NEW';
+  const claimed = Boolean(order.deliveryBoyName);
+  const type = orderTypeKey(order);
+
+  if (order.fulfillmentStatus === 'VOID') return 'pending';
+
+  if (type === 'DELIVERY') {
+    if (life.status === 'DELIVERED') return 'delivered';
+    if (['CANCELLED', 'CANCEL_REQUESTED'].includes(life.status)) return 'pending';
+    if (claimed) return 'out';
+    if (dispatch.ready) return 'ready';
+    return 'pending';
+  }
+
+  // Counter / takeaway / dine-in / car-hop: ready when kitchen finished.
+  if (prepRaw === 'FINISHED' && String(order.paymentStatus || '').toUpperCase() === 'PAID') {
+    return 'delivered';
+  }
+  if (prepRaw === 'FINISHED') return 'ready';
+  return 'pending';
+}
+function compareOrders(a, b) {
+  const tokenA = Number(a.tokenNumber);
+  const tokenB = Number(b.tokenNumber);
+  if (Number.isFinite(tokenA) && Number.isFinite(tokenB) && tokenA !== tokenB) return tokenB - tokenA;
+  return String(b.orderNumber || '').localeCompare(String(a.orderNumber || ''), undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+function renderBoard(orders) {
+  const host = $('monitor-list');
+  host.replaceChildren();
+  const byType = new Map();
+  for (const order of orders || []) {
+    const type = orderTypeKey(order);
+    if (!byType.has(type)) {
+      byType.set(type, { ready: [], pending: [], out: [], delivered: [] });
+    }
+    byType.get(type)[boardLane(order)].push(order);
+  }
+  const types = [...byType.keys()].sort((a, b) => {
+    const ia = TYPE_ORDER.indexOf(a);
+    const ib = TYPE_ORDER.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  if (!types.length) {
+    host.append(node('p', 'monitor-empty', 'No orders for this filter.'));
+    return;
+  }
+  for (const type of types) {
+    const buckets = byType.get(type);
+    const typeCount = LANE_ORDER.reduce((n, lane) => n + buckets[lane.key].length, 0);
+    const section = node('section', 'monitor-type-section');
+    section.append(node('h2', 'monitor-type-heading', `${titleCase(type)} · ${typeCount}`));
+    for (const lane of LANE_ORDER) {
+      const rows = buckets[lane.key].sort(compareOrders);
+      if (!rows.length) continue;
+      const laneEl = node('div', `monitor-lane monitor-lane-${lane.key}`);
+      const label = type === 'DELIVERY' ? lane.deliveryLabel : lane.otherLabel;
+      laneEl.append(node('h3', 'monitor-lane-heading', `${label} · ${rows.length}`));
+      const grid = node('div', 'monitor-lane-grid');
+      for (const order of rows) grid.append(renderOrder(order));
+      laneEl.append(grid);
+      section.append(laneEl);
+    }
+    host.append(section);
+  }
+}
 function smallBadge(value, className) {
   return stageBadge(value, className || 'is-neutral');
 }
@@ -69,7 +156,7 @@ function renderOrder(order) {
   const identity = node('div', 'monitor-card-identity');
   identity.append(node('h2', 'monitor-number', order.orderNumber || 'Order'));
   if (Number.isFinite(Number(order.tokenNumber)) && order.tokenNumber != null && String(order.tokenNumber) !== '') {
-    identity.append(node('span', 'monitor-token', `#${String(order.tokenNumber).padStart(3, '0')}`));
+    identity.append(node('span', 'monitor-token', `TOKEN ${String(order.tokenNumber).padStart(3, '0')}`));
   }
   header.append(identity);
   header.append(node('span', 'monitor-type', titleCase(order.fulfillmentBehavior || order.orderTypeName || 'ORDER')));
@@ -102,7 +189,8 @@ function renderOrder(order) {
   const footer = node('div', 'monitor-card-footer');
   if (order.deliveryBoyName) footer.append(node('span', 'monitor-rider', `Rider: ${order.deliveryBoyName}`));
   else footer.append(node('span', 'monitor-footer-spacer', ''));
-  if (order.fulfillmentStatus !== 'VOID' && dispatch.canMarkReady && state.session.permissions.includes('sales.orders.dispatch')) {
+  const canDispatch = state.session.permissions.includes('sales.orders.dispatch');
+  if (order.fulfillmentStatus !== 'VOID' && dispatch.canMarkReady && canDispatch) {
     const btn = node('button', 'btn primary monitor-ready', 'Ready for delivery');
     btn.type = 'button';
     btn.addEventListener('click', async () => {
@@ -110,6 +198,17 @@ function renderOrder(order) {
       btn.disabled = true;
       const result = await api(`/v1/order-monitor/${encodeURIComponent(order.orderId)}/ready`, 'POST', { expectedRevision: dispatch.revision });
       if (!result.ok) window.alert(result.json.error || 'Could not confirm. Refresh and review.');
+      await refresh();
+    });
+    footer.append(btn);
+  } else if (order.fulfillmentStatus !== 'VOID' && dispatch.canUnmarkReady && canDispatch) {
+    const btn = node('button', 'btn ghost monitor-ready monitor-unready', 'Back to pending');
+    btn.type = 'button';
+    btn.addEventListener('click', async () => {
+      if (!window.confirm(`Move ${order.orderNumber} back to Pending?`)) return;
+      btn.disabled = true;
+      const result = await api(`/v1/order-monitor/${encodeURIComponent(order.orderId)}/unready`, 'POST', { expectedRevision: dispatch.revision });
+      if (!result.ok) window.alert(result.json.error || 'Could not update status. Refresh and review.');
       await refresh();
     });
     footer.append(btn);
@@ -213,7 +312,7 @@ async function refresh() {
     if (result.status === 403) { $('monitor-status').textContent = 'You do not have permission to monitor orders.'; return; }
     if (!result.ok) { $('monitor-status').textContent = result.json.error || 'Could not load orders.'; return; }
     const data = result.json;
-    $('monitor-list').replaceChildren(...(data.orders || []).map(renderOrder));
+    renderBoard(data.orders || []);
     $('monitor-status').textContent = `${data.total} orders`;
     $('page-label').textContent = `Page ${data.page}`;
     $('prev-page').disabled = state.page <= 1;

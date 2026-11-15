@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>GTCT Terminals</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="users-page">
+    <div id="app">
+      <section id="login-view" class="view login-view" hidden>
+        <div class="login-card">
+          <p class="brand">GTCT Restaurant</p>
+          <h1>Terminals</h1>
+          <p class="hint">Sign in as Admin to register tablets and PCs.</p>
+          <div class="login-form">
+            <div class="field">
+              <label for="login-username">Username</label>
+              <input id="login-username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" />
+            </div>
+            <div class="field">
+              <label for="login-password">Password</label>
+              <div class="password-row">
+                <input id="login-password" type="password" autocomplete="current-password" />
+                <button type="button" id="toggle-password-btn" class="btn ghost password-toggle">Show</button>
+              </div>
+            </div>
+            <button type="button" id="login-btn" class="btn primary">Sign in</button>
+            <p id="login-error" class="error" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="main-view" class="view main-view" hidden>
+        <header class="topbar">
+          <div>
+            <p class="brand-inline">GTCT</p>
+            <h1>Terminals</h1>
+            <p class="page-desc">Register devices for multi-user LAN / Wi‑Fi use.</p>
+          </div>
+          <div class="topbar-actions">
+            <span class="banner compact test-badge">TEST</span>
+            <nav id="app-nav" class="app-nav" aria-label="Main">
+              <div class="nav-primary" role="group" aria-label="Floor">
+                <a class="nav-link" href="/">Sales</a>
+              </div>
+              <details id="settings-menu" class="nav-pop">
+                <summary class="nav-icon-btn" aria-label="Settings">
+                  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                    <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
+                  </svg>
+                </summary>
+                <div class="nav-dropdown" role="menu">
+                  <p class="nav-dropdown-heading">Setup</p>
+                  <a class="nav-dropdown-link" href="/menu.html">Menu Setup</a>
+                  <a class="nav-dropdown-link" href="/shop-settings.html">Shop Settings</a>
+                  <a class="nav-dropdown-link" href="/settings.html">Printer Settings</a>
+                  <a class="nav-dropdown-link" href="/reports.html">Reports</a>
+                  <a class="nav-dropdown-link" href="/users.html">User Management</a>
+                  <a class="nav-dropdown-link" href="/terminals.html" aria-current="page">Terminals</a>
+                </div>
+              </details>
+              <details id="account-menu" class="nav-pop">
+                <summary class="nav-account-btn" aria-label="Account">
+                  <span id="session-role" class="nav-account-name"></span>
+                </summary>
+                <div class="nav-dropdown nav-dropdown-account" role="menu">
+                  <button type="button" id="logout-btn" class="nav-dropdown-link nav-logout">Sign Out</button>
+                </div>
+              </details>
+            </nav>
+          </div>
+        </header>
+
+        <div id="denied-block" class="settings-banner" hidden>
+          Administrator access is required for terminals.
+          <a href="/">Back to Sales</a>
+        </div>
+
+        <div id="admin-shell" hidden>
+          <section class="settings-card" style="margin: 1rem 1.1rem">
+            <h2>LAN / Wi‑Fi status</h2>
+            <p id="lan-status" class="muted">Checking…</p>
+            <p class="hint">Tablets open the pair page, enter a code from below, then staff sign in with their own username.</p>
+          </section>
+
+          <section class="settings-card" style="margin: 1rem 1.1rem">
+            <div class="printer-panel-head" style="display:flex;justify-content:space-between;gap:1rem;align-items:center;flex-wrap:wrap">
+              <h2 style="margin:0">Registered terminals</h2>
+              <button type="button" id="add-terminal-btn" class="btn primary">Add terminal</button>
+            </div>
+            <p id="terminal-status" class="status-line" hidden></p>
+            <div id="terminal-list" class="user-list" style="margin-top:0.75rem"></div>
+          </section>
+
+          <section id="terminal-editor" class="settings-card" style="margin: 1rem 1.1rem" hidden>
+            <h2 id="editor-title">New terminal</h2>
+            <input type="hidden" id="terminal-id" />
+            <div class="field">
+              <label for="terminal-name">Display name</label>
+              <input id="terminal-name" type="text" maxlength="60" placeholder="Cashier 1" />
+            </div>
+            <div class="field">
+              <label for="terminal-code">Code</label>
+              <input id="terminal-code" type="text" maxlength="24" placeholder="CASH-1" autocapitalize="characters" />
+            </div>
+            <div class="field">
+              <label for="terminal-purpose">Purpose</label>
+              <select id="terminal-purpose">
+                <option value="any">Any</option>
+                <option value="sales">Sales</option>
+                <option value="monitor">Monitor</option>
+                <option value="prep">Prep</option>
+              </select>
+            </div>
+            <label class="check-row" style="display:flex;gap:0.5rem;align-items:center;margin:0.75rem 0">
+              <input id="terminal-active" type="checkbox" checked />
+              <span>Active</span>
+            </label>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+              <button type="button" id="save-terminal-btn" class="btn primary">Save</button>
+              <button type="button" id="cancel-terminal-btn" class="btn ghost">Cancel</button>
+            </div>
+          </section>
+
+          <section id="pairing-box" class="settings-card" style="margin: 1rem 1.1rem" hidden>
+            <h2>Pairing code</h2>
+            <p id="pairing-meta" class="muted"></p>
+            <p id="pairing-code" style="font-size:2rem;font-weight:800;letter-spacing:0.12em;margin:0.4rem 0"></p>
+            <p class="hint">Enter this on the tablet at <strong>/pair.html</strong>. Expires in 15 minutes.</p>
+            <button type="button" id="close-pairing-btn" class="btn ghost">Close</button>
+          </section>
+        </div>
+      </section>
+    </div>
+    <script type="module" src="/terminals.js"></script>
+  </body>
+</html>

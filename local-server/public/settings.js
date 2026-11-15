@@ -118,7 +118,26 @@ async function ensureSession() {
   return true;
 }
 
-function clearEditor() {
+function openPrinterEditor() {
+  const dialog = $("printer-editor-dialog");
+  if (!dialog) return;
+  setStatus("editor-status", "", true);
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  else dialog.setAttribute("open", "");
+  $("f-name")?.focus();
+}
+
+function closePrinterEditor() {
+  const dialog = $("printer-editor-dialog");
+  if (!dialog) return;
+  if (typeof dialog.close === "function") dialog.close();
+  else dialog.removeAttribute("open");
+  document.querySelectorAll(".printer-list-item.is-selected").forEach((el) => {
+    el.classList.remove("is-selected");
+  });
+}
+
+function clearEditor({ open = true } = {}) {
   $("f-id").value = "";
   $("f-name").value = "";
   $("f-type").value = "MOCK";
@@ -128,8 +147,14 @@ function clearEditor() {
   $("f-width").value = "80";
   $("f-active").checked = true;
   $("f-physical").checked = false;
+  $("f-beep").checked = true;
+  $("f-format").value = "MJ330_RASTER";
   $("editor-title").textContent = "Add printer";
   toggleTypeFields();
+  document.querySelectorAll(".printer-list-item.is-selected").forEach((el) => {
+    el.classList.remove("is-selected");
+  });
+  if (open) openPrinterEditor();
 }
 
 function fillEditor(p) {
@@ -142,8 +167,14 @@ function fillEditor(p) {
   $("f-width").value = String(p.paper_width_mm || 80);
   $("f-active").checked = Boolean(p.is_active);
   $("f-physical").checked = Boolean(p.capabilities?.physicalDispatchEnabled);
-  $("editor-title").textContent = `Edit: ${p.display_name}`;
+  $("f-beep").checked = Boolean(p.capabilities?.beepOnPrint);
+  $("f-format").value = p.capabilities?.format || "TEXT";
+  $("editor-title").textContent = `Edit · ${p.display_name}`;
   toggleTypeFields();
+  document.querySelectorAll(".printer-list-item").forEach((el) => {
+    el.classList.toggle("is-selected", el.dataset.printerId === p.printer_id);
+  });
+  openPrinterEditor();
 }
 
 function toggleTypeFields() {
@@ -153,35 +184,76 @@ function toggleTypeFields() {
   $("f-queue").disabled = type !== "WINDOWS_SPOOLER";
 }
 
+function printerDestination(p) {
+  if (p.connection_type === "NETWORK_TCP") {
+    const host = String(p.host || "").trim();
+    const port = p.port == null || p.port === "" ? "" : String(p.port);
+    if (!host) return "IP not set";
+    return port ? `${host}:${port}` : host;
+  }
+  if (p.connection_type === "WINDOWS_SPOOLER") {
+    return String(p.windows_queue_name || "").trim() || "Queue not set";
+  }
+  return "MOCK file output";
+}
+
 function renderPrinters() {
   const host = $("printer-list");
+  const selectedId = $("f-id")?.value || "";
   host.innerHTML = "";
+  if (!state.printers.length) {
+    host.innerHTML = `<p class="empty">No printers yet. Add one to get started.</p>`;
+  }
   for (const p of state.printers) {
     const stations = (p.stationIds || [])
       .map((id) => state.stations.find((s) => s.station_id === id)?.name || id)
       .join(", ");
-    const dest =
-      p.connection_type === "NETWORK_TCP"
-        ? `${p.host}:${p.port}`
-        : p.connection_type === "WINDOWS_SPOOLER"
-          ? p.windows_queue_name
-          : "MOCK file";
+    const dest = printerDestination(p);
+    const physicalOn = Boolean(p.capabilities?.physicalDispatchEnabled);
+    const soundOn = Boolean(p.capabilities?.beepOnPrint);
     const card = document.createElement("button");
     card.type = "button";
-    card.className = "printer-list-item";
+    card.className = `printer-list-item${selectedId === p.printer_id ? " is-selected" : ""}`;
+    card.dataset.printerId = p.printer_id;
     card.innerHTML = `
-      <strong>${escapeHtml(p.display_name)}</strong>
-      <span class="pill">${escapeHtml(p.connection_type)}</span>
-      ${p.is_active ? "" : '<span class="pill warn">INACTIVE</span>'}
-      <div class="muted">${escapeHtml(dest || "—")}</div>
-      <div class="muted">Stations: ${escapeHtml(stations || "none")}</div>
-      <div class="muted">Status: ${escapeHtml(p.last_test_status || "—")}</div>
-      <div class="muted">Physical flag: ${p.capabilities?.physicalDispatchEnabled ? "ON" : "OFF"} · Server physical: ${state.config?.physicalPrintEnabled ? "ON" : "OFF"}</div>
+      <div class="printer-card-top">
+        <p class="printer-card-name">${escapeHtml(p.display_name)}</p>
+        <div class="printer-card-badges">
+          <span class="printer-badge">${escapeHtml(p.connection_type)}</span>
+          ${p.is_active ? "" : '<span class="printer-badge warn">Inactive</span>'}
+          <span class="printer-badge ${physicalOn ? "ok" : "muted"}">Physical ${physicalOn ? "ON" : "OFF"}</span>
+          <span class="printer-badge ${soundOn ? "ok" : "muted"}">Sound ${soundOn ? "ON" : "OFF"}</span>
+        </div>
+      </div>
+      <div class="printer-card-dest">${escapeHtml(dest)}</div>
+      <div class="printer-card-meta">
+        <div>Stations · ${escapeHtml(stations || "none")}</div>
+        <div>Last test · ${escapeHtml(p.last_test_status || "—")}</div>
+      </div>
     `;
     card.addEventListener("click", () => fillEditor(p));
     host.appendChild(card);
   }
-  $("config-flags").textContent = `Server: physicalPrint=${Boolean(state.config?.physicalPrintEnabled)} · tcpProbe=${Boolean(state.config?.allowTcpProbe)}.`;
+  const ps = state.config?.printSettings || {};
+  const physicalOn = Boolean(state.config?.physicalPrintEnabled);
+  const chip = $("physical-status-chip");
+  if (chip) {
+    chip.textContent = physicalOn ? "Physical printing · ON" : "Physical printing · OFF";
+    chip.className = `printer-status-chip ${physicalOn ? "is-on" : "is-off"}`;
+  }
+  $("config-flags").textContent =
+    `Auto setting ${Boolean(ps.autoPhysicalPrintEnabled) ? "ON" : "OFF"} · env ${
+      state.config?.physicalPrintEnvOverride == null
+        ? "unset"
+        : String(state.config.physicalPrintEnvOverride)
+    } · TCP probe ${Boolean(state.config?.allowTcpProbe) ? "ON" : "OFF"}`;
+  if ($("auto-physical")) {
+    $("auto-physical").checked = Boolean(ps.autoPhysicalPrintEnabled);
+    $("auto-kitchen").checked = ps.kitchenAutoPrint !== false;
+    $("auto-cashier").checked =
+      ps.cashierAutoPrint !== false && ps.cashierAutoPrintOnPayment !== false;
+    if ($("ask-before-print")) $("ask-before-print").checked = ps.askBeforePrint !== false;
+  }
 }
 
 function renderStations() {
@@ -220,6 +292,8 @@ async function savePrinter() {
     isActive: $("f-active").checked,
     capabilities: {
       physicalDispatchEnabled: $("f-physical").checked,
+      beepOnPrint: $("f-beep").checked,
+      format: $("f-format").value || "TEXT",
     },
   };
   const res = await api("/v1/printers", {
@@ -230,9 +304,9 @@ async function savePrinter() {
     setStatus("editor-status", res.json?.error || "Save failed", false);
     return;
   }
-  setStatus("editor-status", `Saved ${res.json.printer.display_name}`, true);
   await refreshAll();
-  fillEditor(res.json.printer);
+  closePrinterEditor();
+  clearEditor({ open: false });
 }
 
 async function saveStations() {
@@ -330,15 +404,62 @@ async function refreshJobs() {
       } catch {
         items = "";
       }
+      const err = j.last_error ? `<div class="muted">${escapeHtml(j.last_error)}</div>` : "";
       return `<div class="job-row">
         <span class="status-badge ${escapeHtml(j.status)}">${escapeHtml(j.status)}</span>
         <strong>${escapeHtml(j.job_type)}</strong>
         <span class="muted">${escapeHtml(j.station_id || "—")}</span>
         <span class="muted">${escapeHtml(j.printer_id)}</span>
         <span>${escapeHtml(items)}</span>
+        ${err}
       </div>`;
     })
     .join("");
+}
+
+async function clearJobHistory() {
+  if (
+    !window.confirm(
+      "Clear finished print-job history? PENDING jobs stay. This does not reprint anything."
+    )
+  ) {
+    return;
+  }
+  const res = await api("/v1/print-jobs/clear-history", {
+    method: "POST",
+    body: "{}",
+  });
+  if (!res.ok) {
+    setStatus("jobs-status", res.json?.error || "Clear failed", false);
+    return;
+  }
+  setStatus("jobs-status", `Cleared ${Number(res.json?.cleared || 0)} job(s).`, true);
+  await refreshJobs();
+}
+
+async function savePrintSettings() {
+  const res = await api("/v1/print-settings", {
+    method: "PUT",
+    body: JSON.stringify({
+      autoPhysicalPrintEnabled: $("auto-physical").checked,
+      kitchenAutoPrint: $("auto-kitchen").checked,
+      cashierAutoPrint: $("auto-cashier").checked,
+      askBeforePrint: $("ask-before-print")?.checked !== false,
+    }),
+  });
+  if (!res.ok) {
+    setStatus("print-settings-status", res.json?.error || "Save failed", false);
+    return;
+  }
+  const held = Number(res.json?.settings?.heldPendingJobs || 0);
+  setStatus(
+    "print-settings-status",
+    held
+      ? `Saved. Held ${held} older PENDING job(s) from before enable.`
+      : "Print settings saved.",
+    true
+  );
+  await refreshAll();
 }
 
 async function refreshAll() {
@@ -378,6 +499,8 @@ function escapeHtml(value) {
 }
 
 function bindUi() {
+  $("save-print-settings-btn")?.addEventListener("click", savePrintSettings);
+  $("clear-jobs-btn")?.addEventListener("click", clearJobHistory);
   $("login-btn").addEventListener("click", login);
   for (const id of ["login-username", "login-password"]) {
     $(id).addEventListener("keydown", (e) => {
@@ -394,7 +517,18 @@ function bindUi() {
     $("toggle-password-btn").textContent = show ? "Hide" : "Show";
   });
   $("logout-btn").addEventListener("click", logout);
-  $("new-printer-btn").addEventListener("click", clearEditor);
+  $("new-printer-btn").addEventListener("click", () => clearEditor({ open: true }));
+  $("editor-close-btn")?.addEventListener("click", () => {
+    closePrinterEditor();
+    clearEditor({ open: false });
+  });
+  $("editor-cancel-btn")?.addEventListener("click", () => {
+    closePrinterEditor();
+    clearEditor({ open: false });
+  });
+  $("printer-editor-dialog")?.addEventListener("cancel", () => {
+    clearEditor({ open: false });
+  });
   $("f-type").addEventListener("change", toggleTypeFields);
   $("save-printer-btn").addEventListener("click", savePrinter);
   $("save-stations-btn").addEventListener("click", saveStations);
@@ -425,7 +559,7 @@ function bindUi() {
 
 async function init() {
   bindUi();
-  clearEditor();
+  clearEditor({ open: false });
   const ok = await ensureSession();
   if (ok) await refreshAll();
 }

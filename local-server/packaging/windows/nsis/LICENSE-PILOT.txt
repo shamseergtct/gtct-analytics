@@ -1,0 +1,17 @@
+GTCT Restaurant Pilot (TEST) — License / Notice
+
+This installer packages the GTCT Restaurant Local Server as a controlled TEST PILOT
+for Windows PCs. It is not authorization for unrestricted production deployment
+or live customer billing under a PRODUCTION operating mode.
+
+Important:
+- Operating mode remains TEST. PRODUCTION / REAL startup is blocked by the app.
+- Physical automatic printing stays disabled until an authorized manual test
+  succeeds on this PC.
+- The persistent SQLite database is stored outside the installation directory
+  under %LOCALAPPDATA%\GTCT\RestaurantPilot and is preserved on uninstall.
+- Do not copy development databases into this folder.
+- Node.js runtime binaries are redistributed under the Node.js license.
+- Application source remains subject to your GTCT project terms.
+
+No default administrator password is embedded in this package.

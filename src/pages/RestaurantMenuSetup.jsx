@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   collection,
   doc,
@@ -11,14 +11,9 @@ import {
   where,
   writeBatch,
 } from "firebase/firestore";
-import {
-  getDownloadURL,
-  ref as storageRef,
-  uploadBytesResumable,
-} from "firebase/storage";
 import { ArrowDown, ArrowUp, ImageIcon, Plus, Save, Upload, X } from "lucide-react";
 import { Link } from "react-router-dom";
-import { db, storage } from "../firebase";
+import { db } from "../firebase";
 import { useAuth } from "../context/AuthContext.jsx";
 import { useClient } from "../context/ClientContext.jsx";
 import { useMoney } from "../hooks/useMoney.js";
@@ -28,20 +23,23 @@ import {
   num,
 } from "../components/sales/salesHelpers.js";
 import { normalizeShopType, shopTypeLabel } from "../utils/shopTypes.js";
+import { normalizeSubCategory } from "../utils/inventorySubCategory.js";
 import {
   assignMenuSortOrders,
   compareMenuItems,
+  listDistinctMenuLabels,
+  normalizeMenuLabel,
 } from "../utils/restaurantMenu.js";
+import {
+  getMenuImageLocal,
+  loadMenuImageUrlMap,
+  revokeMenuImageUrlMap,
+  saveMenuImageLocal,
+} from "../utils/menuImageStore.js";
 
 const RESTAURANT_SHOP_TYPES = new Set(["cafe", "restaurant"]);
-const CATEGORIES = ["COMMODITY", "CONSUMABLES", "ASSET"];
+const INVENTORY_TYPES = ["COMMODITY", "CONSUMABLES", "ASSET"];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-
-function safeImageName(name) {
-  return String(name || "item-image")
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .slice(-100);
-}
 
 const emptyForm = () => ({
   itemName: "",
@@ -49,7 +47,9 @@ const emptyForm = () => ({
   sellingPrice: "",
   cost: "0",
   category: "COMMODITY",
+  menuCategory: "",
   subCategory: "",
+  preparationCenter: "",
   directSale: true,
   isActive: true,
   imageUrl: "",
@@ -78,6 +78,9 @@ export default function RestaurantMenuSetup() {
   const [imageFile, setImageFile] = useState(null);
   const [imagePreview, setImagePreview] = useState("");
   const [imageStatus, setImageStatus] = useState("No image selected");
+  const [localImageUrls, setLocalImageUrls] = useState({});
+  const localImageUrlsRef = useRef({});
+  const itemIdsKey = items.map((row) => row.id).join("|");
 
   useEffect(() => {
     if (!activeClientId || !shopOk) {
@@ -105,6 +108,36 @@ export default function RestaurantMenuSetup() {
     );
   }, [activeClientId, shopOk]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLocal() {
+      revokeMenuImageUrlMap(localImageUrlsRef.current);
+      localImageUrlsRef.current = {};
+      if (!activeClientId || !itemIdsKey) {
+        setLocalImageUrls({});
+        return;
+      }
+      const ids = itemIdsKey.split("|").filter(Boolean);
+      try {
+        const urls = await loadMenuImageUrlMap(activeClientId, ids);
+        if (cancelled) {
+          revokeMenuImageUrlMap(urls);
+          return;
+        }
+        localImageUrlsRef.current = urls;
+        setLocalImageUrls(urls);
+      } catch {
+        if (!cancelled) setLocalImageUrls({});
+      }
+    }
+    loadLocal();
+    return () => {
+      cancelled = true;
+      revokeMenuImageUrlMap(localImageUrlsRef.current);
+      localImageUrlsRef.current = {};
+    };
+  }, [activeClientId, itemIdsKey]);
+
   const menuRows = useMemo(() => {
     return items
       .filter((it) => {
@@ -117,6 +150,19 @@ export default function RestaurantMenuSetup() {
       .slice()
       .sort(compareMenuItems);
   }, [items, showInactive]);
+
+  const menuCategoryOptions = useMemo(
+    () => listDistinctMenuLabels(items, (row) => row.menuCategory),
+    [items]
+  );
+  const subCategoryOptions = useMemo(
+    () => listDistinctMenuLabels(items, (row) => row.subCategory),
+    [items]
+  );
+  const preparationCenterOptions = useMemo(
+    () => listDistinctMenuLabels(items, (row) => row.preparationCenter),
+    [items]
+  );
 
   function patchForm(key, value) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -174,7 +220,9 @@ export default function RestaurantMenuSetup() {
       sellingPrice: String(item.sellingPrice ?? ""),
       cost: String(item.cost ?? "0"),
       category: item.category || "COMMODITY",
+      menuCategory: item.menuCategory || "",
       subCategory: item.subCategory || "",
+      preparationCenter: item.preparationCenter || "",
       directSale: item.directSale !== false,
       isActive: item.isActive !== false,
       imageUrl: item.imageUrl || "",
@@ -186,10 +234,23 @@ export default function RestaurantMenuSetup() {
       URL.revokeObjectURL(imagePreview);
     }
     setImageFile(null);
-    setImagePreview(item.imageUrl || "");
+    setImagePreview(localImageUrls[item.id] || item.imageUrl || "");
     setImageStatus(
-      item.imageUrl ? item.imageName || "Current image" : "No image selected"
+      localImageUrls[item.id] || item.imageUrl
+        ? "Image on this device"
+        : "No image selected"
     );
+    // Prefer fresh local blob if list map is stale.
+    getMenuImageLocal(activeClientId, item.id)
+      .then((blob) => {
+        if (!blob) return;
+        if (imagePreview && imagePreview.startsWith("blob:")) {
+          URL.revokeObjectURL(imagePreview);
+        }
+        setImagePreview(URL.createObjectURL(blob));
+        setImageStatus("Image on this device");
+      })
+      .catch(() => {});
     setErr("");
     setMsg("");
   }
@@ -199,91 +260,6 @@ export default function RestaurantMenuSetup() {
     setEditingId("");
     setForm(emptyForm());
     clearImagePicker();
-  }
-
-  function describeStorageError(reason) {
-    const code = String(reason?.code || "");
-    const message = String(reason?.message || "").trim();
-    if (code === "storage/unauthorized" || code === "storage/unauthenticated") {
-      return "Not allowed to upload images for this shop. Sign in again or ask an admin to check Storage rules.";
-    }
-    if (code === "storage/canceled") {
-      return "Image upload was canceled.";
-    }
-    if (code === "storage/retry-limit-exceeded") {
-      return "Network issue while uploading. Check connection and try a smaller image.";
-    }
-    if (code === "storage/quota-exceeded") {
-      return "Storage quota exceeded.";
-    }
-    return message || "Image upload failed. Try a smaller JPG/PNG (max 5 MB).";
-  }
-
-  function uploadMenuImageFile(itemId) {
-    const previous = {
-      imageUrl: form.imageUrl || "",
-      imagePath: form.imagePath || "",
-      imageName: form.imageName || "",
-      imageStatus:
-        form.imageStatus || (form.imageUrl ? "UPLOADED" : "NONE"),
-    };
-    if (!imageFile || !activeClientId || !itemId) {
-      return Promise.resolve({ ok: true, ...previous });
-    }
-
-    const contentType = String(imageFile.type || "").trim() || "image/jpeg";
-    if (!contentType.startsWith("image/")) {
-      return Promise.resolve({
-        ok: false,
-        message: "Selected file is not a valid image.",
-        ...previous,
-      });
-    }
-
-    setImageStatus("Uploading image…");
-    const uploadedPath = `inventory/${activeClientId}/${itemId}/${Date.now()}-${safeImageName(
-      imageFile.name
-    )}`;
-    const fileRef = storageRef(storage, uploadedPath);
-    const task = uploadBytesResumable(fileRef, imageFile, { contentType });
-
-    return new Promise((resolve) => {
-      task.on(
-        "state_changed",
-        (snapshot) => {
-          if (!snapshot.totalBytes) return;
-          const pct = Math.round(
-            (snapshot.bytesTransferred / snapshot.totalBytes) * 100
-          );
-          setImageStatus(`Uploading image… ${pct}%`);
-        },
-        (reason) => {
-          resolve({
-            ok: false,
-            message: describeStorageError(reason),
-            ...previous,
-          });
-        },
-        async () => {
-          try {
-            const imageUrl = await getDownloadURL(task.snapshot.ref);
-            resolve({
-              ok: true,
-              imageUrl,
-              imagePath: uploadedPath,
-              imageName: imageFile.name,
-              imageStatus: "UPLOADED",
-            });
-          } catch (reason) {
-            resolve({
-              ok: false,
-              message: describeStorageError(reason),
-              ...previous,
-            });
-          }
-        }
-      );
-    });
   }
 
   async function saveForm(event) {
@@ -315,7 +291,9 @@ export default function RestaurantMenuSetup() {
       // Save item fields first so image problems never block the record.
       const menuFields = {
         category: form.category || "COMMODITY",
-        subCategory: String(form.subCategory || "").trim(),
+        menuCategory: normalizeMenuLabel(form.menuCategory),
+        subCategory: normalizeSubCategory(form.subCategory),
+        preparationCenter: normalizeMenuLabel(form.preparationCenter),
         itemCode: cleanCode,
         itemName: cleanName,
         cost: costValue,
@@ -334,10 +312,11 @@ export default function RestaurantMenuSetup() {
         await setDoc(itemRef, {
           clientId: activeClientId,
           ...menuFields,
-          imageUrl: form.imageUrl || "",
-          imagePath: form.imagePath || "",
-          imageName: form.imageName || "",
-          imageStatus: form.imageUrl ? "UPLOADED" : "NONE",
+          // Cloud image optional legacy; menu photos are device-local.
+          imageUrl: "",
+          imagePath: "",
+          imageName: "",
+          imageStatus: "NONE",
           barcode: "",
           minStock: 0,
           batchNo: "",
@@ -360,22 +339,16 @@ export default function RestaurantMenuSetup() {
 
       let imageNote = "";
       if (imageFile) {
-        const imageResult = await uploadMenuImageFile(itemRef.id);
-        if (imageResult.ok) {
-          await updateDoc(itemRef, {
-            imageUrl: imageResult.imageUrl,
-            imagePath: imageResult.imagePath,
-            imageName: imageResult.imageName,
-            imageStatus: "UPLOADED",
-            updatedAt: serverTimestamp(),
-            updatedBy: user?.uid || null,
-          });
-          setImageStatus("Image uploaded");
-        } else {
-          setImageStatus("Upload failed — item saved without new image");
-          imageNote = imageResult.message;
+        setImageStatus("Saving image on this device…");
+        try {
+          await saveMenuImageLocal(activeClientId, itemRef.id, imageFile);
+          setImageStatus("Image saved on this device");
+        } catch (imageError) {
+          imageNote =
+            imageError?.message || "Could not save image on this device.";
+          setImageStatus("Image not saved — item details were saved");
           window.alert(
-            `Item saved, but the image could not be uploaded.\n\n${imageResult.message}`
+            `Item saved, but the image could not be stored on this device.\n\n${imageNote}`
           );
         }
       }
@@ -383,8 +356,8 @@ export default function RestaurantMenuSetup() {
       setMsg(
         imageNote
           ? adding
-            ? "Menu item added. Image was not uploaded."
-            : "Menu item updated. Image was not uploaded."
+            ? "Menu item added. Image was not saved on this device."
+            : "Menu item updated. Image was not saved on this device."
           : adding
             ? "Menu item added."
             : "Menu item updated."
@@ -392,7 +365,7 @@ export default function RestaurantMenuSetup() {
       cancelEdit();
     } catch (reason) {
       setErr(reason?.message || "Could not save menu item.");
-      if (imageFile) setImageStatus("Upload failed");
+      if (imageFile) setImageStatus("Image not saved");
     } finally {
       setSaving(false);
     }
@@ -568,7 +541,7 @@ export default function RestaurantMenuSetup() {
                   {imageStatus}
                 </p>
                 <p className="text-[11px] text-slate-600">
-                  JPG, PNG, or WebP · max 5 MB
+                  Stored on this device only · JPG/PNG/WebP · max 5 MB
                 </p>
               </div>
             </div>
@@ -606,27 +579,66 @@ export default function RestaurantMenuSetup() {
               />
             </label>
             <label className="block text-sm text-slate-300">
-              Category
+              Menu category
+              <input
+                list="menu-category-options"
+                value={form.menuCategory}
+                onChange={(e) => patchForm("menuCategory", e.target.value)}
+                placeholder="Type new or pick — e.g. Burgers, Drinks"
+                maxLength={60}
+                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-white"
+              />
+              <datalist id="menu-category-options">
+                {menuCategoryOptions.map((option) => (
+                  <option key={option} value={option} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block text-sm text-slate-300">
+              Sub-category
+              <input
+                list="menu-subcategory-options"
+                value={form.subCategory}
+                onChange={(e) => patchForm("subCategory", e.target.value)}
+                placeholder="Type new or pick — e.g. Beef, Chicken"
+                maxLength={60}
+                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-white"
+              />
+              <datalist id="menu-subcategory-options">
+                {subCategoryOptions.map((option) => (
+                  <option key={option} value={option} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block text-sm text-slate-300">
+              Preparation center
+              <input
+                list="menu-prep-center-options"
+                value={form.preparationCenter}
+                onChange={(e) => patchForm("preparationCenter", e.target.value)}
+                placeholder="Type new or pick — e.g. Grill, Hot kitchen, Bar"
+                maxLength={60}
+                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-white"
+              />
+              <datalist id="menu-prep-center-options">
+                {preparationCenterOptions.map((option) => (
+                  <option key={option} value={option} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block text-sm text-slate-300">
+              Inventory type
               <select
                 value={form.category}
                 onChange={(e) => patchForm("category", e.target.value)}
                 className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-white"
               >
-                {CATEGORIES.map((c) => (
+                {INVENTORY_TYPES.map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>
                 ))}
               </select>
-            </label>
-            <label className="block text-sm text-slate-300">
-              Sub-category / section
-              <input
-                value={form.subCategory}
-                onChange={(e) => patchForm("subCategory", e.target.value)}
-                placeholder="e.g. Burgers, Drinks"
-                className="mt-1 w-full rounded-xl border border-slate-700 bg-slate-950 px-3 py-2.5 text-white"
-              />
             </label>
           </div>
           <div className="flex flex-wrap gap-4">
@@ -697,9 +709,9 @@ export default function RestaurantMenuSetup() {
                     </button>
                   </div>
                   <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
-                    {item.imageUrl ? (
+                    {localImageUrls[item.id] || item.imageUrl ? (
                       <img
-                        src={item.imageUrl}
+                        src={localImageUrls[item.id] || item.imageUrl}
                         alt=""
                         className="h-full w-full object-cover"
                       />
@@ -718,7 +730,11 @@ export default function RestaurantMenuSetup() {
                     </p>
                     <p className="text-xs text-slate-500">
                       {item.itemCode || "—"}
-                      {item.subCategory ? ` · ${item.subCategory}` : ""}
+                      {item.menuCategory ? ` · ${item.menuCategory}` : ""}
+                      {item.subCategory ? ` / ${item.subCategory}` : ""}
+                      {item.preparationCenter
+                        ? ` · ${item.preparationCenter}`
+                        : ""}
                       {" · "}
                       {money(item.sellingPrice)}
                     </p>

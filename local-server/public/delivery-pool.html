@@ -41,6 +41,18 @@
       <div id="delivery-list" class="list" aria-live="polite"></div>
     </section>
   </main>
+  <dialog id="bill-dialog" class="bill-dialog" aria-labelledby="bill-title">
+    <form method="dialog" class="bill-sheet">
+      <header class="bill-head">
+        <div>
+          <h2 id="bill-title">Bill details</h2>
+          <p id="bill-subtitle" class="bill-sub"></p>
+        </div>
+        <button type="submit" class="outline bill-close" value="close">Close</button>
+      </header>
+      <div id="bill-body" class="bill-body"></div>
+    </form>
+  </dialog>
   <script type="module" src="/delivery-pool.js"></script>
 </body>
 </html>

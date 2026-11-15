@@ -179,6 +179,8 @@ export function createTestOrder(
     deviceId = "",
     userId = "",
     permissions = null,
+    terminalId = "",
+    terminalName = "",
   } = actor;
   let orderNumber = String(input.orderNumber || "").trim();
   const { lines = [] } = input;
@@ -695,6 +697,8 @@ export function createTestOrder(
            created_by_role = ?,
            created_by_device_id = ?,
            created_by_user_id = ?,
+           created_by_terminal_id = ?,
+           created_by_terminal_name = ?,
            order_type = ?,
            destination = ?,
            submission_id = ?,
@@ -741,6 +745,8 @@ export function createTestOrder(
         role,
         deviceId || "",
         userId || null,
+        terminalId || null,
+        terminalName || "",
         fulfillment.code,
         fulfillment.destination,
         submissionId || null,
@@ -784,12 +790,19 @@ export function createTestOrder(
           .get(orderId);
         ticketRevision = Number(row?.n || 0) + 1;
       }
-      const jobs = enqueuePrintJobsForOrder(orderId, ticketRevision, config, {
-        unmapped,
-        orderEdited: Boolean(replacing),
-        fulfillmentChanged: fulfillmentChangedForEdit(replacing, fulfillment),
-        previousLines,
-      });
+      const printKitchen = input.printKitchen !== false;
+      const printCashier = input.printCashier !== false;
+      const jobs =
+        printKitchen || printCashier
+          ? enqueuePrintJobsForOrder(orderId, ticketRevision, config, {
+              unmapped,
+              orderEdited: Boolean(replacing),
+              fulfillmentChanged: fulfillmentChangedForEdit(replacing, fulfillment),
+              previousLines,
+              includeKitchen: printKitchen,
+              includeCashier: printCashier,
+            })
+          : [];
       const order = db
         .prepare(`SELECT * FROM orders WHERE order_id = ?`)
         .get(orderId);

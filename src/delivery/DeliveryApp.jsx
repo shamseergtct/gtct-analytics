@@ -67,6 +67,7 @@ import {
   runDeliveryBillSync,
   subscribeDeliverySync,
 } from "../utils/deliveryBillSync.js";
+import RestaurantShopOrders from "./RestaurantShopOrders.jsx";
 
 function cleanId(value) {
   return String(value || "").trim();
@@ -266,6 +267,8 @@ export default function DeliveryApp() {
   const [editingSubmission, setEditingSubmission] = useState(null);
   /** entry | drafts | approved */
   const [activePage, setActivePage] = useState("entry");
+  /** bills (external entry) | shop (restaurant POS pool) */
+  const [appMode, setAppMode] = useState("bills");
   const [selectedDraftIds, setSelectedDraftIds] = useState(() => new Set());
 
   const billNumberRef = useRef(null);
@@ -1495,9 +1498,9 @@ export default function DeliveryApp() {
             <div className="text-sm font-semibold uppercase tracking-[0.2em] text-sky-400">
               GTCT
             </div>
-            <h1 className="mt-2 text-3xl font-bold text-white">Delivery Entry</h1>
+            <h1 className="mt-2 text-3xl font-bold text-white">Delivery</h1>
             <p className="mt-2 text-sm text-slate-400">
-              Fast bill entry for delivery boys
+              External bill entry · shop restaurant orders on mobile data
             </p>
           </div>
           <form
@@ -1724,6 +1727,39 @@ export default function DeliveryApp() {
         </div>
       ) : null}
 
+      <div className="mx-auto grid max-w-lg grid-cols-2 gap-1 border-b border-slate-800 px-2 py-2">
+        {[
+          { id: "bills", label: "Bills" },
+          { id: "shop", label: "Shop orders" },
+        ].map((mode) => {
+          const active = appMode === mode.id;
+          return (
+            <button
+              key={mode.id}
+              type="button"
+              onClick={() => setAppMode(mode.id)}
+              className={`rounded-xl px-2 py-2.5 text-xs font-semibold transition ${
+                active
+                  ? "bg-violet-500 text-slate-950"
+                  : "bg-slate-900 text-slate-300"
+              }`}
+            >
+              {mode.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {appMode === "shop" ? (
+        <main className="mx-auto max-w-lg space-y-5 px-4 py-5 pb-28">
+          <RestaurantShopOrders
+            clientId={clientId}
+            deliveryBoyId={deliveryBoyId}
+            deliveryBoyName={deliveryBoy?.name || displayName}
+          />
+        </main>
+      ) : (
+        <>
       <nav className="mx-auto grid max-w-lg grid-cols-3 gap-1 border-b border-slate-800 px-2 py-2">
         {[
           { id: "entry", label: "New entry" },
@@ -2419,6 +2455,8 @@ export default function DeliveryApp() {
           </section>
         ) : null}
       </main>
+        </>
+      )}
 
       {logoutConfirmOpen ? (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 p-4 sm:items-center">
