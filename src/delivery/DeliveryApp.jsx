@@ -69,7 +69,9 @@ import {
 } from "../utils/deliveryBillSync.js";
 import RestaurantShopOrders from "./RestaurantShopOrders.jsx";
 import {
+  isDeliveryAlertSoundEnabled,
   playNewOrderAlert,
+  setDeliveryAlertSoundEnabled,
   unlockDeliveryAlertAudio,
 } from "../utils/deliveryOrderAlert.js";
 import {
@@ -280,6 +282,9 @@ export default function DeliveryApp() {
   const [selectedDraftIds, setSelectedDraftIds] = useState(() => new Set());
   const [newOrderAlert, setNewOrderAlert] = useState(null); // { count, orderNumber }
   const [soundReady, setSoundReady] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() =>
+    isDeliveryAlertSoundEnabled()
+  );
 
   const billNumberRef = useRef(null);
   const syncCtxRef = useRef(null);
@@ -291,6 +296,20 @@ export default function DeliveryApp() {
     unlockDeliveryAlertAudio();
     setSoundReady(true);
   }, []);
+
+  const toggleAlertSound = useCallback(() => {
+    markSoundReady();
+    const next = !isDeliveryAlertSoundEnabled();
+    setDeliveryAlertSoundEnabled(next);
+    setSoundEnabled(next);
+    if (next) {
+      playNewOrderAlert({
+        title: "Alert sound on",
+        body: "You will hear a chime for new shop orders.",
+        forceSound: true,
+      });
+    }
+  }, [markSoundReady]);
 
   const currencyDecimals = resolveCurrencyDecimals(shop, "OMR");
   const currency = shop?.currency || "";
@@ -1197,10 +1216,12 @@ export default function DeliveryApp() {
         unlockDeliveryAlertAudio();
         playNewOrderAlert({ title, body });
         // Retry shortly in case the first play was blocked before unlock.
-        window.setTimeout(
-          () => playNewOrderAlert({ title, body }),
-          400
-        );
+        if (isDeliveryAlertSoundEnabled()) {
+          window.setTimeout(
+            () => playNewOrderAlert({ title, body }),
+            400
+          );
+        }
 
         setNewOrderAlert({
           count: newcomers.length,
@@ -1713,13 +1734,27 @@ export default function DeliveryApp() {
               {shop?.name || clientId} · {businessDate}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="shrink-0 rounded-xl border border-slate-700 px-3 py-2 text-xs text-slate-300"
-          >
-            Logout
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleAlertSound}
+              aria-pressed={soundEnabled}
+              className={`rounded-xl border px-3 py-2 text-xs font-semibold ${
+                soundEnabled
+                  ? "border-teal-500/50 bg-teal-500/15 text-teal-100"
+                  : "border-slate-700 bg-slate-900 text-slate-400"
+              }`}
+            >
+              {soundEnabled ? "Sound on" : "Sound off"}
+            </button>
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="rounded-xl border border-slate-700 px-3 py-2 text-xs text-slate-300"
+            >
+              Logout
+            </button>
+          </div>
         </div>
 
         <div className="mx-auto mt-2 flex max-w-lg items-center gap-2 text-xs">
@@ -1753,20 +1788,21 @@ export default function DeliveryApp() {
         </div>
       </header>
 
-      {!soundReady ? (
+      {soundEnabled && !soundReady ? (
         <button
           type="button"
           onClick={() => {
             markSoundReady();
             playNewOrderAlert({
-              title: "Sound enabled",
-              body: "You will hear an alert for new shop orders.",
+              title: "Alert sound ready",
+              body: "You will hear a chime for new shop orders.",
+              forceSound: true,
             });
           }}
           className="w-full border-b border-amber-700/40 bg-amber-950/70 px-4 py-2.5 text-left"
         >
           <div className="mx-auto max-w-lg text-sm font-medium text-amber-100">
-            Tap to enable order alert sound
+            Tap once to unlock alert chime
           </div>
         </button>
       ) : null}

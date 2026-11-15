@@ -48,6 +48,8 @@ const state = {
   expandedCats: new Set(),
   editingCatId: null,
   editingSubId: null,
+  dataCleaning: null,
+  dataCleaningBusy: false,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -2206,8 +2208,156 @@ function bindUi() {
   });
 }
 
+const CLEAN_SCOPE_LABELS = {
+  transactions: "Transaction cleaning",
+  items: "Clean items",
+  customers: "Clean customers",
+  master: "Master data cleaning",
+};
+
+function renderDataCleaningSummary(summary) {
+  const host = $("data-cleaning-summary");
+  if (!host) return;
+  if (!summary?.counts) {
+    host.textContent = "Could not load counts.";
+    return;
+  }
+  const c = summary.counts;
+  host.innerHTML = `
+    <div><strong>Shop</strong> ${escapeHtml(summary.shopId)}</div>
+    <div>Test orders: <strong>${c.testOrders}</strong> · All orders: <strong>${c.allOrders}</strong></div>
+    <div>Menu items: <strong>${c.menuItems}</strong> · Categories: <strong>${c.categories}</strong></div>
+    <div>Customers: <strong>${c.customers}</strong> · Add-ons: <strong>${c.addons}</strong></div>
+    <div>Confirm with: <code>${escapeHtml(summary.confirmPhrase)}</code></div>
+  `;
+  const phrase = $("data-cleaning-phrase");
+  if (phrase && !phrase.value) {
+    phrase.placeholder = summary.confirmPhrase || "CLEAN …";
+  }
+}
+
+async function openDataCleaningDialog() {
+  if (state.role !== "admin") {
+    toast("Admin only", true);
+    return;
+  }
+  const dlg = $("data-cleaning-dialog");
+  if (!dlg) return;
+  const err = $("data-cleaning-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  $("data-cleaning-summary").textContent = "Loading counts…";
+  if (!dlg.open) dlg.showModal();
+  const res = await api("/v1/admin/data-cleaning/summary");
+  if (!res.ok) {
+    $("data-cleaning-summary").textContent =
+      res.json?.error || "Could not load summary.";
+    return;
+  }
+  state.dataCleaning = res.json;
+  renderDataCleaningSummary(res.json);
+}
+
+async function runDataCleaningScope(scope) {
+  if (state.dataCleaningBusy) return;
+  const label = CLEAN_SCOPE_LABELS[scope] || scope;
+  const expected =
+    state.dataCleaning?.confirmPhrase ||
+    `CLEAN ${state.shop?.shopId || state.shop?.shop_id || ""}`;
+  const typed = String($("data-cleaning-phrase")?.value || "").trim();
+  const err = $("data-cleaning-error");
+  if (typed !== expected) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = `Type ${expected} exactly to enable this action.`;
+    }
+    $("data-cleaning-phrase")?.focus();
+    return;
+  }
+  if (
+    !window.confirm(
+      `${label} cannot be undone.\n\nShop: ${state.dataCleaning?.shopId || ""}\nContinue?`
+    )
+  ) {
+    return;
+  }
+  state.dataCleaningBusy = true;
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  try {
+    const res = await api("/v1/admin/data-cleaning", {
+      method: "POST",
+      body: JSON.stringify({
+        scope,
+        confirm: true,
+        confirmPhrase: typed,
+      }),
+    });
+    if (!res.ok) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = res.json?.error || "Cleaning failed";
+      }
+      toast(res.json?.error || "Cleaning failed", true);
+      return;
+    }
+    state.dataCleaning = res.json.summary || state.dataCleaning;
+    renderDataCleaningSummary(state.dataCleaning);
+    $("data-cleaning-phrase").value = "";
+    toast(`${label} finished.`);
+    if (scope === "items" || scope === "master" || scope === "customers") {
+      await loadAll();
+    }
+  } finally {
+    state.dataCleaningBusy = false;
+  }
+}
+
+function bindDataCleaningSecret() {
+  const badge = document.querySelector(".test-badge");
+  if (!badge || badge.dataset.cleanBound === "1") return;
+  badge.dataset.cleanBound = "1";
+  badge.title = badge.title || "TEST";
+  let timer = null;
+  let armed = false;
+  const clear = () => {
+    if (timer) window.clearTimeout(timer);
+    timer = null;
+    armed = false;
+  };
+  const start = (event) => {
+    if (state.role !== "admin") return;
+    if (event.type === "mousedown" && event.button !== 0) return;
+    armed = true;
+    timer = window.setTimeout(() => {
+      if (!armed) return;
+      armed = false;
+      openDataCleaningDialog();
+    }, 1200);
+  };
+  badge.addEventListener("mousedown", start);
+  badge.addEventListener("touchstart", start, { passive: true });
+  badge.addEventListener("mouseup", clear);
+  badge.addEventListener("mouseleave", clear);
+  badge.addEventListener("touchend", clear);
+  badge.addEventListener("touchcancel", clear);
+  badge.addEventListener("contextmenu", (e) => e.preventDefault());
+
+  document.querySelectorAll("[data-clean-scope]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const scope = btn.getAttribute("data-clean-scope");
+      if (scope) runDataCleaningScope(scope);
+    });
+  });
+}
+
 async function init() {
   bindUi();
+  bindDataCleaningSecret();
   const ok = await ensureSession();
   if (ok) await bootstrap();
 }

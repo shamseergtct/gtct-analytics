@@ -1279,3 +1279,83 @@ body.item-editor-open {
     padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
 }
+
+/* Secret admin data cleaning (opened via long-press on TEST badge) */
+.data-cleaning-dialog {
+  width: min(440px, calc(100vw - 1.5rem));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 0;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 18px 48px rgba(20, 32, 51, 0.22);
+}
+
+.data-cleaning-dialog::backdrop {
+  background: rgba(20, 32, 51, 0.45);
+}
+
+.data-cleaning-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.data-cleaning-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.data-cleaning-head h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.data-cleaning-summary {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  background: #f8fafc;
+}
+
+.data-cleaning-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.btn.danger-outline {
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, #fff);
+  background: #fff5f5;
+  color: var(--danger);
+}
+
+.btn.danger-outline:hover {
+  background: #ffe8e8;
+}
+
+.btn.danger {
+  border: 1px solid var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+
+.btn.danger:hover {
+  filter: brightness(0.95);
+}
+
+.data-cleaning-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.test-badge {
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}

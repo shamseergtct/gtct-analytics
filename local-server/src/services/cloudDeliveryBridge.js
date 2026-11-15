@@ -195,14 +195,32 @@ function buildPublishPayload(shopId, order) {
     paymentStatus: shopPayment.status,
     claimRevision,
     prepRevision: order.expectedRevision || claimRevision,
-    lines: (bill?.lines || []).map((line) => ({
-      name: line.name,
-      variantName: line.variantName || "",
-      quantity: Number(line.quantity || 0),
-      lineTotalCents: Number(line.lineTotalCents || 0),
-      instructions: line.instructions || [],
-      addons: line.addons || [],
-    })),
+    lines: (bill?.lines || []).map((line) => {
+      const instructions = Array.isArray(line.instructions)
+        ? line.instructions
+        : [];
+      let splitNo = Number(line.splitNo);
+      if (!Number.isFinite(splitNo) || splitNo < 1) {
+        for (const raw of instructions) {
+          const match = String(raw || "")
+            .trim()
+            .match(/^Order\s+(\d+)$/i);
+          if (match) {
+            splitNo = Number(match[1]);
+            break;
+          }
+        }
+      }
+      return {
+        name: line.name,
+        variantName: line.variantName || "",
+        quantity: Number(line.quantity || 0),
+        lineTotalCents: Number(line.lineTotalCents || 0),
+        splitNo: Number.isFinite(splitNo) && splitNo >= 1 ? Math.trunc(splitNo) : null,
+        instructions,
+        addons: line.addons || [],
+      };
+    }),
   };
 }
 

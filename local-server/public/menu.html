@@ -453,6 +453,42 @@
       </section>
     </div>
 
+    <dialog id="data-cleaning-dialog" class="data-cleaning-dialog">
+      <form method="dialog" class="data-cleaning-card" id="data-cleaning-form">
+        <header class="data-cleaning-head">
+          <div>
+            <h2>Data cleaning</h2>
+            <p class="muted">Admin only. Permanent wipe for this TEST shop. Type the confirm phrase before each action.</p>
+          </div>
+          <button type="submit" value="cancel" class="btn ghost small">Close</button>
+        </header>
+        <div id="data-cleaning-summary" class="data-cleaning-summary muted">Loading counts…</div>
+        <label class="field">
+          <span>Confirm phrase</span>
+          <input id="data-cleaning-phrase" type="text" autocomplete="off" spellcheck="false" placeholder="CLEAN …" />
+        </label>
+        <p id="data-cleaning-error" class="error" hidden></p>
+        <div class="data-cleaning-actions">
+          <button type="button" class="btn danger-outline" data-clean-scope="transactions">
+            Transaction cleaning
+          </button>
+          <button type="button" class="btn danger-outline" data-clean-scope="items">
+            Clean items
+          </button>
+          <button type="button" class="btn danger-outline" data-clean-scope="customers">
+            Clean customers
+          </button>
+          <button type="button" class="btn danger" data-clean-scope="master">
+            Master data cleaning
+          </button>
+        </div>
+        <p class="muted data-cleaning-hint">
+          Items / customers require transactions cleared first if orders still reference them.
+          Master runs transactions, then items, customers, categories, and add-ons.
+        </p>
+      </form>
+    </dialog>
+
     <div id="toast" class="toast" hidden></div>
     <script type="module" src="/menu.js"></script>
   </body>

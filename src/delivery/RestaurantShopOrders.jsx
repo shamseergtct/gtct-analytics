@@ -95,6 +95,42 @@ function addressLine(order) {
     .join(" · ");
 }
 
+/** POS stores split as "Order N" in instructions when the cart is split. */
+function lineSplitNo(line) {
+  const direct = Number(line?.splitNo);
+  if (Number.isFinite(direct) && direct >= 1) return Math.trunc(direct);
+  for (const raw of line?.instructions || []) {
+    const match = String(raw || "").trim().match(/^Order\s+(\d+)$/i);
+    if (match) return Number(match[1]);
+  }
+  return null;
+}
+
+function lineDisplayInstructions(line) {
+  return (line?.instructions || []).filter(
+    (raw) => !/^Order\s+\d+$/i.test(String(raw || "").trim())
+  );
+}
+
+/** Group bill lines like POS Review Order: Order 1 / Order 2 with subtotals. */
+function groupBillLines(lines) {
+  const list = Array.isArray(lines) ? lines : [];
+  const splitNos = [
+    ...new Set(list.map((line) => lineSplitNo(line)).filter((n) => n != null)),
+  ].sort((a, b) => a - b);
+  if (splitNos.length < 2) {
+    return [{ splitNo: null, lines: list, subtotalCents: null }];
+  }
+  return splitNos.map((splitNo) => {
+    const groupLines = list.filter((line) => lineSplitNo(line) === splitNo);
+    const subtotalCents = groupLines.reduce(
+      (sum, line) => sum + Number(line.lineTotalCents || 0),
+      0
+    );
+    return { splitNo, lines: groupLines, subtotalCents };
+  });
+}
+
 function orderAmount(order) {
   const decimals = Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4);
   return Number(order?.totalCents || 0) / 10 ** decimals;
@@ -550,22 +586,53 @@ function OrderCard({
       </div>
 
       {expanded ? (
-        <div className="mt-3 space-y-2 rounded-xl border border-slate-700 bg-slate-950/60 p-3">
+        <div className="mt-3 space-y-3 rounded-xl border border-slate-700 bg-slate-950/60 p-3">
           {lines.length ? (
-            lines.map((line, index) => (
-              <div key={`${order.id}-line-${index}`} className="text-sm text-slate-200">
-                <div className="flex justify-between gap-2 font-semibold">
-                  <span>
-                    {line.quantity}× {line.name}
-                    {line.variantName ? ` — ${line.variantName}` : ""}
-                  </span>
-                  <span>{formatPoolMoney(order, line.lineTotalCents)}</span>
-                </div>
-                {(line.instructions || []).length ? (
-                  <div className="text-xs text-amber-300/90">
-                    {line.instructions.join(" · ")}
+            groupBillLines(lines).map((group, groupIndex) => (
+              <div
+                key={`${order.id}-split-${group.splitNo ?? "all"}`}
+                className={
+                  group.splitNo != null
+                    ? "overflow-hidden rounded-xl ring-1 ring-sky-500/35"
+                    : "space-y-2"
+                }
+              >
+                {group.splitNo != null ? (
+                  <div className="flex items-center justify-between gap-2 bg-sky-600 px-3 py-2 text-sm font-bold text-white">
+                    <span>Order {group.splitNo}</span>
+                    <span>{formatPoolMoney(order, group.subtotalCents)}</span>
                   </div>
                 ) : null}
+                <div
+                  className={
+                    group.splitNo != null ? "space-y-2 px-3 py-2.5" : "space-y-2"
+                  }
+                >
+                  {group.lines.map((line, index) => {
+                    const notes = lineDisplayInstructions(line);
+                    return (
+                      <div
+                        key={`${order.id}-g${groupIndex}-line-${index}`}
+                        className="text-sm text-slate-200"
+                      >
+                        <div className="flex justify-between gap-2 font-semibold">
+                          <span>
+                            {line.quantity}× {line.name}
+                            {line.variantName ? ` — ${line.variantName}` : ""}
+                          </span>
+                          <span>
+                            {formatPoolMoney(order, line.lineTotalCents)}
+                          </span>
+                        </div>
+                        {notes.length ? (
+                          <div className="text-xs text-amber-300/90">
+                            {notes.join(" · ")}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             ))
           ) : (

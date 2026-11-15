@@ -1,8 +1,38 @@
 /** Shared new-order alert for Delivery Entry (must unlock during a user tap). */
 
+const SOUND_PREF_KEY = "gtct.delivery.orderAlertSound";
+
 let sharedCtx = null;
 let unlocked = false;
 let htmlAudio = null;
+let cachedWavUrl = null;
+
+function readSoundPref() {
+  try {
+    const raw = localStorage.getItem(SOUND_PREF_KEY);
+    if (raw === "0" || raw === "false" || raw === "off") return false;
+    if (raw === "1" || raw === "true" || raw === "on") return true;
+  } catch {
+    // ignore
+  }
+  return true; // default on
+}
+
+let soundEnabled = typeof window !== "undefined" ? readSoundPref() : true;
+
+export function isDeliveryAlertSoundEnabled() {
+  return soundEnabled;
+}
+
+export function setDeliveryAlertSoundEnabled(enabled) {
+  soundEnabled = Boolean(enabled);
+  try {
+    localStorage.setItem(SOUND_PREF_KEY, soundEnabled ? "1" : "0");
+  } catch {
+    // ignore
+  }
+  return soundEnabled;
+}
 
 function getAudioContext() {
   const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -13,12 +43,65 @@ function getAudioContext() {
   return sharedCtx;
 }
 
-/** Tiny WAV beep data URL — works when Web Audio is suspended/blocked. */
-function buildBeepDataUrl() {
-  const sampleRate = 22050;
-  const durationSec = 0.55;
+/**
+ * Soft doorbell-style chime (3 rising notes + echo).
+ * Designed to cut through shop noise without a harsh buzzer.
+ */
+function synthesizeChimeSamples(sampleRate) {
+  // Phrase: G5 → C6 → E6 with harmonic stack, then a soft repeat.
+  const melody = [
+    { freq: 784, start: 0.0, dur: 0.28 },
+    { freq: 1046.5, start: 0.26, dur: 0.32 },
+    { freq: 1318.5, start: 0.54, dur: 0.42 },
+    { freq: 1046.5, start: 1.05, dur: 0.22 },
+    { freq: 1318.5, start: 1.28, dur: 0.38 },
+  ];
+  const durationSec = 1.85;
   const numSamples = Math.floor(sampleRate * durationSec);
-  const dataSize = numSamples * 2;
+  const samples = new Float32Array(numSamples);
+
+  const addTone = (freq, start, dur, amp) => {
+    const startI = Math.floor(start * sampleRate);
+    const endI = Math.min(numSamples, Math.floor((start + dur) * sampleRate));
+    const attack = Math.max(1, Math.floor(0.012 * sampleRate));
+    const release = Math.max(1, Math.floor(0.14 * sampleRate));
+    for (let i = startI; i < endI; i += 1) {
+      const local = i - startI;
+      const len = endI - startI;
+      let env = 1;
+      if (local < attack) env = local / attack;
+      else if (local > len - release) env = Math.max(0, (len - local) / release);
+      // Soft sine + gentle 2nd harmonic (bell-like), not square/buzzer.
+      const t = i / sampleRate;
+      const wave =
+        Math.sin(2 * Math.PI * freq * t) * 0.72 +
+        Math.sin(2 * Math.PI * freq * 2 * t) * 0.18 +
+        Math.sin(2 * Math.PI * freq * 3 * t) * 0.06;
+      samples[i] += wave * amp * env;
+    }
+  };
+
+  for (const note of melody) {
+    addTone(note.freq, note.start, note.dur, 0.42);
+    // Quiet octave below for body.
+    addTone(note.freq / 2, note.start + 0.01, note.dur * 0.9, 0.14);
+  }
+
+  // Soft peak normalize.
+  let peak = 0.0001;
+  for (let i = 0; i < samples.length; i += 1) {
+    peak = Math.max(peak, Math.abs(samples[i]));
+  }
+  const scale = 0.9 / peak;
+  for (let i = 0; i < samples.length; i += 1) samples[i] *= scale;
+  return samples;
+}
+
+function buildChimeDataUrl() {
+  if (cachedWavUrl) return cachedWavUrl;
+  const sampleRate = 44100;
+  const samples = synthesizeChimeSamples(sampleRate);
+  const dataSize = samples.length * 2;
   const buffer = new ArrayBuffer(44 + dataSize);
   const view = new DataView(buffer);
 
@@ -39,29 +122,24 @@ function buildBeepDataUrl() {
   writeStr(36, "data");
   view.setUint32(40, dataSize, true);
 
-  for (let i = 0; i < numSamples; i += 1) {
-    const t = i / sampleRate;
-    let freq = 880;
-    if (t >= 0.18 && t < 0.36) freq = 1175;
-    else if (t >= 0.36) freq = 988;
-    const envelope =
-      t < 0.02 ? t / 0.02 : t > durationSec - 0.04 ? (durationSec - t) / 0.04 : 1;
-    const gapMute =
-      (t > 0.16 && t < 0.18) || (t > 0.34 && t < 0.36) ? 0 : 1;
-    const sample = Math.sin(2 * Math.PI * freq * t) * 0.55 * envelope * gapMute;
-    view.setInt16(44 + i * 2, Math.max(-1, Math.min(1, sample)) * 0x7fff, true);
+  for (let i = 0; i < samples.length; i += 1) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
 
   const bytes = new Uint8Array(buffer);
   let binary = "";
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
-  return `data:audio/wav;base64,${btoa(binary)}`;
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  cachedWavUrl = `data:audio/wav;base64,${btoa(binary)}`;
+  return cachedWavUrl;
 }
 
 function getHtmlAudio() {
   if (htmlAudio) return htmlAudio;
   try {
-    htmlAudio = new Audio(buildBeepDataUrl());
+    htmlAudio = new Audio(buildChimeDataUrl());
     htmlAudio.preload = "auto";
     htmlAudio.volume = 1;
   } catch {
@@ -80,7 +158,6 @@ export function unlockDeliveryAlertAudio() {
     }
     const audio = getHtmlAudio();
     if (audio) {
-      // Play muted briefly to satisfy autoplay policies, then reset.
       const prev = audio.volume;
       audio.volume = 0.001;
       const p = audio.play();
@@ -104,38 +181,45 @@ export function unlockDeliveryAlertAudio() {
   }
 }
 
-function playWebAudioBeep() {
+function playWebAudioChime() {
   const ctx = getAudioContext();
   if (!ctx) return false;
 
   const play = () => {
     const now = ctx.currentTime;
     const master = ctx.createGain();
-    master.gain.setValueAtTime(0.0001, now);
-    master.gain.exponentialRampToValueAtTime(0.35, now + 0.02);
-    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
+    master.gain.setValueAtTime(0.85, now);
     master.connect(ctx.destination);
 
-    const tones = [
-      { freq: 932, start: 0, dur: 0.18 },
-      { freq: 1245, start: 0.2, dur: 0.28 },
-      { freq: 932, start: 0.42, dur: 0.18 },
+    const notes = [
+      { freq: 784, start: 0.0, dur: 0.28 },
+      { freq: 1046.5, start: 0.26, dur: 0.32 },
+      { freq: 1318.5, start: 0.54, dur: 0.42 },
+      { freq: 1046.5, start: 1.05, dur: 0.22 },
+      { freq: 1318.5, start: 1.28, dur: 0.38 },
     ];
-    for (const tone of tones) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "square";
-      osc.frequency.value = tone.freq;
-      gain.gain.setValueAtTime(0.0001, now + tone.start);
-      gain.gain.exponentialRampToValueAtTime(1, now + tone.start + 0.015);
-      gain.gain.exponentialRampToValueAtTime(
-        0.0001,
-        now + tone.start + tone.dur
-      );
-      osc.connect(gain);
-      gain.connect(master);
-      osc.start(now + tone.start);
-      osc.stop(now + tone.start + tone.dur + 0.03);
+
+    for (const note of notes) {
+      const harmonics = [
+        { mult: 1, amp: 0.55 },
+        { mult: 2, amp: 0.16 },
+        { mult: 3, amp: 0.05 },
+        { mult: 0.5, amp: 0.12 },
+      ];
+      for (const h of harmonics) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = note.freq * h.mult;
+        const t0 = now + note.start;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(h.amp, t0 + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + note.dur);
+        osc.connect(gain);
+        gain.connect(master);
+        osc.start(t0);
+        osc.stop(t0 + note.dur + 0.05);
+      }
     }
   };
 
@@ -147,7 +231,7 @@ function playWebAudioBeep() {
   return true;
 }
 
-function playHtmlBeep() {
+function playHtmlChime() {
   const audio = getHtmlAudio();
   if (!audio) return false;
   try {
@@ -170,7 +254,7 @@ function showSystemNotification(title, body) {
     if (Notification.permission !== "granted") return;
     const n = new Notification(title || "New shop order", {
       body: body || "A new order is waiting in Shop orders.",
-      silent: false,
+      silent: !soundEnabled,
       tag: "gtct-shop-order",
       renotify: true,
     });
@@ -187,24 +271,34 @@ function showSystemNotification(title, body) {
 }
 
 /**
- * Play alert sound (+ optional vibration / system notification).
- * @param {{ title?: string, body?: string }} [opts]
+ * Play alert sound (+ vibration / system notification).
+ * @param {{ title?: string, body?: string, forceSound?: boolean, skipSound?: boolean }} [opts]
  */
 export function playNewOrderAlert(opts = {}) {
   try {
     if (!unlocked) unlockDeliveryAlertAudio();
-    const webOk = playWebAudioBeep();
-    // Always also try HTML audio — more reliable on mobile Safari / Chrome.
-    playHtmlBeep();
-    if (!webOk) {
-      window.setTimeout(() => {
-        playWebAudioBeep();
-        playHtmlBeep();
-      }, 280);
+
+    const wantSound =
+      opts.forceSound === true ||
+      (opts.skipSound !== true && soundEnabled);
+
+    if (wantSound) {
+      const webOk = playWebAudioChime();
+      playHtmlChime();
+      if (!webOk) {
+        window.setTimeout(() => {
+          playWebAudioChime();
+          playHtmlChime();
+        }, 320);
+      }
     }
 
-    if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-      navigator.vibrate([120, 60, 120, 60, 200]);
+    if (
+      wantSound &&
+      typeof navigator !== "undefined" &&
+      typeof navigator.vibrate === "function"
+    ) {
+      navigator.vibrate([140, 70, 140, 70, 220]);
     }
     showSystemNotification(opts.title, opts.body);
   } catch {

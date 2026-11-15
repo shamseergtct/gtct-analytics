@@ -106,6 +106,10 @@ import {
   countOrders,
   clearTestOrders,
 } from "../services/orders.js";
+import {
+  getDataCleaningSummary,
+  runDataCleaning,
+} from "../services/dataCleaning.js";
 import { listOrderRegister, getOrderRegisterDetail } from "../services/orderRegister.js";
 import { voidUnpaidTestOrder } from "../services/orderVoid.js";
 import { getBusinessShift, openBusinessShift, closeBusinessShift } from "../services/businessShifts.js";
@@ -2058,6 +2062,42 @@ export function createServer(config) {
               deleted: result.deleted,
               remainingOrders: result.remainingOrders,
             },
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/admin/data-cleaning/summary") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          sendJson(res, 200, getDataCleaningSummary(config.testTenantId));
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code } : {}),
+          });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/admin/data-cleaning") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const result = runDataCleaning(config.testTenantId, {
+            role: auth.role,
+            scope: body.scope,
+            confirm: Boolean(body.confirm),
+            confirmPhrase: body.confirmPhrase,
+            actorUserId: auth.userId || "",
           });
           sendJson(res, 200, result);
         } catch (err) {
