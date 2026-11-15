@@ -11,6 +11,7 @@ import { nowIso } from "../util/time.js";
 import { getShopSettings } from "./shopSettings.js";
 import { getDeliveryBillSnapshot } from "./deliveryPool.js";
 import { readOrderOperationalState } from "./orderOperationalState.js";
+import { getOrderPayment } from "./settlements.js";
 import { hashPassword } from "./staffAuth.js";
 import { recordAudit } from "./audit.js";
 import {
@@ -19,6 +20,46 @@ import {
 } from "./deliveryLifecycle.js";
 import { markDeliveryPayment } from "./deliveryPaymentReports.js";
 import { log } from "../util/logger.js";
+
+/** Same payment truth Monitor uses (allocations + balances + credit). */
+function readShopPaymentSnapshot(shopId, orderId) {
+  try {
+    const payment = getOrderPayment(orderId, shopId);
+    const status = String(payment.paymentStatus || "UNPAID").toUpperCase();
+    const shopCredit = getDb()
+      .prepare(
+        `SELECT state FROM delivery_shop_credit_authorizations
+         WHERE shop_id = ? AND order_id = ?`
+      )
+      .get(shopId, orderId);
+    if (shopCredit?.state === "APPROVED" && status !== "PAID") {
+      return {
+        status: "CREDIT",
+        cashCents: Number(payment.cashCents || 0),
+        bankCents: Number(payment.bankCents || 0),
+        creditCents: Number(
+          payment.creditCents || payment.orderTotalCents || payment.paidCents || 0
+        ),
+        verified: true,
+      };
+    }
+    return {
+      status,
+      cashCents: Number(payment.cashCents || 0),
+      bankCents: Number(payment.bankCents || 0),
+      creditCents: Number(payment.creditCents || 0),
+      verified: status !== "UNPAID",
+    };
+  } catch {
+    return {
+      status: "UNPAID",
+      cashCents: 0,
+      bankCents: 0,
+      creditCents: 0,
+      verified: false,
+    };
+  }
+}
 
 const CLOUD_DELIVERY_PERMS = [
   "delivery.pool.view",
@@ -129,6 +170,8 @@ function buildPublishPayload(shopId, order) {
     createHash("sha256")
       .update(`${order.orderId}:${order.updatedAt || order.createdAt || ""}`)
       .digest("hex");
+  const totalCents = Number(order.totalCents ?? bill?.totalCents ?? 0);
+  const shopPayment = readShopPaymentSnapshot(shopId, order.orderId);
   return {
     localOrderId: order.orderId,
     localShopId: shopId,
@@ -143,11 +186,13 @@ function buildPublishPayload(shopId, order) {
     addressNote: order.addressNote || bill?.addressNote || "",
     currencyCode: order.currencyCode || bill?.currencyCode || "",
     currencyDecimals: Number(order.currencyDecimals ?? bill?.currencyDecimals ?? 2),
-    totalCents: Number(order.totalCents ?? bill?.totalCents ?? 0),
+    totalCents,
     goodsCents: Number(bill?.goodsCents || 0),
     deliveryChargeCents: Number(bill?.deliveryChargeCents || 0),
     taxCents: Number(bill?.taxCents || 0),
     taxName: bill?.taxName || "",
+    shopPayment,
+    paymentStatus: shopPayment.status,
     claimRevision,
     prepRevision: order.expectedRevision || claimRevision,
     lines: (bill?.lines || []).map((line) => ({
@@ -332,6 +377,18 @@ function applyPayment(shopId, row) {
     )
     .get(shopId, orderId);
   if (existing && String(existing.report_type) === kind) return true;
+  // Cashier settlement already recorded — nothing for the rider report to apply.
+  try {
+    const payment = getOrderPayment(orderId, shopId);
+    if (
+      ["PAID", "CREDIT"].includes(String(payment.paymentStatus || "").toUpperCase()) &&
+      ["SHOP_PAID_REPORTED", "CREDIT_REPORTED", "PARTIAL_SHOP"].includes(kind)
+    ) {
+      return true;
+    }
+  } catch {
+    // fall through to normal apply
+  }
   const expectedVersion = Number(existing?.version || 0);
   markDeliveryPayment(
     shopId,
@@ -361,9 +418,11 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
   }
 
   // Bridge actor is synthetic; listAvailableDeliveries requires delivery guard.
-  // Use admin-readable query of ready pool via SQL + readiness instead.
-  const available = listReadyDeliveryOrders(shopId);
-  const publishOrders = available.map((order) => buildPublishPayload(shopId, order));
+  // Publish ready pool + claimed open orders so shop payment updates sync.
+  const publishSource = listPublishableDeliveryOrders(shopId);
+  const publishOrders = publishSource.map((order) =>
+    buildPublishPayload(shopId, order)
+  );
 
   const response = await postBridge(cfg.url, cfg.secret, {
     clientId: cfg.clientId,
@@ -426,23 +485,28 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
   };
 }
 
-function listReadyDeliveryOrders(shopId) {
+function listPublishableDeliveryOrders(shopId) {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT o.* FROM orders o
+      `SELECT o.*, c.order_id AS claimed_order_id FROM orders o
        LEFT JOIN order_delivery_claims c
          ON c.shop_id = o.tenant_id AND c.order_id = o.order_id
        WHERE o.tenant_id = ? AND o.is_test = 1 AND o.status = 'OPEN'
-         AND o.fulfillment_behavior = 'DELIVERY' AND c.order_id IS NULL
+         AND o.fulfillment_behavior = 'DELIVERY'
        ORDER BY o.created_at ASC
-       LIMIT 200`
+       LIMIT 250`
     )
     .all(shopId);
   const out = [];
+  const seen = new Set();
   for (const o of rows) {
+    const claimed = Boolean(o.claimed_order_id);
     const state = readOrderOperationalState(db, shopId, o);
-    if (!state.dispatch.ready) continue;
+    // Unclaimed: only when ready for the pool. Claimed: always sync payment.
+    if (!claimed && !state.dispatch.ready) continue;
+    if (seen.has(o.order_id)) continue;
+    seen.add(o.order_id);
     out.push({
       orderId: o.order_id,
       orderNumber: o.order_number,
@@ -461,7 +525,7 @@ function listReadyDeliveryOrders(shopId) {
       updatedAt: o.updated_at,
       expectedRevision: state.dispatch.revision || "",
     });
-    if (out.length >= 100) break;
+    if (out.length >= 150) break;
   }
   return out;
 }

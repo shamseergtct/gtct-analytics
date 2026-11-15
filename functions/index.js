@@ -512,13 +512,30 @@ exports.reportRestaurantDeliveryPayment = onCall(
         throw new HttpsError("aborted", "Payment mark changed. Refresh and retry.");
       }
       const now = Date.now();
+      const cashCents = Math.max(0, Math.round(Number(request.data?.cashCents) || 0));
+      const shopPaidCents = Math.max(
+        0,
+        Math.round(Number(request.data?.shopPaidCents) || 0)
+      );
+      const creditCents = Math.max(
+        0,
+        Math.round(Number(request.data?.creditCents) || 0)
+      );
+      const multi = request.data?.multi === true;
+      const paymentReport = {
+        status: reportType,
+        version: expectedVersion + 1,
+        reportedAt: now,
+        reportedByDeliveryBoyId: actor.deliveryBoyId,
+        multi: Boolean(multi),
+      };
+      if (multi || reportType === "PARTIAL_SHOP") {
+        paymentReport.cashCents = cashCents;
+        paymentReport.shopPaidCents = shopPaidCents;
+        paymentReport.creditCents = creditCents;
+      }
       tx.update(ref, {
-        paymentReport: {
-          status: reportType,
-          version: expectedVersion + 1,
-          reportedAt: now,
-          reportedByDeliveryBoyId: actor.deliveryBoyId,
-        },
+        paymentReport,
         updatedAt: now,
         localPaymentApplied: false,
       });
@@ -579,7 +596,9 @@ exports.restaurantDeliveryBridge = onRequest(
             claimedByName: prev.claimedByName || "",
             claimedByUid: prev.claimedByUid || "",
             claimedAt: prev.claimedAt || null,
+            // Keep rider marks; always refresh cashier settlement from POS.
             paymentReport: prev.paymentReport || order.paymentReport || null,
+            shopPayment: order.shopPayment || prev.shopPayment || null,
             deliveryLifecycle: prev.deliveryLifecycle || order.deliveryLifecycle || null,
             localClaimApplied: prev.localClaimApplied === true,
             localStatusApplied: prev.localStatusApplied === true,
