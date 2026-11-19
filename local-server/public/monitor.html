@@ -2,93 +2,30 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b539e" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-title" content="GTCT" />
-  <title>GTCT Order Monitor — TEST</title>
-  <link rel="manifest" href="/manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
-  <link rel="stylesheet" href="/styles.css" />
-  <link rel="stylesheet" href="/monitor.css?v=board-compact1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="refresh" content="0;url=/orders.html?view=board" />
+  <title>Opening Orders Board…</title>
+  <script>
+    (function () {
+      var params = new URLSearchParams(location.search);
+      params.set("view", "board");
+      location.replace("/orders.html?" + params.toString());
+    })();
+  </script>
 </head>
 <body>
-  <section class="view login-view" id="login-view" hidden>
-    <div class="login-card">
-      <p class="brand">GTCT Restaurant</p>
-      <h1>Order Monitor</h1>
-      <p class="hint">Sign in as an authorized Admin or Cashier.</p>
-      <div class="login-form">
-        <div class="field"><label for="login-username">Username</label><input id="login-username" autocomplete="username" /></div>
-        <div class="field"><label for="login-password">Password</label><input id="login-password" type="password" autocomplete="current-password" /></div>
-        <button id="login-btn" type="button" class="btn primary">Sign in</button>
-        <p class="error" id="login-error" role="alert" hidden></p>
-      </div>
-    </div>
-  </section>
-  <section class="view" id="main-view" hidden>
-    <header class="topbar">
-      <div class="topbar-brand"><p class="brand-inline">GTCT</p><h1>Order Monitor <span class="monitor-test">TEST</span></h1></div>
-      <div class="topbar-actions">
-        <span class="banner compact test-badge">TEST</span>
-        <nav id="app-nav" class="app-nav" aria-label="Main">
-          <div class="nav-primary" role="group" aria-label="Floor">
-            <a class="nav-link" href="/">Sales</a>
-            <a class="nav-link" href="/orders.html">Orders</a>
-            <a class="nav-link" href="/monitor.html" aria-current="page">Monitor</a>
-            <a class="nav-link" href="/prep.html">Prep</a>
-          </div>
-          <details id="settings-menu" class="nav-pop">
-            <summary class="nav-icon-btn" aria-label="Settings">
-              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.55-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.68.22l2.39-.96c.5.39 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.55 1.63-.94l2.39.96c.25.12.54.02.68-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7z"/>
-              </svg>
-            </summary>
-            <div class="nav-dropdown" role="menu">
-              <p class="nav-dropdown-heading">Delivery</p>
-              <a class="nav-dropdown-link" href="/delivery-cash.html">Rider Cash</a>
-            </div>
-          </details>
-          <details id="account-menu" class="nav-pop">
-            <summary class="nav-account-btn" aria-label="Account">
-              <span id="session-role" class="nav-account-name"></span>
-            </summary>
-            <div class="nav-dropdown nav-dropdown-account" role="menu">
-              <button type="button" class="nav-dropdown-link nav-logout" id="logout-btn">Sign Out</button>
-            </div>
-          </details>
-        </nav>
-      </div>
-    </header>
-    <main class="monitor-page">
-      <div class="monitor-controls">
-        <label for="behavior">Order type
-          <select id="behavior">
-            <option value="">All</option>
-            <option value="DELIVERY">Delivery</option>
-            <option value="COUNTER">Counter</option>
-            <option value="TAKEAWAY">Takeaway</option>
-            <option value="TABLE">Dine-in</option>
-            <option value="CAR_HOP">Car-hop</option>
-          </select>
-        </label>
-        <label for="order-date">Date <input id="order-date" type="date" /></label>
-        <label for="order-search">Search <input id="order-search" type="search" placeholder="Invoice, token, customer, address" /></label>
-        <div class="monitor-view-switch" role="group" aria-label="Order view">
-          <button type="button" id="view-grid" class="monitor-switch-btn" aria-pressed="true" aria-label="Grid view">▦</button>
-          <button type="button" id="view-list" class="monitor-switch-btn" aria-pressed="false" aria-label="List view">☷</button>
-        </div>
-        <button type="button" id="refresh-btn" class="btn ghost monitor-refresh">Refresh</button>
-      </div>
-      <p id="monitor-status" aria-live="polite" class="hint">Loading…</p>
-      <section id="monitor-list" class="monitor-list" aria-label="Orders"></section>
-      <div class="monitor-pager">
-        <button type="button" id="prev-page" class="btn ghost">Previous</button>
-        <span id="page-label"></span>
-        <button type="button" id="next-page" class="btn ghost">Next</button>
-      </div>
-    </main>
-  </section>
-  <script type="module" src="/monitor.js"></script>
+  <p><a id="board-redirect" href="/orders.html?view=board">Opening Orders Board...</a></p>
+  <noscript>
+    <p><a href="/orders.html?view=board">Opening Orders Board...</a></p>
+  </noscript>
+  <script>
+    (function () {
+      var a = document.getElementById("board-redirect");
+      if (!a) return;
+      var params = new URLSearchParams(location.search);
+      params.set("view", "board");
+      a.href = "/orders.html?" + params.toString();
+    })();
+  </script>
 </body>
 </html>
