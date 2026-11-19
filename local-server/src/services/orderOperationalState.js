@@ -92,3 +92,39 @@ export function readOrderOperationalState(db, shopId, order) {
     },
   };
 }
+
+/** Throws 409 ORDER_NOT_EDITABLE when record/dispatch state blocks edit. */
+export function assertOrderEditable(db, shopId, order) {
+  if (order.status !== "OPEN") {
+    throw Object.assign(new Error("Only open orders can be edited."), {
+      status: 409,
+      code: "ORDER_NOT_EDITABLE",
+    });
+  }
+  const ops = readOrderOperationalState(db, shopId, order);
+  const life = String(ops.deliveryLifecycle?.status || "");
+  if (life === "DELIVERED" || ops.operationalStatus === "DELIVERY_DELIVERED") {
+    throw Object.assign(new Error("Delivered orders cannot be edited."), {
+      status: 409,
+      code: "ORDER_NOT_EDITABLE",
+    });
+  }
+  if (life === "CANCELLED" || ops.operationalStatus === "DELIVERY_CANCELLED") {
+    throw Object.assign(new Error("Cancelled orders cannot be edited."), {
+      status: 409,
+      code: "ORDER_NOT_EDITABLE",
+    });
+  }
+  if (life === "CANCEL_REQUESTED" || ops.operationalStatus === "DELIVERY_CANCEL_REQUESTED") {
+    throw Object.assign(new Error("Orders with a cancellation request cannot be edited."), {
+      status: 409,
+      code: "ORDER_NOT_EDITABLE",
+    });
+  }
+  if (ops.deliveryBoyName || ops.deliveryAcceptedAt) {
+    throw Object.assign(new Error("Out for delivery — cannot be edited."), {
+      status: 409,
+      code: "ORDER_NOT_EDITABLE",
+    });
+  }
+}

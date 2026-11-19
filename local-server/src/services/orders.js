@@ -21,6 +21,7 @@ import {
 } from "./tax.js";
 import { resolveVariantForOrder } from "./variants.js";
 import { resolveSaleFulfillment } from "./orderSetup.js";
+import { assertOrderEditable } from "./orderOperationalState.js";
 
 function existingOrderResult(db, order) {
   const jobs = db
@@ -221,12 +222,7 @@ export function createTestOrder(
           });
         }
         assertOrderShiftOpenForEdit(db, tenantId, replacing);
-        if (replacing.status !== "OPEN") {
-          throw Object.assign(new Error("Only open orders can be edited."), {
-            status: 400,
-            code: "ORDER_NOT_EDITABLE",
-          });
-        }
+        assertOrderEditable(db, tenantId, replacing);
         const settled = db
           .prepare(`SELECT 1 AS ok FROM order_settlements WHERE shop_id = ? AND order_id = ?
             UNION ALL SELECT 1 AS ok FROM order_payment_allocations WHERE shop_id = ? AND order_id = ? LIMIT 1`)
@@ -991,13 +987,9 @@ export function loadOrderForEdit(shopId, orderId) {
       code: "ORDER_NOT_FOUND",
     });
   }
-  if (order.status !== "OPEN") {
-    throw Object.assign(new Error("Only open orders can be edited."), {
-      status: 400,
-      code: "ORDER_NOT_EDITABLE",
-    });
-  }
-  const settled = getDb()
+  const db = getDb();
+  assertOrderEditable(db, shopId, order);
+  const settled = db
     .prepare(`SELECT 1 AS ok FROM order_settlements WHERE shop_id = ? AND order_id = ?
       UNION ALL SELECT 1 AS ok FROM order_payment_allocations WHERE shop_id = ? AND order_id = ? LIMIT 1`)
     .get(shopId, orderId, shopId, orderId);
