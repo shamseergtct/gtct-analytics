@@ -4644,6 +4644,7 @@ function syncOrderPrintChoice() {
   const kitchen = $("review-print-kitchen");
   const cashier = $("review-print-cashier");
   if (!wrap || !kitchen || !cashier) return;
+  const editing = Boolean(state.editingOrderId);
   const allowKitchen = ps.kitchenAutoPrint !== false;
   const allowCashier =
     ps.cashierAutoPrint !== false && ps.cashierAutoPrintOnPayment !== false;
@@ -4652,8 +4653,8 @@ function syncOrderPrintChoice() {
   kitchen.closest("label").hidden = !allowKitchen;
   cashier.closest("label").hidden = !allowCashier;
   if (!ask) {
-    kitchen.checked = allowKitchen;
-    cashier.checked = allowCashier;
+    kitchen.checked = editing ? false : allowKitchen;
+    cashier.checked = editing ? false : allowCashier;
     kitchen.disabled = true;
     cashier.disabled = true;
     return;
@@ -4661,10 +4662,10 @@ function syncOrderPrintChoice() {
   kitchen.disabled = !allowKitchen;
   cashier.disabled = !allowCashier;
   if (!Object.prototype.hasOwnProperty.call(kitchen.dataset, "userTouched")) {
-    kitchen.checked = allowKitchen;
+    kitchen.checked = editing ? false : allowKitchen;
   }
   if (!Object.prototype.hasOwnProperty.call(cashier.dataset, "userTouched")) {
-    cashier.checked = allowCashier;
+    cashier.checked = editing ? false : allowCashier;
   }
 }
 
@@ -5335,6 +5336,8 @@ async function beginEdit(orderId) {
   state.orderNumber = draft.orderNumber || "";
   state.submissionId = newSubmissionId();
   state.lastOrderId = null;
+  delete $("review-print-kitchen")?.dataset.userTouched;
+  delete $("review-print-cashier")?.dataset.userTouched;
   state.fulfillment = { ...blankFulfillment(), ...(draft.fulfillment || {}) };
   normalizeFulfillmentCustomerFields();
   const typeSelect = $("order-type");

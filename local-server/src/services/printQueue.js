@@ -171,6 +171,38 @@ function removedTicketLines(previous, current) {
   return removed;
 }
 
+/** Lines in current that do not match a previous signature (new or changed). */
+function newOrChangedTicketLines(previous, current) {
+  const remaining = (previous || []).map(ticketLineSignature);
+  const changed = [];
+  for (const line of current || []) {
+    const signature = ticketLineSignature(line);
+    const index = remaining.indexOf(signature);
+    if (index >= 0) remaining.splice(index, 1);
+    else changed.push(line);
+  }
+  return changed;
+}
+
+function cancelledKitchenItems(removed) {
+  return (removed || []).map((item) => {
+    const name = String(item.name || item.item_name || "").trim() || "ITEM";
+    const qty = Number(item.quantity || 0);
+    return {
+      name: `CANCELLED: ${name} x${qty}`,
+      quantity: "",
+      instructions: [],
+      addons: [],
+      variantName: "",
+      unitBasePriceCents: 0,
+      unitAddonsCents: 0,
+      unitTotalCents: 0,
+      lineTotalCents: 0,
+      stationName: null,
+    };
+  });
+}
+
 /**
  * Enqueue kitchen jobs per station and/or an unpaid cashier bill.
  * Paid cashier receipts are enqueued after payment via enqueueCashierReceiptAfterPayment.
@@ -259,7 +291,6 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
   }
 
   const orderEdited = options.orderEdited === true;
-  const fulfillmentChanged = options.fulfillmentChanged === true;
   const previousByStation = new Map();
   for (const line of options.previousLines || []) {
     if (!line.stationId) continue;
@@ -270,7 +301,7 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
     if (!orderEdited) return true;
     const before = (previousByStation.get(stationId) || []).map(ticketLineSignature).sort().join("||");
     const after = (byStation.get(stationId) || []).map(ticketLineSignature).sort().join("||");
-    return fulfillmentChanged || before !== after;
+    return before !== after;
   }
 
   const includeKitchen = options.includeKitchen !== false;
@@ -282,9 +313,17 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
       if (!stationChanged(stationId)) continue;
       const station = stationStmt.get(stationId);
       const printer = stationPrinter(db, stationId);
+      const prevStationLines = previousByStation.get(stationId) || [];
       const removedItems = orderEdited
-        ? removedTicketLines(previousByStation.get(stationId), stationLines)
+        ? removedTicketLines(prevStationLines, stationLines)
         : [];
+      const kitchenLines = orderEdited
+        ? newOrChangedTicketLines(prevStationLines, stationLines)
+        : stationLines;
+      const items = orderEdited
+        ? [...mapLineItems(kitchenLines), ...cancelledKitchenItems(removedItems)]
+        : mapLineItems(stationLines);
+      if (orderEdited && items.length === 0) continue;
       if (!printer) {
         // Explicit failure path — do not drop station items
         const cashierPrinter = stationPrinter(db, "station_cashier");
@@ -310,9 +349,11 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
           ticketRevision,
           isReprint: false,
           orderEdited,
-          removedItems,
-          items: mapLineItems(stationLines),
-          warning: "NO PRINTER ASSIGNED TO STATION",
+          removedItems: [],
+          items,
+          warning: orderEdited
+            ? "REVISED ORDER — NO PRINTER ASSIGNED TO STATION"
+            : "NO PRINTER ASSIGNED TO STATION",
         };
         const key = buildIdempotencyKey({
           tenantId: order.tenant_id,
@@ -369,8 +410,9 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
         ticketRevision,
         isReprint: false,
         orderEdited,
-        removedItems,
-        items: mapLineItems(stationLines),
+        removedItems: [],
+        items,
+        ...(orderEdited ? { warning: "REVISED ORDER" } : {}),
       };
 
       const key = buildIdempotencyKey({
@@ -404,6 +446,7 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
         const printer = stationPrinter(db, stationId) || stationPrinter(db, "station_cashier");
         if (!printer) continue;
         const removedItems = removedTicketLines(oldLines, []);
+        if (!removedItems.length) continue;
         const payload = {
           restaurantDisplayName: shopDisplayName,
           shopDisplayName,
@@ -421,8 +464,9 @@ export function enqueuePrintJobsForOrder(orderId, ticketRevision, config, option
           ticketRevision,
           isReprint: false,
           orderEdited: true,
-          removedItems,
-          items: [],
+          removedItems: [],
+          items: cancelledKitchenItems(removedItems),
+          warning: "REVISED ORDER",
         };
         const key = buildIdempotencyKey({
           tenantId: order.tenant_id,
