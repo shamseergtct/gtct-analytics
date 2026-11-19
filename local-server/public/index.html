@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="theme-color" content="#0b539e" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
@@ -13,7 +13,8 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
-    <link rel="stylesheet" href="/styles.css?v=sales-m10" />
+    <link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png" />
+    <link rel="stylesheet" href="/styles.css?v=sales-ui-customize-clear" />
     <meta http-equiv="Cache-Control" content="no-cache" />
     <link rel="stylesheet" href="/delivery-navigation.css" />
   </head>
@@ -60,12 +61,16 @@
             </div>
             <button type="button" id="login-btn" class="btn primary">Sign in</button>
             <p id="login-error" class="error" hidden></p>
+            <p class="recovery-link">
+              <a href="/recovery.html">Forgot password?</a>
+            </p>
           </div>
         </div>
       </section>
 
       <!-- Main POS -->
       <section id="main-view" class="view main-view" hidden>
+        <div class="test-mode-banner" role="status">TEST MODE – not real sales</div>
         <header class="topbar">
           <div class="topbar-brand">
             <p class="brand-inline">GTCT</p>
@@ -73,7 +78,7 @@
           </div>
           <div class="topbar-actions">
             <button type="button" id="pending-payments-btn" class="pending-payments-btn" hidden aria-controls="pending-payments-drawer" aria-expanded="false">
-              Unpaid <span id="pending-payments-count" hidden>0</span>
+              Unpaid <span id="pending-payments-count" class="unpaid-count-badge" hidden>0</span>
             </button>
             <button type="button" id="print-jobs-btn" class="print-jobs-btn" aria-controls="print-jobs-drawer" aria-expanded="false" aria-label="Print jobs">
               <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -81,7 +86,6 @@
               </svg>
               <span id="print-jobs-count" class="print-jobs-count" hidden>0</span>
             </button>
-            <span class="banner compact test-badge">TEST</span>
             <button
               type="button"
               id="nav-menu-btn"
@@ -158,7 +162,14 @@
           <section class="cart-pane" id="cart-pane">
             <div class="cart-pane-inner">
               <div class="cart-pane-head">
-                <h2>Cart</h2>
+                <h2 class="cart-pane-title">
+                  Cart
+                  <span class="cart-draft-inline muted">
+                    <span id="order-number-label">Draft</span>
+                    <span id="order-number-display" class="draft-number">—</span>
+                  </span>
+                </h2>
+                <input id="order-number" type="text" readonly hidden title="" />
                 <button type="button" id="hold-cart-btn" class="btn ghost small" hidden>Hold</button>
                 <button type="button" id="new-order-btn" class="btn ghost small">New #</button>
                 <button type="button" id="close-cart-drawer" class="btn ghost small cart-drawer-close" hidden aria-label="Close cart">✕</button>
@@ -171,25 +182,30 @@
                 <div id="held-cart-list" class="held-cart-list"></div>
               </div>
               <div class="order-meta compact-meta">
-                <label class="field">
-                  <span id="order-number-label">Draft #</span>
-                  <input id="order-number" type="text" readonly title="" />
-                </label>
                 <div class="field order-type-field">
-                  <label for="order-type">Order type</label>
-                  <select id="order-type" aria-label="Order type"></select>
+                  <div id="order-type-quick" class="order-type-segmented" role="group" aria-label="Order type"></div>
+                  <select id="order-type" class="sr-only-select" aria-label="Order type" tabindex="-1"></select>
                 </div>
                 <div id="fulfillment-fields" class="fulfillment-fields"></div>
               </div>
-              <div id="split-bar" class="split-bar" hidden></div>
-              <div id="cart-lines" class="cart-lines"></div>
+              <div class="cart-items-region">
+                <div class="cart-items-head">
+                  <strong id="cart-items-label" class="cart-items-label">Items (0)</strong>
+                  <div id="split-bar" class="split-bar" hidden></div>
+                </div>
+                <div id="cart-lines" class="cart-lines"></div>
+              </div>
+              <div id="cart-undo-bar" class="cart-undo-bar" hidden role="status" aria-live="polite">
+                <span id="cart-undo-text">Item removed</span>
+                <button type="button" id="cart-undo-btn" class="btn ghost small">Undo</button>
+              </div>
               <div class="cart-footer sticky-cart-footer">
                 <div id="cart-tax-summary" class="cart-tax-summary" aria-live="polite"></div>
                 <p id="send-status" class="status-line" hidden></p>
                 <button type="button" id="cart-add-more-items" class="btn ghost cart-add-more-items">← Add more items</button>
                 <div class="cart-actions">
-                  <button type="button" id="clear-cart-btn" class="btn ghost">Clear</button>
-                  <button type="button" id="review-btn" class="btn primary">Review &amp; Send</button>
+                  <button type="button" id="clear-cart-btn" class="btn clear-cart-btn">Clear</button>
+                  <button type="button" id="review-btn" class="btn primary review-send-btn">Review &amp; Send</button>
                 </div>
               </div>
             </div>
@@ -296,10 +312,32 @@
         <div id="picker-customer-section" class="picker-search">
           <label class="field">
             <span>Search customer</span>
-            <input id="picker-cust-search" type="search" placeholder="Search customer name or phone" autocomplete="off" enterkeyhint="search" />
+            <input
+              id="picker-cust-search"
+              type="search"
+              placeholder="Search name or phone"
+              autocomplete="off"
+              enterkeyhint="search"
+              inputmode="tel"
+            />
           </label>
           <div id="picker-cust-results" class="cust-results" hidden></div>
+          <div id="picker-phone-prompt" class="picker-phone-prompt" hidden>
+            <p class="picker-phone-copy">
+              <strong id="picker-phone-name">Customer</strong> has no contact number.
+            </p>
+            <label class="field">
+              <span>Contact number</span>
+              <input id="picker-phone-input" type="tel" inputmode="tel" autocomplete="tel" maxlength="30" />
+            </label>
+            <p id="picker-phone-error" class="error" hidden></p>
+            <div class="dialog-actions">
+              <button type="button" id="picker-phone-cancel" class="btn ghost">Back</button>
+              <button type="button" id="picker-phone-save" class="btn primary">Save &amp; select</button>
+            </div>
+          </div>
           <div class="dialog-actions">
+            <button type="button" id="picker-new-customer" class="btn ghost">+ New customer</button>
             <button type="button" id="address-picker-clear" class="btn ghost">Remove customer</button>
           </div>
         </div>
@@ -434,56 +472,27 @@
     </dialog>
 
     <!-- Customize modal -->
-    <dialog id="instr-dialog" class="customize-dialog">
+    <dialog id="instr-dialog" class="customize-dialog" aria-labelledby="instr-item-name">
       <form method="dialog" id="instr-form" class="instr-form customize-form">
+        <div class="customize-sheet-handle" aria-hidden="true"></div>
         <div class="customize-scroll">
-          <header class="customize-hero">
-            <div class="customize-hero-media" id="customize-item-media" aria-hidden="true"></div>
+          <header class="customize-hero" id="customize-hero">
+            <div class="customize-hero-media" id="customize-item-media" aria-hidden="true" hidden></div>
             <div class="customize-hero-body">
               <h3 id="instr-item-name">Customize item</h3>
               <p id="customize-variant-label" class="customize-variant muted" hidden></p>
-              <div class="customize-hero-controls">
-                <div class="qty-controls customize-qty-row" aria-label="Quantity">
-                  <button type="button" id="customize-qty-dec" aria-label="Decrease quantity">−</button>
-                  <input
-                    id="customize-qty"
-                    type="text"
-                    inputmode="numeric"
-                    pattern="[0-9]*"
-                    autocomplete="off"
-                    aria-label="Quantity"
-                  />
-                  <button type="button" id="customize-qty-inc" aria-label="Increase quantity">+</button>
-                </div>
-                <div class="customize-price-block">
-                  <p id="customize-configured-price" class="customize-configured muted"></p>
-                  <label class="field customize-price-field" for="customize-unit-price">
-                    <span id="customize-price-label">Custom price</span>
-                    <div class="customize-price-input-row">
-                      <span id="customize-price-currency" class="currency-prefix" aria-hidden="true"></span>
-                      <input
-                        id="customize-unit-price"
-                        type="text"
-                        inputmode="decimal"
-                        autocomplete="off"
-                        placeholder="0.000"
-                        aria-label="Custom unit selling price"
-                      />
-                    </div>
-                  </label>
-                  <div class="customize-price-meta">
-                    <span id="customize-price-adjusted" class="price-adjusted-badge" hidden>Custom</span>
-                    <button type="button" id="customize-price-reset" class="btn ghost small" hidden>
-                      Reset
-                    </button>
-                  </div>
-                  <p id="customize-line-total" class="customize-line-total muted"></p>
-                  <p id="customize-price-locked" class="muted customize-price-locked" hidden>
-                    You do not have permission to change this price.
-                  </p>
-                </div>
-              </div>
-              <p id="customize-price-error" class="error" hidden></p>
+            </div>
+            <div class="qty-controls customize-qty-row" aria-label="Quantity">
+              <button type="button" id="customize-qty-dec" aria-label="Decrease quantity">−</button>
+              <input
+                id="customize-qty"
+                type="text"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="off"
+                aria-label="Quantity"
+              />
+              <button type="button" id="customize-qty-inc" aria-label="Increase quantity">+</button>
             </div>
           </header>
 
@@ -498,28 +507,25 @@
 
           <section id="panel-notes" class="customize-panel" role="tabpanel" aria-labelledby="tab-notes">
             <div id="kitchen-step-1" class="kitchen-step">
-              <p class="step-label" id="kitchen-step-label">What change?</p>
-              <div id="mod-chips" class="chips kitchen-choice-chips" role="group" aria-label="Modifiers"></div>
-              <div id="standalone-chips" class="chips kitchen-choice-chips" style="margin-top:0.5rem"></div>
+              <p class="step-heading" id="kitchen-step-label"><span class="step-num" aria-hidden="true">1</span> What change?</p>
+              <div id="mod-chips" class="chips kitchen-choice-chips" role="group" aria-label="What change"></div>
+              <div id="standalone-chips" class="chips kitchen-choice-chips" aria-label="Quick notes"></div>
             </div>
             <div id="kitchen-step-2" class="kitchen-step" hidden>
-              <div class="kitchen-step-back-row">
-                <button type="button" id="kitchen-step-back" class="btn ghost small">Back</button>
-                <p class="step-label" id="kitchen-target-label">Which ingredients?</p>
-              </div>
+              <button type="button" id="kitchen-step-back" class="kitchen-change-action">← Change action</button>
+              <p class="step-heading" id="kitchen-target-label"><span class="step-num" aria-hidden="true">2</span> Of what?</p>
               <div id="target-chips" class="chips kitchen-choice-chips" role="group" aria-label="Ingredients"></div>
-              <div class="kitchen-target-ok">
-                <button type="button" id="kitchen-targets-ok" class="btn primary" disabled>OK</button>
-              </div>
+              <!-- Kept for compatibility; hidden — tap ingredient adds and returns to step 1. -->
+              <button type="button" id="kitchen-targets-ok" class="btn primary kitchen-targets-ok" hidden disabled>Done</button>
             </div>
             <p id="instr-preview" class="instr-feedback" role="status" aria-live="polite" hidden></p>
-            <section class="customize-section selected-instr-section">
-              <p class="step-label">Selected</p>
-              <div id="instr-chip-list" class="selected-instr-chips"></div>
+            <section class="customize-section selected-instr-section" id="selected-instr-section" hidden>
+              <p class="step-heading" id="selected-instr-heading">This item:</p>
+              <div id="instr-chip-list" class="selected-instr-chips" role="list" aria-labelledby="selected-instr-heading"></div>
             </section>
-            <label class="field">
+            <label class="field customize-note-field">
               <span>Additional order note (optional)</span>
-              <input id="custom-note" type="text" maxlength="80" placeholder="e.g. cut in half" />
+              <input id="custom-note" type="text" maxlength="80" placeholder="e.g. cut in half" autocomplete="off" />
             </label>
           </section>
 
@@ -529,17 +535,52 @@
             <p id="addon-price-error" class="error" hidden></p>
           </section>
 
-          <section class="customize-section" id="price-summary-card">
-            <dl id="price-summary" class="price-summary price-summary-compact"></dl>
-            <button type="button" id="price-breakdown-toggle" class="btn ghost small price-breakdown-toggle">
-              View price breakdown
-            </button>
-            <dl id="price-summary-detail" class="price-summary" hidden></dl>
-          </section>
+          <div class="customize-collapse-row">
+            <details class="customize-price-override" id="customize-price-override">
+              <summary>Price override</summary>
+              <div class="customize-price-block">
+                <p id="customize-configured-price" class="customize-configured muted"></p>
+                <label class="field customize-price-field" for="customize-unit-price">
+                  <span id="customize-price-label">Custom price</span>
+                  <div class="customize-price-input-row">
+                    <span id="customize-price-currency" class="currency-prefix" aria-hidden="true"></span>
+                    <input
+                      id="customize-unit-price"
+                      type="text"
+                      inputmode="decimal"
+                      autocomplete="off"
+                      placeholder="0.000"
+                      aria-label="Custom unit selling price"
+                    />
+                  </div>
+                </label>
+                <div class="customize-price-meta">
+                  <span id="customize-price-adjusted" class="price-adjusted-badge" hidden>Custom</span>
+                  <button type="button" id="customize-price-reset" class="btn ghost small" hidden>
+                    Reset
+                  </button>
+                </div>
+                <p id="customize-price-locked" class="muted customize-price-locked" hidden>
+                  You do not have permission to change this price.
+                </p>
+                <p id="customize-price-error" class="error" hidden></p>
+              </div>
+            </details>
+
+            <details class="customize-price-breakdown" id="customize-price-breakdown">
+              <summary>View price breakdown</summary>
+              <dl id="price-summary-detail" class="price-summary"></dl>
+            </details>
+          </div>
+          <dl id="price-summary" class="price-summary price-summary-compact" hidden></dl>
+          <p id="customize-line-total" class="customize-line-total" hidden></p>
         </div>
         <div class="customize-footer">
-          <button type="button" id="customize-cancel-btn" class="btn ghost">Cancel</button>
-          <button type="button" id="customize-apply-btn" class="btn primary">Apply Customization</button>
+          <strong id="customize-footer-total" class="customize-footer-total">Line total —</strong>
+          <div class="customize-footer-actions">
+            <button type="button" id="customize-cancel-btn" class="btn ghost">Cancel</button>
+            <button type="button" id="customize-apply-btn" class="btn primary">Apply Customization</button>
+          </div>
         </div>
       </form>
     </dialog>
@@ -677,6 +718,6 @@
     </dialog>
 
     <script defer src="/delivery-navigation.js"></script>
-    <script type="module" src="/app.js?v=sales-m10"></script>
+    <script type="module" src="/app.js?v=sales-ui-customize-clear"></script>
   </body>
 </html>

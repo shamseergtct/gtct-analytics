@@ -5,6 +5,7 @@ import {
   formatTaxPercentFromBps,
 } from "./money.js";
 import { registerPwa } from "./pwa.js";
+import { formatSplitGroupTotalLabel, renderOrderLineItemHtml } from "./orderLineItems.js";
 const DEFAULT_MODIFIERS = ["Less", "More", "No", "Extra"];
 const DEFAULT_TARGETS = ["Sugar", "Sauce", "Onion", "Salt", "Ice", "Cheese"];
 
@@ -169,7 +170,10 @@ function fallbackOrderNumber() {
 function showOrderNumber() {
   const field = $("order-number");
   const label = $("order-number-label");
-  if (label) label.textContent = state.editingOrderId ? "Editing #" : "Draft #";
+  const display = $("order-number-display");
+  if (label) label.textContent = state.editingOrderId ? "Editing" : "Draft";
+  const value = state.orderNumber || "—";
+  if (display) display.textContent = value;
   if (!field) return;
   field.value = state.orderNumber || "";
   field.title = state.editingOrderId
@@ -177,6 +181,67 @@ function showOrderNumber() {
     : state.orderNumber
       ? "Next order number, shared by every screen. It advances by one when an order is accepted."
       : "";
+}
+
+function titleCaseLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.toUpperCase() === "ALL") return "All";
+  return raw
+    .toLowerCase()
+    .split(/([\s/_-]+)/)
+    .map((part, i) =>
+      i % 2 === 1 ? part : part ? part.charAt(0).toUpperCase() + part.slice(1) : part
+    )
+    .join("");
+}
+
+function cartQtyForMenuItem(item) {
+  const id = item?.item_id;
+  if (!id) return 0;
+  let qty = 0;
+  for (const line of state.cart) {
+    if (line.itemId === id || line.item_id === id) qty += Number(line.quantity) || 0;
+  }
+  return qty;
+}
+
+let cartUndoTimer = null;
+let cartUndoSnapshot = null;
+
+function hideCartUndo() {
+  if (cartUndoTimer) {
+    clearTimeout(cartUndoTimer);
+    cartUndoTimer = null;
+  }
+  cartUndoSnapshot = null;
+  const bar = $("cart-undo-bar");
+  if (bar) bar.hidden = true;
+}
+
+function showCartUndo(line) {
+  hideCartUndo();
+  cartUndoSnapshot = structuredClone
+    ? structuredClone(line)
+    : JSON.parse(JSON.stringify(line));
+  const bar = $("cart-undo-bar");
+  const text = $("cart-undo-text");
+  if (text) text.textContent = `Removed “${line.name}”`;
+  if (bar) bar.hidden = false;
+  cartUndoTimer = setTimeout(() => {
+    hideCartUndo();
+  }, 5000);
+}
+
+function undoCartRemove() {
+  if (!cartUndoSnapshot) return;
+  const line = cartUndoSnapshot;
+  hideCartUndo();
+  state.cart.push(line);
+  focusCartLine(line.lineId, { follow: true });
+  renderCart();
+  renderMenu();
+  void syncDraftNumber();
 }
 
 let draftNumberTimer = null;
@@ -551,6 +616,7 @@ function applyCartSnapshot(snapshot) {
   showOrderNumber();
   if (snapshot.fulfillment && typeof snapshot.fulfillment === "object") {
     state.fulfillment = { ...blankFulfillment(), ...snapshot.fulfillment };
+    normalizeFulfillmentCustomerFields();
   }
   if ($("order-type") && snapshot.orderType) {
     const known = (state.orderTypes || []).some((row) => row.orderTypeId === snapshot.orderType);
@@ -854,17 +920,22 @@ function linesForBill(lines) {
     .map((row) => row.line);
 }
 
-function reviewLinesHtml(lines) {
+function reviewLinesHtml(lines, { hideSingleCategory = false, bareLineAmount = false } = {}) {
+  const sorted = linesForBill(lines);
+  const categories = new Set(
+    sorted.map((line) => menuMetaForLine(line).category || "Other")
+  );
+  const skipCategory = hideSingleCategory && categories.size <= 1;
   let last = "";
-  return linesForBill(lines)
+  return sorted
     .map((line) => {
       const category = menuMetaForLine(line).category || "Other";
       const head =
-        category === last
+        skipCategory || category === last
           ? ""
           : `<p class="review-category">${escapeHtml(category)}</p>`;
       last = category;
-      return head + reviewLineHtml(line);
+      return head + reviewLineHtml(line, { bareLineAmount });
     })
     .join("");
 }
@@ -945,6 +1016,16 @@ function customizationKey(line) {
   return `${instr}||${note}||${addons}`;
 }
 
+/** One-line cart preview of kitchen notes / extras / free-text note. */
+function cartLineNotePreview(line) {
+  const bits = [
+    ...(line.instructions || []),
+    ...(line.addons || []).map((a) => a.name),
+    String(line.orderNote || "").trim(),
+  ].filter(Boolean);
+  return bits.join(" · ");
+}
+
 function renderCategories() {
   const cats = ["ALL", ...new Set(state.menu.map(categoryForItem))];
   const host = $("category-filters");
@@ -953,7 +1034,9 @@ function renderCategories() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `chip${state.category === cat ? " active" : ""}`;
-    btn.textContent = cat;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", state.category === cat ? "true" : "false");
+    btn.textContent = titleCaseLabel(cat);
     btn.addEventListener("click", () => {
       state.category = cat;
       state.subcategory = "ALL";
@@ -992,7 +1075,9 @@ function renderSubcategories() {
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = `chip green${state.subcategory === sub ? " active" : ""}`;
-    btn.textContent = sub === "ALL" ? "All" : sub;
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", state.subcategory === sub ? "true" : "false");
+    btn.textContent = titleCaseLabel(sub);
     btn.addEventListener("click", () => {
       state.subcategory = sub;
       renderSubcategories();
@@ -1025,15 +1110,16 @@ function itemDisplayPrice(item) {
   };
 }
 
-function showToast(message) {
+function showToast(message, opts = {}) {
   const el = $("toast");
   if (!el) return;
+  const duration = Number(opts.duration) > 0 ? Number(opts.duration) : 1600;
   el.hidden = false;
   el.textContent = message;
   clearTimeout(showToast._t);
   showToast._t = setTimeout(() => {
     el.hidden = true;
-  }, 1600);
+  }, duration);
 }
 
 function renderMenu() {
@@ -1067,8 +1153,13 @@ function renderMenu() {
     const soldOut = Boolean(item.is_sold_out);
     const vars = salesVariants(item);
     const price = itemDisplayPrice(item);
+    const inCartQty = cartQtyForMenuItem(item);
+    const canToggleSold =
+      state.role === "admin" || state.permissions.includes("menu.sold_out.update");
     const card = document.createElement("article");
-    card.className = `menu-card${soldOut ? " sold-out" : ""}`;
+    const showPhotos = !state.salesView.hidePhotos;
+    const hasPhoto = Boolean(item.image_url) && showPhotos;
+    card.className = `menu-card${soldOut ? " sold-out" : ""}${hasPhoto ? "" : " menu-card-text-only"}`;
     card.setAttribute(
       "aria-label",
       soldOut
@@ -1082,43 +1173,64 @@ function renderMenu() {
       card.setAttribute("role", "button");
     }
 
-    const showPhotos = !state.salesView.hidePhotos;
-    const hasPhoto = Boolean(item.image_url) && showPhotos;
-    if (!showPhotos) {
-      card.classList.add("menu-card-text-only");
-    } else if (!item.image_url) {
-      card.classList.add("menu-card-no-image");
-    }
-
-    if (showPhotos) {
+    if (hasPhoto) {
       const media = document.createElement("div");
       media.className = "menu-card-media";
-      media.innerHTML = `
-        <div class="menu-card-fallback" aria-hidden="true">
-          <svg class="menu-card-ph" viewBox="0 0 48 48" width="36" height="36" fill="none">
-            <ellipse cx="24" cy="30" rx="16" ry="5" stroke="currentColor" stroke-width="1.75"/>
-            <path d="M10 28c0-8 6.5-14 14-14s14 6 14 14" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"/>
-            <circle cx="24" cy="18" r="2.5" fill="currentColor" opacity="0.35"/>
-          </svg>
-        </div>
-      `;
-      if (hasPhoto) {
-        const img = document.createElement("img");
-        img.className = "menu-card-img";
-        img.alt = "";
-        img.loading = "lazy";
-        img.src = item.image_url;
-        img.addEventListener("error", () => {
-          img.remove();
-          card.classList.add("menu-card-no-image");
-        });
-        img.addEventListener("load", () => {
-          const fallback = media.querySelector(".menu-card-fallback");
-          if (fallback) fallback.remove();
-        });
-        media.appendChild(img);
-      }
+      const img = document.createElement("img");
+      img.className = "menu-card-img";
+      img.alt = "";
+      img.loading = "lazy";
+      img.src = item.image_url;
+      img.addEventListener("error", () => {
+        media.remove();
+        card.classList.add("menu-card-text-only");
+      });
+      media.appendChild(img);
       card.appendChild(media);
+    }
+
+    if (inCartQty > 0 && !soldOut) {
+      const badge = document.createElement("span");
+      badge.className = "menu-card-qty-badge";
+      badge.textContent = `×${inCartQty}`;
+      badge.setAttribute("aria-label", `${inCartQty} in cart`);
+      card.appendChild(badge);
+    }
+
+    if (soldOut) {
+      const soldBadge = document.createElement("span");
+      soldBadge.className = "menu-card-sold-badge";
+      soldBadge.textContent = "Sold out";
+      card.appendChild(soldBadge);
+    }
+
+    const infoBtn = document.createElement("button");
+    infoBtn.type = "button";
+    infoBtn.className = "menu-card-info menu-card-info-corner";
+    infoBtn.setAttribute("aria-label", `View information about ${item.name}`);
+    infoBtn.innerHTML = `<span class="menu-card-info-icon" aria-hidden="true">ⓘ</span>`;
+    infoBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      openProductKnowledge(item);
+    });
+    card.appendChild(infoBtn);
+
+    if (canToggleSold) {
+      const soldBtn = document.createElement("button");
+      soldBtn.type = "button";
+      soldBtn.className = `menu-card-soldout-toggle${soldOut ? " is-sold" : ""}`;
+      soldBtn.setAttribute(
+        "aria-label",
+        soldOut ? `Mark ${item.name} available` : `Mark ${item.name} sold out`
+      );
+      soldBtn.title = soldOut ? "Mark available" : "Mark sold out";
+      soldBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        toggleSoldOut(item);
+      });
+      card.appendChild(soldBtn);
     }
 
     const body = document.createElement("div");
@@ -1129,29 +1241,6 @@ function renderMenu() {
     nameEl.className = "menu-card-name";
     nameEl.textContent = item.name;
     titleRow.appendChild(nameEl);
-
-    if (state.role === "admin" || state.permissions.includes("menu.sold_out.update")) {
-      const soldBtn = document.createElement("button");
-      soldBtn.type = "button";
-      soldBtn.className = `menu-card-soldout${soldOut ? " is-sold" : ""}`;
-      soldBtn.textContent = soldOut ? "Sold" : "Available";
-      soldBtn.setAttribute(
-        "aria-label",
-        soldOut ? `Mark ${item.name} available` : `Mark ${item.name} sold out`
-      );
-      soldBtn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        toggleSoldOut(item);
-      });
-      if (showPhotos) {
-        card.appendChild(soldBtn);
-      } else {
-        soldBtn.classList.add("menu-card-soldout-inline");
-        titleRow.appendChild(soldBtn);
-      }
-    }
-
     body.appendChild(titleRow);
     if (price.meta && !soldOut) {
       const meta = document.createElement("span");
@@ -1164,22 +1253,8 @@ function renderMenu() {
     footer.className = "menu-card-footer";
     const priceEl = document.createElement("span");
     priceEl.className = "menu-card-price";
-    priceEl.textContent = soldOut ? `${price.label} · Sold out` : price.label;
-    const infoBtn = document.createElement("button");
-    infoBtn.type = "button";
-    infoBtn.className = "menu-card-info";
-    infoBtn.setAttribute(
-      "aria-label",
-      `View information about ${item.name}`
-    );
-    infoBtn.innerHTML = `<span class="menu-card-info-icon" aria-hidden="true">ⓘ</span><span class="menu-card-info-label">Info</span>`;
-    infoBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      openProductKnowledge(item);
-    });
+    priceEl.textContent = price.label;
     footer.appendChild(priceEl);
-    footer.appendChild(infoBtn);
 
     card.appendChild(body);
     card.appendChild(footer);
@@ -1187,14 +1262,30 @@ function renderMenu() {
     if (!soldOut) {
       const addItem = () => onMenuItemTap(item);
       card.addEventListener("click", (e) => {
-        if (e.target.closest(".menu-card-info, .menu-card-soldout")) return;
+        if (
+          e.target.closest(
+            ".menu-card-info, .menu-card-soldout-toggle, .menu-card-soldout"
+          )
+        ) {
+          return;
+        }
         addItem();
       });
       card.addEventListener("keydown", (e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
-        if (e.target.closest(".menu-card-info, .menu-card-soldout")) return;
+        if (
+          e.target.closest(
+            ".menu-card-info, .menu-card-soldout-toggle, .menu-card-soldout"
+          )
+        ) {
+          return;
+        }
         e.preventDefault();
         addItem();
+      });
+    } else if (canToggleSold) {
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".menu-card-info, .menu-card-soldout-toggle")) return;
       });
     }
     grid.appendChild(card);
@@ -1651,6 +1742,7 @@ function addToCart(item, variant) {
     focusCartLine(candidate.lineId, { follow: true });
   }
   renderCart();
+  renderMenu();
   const label = variant
     ? `${item.name} — ${variant.name}`
     : item.name;
@@ -1683,6 +1775,7 @@ function addToCartForCustomize(item, variant) {
   candidate._pendingCustomize = true;
   state.cart.push(candidate);
   renderCart();
+  renderMenu();
   setStatus("");
   void syncDraftNumber();
   state._customizeTrigger = document.activeElement;
@@ -1992,26 +2085,43 @@ function renderCart() {
   if (orderInput) {
     orderInput.title = state.orderNumber || "";
   }
+  const payable = customerPayableCents(tax);
+  const reviewBtn = $("review-btn") || $("review-order-btn");
+  if (reviewBtn) {
+    reviewBtn.textContent = state.cart.length
+      ? `Review & Send · ${formatPrice(payable)}`
+      : "Review & Send";
+  }
   const taxHost = $("cart-tax-summary");
   if (taxHost) {
     if (!state.cart.length) state.cartPriceBreakdownOpen = false;
     taxHost.innerHTML = state.cart.length
-      ? `<div class="cart-price-inline">
-          <span>Est. total</span>
-          <strong>${escapeHtml(formatPrice(customerPayableCents(tax)))}</strong>
+      ? `<div class="cart-totals-block">
+          <div class="cart-total-row cart-total-row-subtotal">
+            <span class="cart-subtotal-label">
+              Subtotal
+              <button type="button" id="cart-price-breakdown-toggle"
+                class="cart-price-breakdown-link"
+                aria-expanded="${state.cartPriceBreakdownOpen}"
+                aria-controls="cart-price-breakdown">
+                ${state.cartPriceBreakdownOpen ? "Hide breakdown" : "Price breakdown"}
+              </button>
+            </span>
+            <strong class="cart-total-value cart-subtotal-value">${escapeHtml(formatPrice(totals.cents))}</strong>
+          </div>
+          <div class="cart-total-row cart-total-row-primary">
+            <span>Total</span>
+            <strong class="cart-total-value">${escapeHtml(formatPrice(payable))}</strong>
+          </div>
         </div>
-        <button type="button" id="cart-price-breakdown-toggle"
-          class="cart-price-breakdown-toggle"
-          aria-expanded="${state.cartPriceBreakdownOpen}"
-          aria-controls="cart-price-breakdown">
-          ${state.cartPriceBreakdownOpen ? "Hide" : "View"} price breakdown
-        </button>
         <div id="cart-price-breakdown" class="cart-price-detail" ${state.cartPriceBreakdownOpen ? "" : "hidden"}>
           ${renderTaxSummaryHtml(tax, { compact: true, itemCount: totals.count, showEstimateNote: false })}
         </div>`
       : "";
   }
 
+  const itemsLabel = $("cart-items-label");
+  if (itemsLabel) itemsLabel.textContent = `Items (${totals.count})`;
   renderSplitBar();
   if (!state.cart.length) {
     host.innerHTML = `<p class="empty">Cart is empty. Tap a menu item to add it.</p>`;
@@ -2027,7 +2137,7 @@ function renderCart() {
       const head = document.createElement("div");
       head.className = "split-group-head";
       const adding = lineSplitNo({ splitNo: state.activeSplit }) === splitNo;
-      head.innerHTML = `<span>Order ${splitNo}${adding ? " · adding here" : ""}</span><strong>${formatPrice(splitItemsCents(groupLines))}</strong>`;
+      head.innerHTML = `<span>Order ${splitNo}${adding ? " · adding here" : ""}</span><strong>${formatSplitGroupTotalLabel(formatPrice(splitItemsCents(groupLines)))}</strong>`;
       host.appendChild(head);
       if (!groupLines.length) {
         const note = document.createElement("p");
@@ -2038,91 +2148,97 @@ function renderCart() {
     }
   for (const line of groupLines) {
     const el = document.createElement("div");
-    el.className = "cart-line";
+    el.className = "cart-line cart-line-compact";
     el.dataset.lineId = line.lineId;
+    el.setAttribute("role", "button");
+    el.tabIndex = 0;
+    el.setAttribute("aria-label", `Edit ${line.name}`);
     if (line.lineId === state.cartFocusLineId && state.cartFollowLatest) {
       el.classList.add("just-added");
     }
-    const tags = (line.instructions || [])
-      .map((i) => `<span class="tag">${escapeHtml(i)}</span>`)
-      .join("");
-    const addonTags = (line.addons || [])
-      .map((a) => {
-        const p = addonAppliedPrice(a);
-        const label = `${p < 0 ? "− " : p > 0 ? "+ " : ""}${a.name} ${formatPrice(Math.abs(p))}`;
-        return `<span class="tag">${escapeHtml(label)}</span>`;
-      })
-      .join("");
+    const notePreview = cartLineNotePreview(line);
     const unit = lineUnitCents(line);
+    const lineTotal = formatPrice(unit * line.quantity);
     const nameHtml = escapeHtml(line.name);
-    const customizeLabel = line.variantName
-      ? `Customize ${line.name} — ${line.variantName}`
-      : `Customize ${line.name}`;
-    const variantHtml = line.variantName
-      ? `<span class="cart-line-variant">${escapeHtml(line.variantName)}</span>`
-      : "";
+    const variantBit = line.variantName ? ` · ${escapeHtml(line.variantName)}` : "";
     const adjusted =
       line.basePriceAdjusted ||
       Number(line.priceCents) !== lineConfiguredPrice(line);
+    const editHint =
+      '<span class="cart-line-edit-hint" aria-hidden="true"><svg viewBox="0 0 20 20" width="14" height="14"><path fill="currentColor" d="M14.7 2.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-9.5 9.5-3.2.8a.5.5 0 0 1-.6-.6l.8-3.2 9.5-9.5z"/></svg></span>';
     el.innerHTML = `
-      <div class="cart-line-main" data-act="customize" role="button" tabindex="0" aria-label="${escapeHtml(customizeLabel)}">
-        <div class="cart-line-head">
-          <div class="cart-line-info">
-            <strong class="cart-line-name">${nameHtml}</strong>
-            ${variantHtml}
-            <div class="cart-line-price muted">${formatPrice(line.priceCents)} × ${line.quantity} · <strong>${formatPrice(unit * line.quantity)}</strong>${
-              adjusted ? ` <span class="price-adjusted-badge">Adjusted</span>` : ""
-            }</div>
-          </div>
-          <span class="cart-line-edit-hint" aria-hidden="true">
-            <svg viewBox="0 0 20 20" width="14" height="14"><path fill="currentColor" d="M14.7 2.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-9.5 9.5-3.2.8a.5.5 0 0 1-.6-.6l.8-3.2 9.5-9.5z"/></svg>
-          </span>
-        </div>
-        ${tags ? `<div class="instr-tags">${tags}</div>` : ""}
-        ${addonTags ? `<div class="instr-tags">${addonTags}</div>` : ""}
-        ${
-          line.orderNote
-            ? `<div class="cart-order-note">Note: ${escapeHtml(line.orderNote)}</div>`
-            : ""
-        }
+      <div class="cart-line-row cart-line-row-primary">
+        <span class="cart-line-title">
+          <strong class="cart-line-name">${nameHtml}</strong>${variantBit}${
+            adjusted ? ` <span class="price-adjusted-badge">Adj</span>` : ""
+          }
+          ${editHint}
+        </span>
+        <strong class="cart-line-total">${lineTotal}</strong>
       </div>
-      <div class="cart-line-toolbar">
-        ${
-          splitInUse()
-            ? `<label class="split-move"><select data-act="move-split" aria-label="Move ${escapeHtml(line.name)} to another order">${splitIds()
-                .map(
-                  (n) =>
-                    `<option value="${n}"${n === lineSplitNo(line) ? " selected" : ""}>Order ${n}</option>`
-                )
-                .join("")}</select></label>`
-            : ""
-        }
-        <div class="qty-controls">
-          <button type="button" data-act="dec" aria-label="Decrease quantity">−</button>
-          <span aria-live="polite">${line.quantity}</span>
-          <button type="button" data-act="inc" aria-label="Increase quantity">+</button>
+      ${
+        notePreview
+          ? `<p class="cart-line-note muted" title="${escapeHtml(notePreview)}">📝 ${escapeHtml(notePreview)}</p>`
+          : ""
+      }
+      <div class="cart-line-row cart-line-row-meta">
+        <span class="cart-line-unit muted">${formatPrice(line.priceCents)} × ${line.quantity}</span>
+        <div class="cart-line-toolbar">
+          ${
+            splitInUse()
+              ? `<label class="split-move"><select data-act="move-split" aria-label="Move ${escapeHtml(line.name)} to another order">${splitIds()
+                  .map(
+                    (n) =>
+                      `<option value="${n}"${n === lineSplitNo(line) ? " selected" : ""}>Order ${n}</option>`
+                  )
+                  .join("")}</select></label>`
+              : ""
+          }
+          <div class="qty-controls">
+            <button type="button" data-act="dec" aria-label="Decrease quantity">−</button>
+            <span class="qty-value" aria-live="polite">${line.quantity}</span>
+            <button type="button" data-act="inc" aria-label="Increase quantity">+</button>
+          </div>
+          <button type="button" class="icon-btn danger" data-act="remove" aria-label="Remove item" title="Remove">
+            <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 3h6l.5 1H17v2H3V4h3.5L7 3zm1 5h2v7H8V8zm4 0h2v7h-2V8zM5 8h2v7H5V8z"/></svg>
+          </button>
         </div>
-        <button type="button" class="icon-btn danger" data-act="remove" aria-label="Remove item" title="Remove">
-          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M7 3h6l.5 1H17v2H3V4h3.5L7 3zm1 5h2v7H8V8zm4 0h2v7h-2V8zM5 8h2v7H5V8z"/></svg>
-        </button>
       </div>
     `;
     const openCustomize = (e) => {
+      if (
+        e?.target?.closest?.(
+          ".cart-line-toolbar, [data-act='dec'], [data-act='inc'], [data-act='remove'], [data-act='move-split']"
+        )
+      ) {
+        return;
+      }
       e?.preventDefault?.();
-      state._customizeTrigger = document.activeElement;
+      e?.stopPropagation?.();
+      state._customizeTrigger = el;
       openInstructions(line.lineId);
     };
-    el.querySelector('[data-act="customize"]').addEventListener("click", openCustomize);
-    el.querySelector('[data-act="customize"]').addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        openCustomize(e);
+    el.addEventListener("click", openCustomize);
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (
+        e.target?.closest?.(
+          ".cart-line-toolbar, [data-act='dec'], [data-act='inc'], [data-act='remove'], [data-act='move-split']"
+        )
+      ) {
+        return;
       }
+      e.preventDefault();
+      openCustomize(e);
     });
+    el.querySelector(".cart-line-toolbar")?.addEventListener("click", (e) => e.stopPropagation());
+    el.querySelector(".cart-line-toolbar")?.addEventListener("keydown", (e) => e.stopPropagation());
     el.querySelector('[data-act="dec"]').addEventListener("click", (e) => {
       e.stopPropagation();
       if (line.quantity <= 1) {
+        const removed = state.cart.find((l) => l.lineId === line.lineId);
         state.cart = state.cart.filter((l) => l.lineId !== line.lineId);
+        if (removed) showCartUndo(removed);
         if (state.cartFocusLineId === line.lineId) {
           focusCartLine(null);
         }
@@ -2130,20 +2246,25 @@ function renderCart() {
         line.quantity -= 1;
       }
       renderCart();
+      renderMenu();
     });
     el.querySelector('[data-act="inc"]').addEventListener("click", (e) => {
       e.stopPropagation();
       line.quantity += 1;
       renderCart();
+      renderMenu();
       void syncDraftNumber();
     });
     el.querySelector('[data-act="remove"]').addEventListener("click", (e) => {
       e.stopPropagation();
+      const removed = state.cart.find((l) => l.lineId === line.lineId);
       state.cart = state.cart.filter((l) => l.lineId !== line.lineId);
+      if (removed) showCartUndo(removed);
       if (state.cartFocusLineId === line.lineId) {
         focusCartLine(null);
       }
       renderCart();
+      renderMenu();
     });
     el.querySelector('[data-act="move-split"]')?.addEventListener("change", (e) => {
       moveLineToSplit(line, Number(e.target.value));
@@ -2171,6 +2292,10 @@ function openInstructions(lineId) {
   state.kitchenStep = 1;
   state.customizeTab = "notes";
   state.priceBreakdownOpen = false;
+  const priceOverride = $("customize-price-override");
+  if (priceOverride) priceOverride.open = false;
+  const priceBreakdown = $("customize-price-breakdown");
+  if (priceBreakdown) priceBreakdown.open = false;
   const configured = lineConfiguredPrice(line);
   const applied = Number(line.priceCents || 0);
   state.customizeDraft = {
@@ -2237,34 +2362,63 @@ function openInstructions(lineId) {
   renderSelectedInstructions();
   renderAddonPicker();
   updatePriceSummary();
-  $("addon-price-error").hidden = true;
-  $("customize-price-error").hidden = true;
+  const addonErr = $("addon-price-error");
+  const priceErr = $("customize-price-error");
+  if (addonErr) addonErr.hidden = true;
+  if (priceErr) priceErr.hidden = true;
   const applyBtn = $("customize-apply-btn");
   if (applyBtn) {
     applyBtn.textContent = state.customizeDraft.isNew
       ? "Add to cart"
       : "Apply Customization";
   }
+  // Defer showModal so the opening click cannot immediately dismiss the dialog.
   document.body.classList.add("customize-open");
-  $("instr-dialog").showModal();
+  const dialog = $("instr-dialog");
+  const reveal = () => {
+    if (!dialog) return;
+    try {
+      if (!dialog.open) dialog.showModal();
+    } catch {
+      try {
+        dialog.setAttribute("open", "");
+      } catch {
+        /* ignore */
+      }
+    }
+    const note = $("custom-note");
+    note?.focus();
+    note?.select?.();
+  };
+  if (typeof queueMicrotask === "function") queueMicrotask(reveal);
+  else setTimeout(reveal, 0);
 }
 
 function renderCustomizeMedia(line) {
   const host = $("customize-item-media");
+  const hero = $("customize-hero");
   if (!host) return;
   host.innerHTML = "";
-  if (line.imageUrl) {
-    const img = document.createElement("img");
-    img.src = line.imageUrl;
-    img.alt = "";
-    img.className = "customize-item-img";
-    img.addEventListener("error", () => {
-      host.innerHTML = `<div class="customize-item-fallback" aria-hidden="true"></div>`;
-    });
-    host.appendChild(img);
-  } else {
-    host.innerHTML = `<div class="customize-item-fallback" aria-hidden="true"></div>`;
+  const hasPhoto = Boolean(line.imageUrl);
+  if (!hasPhoto) {
+    host.hidden = true;
+    host.setAttribute("aria-hidden", "true");
+    hero?.classList.add("customize-hero--no-media");
+    return;
   }
+  host.hidden = false;
+  host.setAttribute("aria-hidden", "true");
+  hero?.classList.remove("customize-hero--no-media");
+  const img = document.createElement("img");
+  img.src = line.imageUrl;
+  img.alt = "";
+  img.className = "customize-item-img";
+  img.addEventListener("error", () => {
+    host.innerHTML = "";
+    host.hidden = true;
+    hero?.classList.add("customize-hero--no-media");
+  });
+  host.appendChild(img);
 }
 
 function setCustomizeTab(tab) {
@@ -2291,6 +2445,17 @@ function setCustomizeTab(tab) {
   }
 }
 
+function kitchenStepTwoHeading(mod) {
+  const action = String(mod || "").trim();
+  if (!action) return `<span class="step-num" aria-hidden="true">2</span> Of what?`;
+  const lower = action.toLowerCase();
+  // Simple staff wording: "More of what?", "No what?", "Less of what?"
+  if (lower === "no" || lower === "without") {
+    return `<span class="step-num" aria-hidden="true">2</span> ${escapeHtml(action)} what?`;
+  }
+  return `<span class="step-num" aria-hidden="true">2</span> ${escapeHtml(action)} of what?`;
+}
+
 function setKitchenStep(step) {
   state.kitchenStep = step === 2 ? 2 : 1;
   const s1 = $("kitchen-step-1");
@@ -2298,8 +2463,15 @@ function setKitchenStep(step) {
   if (s1) s1.hidden = state.kitchenStep !== 1;
   if (s2) s2.hidden = state.kitchenStep !== 2;
   const label = $("kitchen-target-label");
-  if (label && state.selectedMod) {
-    label.textContent = `Which ingredients for “${state.selectedMod}”?`;
+  if (label) {
+    label.innerHTML =
+      state.kitchenStep === 2
+        ? kitchenStepTwoHeading(state.selectedMod)
+        : `<span class="step-num" aria-hidden="true">2</span> Of what?`;
+  }
+  const step1 = $("kitchen-step-label");
+  if (step1 && state.kitchenStep === 1) {
+    step1.innerHTML = `<span class="step-num" aria-hidden="true">1</span> What change?`;
   }
   renderInstrChips();
 }
@@ -2315,7 +2487,7 @@ function syncKitchenTargetsOk() {
   if (!btn) return;
   const count = state.selectedTargets.length;
   btn.disabled = count === 0;
-  btn.textContent = count > 1 ? `OK (${count})` : "OK";
+  btn.textContent = count > 1 ? `Done (${count})` : "Done";
 }
 
 function showInstrFeedback(message, { error = false } = {}) {
@@ -2450,15 +2622,18 @@ function syncCustomizeUnitPrice() {
 
 function updateCustomizeLineTotalPreview() {
   const draft = getDraft();
-  const el = $("customize-line-total");
-  if (!el || !draft) return;
+  const footer = $("customize-footer-total");
+  const legacy = $("customize-line-total");
+  if (!draft) return;
   const addons = draft.addons.reduce(
     (s, a) => s + Number(a.unitPriceCents || 0) * Number(a.quantity || 1),
     0
   );
   const unit = Number(draft.unitPriceCents || 0) + addons;
   const lineTotal = unit * Number(draft.quantity || 1);
-  el.textContent = `Line total ${formatPrice(lineTotal)}`;
+  const label = `Line total ${formatPrice(lineTotal)}`;
+  if (footer) footer.textContent = label;
+  if (legacy) legacy.textContent = label;
 }
 
 function onCustomizeUnitPriceInput(e) {
@@ -2707,14 +2882,12 @@ function renderAddonPicker() {
 }
 
 function updatePriceSummary() {
-  const host = $("price-summary");
   const detail = $("price-summary-detail");
-  const toggle = $("price-breakdown-toggle");
-  if (!host) return;
+  const breakdown = $("customize-price-breakdown");
   const draft = getDraft();
   if (!draft) {
-    host.innerHTML = "";
     if (detail) detail.innerHTML = "";
+    updateCustomizeLineTotalPreview();
     return;
   }
   const base = Number(draft.unitPriceCents || 0);
@@ -2729,39 +2902,16 @@ function updatePriceSummary() {
   const unit = base + net;
   const qty = Number(draft.quantity || 1);
   const lineTotal = unit * qty;
-  const priceNeeded = draft.addons.some(
-    (a) => a.priceEnteredAtSale && a.unitPriceCents == null
-  );
-  const extrasNote = priceNeeded
-    ? `<div><dt>Extras</dt><dd>Enter add-on price</dd></div>`
-    : net !== 0
-      ? `<div><dt>Extras</dt><dd>${escapeHtml(formatSignedPrice(net))}</dd></div>`
-      : "";
-  host.innerHTML = `
-    <div><dt>Unit price</dt><dd>${escapeHtml(formatPrice(base))}</dd></div>
-    <div><dt>Quantity</dt><dd>${qty}</dd></div>
-    ${extrasNote}
-    <div class="price-summary-total"><dt>Line total</dt><dd><strong>${escapeHtml(
-      formatPrice(lineTotal)
-    )}</strong></dd></div>
-  `;
+  state.priceBreakdownOpen = Boolean(breakdown?.open);
   if (detail) {
-    detail.hidden = !state.priceBreakdownOpen;
     detail.innerHTML = `
       <div><dt>Base selling price</dt><dd>${escapeHtml(formatPrice(base))}</dd></div>
       <div><dt>Add-on charges</dt><dd>${escapeHtml(formatSignedPrice(charges))}</dd></div>
       <div><dt>Reductions</dt><dd>${escapeHtml(formatSignedPrice(reductions))}</dd></div>
       <div><dt>Net adjustment</dt><dd>${escapeHtml(formatSignedPrice(net))}</dd></div>
       <div><dt>Unit total</dt><dd><strong>${escapeHtml(formatPrice(unit))}</strong></dd></div>
-      <div class="price-summary-total"><dt>Line total</dt><dd><strong>${escapeHtml(
-        formatPrice(lineTotal)
-      )}</strong></dd></div>
+      <div><dt>Quantity</dt><dd>${qty}</dd></div>
     `;
-  }
-  if (toggle) {
-    toggle.textContent = state.priceBreakdownOpen
-      ? "Hide price breakdown"
-      : "View price breakdown";
   }
   updateCustomizeLineTotalPreview();
   if (unit < 0 || lineTotal < 0) {
@@ -2773,17 +2923,21 @@ function updatePriceSummary() {
 
 function renderSelectedInstructions() {
   const host = $("instr-chip-list");
+  const section = $("selected-instr-section");
   if (!host) return;
   const draft = getDraft();
   host.innerHTML = "";
   if (!draft?.instructions?.length) {
-    host.innerHTML = "";
+    if (section) section.hidden = true;
     return;
   }
+  if (section) section.hidden = false;
   draft.instructions.forEach((text, idx) => {
     const chip = document.createElement("span");
-    chip.className = "tag-chip";
-    chip.innerHTML = `${escapeHtml(text)} <button type="button" aria-label="Remove ${escapeHtml(text)}">×</button>`;
+    chip.className = "tag-chip this-item-chip";
+    chip.setAttribute("role", "listitem");
+    chip.innerHTML = `<span class="this-item-chip-text">${escapeHtml(text)}</span>
+      <button type="button" class="this-item-chip-remove" aria-label="Remove ${escapeHtml(text)}">✕</button>`;
     chip.querySelector("button").addEventListener("click", () => {
       draft.instructions.splice(idx, 1);
       renderSelectedInstructions();
@@ -2829,7 +2983,7 @@ function renderInstrChips() {
         state.selectedMod = m;
         state.selectedTargets = [];
         setKitchenStep(2);
-        showInstrFeedback("Select one or more ingredients, then OK");
+        showInstrFeedback(`Tap what to ${String(m).toLowerCase()}`);
       });
       modHost.appendChild(btn);
     }
@@ -2837,28 +2991,31 @@ function renderInstrChips() {
       if (!standHost) break;
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "chip kitchen-choice";
-      btn.textContent = s;
+      const already = Boolean(
+        getDraft()?.instructions?.some(
+          (i) => i.trim().toLowerCase() === String(s).trim().toLowerCase()
+        )
+      );
+      btn.className = `chip kitchen-choice${already ? " is-selected" : ""}`;
+      btn.innerHTML = already
+        ? `<span class="kitchen-choice-check" aria-hidden="true">✓</span><span>${escapeHtml(s)}</span>`
+        : escapeHtml(s);
+      btn.setAttribute("aria-pressed", already ? "true" : "false");
       btn.addEventListener("click", () => addStandaloneInstruction(s));
       standHost.appendChild(btn);
     }
     return;
   }
 
+  // Step 2: tap one ingredient → add "<Action> <Ingredient>" and return to step 1.
   for (const t of targets) {
     const btn = document.createElement("button");
     btn.type = "button";
-    const selected = state.selectedTargets.includes(t);
-    btn.className = `chip green kitchen-choice${selected ? " active" : ""}`;
+    btn.className = "chip kitchen-choice";
     btn.textContent = t;
-    btn.setAttribute("aria-pressed", selected ? "true" : "false");
     btn.addEventListener("click", () => {
-      if (state.selectedTargets.includes(t)) {
-        state.selectedTargets = state.selectedTargets.filter((name) => name !== t);
-      } else {
-        state.selectedTargets = [...state.selectedTargets, t];
-      }
-      renderInstrChips();
+      state.selectedTargets = [t];
+      addInstruction();
     });
     targetHost.appendChild(btn);
   }
@@ -2904,6 +3061,8 @@ function addInstruction() {
   state.selectedTargets = [];
   setKitchenStep(1);
   renderSelectedInstructions();
+  // Refresh step-1 chips so standalone selected ✓ states update if needed.
+  renderInstrChips();
 }
 
 function validateDraftPrices() {
@@ -3178,33 +3337,31 @@ function updateFeeNote() {
   const money = state.money;
   const block = state.fulfillment.blockNumber;
   const suggested = state.fulfillment.expectedBlockRateCents;
+  const chargeInput = $("dl-charge");
+  let text = "";
+  let isCustom = false;
   if (!block) {
-    note.textContent = "Enter a block number.";
-    note.classList.remove("is-custom");
-    return;
-  }
-  if (suggested == null) {
+    text = "Enter a block number.";
+  } else if (suggested == null) {
     const entered = state.fulfillment.deliveryChargeCents != null;
-    note.textContent = withDeliveryTaxHint(
+    text = withDeliveryTaxHint(
       entered ? "Custom delivery charge" : "No saved rate for this block"
     );
-    note.classList.toggle("is-custom", entered);
-    return;
+    isCustom = entered;
+  } else if (state.fulfillment.deliveryChargeCents == null) {
+    text = "Enter a delivery charge using the shop currency.";
+  } else if (state.fulfillment.deliveryFeeOverride) {
+    text = withDeliveryTaxHint("Custom delivery charge");
+    isCustom = true;
+  } else {
+    text = withDeliveryTaxHint(
+      `Suggested block rate: ${money ? money.format(suggested) : suggested}`
+    );
   }
-  if (state.fulfillment.deliveryChargeCents == null) {
-    note.textContent = "Enter a delivery charge using the shop currency.";
-    note.classList.remove("is-custom");
-    return;
-  }
-  if (state.fulfillment.deliveryFeeOverride) {
-    note.textContent = withDeliveryTaxHint("Custom delivery charge");
-    note.classList.add("is-custom");
-    return;
-  }
-  note.textContent = withDeliveryTaxHint(
-    `Suggested block rate: ${money ? money.format(suggested) : suggested}`
-  );
-  note.classList.remove("is-custom");
+  note.textContent = text;
+  note.classList.toggle("is-custom", isCustom);
+  note.title = text;
+  if (chargeInput) chargeInput.title = text;
 }
 
 function applyBlockRate(blockNumber, { keepManual = false } = {}) {
@@ -3302,42 +3459,172 @@ function readFulfillmentInputs() {
   }
 }
 
+/** Canonical phone string from customer API objects or fulfillment state. */
+function customerContactPhone(source) {
+  if (!source || typeof source !== "object") return "";
+  return String(
+    source.customerPhone ??
+      source.phone ??
+      source.contactPhone ??
+      source.contact_number ??
+      source.contact ??
+      source.mobile ??
+      ""
+  ).trim();
+}
+
+function selectedCustomerId(f = state.fulfillment) {
+  return String(f?.customerId || f?.customer_id || "").trim();
+}
+
+/** Single source of truth: Delivery needs a customer id + non-empty contact number. */
+function hasValidDeliveryCustomer(f = state.fulfillment) {
+  return Boolean(selectedCustomerId(f) && customerContactPhone(f));
+}
+
+function normalizeFulfillmentCustomerFields(f = state.fulfillment) {
+  if (!f || typeof f !== "object") return f;
+  const id = selectedCustomerId(f);
+  const phone = customerContactPhone(f);
+  f.customerId = id;
+  f.customerPhone = phone;
+  if (f.customerName == null) f.customerName = "";
+  return f;
+}
+
 function customerPickerHtml(required) {
-  const label = required ? "Customer (Required)" : "Customer (Optional)";
-  return `<div class="customer-picker wide">
-    <label class="field">
-      <span>${label}</span>
-      <input id="cust-search" type="search" placeholder="Search customer name or phone" autocomplete="off" enterkeyhint="search" />
-    </label>
-    <button type="button" id="cust-add" class="btn ghost small">+ Add</button>
-    <div id="cust-results" class="cust-results" hidden></div>
+  const stateClass = required ? "customer-picker--missing" : "customer-picker--optional";
+  const triggerLabel = required ? "Customer required" : "+ Add customer (optional)";
+  const fieldLabel = required ? "Customer (required)" : "Customer (optional)";
+  return `<div class="customer-picker wide customer-picker-collapsed ${stateClass}" data-required="${required ? "1" : "0"}">
+    <button type="button" id="cust-expand" class="btn ghost customer-add-trigger${required ? " customer-required-missing" : ""}" aria-invalid="${required ? "true" : "false"}">
+      ${required ? `<span class="cust-status-icon" aria-hidden="true">!</span>` : ""}
+      ${escapeHtml(triggerLabel)}
+    </button>
+    <div class="customer-picker-body" hidden>
+      <label class="field">
+        <span>${fieldLabel}</span>
+        <input id="cust-search" type="search" placeholder="Search customer name or phone" autocomplete="off" enterkeyhint="search" />
+      </label>
+      <button type="button" id="cust-add" class="btn ghost small">+ New</button>
+      <div id="cust-results" class="cust-results" hidden></div>
+    </div>
   </div>`;
 }
 
-function customerSummaryHtml(f, { addresses = false } = {}) {
-  if (!f.customerId) return "";
-  const who = [f.customerName, f.customerPhone].filter(Boolean).join(" · ");
-  const place = [
-    f.addressLabel || "",
-    f.buildingNumber ? `Building ${f.buildingNumber}` : "",
-    f.roadNumber ? `Road ${f.roadNumber}` : "",
-    f.blockNumber ? `Block ${f.blockNumber}` : "",
-  ].filter(Boolean).join(" · ");
-  const addressHtml = addresses
-    ? `<p class="cust-summary-address">${escapeHtml(place || "No saved address")}</p>
-    ${f.addressNote ? `<p class="muted">${escapeHtml(f.addressNote)}</p>` : ""}`
+/** Display-only address line; skips label when it duplicates building number. */
+function formatCustomerAddressLine(f) {
+  const label = String(f?.addressLabel || "").trim();
+  const building = String(f?.buildingNumber || "").trim();
+  const road = String(f?.roadNumber || "").trim();
+  const block = String(f?.blockNumber || "").trim();
+  const buildingPart = building ? `Building ${building}` : "";
+  const labelLower = label.toLowerCase();
+  const labelDuplicatesBuilding =
+    Boolean(building) &&
+    (labelLower === building.toLowerCase() || labelLower === buildingPart.toLowerCase());
+  const parts = [];
+  if (label && !labelDuplicatesBuilding) parts.push(label);
+  if (buildingPart) parts.push(buildingPart);
+  if (road) parts.push(`Road ${road}`);
+  if (block) parts.push(`Block ${block}`);
+  return parts.join(" · ");
+}
+
+function customerCardStatus(f = state.fulfillment, { delivery = false } = {}) {
+  const hasId = Boolean(selectedCustomerId(f));
+  const phone = customerContactPhone(f);
+  if (!delivery) {
+    return { tone: "neutral", label: hasId ? "Customer" : "Optional", icon: "" };
+  }
+  if (!hasId) {
+    return { tone: "missing", label: "Customer required", icon: "!" };
+  }
+  if (!phone) {
+    return { tone: "warn", label: "Add contact number", icon: "!" };
+  }
+  if (hasValidDeliveryCustomer(f)) {
+    return { tone: "ok", label: "Customer ready", icon: "✓" };
+  }
+  return { tone: "warn", label: "Add contact number", icon: "!" };
+}
+
+function customerSummaryHtml(f, { addresses = false, delivery = false } = {}) {
+  if (!selectedCustomerId(f)) return "";
+  const name = String(f.customerName || "").trim() || "Customer";
+  const phone = customerContactPhone(f);
+  const status = customerCardStatus(f, { delivery });
+  const toneClass =
+    status.tone === "ok"
+      ? "cust-summary--ok"
+      : status.tone === "warn"
+        ? "cust-summary--warn"
+        : status.tone === "missing"
+          ? "cust-summary--missing"
+          : "";
+  const canCompact =
+    (delivery ? hasValidDeliveryCustomer(f) : Boolean(selectedCustomerId(f) && phone)) &&
+    !state._customerCardExpanded;
+  if (canCompact) {
+    const bits = [name, phone, f.blockNumber ? `Block ${f.blockNumber}` : ""].filter(Boolean);
+    return `<div class="cust-summary wide cust-summary--compact ${toneClass}" data-cust-tone="${escapeHtml(status.tone)}">
+      <button type="button" id="cust-compact-toggle" class="cust-compact-row" aria-expanded="false">
+        <span class="cust-compact-text"><span class="cust-status-icon" aria-hidden="true">✓</span> ${escapeHtml(bits.join(" · "))}</span>
+        <span class="cust-compact-change">Change</span>
+      </button>
+    </div>`;
+  }
+  const phoneHtml = phone
+    ? `<a class="cust-summary-phone" href="tel:${escapeHtml(phone.replace(/\s+/g, ""))}">${escapeHtml(phone)}</a>`
     : "";
-  const addressActions = `<button type="button" id="cust-pick-address" class="btn ghost small">Change address</button>
-      ${addresses ? `<button type="button" id="cust-add-address" class="btn ghost small">+ Add address</button>` : ""}`;
-  return `<div class="cust-summary wide">
+  const place = formatCustomerAddressLine(f);
+  const pinSvg =
+    '<svg class="cust-pin" viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M10 2a6 6 0 0 0-6 6c0 4.5 6 10 6 10s6-5.5 6-10a6 6 0 0 0-6-6zm0 8.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4z"/></svg>';
+  const addressHtml = addresses
+    ? `<p class="cust-summary-address">${pinSvg}<span class="cust-summary-address-text">${escapeHtml(place || "No saved address")}</span></p>
+    ${f.addressNote ? `<p class="muted cust-summary-note">${escapeHtml(f.addressNote)}</p>` : ""}`
+    : "";
+  const moreItems = [
+    `<button type="button" id="cust-edit" role="menuitem">Edit customer</button>`,
+    addresses ? `<button type="button" id="cust-add-address" role="menuitem">+ Add address</button>` : "",
+  ]
+    .filter(Boolean)
+    .join("");
+  const phoneAction =
+    delivery && !phone
+      ? `<button type="button" id="cust-add-phone" class="btn ghost small">Add contact number</button>`
+      : "";
+  const addressAction = addresses
+    ? `<button type="button" id="cust-pick-address" class="btn ghost small">Change address</button>`
+    : "";
+  const collapseAction =
+    delivery && hasValidDeliveryCustomer(f)
+      ? `<button type="button" id="cust-compact-toggle" class="btn ghost small" aria-expanded="true">Done</button>`
+      : "";
+  const readyMark =
+    status.tone === "ok"
+      ? `<span class="cust-status-icon cust-summary-ready-mark" aria-hidden="true">✓</span>`
+      : status.tone === "warn"
+        ? `<span class="cust-summary-status cust-summary-status-inline"><span class="cust-status-icon" aria-hidden="true">!</span>${escapeHtml(status.label)}</span>`
+        : "";
+  return `<div class="cust-summary wide ${toneClass}" data-cust-tone="${escapeHtml(status.tone)}">
     <div class="cust-summary-top">
-      <strong>${escapeHtml(who || "Customer")}</strong>
-      <button type="button" id="cust-edit" class="btn ghost small">Edit</button>
+      <div class="cust-summary-identity">
+        ${readyMark}
+        <strong class="cust-summary-name">${escapeHtml(name)}</strong>
+        ${phoneHtml}
+      </div>
+      ${collapseAction}
     </div>
     ${addressHtml}
     <div class="cust-summary-actions">
       <button type="button" id="cust-change" class="btn ghost small">Change customer</button>
-      ${addressActions}
+      ${addressAction}
+      ${phoneAction}
+      <div class="cust-more">
+        <button type="button" id="cust-more-btn" class="btn ghost small" aria-haspopup="menu" aria-expanded="false" aria-controls="cust-more-menu">More</button>
+        <div id="cust-more-menu" class="cust-more-menu" role="menu" hidden>${moreItems}</div>
+      </div>
     </div>
   </div>`;
 }
@@ -3361,18 +3648,30 @@ function applySavedAddress(address) {
 }
 
 function selectCustomer(customer, { stayInPicker = false } = {}) {
-  if (!customer?.customerId) return;
+  const customerId = selectedCustomerId(customer);
+  if (!customerId) return;
+  const phone = customerContactPhone(customer);
+  if (!phone) {
+    promptCustomerPhoneInPicker({ ...customer, customerId });
+    return;
+  }
+  hidePickerPhonePrompt();
   state.addressBook = activeAddresses(customer);
-  state.fulfillment.customerId = customer.customerId;
+  state.fulfillment.customerId = customerId;
   state.fulfillment.customerName = customer.name || "";
-  state.fulfillment.customerPhone = customer.phone || "";
+  state.fulfillment.customerPhone = phone;
+  normalizeFulfillmentCustomerFields();
   applySavedAddress(preferredAddress(customer));
+  state._customerCardExpanded = false;
   const pickerSearch = $("picker-cust-search");
   if (pickerSearch) pickerSearch.value = "";
   const pickerResults = $("picker-cust-results");
   if (pickerResults) {
     pickerResults.hidden = true;
     pickerResults.innerHTML = "";
+  }
+  if ($("send-status") && /customer with a contact/i.test($("send-status").textContent || "")) {
+    setStatus("");
   }
   renderFulfillmentFields();
   renderCart();
@@ -3383,7 +3682,9 @@ function selectCustomer(customer, { stayInPicker = false } = {}) {
   }
   if (selectedOrderType()?.behavior === "DELIVERY" && state.addressBook.length > 1) {
     openAddressPicker("address");
+    return;
   }
+  void maybeResumeReviewAfterCustomerGate();
 }
 
 function clearSelectedCustomer() {
@@ -3400,6 +3701,7 @@ function clearSelectedCustomer() {
   state.fulfillment.deliveryChargeCents = null;
   state.fulfillment.deliveryFeeOverride = false;
   state.fulfillment.expectedBlockRateCents = null;
+  state._customerCardExpanded = false;
   renderFulfillmentFields();
   renderCart();
   persistActiveCart();
@@ -3555,6 +3857,7 @@ async function saveNewCustomer({ another = false } = {}) {
       renderFulfillmentFields();
       persistActiveCart();
       showToast("Customer saved");
+      void maybeResumeReviewAfterCustomerGate();
     } finally {
       if (saveBtn) saveBtn.disabled = false;
     }
@@ -3584,6 +3887,7 @@ async function saveNewCustomer({ another = false } = {}) {
     showToast("Customer saved");
     if (!another) {
       closeCustomerDialog();
+      void maybeResumeReviewAfterCustomerGate();
       return;
     }
     state._customerMode = "extra";
@@ -3676,13 +3980,26 @@ async function openAddressPicker(mode) {
   const dialog = $("address-picker-dialog");
   dialog?.classList.toggle("picker-mode-customer", focusCustomer);
   dialog?.classList.toggle("picker-mode-address", !focusCustomer);
+  dialog?.classList.toggle(
+    "picker-gate-delivery",
+    Boolean(state._resumeReviewAfterCustomer && focusCustomer)
+  );
   if (!focusCustomer && mode === "address") dialog?.classList.remove("show-customer-search");
   const title = $("address-picker-title");
-  if (title) title.textContent = focusCustomer ? "Change customer" : "Change address";
+  if (title) {
+    title.textContent =
+      state._resumeReviewAfterCustomer && focusCustomer
+        ? "Delivery needs a customer"
+        : focusCustomer
+          ? "Select customer"
+          : "Change address";
+  }
   const current = $("picker-current");
   if (current) {
-    const who = [state.fulfillment.customerName, state.fulfillment.customerPhone].filter(Boolean).join(" · ");
-    current.textContent = who || "Selected customer";
+    const who = [state.fulfillment.customerName, customerContactPhone(state.fulfillment)]
+      .filter(Boolean)
+      .join(" · ");
+    current.textContent = who || (focusCustomer ? "Search or add a customer" : "Selected customer");
   }
   const adjust = $("address-picker-adjust");
   if (adjust) adjust.hidden = selectedOrderType()?.behavior !== "DELIVERY";
@@ -3713,15 +4030,20 @@ async function openAddressPicker(mode) {
       const match = rows.find((row) => row.addressId === button.dataset.id);
       if (!match) return;
       applySavedAddress(match);
-      $("address-picker-dialog")?.close();
       renderFulfillmentFields();
       renderCart();
       persistActiveCart();
+      if (state._resumeReviewAfterCustomer) {
+        void maybeResumeReviewAfterCustomerGate();
+        return;
+      }
+      $("address-picker-dialog")?.close();
     });
   });
   host.querySelectorAll("[data-edit]").forEach((button) => {
     button.addEventListener("click", () => {
       const match = rows.find((row) => row.addressId === button.dataset.edit);
+      state._openingNestedCustomerDialog = true;
       $("address-picker-dialog")?.close();
       if (match) openAddressEditor(match);
     });
@@ -3786,6 +4108,7 @@ function renderFulfillmentFields() {
   if (!host) return;
   syncOrderTypeQuickButtons();
   const type = selectedOrderType();
+  normalizeFulfillmentCustomerFields();
   const f = state.fulfillment;
   if (!type) {
     host.innerHTML = `<p class="fee-warn">No active order types. Add one in Shop Settings.</p>`;
@@ -3802,9 +4125,11 @@ function renderFulfillmentFields() {
       if (f.deliveryChargeCents === rate.chargeCents) f.deliveryFeeOverride = false;
     }
   }
-  const summary = customerSummaryHtml(f, { addresses: delivery });
-  const picker = customerPickerHtml(delivery);
-  let html = f.customerId ? summary + picker : picker + summary;
+  const hasCustomer = Boolean(selectedCustomerId(f));
+  const summary = customerSummaryHtml(f, { addresses: delivery, delivery });
+  // Never show "+ Add customer" alongside an already-selected customer card.
+  const picker = hasCustomer ? "" : customerPickerHtml(delivery);
+  let html = hasCustomer ? summary : picker;
   if (type.behavior === "COUNTER") {
     html += fieldHtml("ff-counter", "Counter", f.counterLabel, {
       wide: true,
@@ -3819,18 +4144,21 @@ function renderFulfillmentFields() {
       .map((row) => `<option value="${escapeHtml(row.blockNumber)}"></option>`)
       .join("");
     html += `
-      <div class="fee-row wide">
-        <label class="field">
-          <span>Block number</span>
-          <input id="dl-block" type="text" value="${escapeHtml(f.blockNumber || "")}" list="dl-block-list" autocomplete="off" />
-          <datalist id="dl-block-list">${suggestions}</datalist>
-        </label>
-        <label class="field">
-          <span>Delivery charge</span>
-          <input id="dl-charge" type="text" inputmode="decimal" value="${escapeHtml(charge)}" autocomplete="off" />
-        </label>
-      </div>
-      <p id="fee-note" class="fee-note wide"></p>`;
+      <section class="delivery-details wide" aria-labelledby="delivery-details-heading">
+        <h4 id="delivery-details-heading" class="delivery-details-heading">Delivery details</h4>
+        <div class="fee-row fee-row-compact">
+          <label class="field">
+            <span>Block number</span>
+            <input id="dl-block" class="delivery-compact-input" type="text" value="${escapeHtml(f.blockNumber || "")}" list="dl-block-list" autocomplete="off" />
+            <datalist id="dl-block-list">${suggestions}</datalist>
+          </label>
+          <label class="field">
+            <span>Delivery charge</span>
+            <input id="dl-charge" class="delivery-compact-input" type="text" inputmode="decimal" value="${escapeHtml(charge)}" autocomplete="off" title="" />
+          </label>
+        </div>
+        <p id="fee-note" class="fee-note fee-note-compact"></p>
+      </section>`;
   } else if (type.behavior === "TABLE") {
     html += fieldHtml("ff-table", "Table number", f.tableNumber, {
       wide: true,
@@ -3847,12 +4175,39 @@ function renderFulfillmentFields() {
       });
   }
   host.innerHTML = html;
+  refreshFulfillmentValidationUi();
+  $("cust-expand")?.addEventListener("click", () => {
+    const picker = host.querySelector(".customer-picker");
+    const body = host.querySelector(".customer-picker-body");
+    const trigger = $("cust-expand");
+    if (!picker || !body) return;
+    picker.classList.remove("customer-picker-collapsed");
+    body.hidden = false;
+    if (trigger) trigger.hidden = true;
+    $("cust-search")?.focus();
+  });
   $("cust-search")?.addEventListener("input", scheduleCustomerSearch);
   $("cust-add")?.addEventListener("click", () => openCustomerDialog("create"));
   $("cust-change")?.addEventListener("click", () => openAddressPicker("customer"));
   $("cust-edit")?.addEventListener("click", () => openCustomerDialog("edit"));
   $("cust-pick-address")?.addEventListener("click", () => openAddressPicker("address"));
   $("cust-add-address")?.addEventListener("click", () => openAddressEditor(null));
+  $("cust-add-phone")?.addEventListener("click", () => {
+    void openAddressPicker("customer").then(() => {
+      promptCustomerPhoneInPicker({
+        customerId: selectedCustomerId(),
+        name: state.fulfillment.customerName || "",
+        phone: "",
+      });
+    });
+  });
+  host.querySelectorAll("#cust-compact-toggle").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      state._customerCardExpanded = !state._customerCardExpanded;
+      renderFulfillmentFields();
+    });
+  });
+  bindCustomerMoreMenu(host);
   if (delivery) {
     const block = $("dl-block");
     block?.addEventListener("change", () => commitBlockInput(block.value));
@@ -3929,15 +4284,196 @@ function fulfillmentPayload() {
   return body;
 }
 
+function deliveryMissingCustomerContact() {
+  const type = selectedOrderType();
+  if (type?.behavior !== "DELIVERY") return false;
+  normalizeFulfillmentCustomerFields();
+  return !hasValidDeliveryCustomer();
+}
+
+function markCustomerRequiredUi() {
+  const trigger = $("cust-expand");
+  const picker = trigger?.closest(".customer-picker");
+  const missing = deliveryMissingCustomerContact();
+  if (trigger) {
+    trigger.classList.toggle("customer-required-missing", missing);
+    trigger.setAttribute("aria-invalid", missing ? "true" : "false");
+  }
+  picker?.classList.toggle("customer-picker--missing", missing);
+  picker?.classList.toggle("customer-picker--optional", !missing && picker?.dataset.required !== "1");
+}
+
+function bindCustomerMoreMenu(host) {
+  const moreBtn = host?.querySelector("#cust-more-btn");
+  const menu = host?.querySelector("#cust-more-menu");
+  if (!moreBtn || !menu) return;
+  let onDoc = null;
+  let onKey = null;
+  const closeMenu = () => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    moreBtn.setAttribute("aria-expanded", "false");
+    if (onDoc) document.removeEventListener("click", onDoc);
+    if (onKey) document.removeEventListener("keydown", onKey);
+    onDoc = null;
+    onKey = null;
+  };
+  moreBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (!menu.hidden) {
+      closeMenu();
+      return;
+    }
+    menu.hidden = false;
+    moreBtn.setAttribute("aria-expanded", "true");
+    onDoc = (ev) => {
+      if (menu.contains(ev.target) || moreBtn.contains(ev.target)) return;
+      closeMenu();
+    };
+    onKey = (ev) => {
+      if (ev.key === "Escape") closeMenu();
+    };
+    setTimeout(() => {
+      document.addEventListener("click", onDoc);
+      document.addEventListener("keydown", onKey);
+    }, 0);
+  });
+  menu.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => closeMenu());
+  });
+}
+
+function refreshFulfillmentValidationUi() {
+  normalizeFulfillmentCustomerFields();
+  markCustomerRequiredUi();
+  if (!deliveryMissingCustomerContact()) {
+    const status = $("send-status");
+    if (status && /customer with a contact/i.test(status.textContent || "")) {
+      setStatus("");
+    }
+  }
+}
+
+function focusReviewSendButton() {
+  const btn = $("review-btn") || $("review-order-btn");
+  requestAnimationFrame(() => btn?.focus());
+}
+
+function hidePickerPhonePrompt() {
+  state._pendingPhoneCustomer = null;
+  const panel = $("picker-phone-prompt");
+  const err = $("picker-phone-error");
+  if (panel) panel.hidden = true;
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  const input = $("picker-phone-input");
+  if (input) input.value = "";
+}
+
+function promptCustomerPhoneInPicker(customer) {
+  state._pendingPhoneCustomer = customer;
+  const panel = $("picker-phone-prompt");
+  const name = $("picker-phone-name");
+  const err = $("picker-phone-error");
+  const input = $("picker-phone-input");
+  if (name) name.textContent = customer.name || "Customer";
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  if (input) input.value = "";
+  if (panel) panel.hidden = false;
+  input?.focus();
+}
+
+async function confirmPendingCustomerPhone() {
+  const customer = state._pendingPhoneCustomer;
+  const phone = String($("picker-phone-input")?.value || "").trim();
+  const err = $("picker-phone-error");
+  if (!customer?.customerId) return;
+  if (!phone) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Enter a contact number.";
+    }
+    $("picker-phone-input")?.focus();
+    return;
+  }
+  const saveBtn = $("picker-phone-save");
+  if (saveBtn) saveBtn.disabled = true;
+  try {
+    const res = await api(`/v1/customers/${encodeURIComponent(customer.customerId)}`, {
+      method: "PUT",
+      body: JSON.stringify({
+        name: customer.name || "",
+        phone,
+      }),
+    });
+    if (!res.ok) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = res.json?.error || "Could not save the contact number.";
+      }
+      return;
+    }
+    hidePickerPhonePrompt();
+    selectCustomer(res.json.customer);
+  } finally {
+    if (saveBtn) saveBtn.disabled = false;
+  }
+}
+
+async function maybeResumeReviewAfterCustomerGate() {
+  if (!state._resumeReviewAfterCustomer) return;
+  normalizeFulfillmentCustomerFields();
+  if (deliveryMissingCustomerContact()) return;
+  refreshFulfillmentValidationUi();
+  state._completingCustomerGate = true;
+  state._resumeReviewAfterCustomer = false;
+  const dialog = $("address-picker-dialog");
+  if (dialog?.open) dialog.close();
+  await openReview();
+  state._completingCustomerGate = false;
+  if (!$("review-dialog")?.open) focusReviewSendButton();
+}
+
+async function openDeliveryCustomerGate() {
+  state._pickerMode = "customer";
+  hidePickerPhonePrompt();
+  await openAddressPicker("customer");
+  const title = $("address-picker-title");
+  if (title) title.textContent = "Delivery needs a customer";
+  const dialog = $("address-picker-dialog");
+  dialog?.setAttribute("aria-labelledby", "address-picker-title");
+  const f = state.fulfillment;
+  // Already have a customer but no contact number — ask for phone in the gate.
+  if (selectedCustomerId(f) && !customerContactPhone(f)) {
+    promptCustomerPhoneInPicker({
+      customerId: selectedCustomerId(f),
+      name: f.customerName || "",
+      phone: "",
+    });
+    return;
+  }
+  const search = $("picker-cust-search");
+  if (search) {
+    search.setAttribute("inputmode", "tel");
+    search.focus();
+  }
+}
+
 function validateFulfillmentForSend() {
   const type = selectedOrderType();
   if (!type) return { ok: false, error: "Choose an order type." };
   readFulfillmentInputs();
+  normalizeFulfillmentCustomerFields();
   if (type.behavior === "TABLE" && !state.fulfillment.tableNumber) {
     return { ok: false, error: "Enter a table number." };
   }
   if (type.behavior === "DELIVERY") {
-    if (!state.fulfillment.customerId || !state.fulfillment.customerPhone) {
+    if (!hasValidDeliveryCustomer()) {
       return { ok: false, error: "Select a customer with a contact number." };
     }
     if (!state.fulfillment.addressId) {
@@ -3997,40 +4533,39 @@ async function loadOrderSetup() {
   renderFulfillmentFields();
 }
 
-function reviewLineHtml(l) {
-  const instr = (l.instructions || []).length
-    ? `<div class="instr-tags">${l.instructions
-        .map((i) => `<span class="tag">${escapeHtml(i)}</span>`)
-        .join("")}</div>`
-    : "";
-  const noteHtml = l.orderNote
-    ? `<div class="muted review-order-note">Note: ${escapeHtml(l.orderNote)}</div>`
-    : "";
-  const addonHtml = (l.addons || [])
-    .map((a) => {
-      const p = addonAppliedPrice(a);
-      const label = `${a.name} ${formatSignedPrice(p)}`;
-      return `<span class="tag">${escapeHtml(label)}</span>`;
-    })
-    .join("");
-  const variant = l.variantName
-    ? `<span class="review-variant">${escapeHtml(l.variantName)}</span>`
-    : "";
+function formatLineAmountOnly(cents) {
+  if (state.money?.formatPlain) return state.money.formatPlain(cents);
+  const decimals = 3;
+  const factor = 10 ** decimals;
+  return (Number(cents || 0) / factor).toFixed(decimals);
+}
+
+function reviewLineHtml(l, { bareLineAmount = false } = {}) {
   const label = l.variantName
     ? `Edit ${l.name} — ${l.variantName}`
     : `Edit ${l.name}`;
-  return `<div class="review-line" data-line-id="${escapeHtml(l.lineId)}">
-    <div class="review-line-main">
-      <span class="review-qty">${escapeHtml(l.quantity)}×</span>
-      <span class="review-name">${escapeHtml(l.name)}${variant}</span>
-      <span class="review-line-price">${formatPrice(lineUnitCents(l) * l.quantity)}</span>
-      <button type="button" class="review-edit" data-act="edit" aria-label="${escapeHtml(label)}">
+  const editButtonHtml = `<button type="button" class="review-edit" data-act="edit" aria-label="${escapeHtml(label)}">
         <svg viewBox="0 0 20 20" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M14.7 2.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-9.5 9.5-3.2.8a.5.5 0 0 1-.6-.6l.8-3.2 9.5-9.5z"/></svg>
         Edit
-      </button>
-    </div>
-    ${instr}${addonHtml ? `<div class="instr-tags">${addonHtml}</div>` : ""}${noteHtml}
-  </div>`;
+      </button>`;
+  return renderOrderLineItemHtml(
+    {
+      ...l,
+      itemName: l.name,
+      lineTotalCents: lineUnitCents(l) * Number(l.quantity || 0),
+      addons: (l.addons || []).map((a) => ({
+        ...a,
+        appliedPriceCents: addonAppliedPrice(a),
+      })),
+    },
+    {
+      escapeHtml,
+      formatMoney: formatPrice,
+      formatLineMoney: bareLineAmount ? formatLineAmountOnly : formatPrice,
+      formatSignedMoney: formatSignedPrice,
+      editButtonHtml,
+    }
+  );
 }
 
 function paintReview() {
@@ -4039,7 +4574,7 @@ function paintReview() {
   const destination = fulfillmentSummary();
   const meta = $("review-meta");
   if (meta) {
-    const hasCustomer = Boolean(state.fulfillment.customerId);
+    const hasCustomer = Boolean(selectedCustomerId());
     const summary = `${escapeHtml(type?.name || "")}${destination ? ` · ${escapeHtml(destination)}` : ""}`;
     const numberLabel = state.editingOrderId ? "Editing" : "Draft";
     const numberTitle = state.editingOrderId
@@ -4066,8 +4601,11 @@ function paintReview() {
         .map((n) => {
           const lines = linesForSplit(n);
           return `<section class="review-split">
-            <header class="review-split-head"><strong>Order ${n}</strong><strong>${formatPrice(splitItemsCents(lines))}</strong></header>
-            <div class="review-lines">${reviewLinesHtml(lines)}</div>
+            <header class="review-split-head">
+              <strong class="review-split-title">Order ${n}</strong>
+              <strong class="review-split-total">${formatSplitGroupTotalLabel(formatPrice(splitItemsCents(lines)))}</strong>
+            </header>
+            <div class="review-lines">${reviewLinesHtml(lines, { hideSingleCategory: true, bareLineAmount: true })}</div>
           </section>`;
         })
         .join("")
@@ -4176,11 +4714,21 @@ async function openReview() {
     setStatus("Add at least one item before sending.", false);
     return;
   }
+  readFulfillmentInputs();
+  normalizeFulfillmentCustomerFields();
+  refreshFulfillmentValidationUi();
+  if (deliveryMissingCustomerContact()) {
+    setStatus("Select a customer with a contact number.", false);
+    state._resumeReviewAfterCustomer = true;
+    await openDeliveryCustomerGate();
+    return;
+  }
   const ready = validateFulfillmentForSend();
   if (!ready.ok) {
     setStatus(ready.error, false);
     return;
   }
+  setStatus("");
   await syncDraftNumber();
   paintReview();
   syncOrderPrintChoice();
@@ -4703,7 +5251,7 @@ async function bootstrapData() {
     if (restored && !state.editingOrderId && jobsIncludeOrderNumber(jobs, state.orderNumber)) {
       await prepareNextOrderAfterDispatch(state.orderNumber);
     } else if (restored) {
-      setStatus("Cart restored after refresh.");
+      showToast("Cart restored after refresh.", { duration: 3000 });
     }
   } else {
     updateHeldCartUi();
@@ -4788,6 +5336,7 @@ async function beginEdit(orderId) {
   state.submissionId = newSubmissionId();
   state.lastOrderId = null;
   state.fulfillment = { ...blankFulfillment(), ...(draft.fulfillment || {}) };
+  normalizeFulfillmentCustomerFields();
   const typeSelect = $("order-type");
   if (typeSelect) {
     const known = (state.orderTypes || []).some((row) => row.orderTypeId === draft.orderTypeId);
@@ -5508,11 +6057,14 @@ function bindUi() {
     const wasEditing = Boolean(state.editingOrderId);
     if (!cartHasItems() && !wasEditing && !fulfillmentHasDetails()) return;
     if (!window.confirm("Clear this order, including the customer and address?")) return;
+    hideCartUndo();
     if ($("review-dialog")?.open) $("review-dialog").close();
     emptyCart({ status: "Cart cleared." });
     resetFulfillmentForNewOrder();
+    renderMenu();
     if (wasEditing) void ensureDraftIdentity({ fresh: true });
   });
+  $("cart-undo-btn")?.addEventListener("click", () => undoCartRemove());
   $("cart-lines")?.addEventListener("scroll", onCartLinesScroll, {
     passive: true,
   });
@@ -5675,6 +6227,14 @@ function bindUi() {
   $("customer-dialog")?.addEventListener("close", () => {
     const err = $("cust-error");
     if (err) err.hidden = true;
+    if (state._completingCustomerGate) return;
+    if (state._resumeReviewAfterCustomer && deliveryMissingCustomerContact()) {
+      void openDeliveryCustomerGate();
+      return;
+    }
+    if (state._resumeReviewAfterCustomer && !deliveryMissingCustomerContact()) {
+      void maybeResumeReviewAfterCustomerGate();
+    }
   });
   $("addr-cancel")?.addEventListener("click", closeAddressDialog);
   $("addr-save")?.addEventListener("click", () => {
@@ -5685,18 +6245,49 @@ function bindUi() {
     $("address-picker-dialog")?.classList.add("show-customer-search");
     $("picker-cust-search")?.focus();
   });
+  $("picker-new-customer")?.addEventListener("click", () => {
+    state._openingNestedCustomerDialog = true;
+    $("address-picker-dialog")?.close();
+    openCustomerDialog("create");
+  });
+  $("picker-phone-cancel")?.addEventListener("click", () => {
+    hidePickerPhonePrompt();
+    $("picker-cust-search")?.focus();
+  });
+  $("picker-phone-save")?.addEventListener("click", () => {
+    void confirmPendingCustomerPhone();
+  });
+  $("picker-phone-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void confirmPendingCustomerPhone();
+    }
+  });
   $("address-picker-cancel")?.addEventListener("click", () => $("address-picker-dialog")?.close());
   $("address-picker-clear")?.addEventListener("click", () => {
     $("address-picker-dialog")?.close();
     clearSelectedCustomer();
   });
   $("address-picker-add")?.addEventListener("click", () => {
+    state._openingNestedCustomerDialog = true;
     $("address-picker-dialog")?.close();
     openAddressEditor(null);
   });
   $("address-picker-adjust")?.addEventListener("click", () => {
+    state._openingNestedCustomerDialog = true;
     $("address-picker-dialog")?.close();
     openOrderAddressDialog();
+  });
+  $("address-picker-dialog")?.addEventListener("close", () => {
+    hidePickerPhonePrompt();
+    if (state._completingCustomerGate || state._openingNestedCustomerDialog) {
+      state._openingNestedCustomerDialog = false;
+      return;
+    }
+    if (state._resumeReviewAfterCustomer) {
+      state._resumeReviewAfterCustomer = false;
+      focusReviewSendButton();
+    }
   });
   $("order-addr-cancel")?.addEventListener("click", () => $("order-address-dialog")?.close());
   $("order-addr-apply")?.addEventListener("click", () => {
@@ -5710,6 +6301,7 @@ function bindUi() {
   });
   $("order-type")?.addEventListener("change", () => {
     renderFulfillmentFields();
+    refreshFulfillmentValidationUi();
     renderCart();
     persistActiveCart();
   });
@@ -5774,8 +6366,8 @@ function bindUi() {
   });
   $("tab-notes")?.addEventListener("click", () => setCustomizeTab("notes"));
   $("tab-extras")?.addEventListener("click", () => setCustomizeTab("extras"));
-  $("price-breakdown-toggle")?.addEventListener("click", () => {
-    state.priceBreakdownOpen = !state.priceBreakdownOpen;
+  $("customize-price-breakdown")?.addEventListener("toggle", () => {
+    state.priceBreakdownOpen = Boolean($("customize-price-breakdown")?.open);
     updatePriceSummary();
   });
   $("cart-tax-summary")?.addEventListener("click", (event) => {
@@ -5785,9 +6377,13 @@ function bindUi() {
     const detail = $("cart-price-breakdown");
     if (detail) detail.hidden = !state.cartPriceBreakdownOpen;
     button.textContent = state.cartPriceBreakdownOpen
-      ? "Hide price breakdown"
-      : "View price breakdown";
+      ? "Hide breakdown"
+      : "Price breakdown";
     button.setAttribute("aria-expanded", String(state.cartPriceBreakdownOpen));
+  });
+  $("instr-form")?.addEventListener("submit", (e) => {
+    // Keep method=dialog for semantics, but never auto-close via implicit submit.
+    e.preventDefault();
   });
   $("customize-apply-btn")?.addEventListener("click", (e) => {
     e.preventDefault();
@@ -5803,6 +6399,10 @@ function bindUi() {
   });
   $("instr-dialog")?.addEventListener("close", () => {
     document.body.classList.remove("customize-open");
+  });
+  // Guard against the opening pointer event dismissing the dialog in some browsers.
+  $("instr-dialog")?.addEventListener("click", (e) => {
+    if (e.target === $("instr-dialog")) e.stopPropagation();
   });
   $("custom-note")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {

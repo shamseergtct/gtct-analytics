@@ -11,6 +11,7 @@
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/orders.css" />
+    <link rel="stylesheet" href="/monitor.css?v=board-compact1" />
   </head>
   <body>
     <section id="login-view" class="view login-view" hidden>
@@ -74,7 +75,11 @@
               <button type="button" id="shift-close" class="btn ghost" hidden>Close Shift</button>
             </div>
           </section>
-          <div id="type-tabs" class="chips chip-scroll" role="tablist" aria-label="Order types"></div>
+          <div class="orders-view-toggle" role="group" aria-label="Orders view">
+            <button type="button" id="view-list-btn" class="orders-view-btn" aria-pressed="true">List</button>
+            <button type="button" id="view-board-btn" class="orders-view-btn" aria-pressed="false">Board</button>
+          </div>
+          <div id="type-tabs" class="chips orders-type-tabs" role="tablist" aria-label="Order types"></div>
           <div class="orders-tools">
             <input id="order-search" type="search" placeholder="Search invoice, token, customer" aria-label="Search invoice, token or customer" />
             <input id="order-date" type="date" aria-label="Order date" />
@@ -87,11 +92,21 @@
             <div id="address-type-tabs" class="chips" role="tablist" aria-label="Address type"></div>
           </div>
           <p id="orders-status" class="hint" aria-live="polite">Loading orders…</p>
-          <div id="orders-list"></div>
-          <div class="orders-pager">
-            <button type="button" id="page-prev" class="btn ghost">Previous</button>
-            <span id="page-label"></span>
-            <button type="button" id="page-next" class="btn ghost">Next</button>
+          <div id="orders-list-panel">
+            <div id="orders-list"></div>
+            <div class="orders-pager">
+              <button type="button" id="page-prev" class="btn ghost">Previous</button>
+              <span id="page-label"></span>
+              <button type="button" id="page-next" class="btn ghost">Next</button>
+            </div>
+          </div>
+          <div id="orders-board-panel" class="orders-board-panel" hidden>
+            <div id="orders-board" class="monitor-list" aria-live="polite"></div>
+            <div class="orders-pager">
+              <button type="button" id="board-page-prev" class="btn ghost">Previous</button>
+              <span id="board-page-label"></span>
+              <button type="button" id="board-page-next" class="btn ghost">Next</button>
+            </div>
           </div>
         </div>
       </main>

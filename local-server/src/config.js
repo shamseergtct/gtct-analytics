@@ -338,6 +338,8 @@ export function loadConfig(options = {}) {
     );
   }
 
+  const supportMasterKey = String(process.env.GTCT_SUPPORT_MASTER_KEY || "").trim();
+
   const config = {
     rootDir: ROOT,
     dataDir,
@@ -360,6 +362,7 @@ export function loadConfig(options = {}) {
     restaurantDisplayName: "GTCT RESTAURANT — KITCHEN TEST",
     apiToken,
     adminToken,
+    supportMasterKey,
     dispatchIntervalMs: Number(process.env.GTCT_DISPATCH_INTERVAL_MS || 1500),
     tls: tlsMaterial,
     lanAccessReady,

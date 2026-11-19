@@ -16,6 +16,11 @@ windows-pilot/dist/
 windows-pilot/env.pilot.cmd
 packaging/windows/cache/
 packaging/windows/dist/
+packaging/windows/.tools/
+packaging/windows/launcher/*.syso
+packaging/windows/icons/icon-*.png
+!packaging/windows/icons/gtct-restaurant.ico
+!packaging/windows/icons/gtct-restaurant-icon-1024.png
 
 # Codex merge leftovers / patch tooling
 _p2e*/

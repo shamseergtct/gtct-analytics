@@ -46,6 +46,7 @@
     "accept:order-register": "node src/scripts/acceptanceOrderRegister.js",
     "accept:order-monitor": "node src/scripts/acceptanceOrderMonitor.js",
     "admin:create": "node src/scripts/createFirstAdmin.js",
+    "admin:reset-password": "node src/scripts/resetStaffPassword.js",
     "accept:production-guard": "node src/scripts/acceptanceProductionGuard.js",
     "production:prepare-sealed": "node src/scripts/prepareSealedProduction.js",
     "production:verify-sealed": "node src/scripts/verifySealedProduction.js",

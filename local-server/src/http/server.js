@@ -14,6 +14,10 @@ import {
   listKitchenStationIds,
 } from "../services/staffUsers.js";
 import {
+  resetPasswordWithSupportMasterKey,
+  supportMasterKeyConfigured,
+} from "../services/supportRecovery.js";
+import {
   loginWithToken,
   loginWithPassword,
   logoutRequest,
@@ -378,6 +382,33 @@ export function createServer(config) {
           },
           { "Set-Cookie": result.cookie }
         );
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/recovery/status") {
+        if (!isTrustedBrowserOrigin(req, config)) {
+          sendJson(res, 403, { error: "Open recovery from this restaurant’s page." });
+          return;
+        }
+        sendJson(res, 200, {
+          ok: true,
+          supportMasterEnabled: supportMasterKeyConfigured(config),
+        });
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/recovery/support-reset") {
+        if (!isTrustedBrowserOrigin(req, config)) {
+          sendJson(res, 403, { error: "Open recovery from this restaurant’s page." });
+          return;
+        }
+        const body = await readBody(req);
+        const result = resetPasswordWithSupportMasterKey(req, config, body);
+        if (!result.ok) {
+          sendJson(res, result.status, { error: result.error });
+          return;
+        }
+        sendJson(res, 200, { ok: true, username: result.username });
         return;
       }
 

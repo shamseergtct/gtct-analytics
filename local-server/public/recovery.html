@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GTCT Restaurant — Reset password</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body class="sales-app">
+    <section class="view login-view">
+      <div class="login-card">
+        <p class="brand">GTCT</p>
+        <h1>Reset password</h1>
+        <p class="banner">TEST MODE — NO REAL SALES OR PAYMENTS</p>
+        <p class="hint">
+          If you forgot a password, reset it on the restaurant server PC, or use a GTCT support recovery key when that is enabled.
+        </p>
+
+        <div class="recovery-panel">
+          <h2 class="recovery-title">On the restaurant PC</h2>
+          <ol class="recovery-steps">
+            <li>Open <strong>Reset Staff Password</strong> from the Start menu (GTCT), or run the reset command in a terminal on that PC.</li>
+            <li>Choose the username (for example <code>admin</code>).</li>
+            <li>Enter a new password (letters and numbers, at least 8 characters).</li>
+            <li>Return here and sign in.</li>
+          </ol>
+          <p class="muted recovery-note">
+            Command (developer / unpackaged): <code>npm run admin:reset-password</code>
+          </p>
+        </div>
+
+        <div id="support-panel" class="recovery-panel" hidden>
+          <h2 class="recovery-title">GTCT support recovery</h2>
+          <p class="hint">Enter the support master key for this shop, then set a new password.</p>
+          <div class="field">
+            <label for="master-key">Support master key</label>
+            <input id="master-key" type="password" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="username">Username</label>
+            <input id="username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off" />
+          </div>
+          <div class="field">
+            <label for="password">New password</label>
+            <input id="password" type="password" autocomplete="new-password" />
+          </div>
+          <div class="field">
+            <label for="confirm">Confirm new password</label>
+            <input id="confirm" type="password" autocomplete="new-password" />
+          </div>
+          <button type="button" id="reset-btn" class="btn primary">Reset password</button>
+          <p id="reset-error" class="error" hidden></p>
+          <p id="reset-ok" class="ok-msg" hidden></p>
+        </div>
+
+        <p id="support-disabled" class="muted recovery-note">
+          Support master-key recovery is not enabled on this PC. Use the restaurant PC reset tool above.
+        </p>
+
+        <p class="recovery-back">
+          <a href="/">Back to sign in</a>
+        </p>
+      </div>
+    </section>
+    <script src="/recovery.js" type="module"></script>
+  </body>
+</html>

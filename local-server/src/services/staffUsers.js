@@ -406,6 +406,58 @@ export function updateStaffUser(shopId, userId, input, actor) {
   return user;
 }
 
+export function listStaffAccounts(shopId) {
+  const shop = String(shopId || "").trim();
+  if (!shop) return [];
+  return getDb()
+    .prepare(
+      `SELECT u.user_id AS userId, u.username, u.full_name AS fullName, u.is_active AS isActive,
+              COALESCE(
+                (SELECT r.role_id FROM staff_user_roles r
+                 WHERE r.shop_id = u.shop_id AND r.user_id = u.user_id AND r.revoked_at IS NULL
+                 ORDER BY CASE r.role_id
+                   WHEN 'role_admin' THEN 0
+                   WHEN 'role_cashier' THEN 1
+                   WHEN 'role_kitchen' THEN 2
+                   WHEN 'role_delivery' THEN 3
+                   ELSE 9 END
+                 LIMIT 1),
+                ''
+              ) AS roleId
+       FROM staff_users u
+       WHERE u.shop_id = ?
+       ORDER BY u.username COLLATE NOCASE`
+    )
+    .all(shop)
+    .map((row) => ({
+      userId: row.userId,
+      username: row.username,
+      fullName: row.fullName,
+      isActive: Boolean(row.isActive),
+      role: roleCode(row.roleId) || "staff",
+    }));
+}
+
+export function findStaffUserIdByUsername(shopId, username) {
+  const shop = String(shopId || "").trim();
+  const normalized = normalizeUsername(username);
+  if (!shop || !normalized) return null;
+  const row = getDb()
+    .prepare(
+      `SELECT user_id AS userId, username, is_active AS isActive
+       FROM staff_users
+       WHERE shop_id = ? AND username_normalized = ?
+       LIMIT 1`
+    )
+    .get(shop, normalized);
+  if (!row) return null;
+  return {
+    userId: row.userId,
+    username: row.username,
+    isActive: Boolean(row.isActive),
+  };
+}
+
 export function resetStaffPassword(shopId, userId, input, actor) {
   const password = input.password;
   const confirm = input.confirmPassword ?? input.confirm_password;

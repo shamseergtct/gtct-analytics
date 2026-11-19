@@ -1,17 +1,23 @@
 import { createMoneyFormatter } from "/money.js";
 import { registerPwa } from "./pwa.js";
+import { renderBoard } from "./orderBoard.js";
 registerPwa();
 
+const VIEW_KEY = "gtct.orders.view";
 const state = {
   role: null,
   staff: false,
   permissions: [],
   fullName: "",
   page: 1,
+  boardPage: 1,
+  view: "list",
   behavior: "",
   orderTypeId: "",
   addressLabel: "",
   register: null,
+  boardBusy: false,
+  expandedOrderIds: new Set(),
   activeShift: null,
   money: createMoneyFormatter({ currencyLabel: "", currencyDecimals: 2 }),
 };
@@ -33,6 +39,123 @@ async function api(path, options = {}) {
     try { json = JSON.parse(text); } catch { json = { raw: text }; }
   }
   return { ok: res.ok, status: res.status, json };
+}
+
+/** Board module expects (path, method, body). */
+function boardApi(path, method = "GET", body) {
+  return api(path, {
+    method,
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+}
+
+function defaultViewForRole(role) {
+  return role === "admin" || role === "cashier" ? "list" : "board";
+}
+
+function resolveInitialView(role) {
+  const param = new URLSearchParams(location.search).get("view");
+  if (param === "board" || param === "list") return param;
+  try {
+    const saved = localStorage.getItem(VIEW_KEY);
+    if (saved === "board" || saved === "list") return saved;
+  } catch { /* ignore */ }
+  return defaultViewForRole(role);
+}
+
+function persistView(view) {
+  try { localStorage.setItem(VIEW_KEY, view); } catch { /* ignore */ }
+  const url = new URL(location.href);
+  url.searchParams.set("view", view);
+  history.replaceState(null, "", url);
+}
+
+function applyViewChrome() {
+  const isBoard = state.view === "board";
+  $("view-list-btn")?.setAttribute("aria-pressed", String(!isBoard));
+  $("view-board-btn")?.setAttribute("aria-pressed", String(isBoard));
+  $("view-list-btn")?.classList.toggle("is-active", !isBoard);
+  $("view-board-btn")?.classList.toggle("is-active", isBoard);
+  if ($("orders-list-panel")) $("orders-list-panel").hidden = isBoard;
+  if ($("orders-board-panel")) $("orders-board-panel").hidden = !isBoard;
+  if ($("delivery-tools")) {
+    $("delivery-tools").hidden = isBoard || state.behavior !== "DELIVERY";
+  }
+}
+
+function setView(view, { reload = true } = {}) {
+  state.view = view === "board" ? "board" : "list";
+  persistView(state.view);
+  applyViewChrome();
+  if (reload) void refreshCurrentView();
+}
+
+function refreshCurrentView() {
+  if (state.view === "board") return loadBoard();
+  return loadOrders();
+}
+
+function boardQueryString() {
+  const params = new URLSearchParams();
+  params.set("page", String(state.boardPage));
+  params.set("pageSize", "60");
+  if (state.behavior) params.set("behavior", state.behavior);
+  if (state.orderTypeId) params.set("orderTypeId", state.orderTypeId);
+  const q = $("order-search").value.trim();
+  const date = $("order-date").value;
+  if (q) params.set("q", q);
+  if (date) params.set("date", date);
+  return params.toString();
+}
+
+function boardCtx() {
+  return {
+    session: {
+      role: state.role,
+      permissions: state.permissions,
+      fullName: state.fullName,
+    },
+    expandedOrderIds: state.expandedOrderIds,
+    api: boardApi,
+    onRefresh: loadBoard,
+  };
+}
+
+async function loadBoard() {
+  if (!canView() || state.boardBusy) return;
+  state.boardBusy = true;
+  setStatus("Loading board…");
+  try {
+    const result = await api(`/v1/order-monitor?${boardQueryString()}`);
+    if (result.status === 401) {
+      showLogin("Sign in to view orders.");
+      return;
+    }
+    if (!result.ok) {
+      setStatus(result.json?.error || "Could not load board.");
+      return;
+    }
+    const data = result.json;
+    if (data.orderTypes) {
+      state.register = {
+        ...(state.register || {}),
+        orderTypes: data.orderTypes,
+        addressLabels: data.addressLabels || state.register?.addressLabels || [],
+      };
+      renderTabs();
+    }
+    renderBoard($("orders-board"), data.orders || [], boardCtx());
+    $("board-page-label").textContent = data.total
+      ? `Page ${data.page} · ${data.total} orders`
+      : "No orders";
+    $("board-page-prev").disabled = data.page <= 1;
+    $("board-page-next").disabled = data.page * data.pageSize >= data.total;
+    setStatus("");
+  } catch {
+    setStatus("Connection lost. Try again.");
+  } finally {
+    state.boardBusy = false;
+  }
 }
 
 function canView() {
@@ -180,13 +303,17 @@ function renderTabs() {
     const selected = tab.behavior === state.behavior && tab.orderTypeId === state.orderTypeId;
     return `<button type="button" class="chip" role="tab" aria-selected="${selected}" data-behavior="${escapeHtml(tab.behavior)}" data-type="${escapeHtml(tab.orderTypeId)}">${escapeHtml(tab.name)}</button>`;
   }).join("");
-  $("delivery-tools").hidden = state.behavior !== "DELIVERY";
+  if ($("delivery-tools")) {
+    $("delivery-tools").hidden = state.view === "board" || state.behavior !== "DELIVERY";
+  }
   const labels = ["", ...(state.register?.addressLabels || [])];
-  $("address-type-tabs").innerHTML = labels.map((label) => {
-    const selected = label === state.addressLabel;
-    const text = label || "All address types";
-    return `<button type="button" class="chip" role="tab" aria-selected="${selected}" data-label="${escapeHtml(label)}">${escapeHtml(text)}</button>`;
-  }).join("");
+  if ($("address-type-tabs")) {
+    $("address-type-tabs").innerHTML = labels.map((label) => {
+      const selected = label === state.addressLabel;
+      const text = label || "All address types";
+      return `<button type="button" class="chip" role="tab" aria-selected="${selected}" data-label="${escapeHtml(label)}">${escapeHtml(text)}</button>`;
+    }).join("");
+  }
 }
 
 function orderCells(order) {
@@ -438,7 +565,13 @@ function showMain() {
   const allowed = canView();
   $("orders-denied").hidden = allowed;
   $("orders-shell").hidden = !allowed;
-  if (allowed) { void loadOrders(); void loadShift(); }
+  if (allowed) {
+    state.view = resolveInitialView(state.role);
+    persistView(state.view);
+    applyViewChrome();
+    void refreshCurrentView();
+    void loadShift();
+  }
 }
 
 async function login() {
@@ -474,13 +607,16 @@ $("logout-btn").addEventListener("click", async () => {
   await api("/v1/session/logout", { method: "POST" });
   showLogin();
 });
+$("view-list-btn")?.addEventListener("click", () => setView("list"));
+$("view-board-btn")?.addEventListener("click", () => setView("board"));
 $("type-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-behavior]");
   if (!button) return;
   state.behavior = button.dataset.behavior || "";
   state.orderTypeId = button.dataset.type || "";
   state.page = 1;
-  void loadOrders();
+  state.boardPage = 1;
+  void refreshCurrentView();
 });
 $("address-type-tabs").addEventListener("click", (event) => {
   const button = event.target.closest("[data-label]");
@@ -489,13 +625,15 @@ $("address-type-tabs").addEventListener("click", (event) => {
   state.page = 1;
   void loadOrders();
 });
-$("order-search").addEventListener("input", () => {
+$("order-search").addEventListener("change", () => {
   state.page = 1;
-  void loadOrders();
+  state.boardPage = 1;
+  void refreshCurrentView();
 });
 $("order-date").addEventListener("change", () => {
   state.page = 1;
-  void loadOrders();
+  state.boardPage = 1;
+  void refreshCurrentView();
 });
 for (const id of ["filter-block", "filter-road", "filter-building"]) {
   $(id).addEventListener("change", () => {
@@ -505,6 +643,7 @@ for (const id of ["filter-block", "filter-road", "filter-building"]) {
 }
 $("clear-filters").addEventListener("click", () => {
   state.page = 1;
+  state.boardPage = 1;
   state.behavior = "";
   state.orderTypeId = "";
   state.addressLabel = "";
@@ -513,7 +652,7 @@ $("clear-filters").addEventListener("click", () => {
   $("filter-block").value = "";
   $("filter-road").value = "";
   $("filter-building").value = "";
-  void loadOrders();
+  void refreshCurrentView();
 });
 $("page-prev").addEventListener("click", () => {
   if (state.page > 1) {
@@ -525,6 +664,20 @@ $("page-next").addEventListener("click", () => {
   state.page += 1;
   void loadOrders();
 });
+$("board-page-prev")?.addEventListener("click", () => {
+  if (state.boardPage > 1) {
+    state.boardPage -= 1;
+    void loadBoard();
+  }
+});
+$("board-page-next")?.addEventListener("click", () => {
+  state.boardPage += 1;
+  void loadBoard();
+});
+window.setInterval(() => {
+  if (state.view !== "board" || !canView() || document.hidden) return;
+  void loadBoard();
+}, 8000);
 $("orders-list").addEventListener("click", (event) => {
   const edit = event.target.closest("[data-edit]");
   if (edit) {

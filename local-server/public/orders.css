@@ -4,6 +4,63 @@
   padding: 16px;
 }
 
+.orders-view-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0;
+  margin: 0 0 14px;
+  border: 2px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+.orders-view-btn {
+  min-height: 48px;
+  min-width: 88px;
+  padding: 0.55rem 1.1rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.orders-view-btn + .orders-view-btn {
+  border-left: 1px solid var(--line);
+}
+
+.orders-view-btn.is-active,
+.orders-view-btn[aria-pressed="true"] {
+  background: var(--blue);
+  color: #fff;
+}
+
+.orders-type-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  overflow: visible;
+  max-width: 100%;
+}
+
+.orders-type-tabs .chip {
+  min-height: 48px;
+}
+
+.orders-board-panel[hidden],
+.orders-list-panel[hidden] {
+  display: none !important;
+}
+
+.orders-board-panel .monitor-ready,
+.orders-board-panel .monitor-detail-trigger,
+.orders-board-panel .monitor-review-actions .btn {
+  min-height: 48px;
+}
+
 .orders-tools[hidden] { display: none; }
 .orders-edit { margin-left: 0.45rem; padding: 0.15rem 0.55rem; font-size: 0.85rem; }
 .orders-shell[hidden] { display: none; }

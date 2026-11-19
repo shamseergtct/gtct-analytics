@@ -14,7 +14,7 @@ cp -f dist/launcher/GTCTRestaurantPilot-arm64.exe dist/payload/GTCTRestaurantPil
 echo "=== Compiling NSIS multi-arch setup EXE ==="
 makensis -V2 nsis/gtct-restaurant-pilot.nsi
 
-SETUP="$(ls -1 dist/GTCT-Restaurant-Pilot-Setup-*.exe | tail -1)"
+SETUP="$(ls -1t dist/GTCT-Restaurant-Pilot-Setup-*.exe | head -1)"
 echo "Installer built: $SETUP"
 ls -lh "$SETUP"
 file "$SETUP" || true

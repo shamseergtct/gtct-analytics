@@ -88,7 +88,12 @@ Node runtime: ${NODE_VERSION}
 better-sqlite3: $(node -p "require('$STAGE/app/node_modules/better-sqlite3/package.json').version")
 Operating mode: TEST (PRODUCTION startup remains blocked by the application)
 Physical print default: OFF
+Always-on host: Scheduled Task "GTCT Restaurant Host" (--host) at logon
+LAN HTTPS: private IPv4 + self-signed cert (tablets: https://<lan-ip>:8787/pair.html)
 Data directory (runtime): %LOCALAPPDATA%\\GTCT\\RestaurantPilot
+Password reset: Start Menu → GTCT → Reset Staff Password
+Trust cert (remove Not secure): Start Menu → GTCT → Trust LAN Certificate
+LAN prepare (firewall/GPO): runs at install; Start Menu → GTCT → Prepare LAN Access
 EOF
 
 echo "Payload staged at $STAGE"
