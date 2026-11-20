@@ -2201,8 +2201,15 @@ export function createServer(config) {
       if (path === '/v1/business-shift' && method === 'GET') {
         const auth = requireAuth(req, res, config);
         if (!auth) return;
-        if (!auth.userId || !authAllows(auth, 'sales.orders.view')) {
-          sendJson(res, 403, { error: 'Orders permission required.' });
+        if (
+          !auth.userId ||
+          !(
+            authAllows(auth, "sales.orders.view") ||
+            authAllows(auth, "sales.order.create") ||
+            authAllows(auth, "sales.payment.receive")
+          )
+        ) {
+          sendJson(res, 403, { error: "Sales permission required to view the business shift." });
           return;
         }
         try { sendJson(res, 200, getBusinessShift(config.testTenantId)); }

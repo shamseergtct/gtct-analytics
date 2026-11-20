@@ -77,6 +77,21 @@
             <h1>Restaurant Sales</h1>
           </div>
           <div class="topbar-actions">
+            <details id="shift-menu" class="nav-pop shift-menu" hidden>
+              <summary id="shift-menu-btn" class="shift-chip" aria-label="Business shift">
+                <span id="shift-chip-label">Shift</span>
+              </summary>
+              <div class="nav-dropdown shift-menu-dropdown" role="menu">
+                <div class="shift-menu-head">
+                  <p id="shift-menu-status" class="nav-dropdown-heading">Business shift</p>
+                  <button type="button" id="shift-menu-close" class="btn ghost small shift-menu-close" aria-label="Close shift menu">✕</button>
+                </div>
+                <p id="shift-menu-detail" class="shift-menu-detail muted">Loading…</p>
+                <button type="button" id="shift-open-btn" class="nav-dropdown-link" hidden>Open shift…</button>
+                <button type="button" id="shift-change-btn" class="nav-dropdown-link" hidden>Change shift…</button>
+                <button type="button" id="shift-close-btn" class="nav-dropdown-link" hidden>Close shift</button>
+              </div>
+            </details>
             <button type="button" id="pending-payments-btn" class="pending-payments-btn" hidden aria-controls="pending-payments-drawer" aria-expanded="false">
               Unpaid <span id="pending-payments-count" class="unpaid-count-badge" hidden>0</span>
             </button>
@@ -147,10 +162,7 @@
             <div class="pane-toolbar sticky-tools">
               <div class="sales-tools-row">
                 <input id="menu-search" type="search" placeholder="Search menu…" enterkeyhint="search" aria-label="Search menu" />
-                <div class="sales-view-controls" role="group" aria-label="Menu view">
-                  <button type="button" id="sales-density-btn" class="btn ghost small sales-view-btn" aria-pressed="false">Compact</button>
-                  <button type="button" id="sales-photos-btn" class="btn ghost small sales-view-btn" aria-pressed="false">Hide photos</button>
-                </div>
+                <div class="sales-view-controls" role="group" aria-label="Menu view"></div>
               </div>
               <div id="category-filters" class="chips chip-scroll" role="tablist" aria-label="Categories"></div>
               <div id="subcategory-filters" class="chips chip-scroll subchips" hidden role="tablist" aria-label="Subcategories"></div>
@@ -200,9 +212,9 @@
               </div>
               <div class="cart-footer sticky-cart-footer">
                 <div id="cart-tax-summary" class="cart-tax-summary" aria-live="polite"></div>
-                <p id="send-status" class="status-line" hidden></p>
+                <p id="send-status" class="status-line" hidden aria-live="polite"></p>
                 <button type="button" id="cart-add-more-items" class="btn ghost cart-add-more-items">← Add more items</button>
-                <div class="cart-actions">
+                <div class="cart-actions cart-actions-pinned">
                   <button type="button" id="clear-cart-btn" class="btn clear-cart-btn">Clear</button>
                   <button type="button" id="review-btn" class="btn primary review-send-btn">Review &amp; Send</button>
                 </div>
@@ -214,7 +226,7 @@
         <button type="button" id="mobile-cart-bar" class="mobile-cart-bar" hidden>
           <span class="mobile-cart-left"><strong id="mobile-cart-count">0</strong> items</span>
           <span id="mobile-cart-total" class="mobile-cart-mid">—</span>
-          <span class="mobile-cart-cta">View cart</span>
+          <span class="mobile-cart-cta">Review</span>
         </button>
         <div id="cart-drawer-backdrop" class="cart-drawer-backdrop" hidden></div>
 
@@ -428,6 +440,34 @@
         <div class="dialog-actions">
           <button type="button" id="hold-cancel-btn" class="btn ghost">Cancel</button>
           <button type="button" id="hold-confirm-btn" class="btn primary">Hold cart</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="shift-dialog" class="shift-dialog" aria-labelledby="shift-dialog-title">
+      <form method="dialog" id="shift-dialog-form" class="hold-form shift-dialog-form">
+        <div class="shift-dialog-head">
+          <h3 id="shift-dialog-title">Open shift</h3>
+          <button type="button" id="shift-dialog-x" class="btn ghost small" aria-label="Close">✕</button>
+        </div>
+        <p id="shift-dialog-hint" class="muted hold-hint">
+          Sales stay on this business date until you close or change the shift — including after midnight.
+        </p>
+        <p id="shift-dialog-current" class="shift-dialog-current" hidden></p>
+        <div class="shift-picker-row">
+          <label class="field">
+            <span>Business date</span>
+            <input id="shift-dialog-date" type="date" required aria-label="Business date" />
+          </label>
+          <label class="field">
+            <span>Start time</span>
+            <input id="shift-dialog-time" type="time" aria-label="Shift start time" />
+          </label>
+        </div>
+        <p id="shift-dialog-error" class="error" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="shift-dialog-cancel" class="btn ghost">Cancel</button>
+          <button type="button" id="shift-dialog-confirm" class="btn primary">Open shift</button>
         </div>
       </form>
     </dialog>
@@ -718,5 +758,6 @@
 
     <script defer src="/delivery-navigation.js"></script>
     <script type="module" src="/app.js?v=sales-ui-customize-clear"></script>
+      <script defer src="/scroll-nav.js"></script>
   </body>
 </html>

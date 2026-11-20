@@ -576,6 +576,14 @@ $("prep-finished-search").addEventListener("input", (event) => {
   state.finishedQuery = event.target.value;
   renderFinished((state.board?.tickets || []).filter((ticket) => ticket.status === "FINISHED"));
 });
+function scrollPrepFocus(dir) {
+  const body = $("prep-focus-body");
+  if (!body) return;
+  const delta = Math.max(160, Math.floor(body.clientHeight * 0.75)) * (dir === "up" ? -1 : 1);
+  body.scrollBy({ top: delta, behavior: "smooth" });
+}
+$("prep-focus-scroll-up")?.addEventListener("click", () => scrollPrepFocus("up"));
+$("prep-focus-scroll-down")?.addEventListener("click", () => scrollPrepFocus("down"));
 $("prep-focus-close").addEventListener("click", () => closeFocus());
 $("prep-focus-backdrop").addEventListener("click", (event) => {
   if (event.target === $("prep-focus-backdrop")) closeFocus();
@@ -591,7 +599,12 @@ document.addEventListener("keydown", (event) => {
   }
   // Keep keyboard navigation inside the active preparation dialog.
   if (event.key === "Tab") {
-    const controls = [$("prep-focus-close"), $("prep-focus-finish")].filter((el) => !el.disabled);
+    const controls = [
+      $("prep-focus-scroll-up"),
+      $("prep-focus-scroll-down"),
+      $("prep-focus-close"),
+      $("prep-focus-finish"),
+    ].filter((el) => el && !el.disabled);
     if (!controls.length) return;
     const position = controls.indexOf(document.activeElement);
     if (event.shiftKey && position <= 0) {

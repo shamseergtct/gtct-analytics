@@ -77,6 +77,8 @@ const state = {
   search: "",
   salesView: readSalesViewPrefs(),
   cart: [],
+  activeShift: null,
+  shiftSuggestedDate: "",
   activeSplit: 1,
   orderNumber: "",
   editingOrderId: null,
@@ -204,6 +206,29 @@ function cartQtyForMenuItem(item) {
     if (line.itemId === id || line.item_id === id) qty += Number(line.quantity) || 0;
   }
   return qty;
+}
+
+function adjustMenuItemCartQty(item, delta) {
+  if (!item || state.addingLock) return;
+  if (delta > 0) {
+    onMenuItemTap(item);
+    return;
+  }
+  const id = item.item_id;
+  for (let i = state.cart.length - 1; i >= 0; i -= 1) {
+    const line = state.cart[i];
+    if (line.itemId !== id && line.item_id !== id) continue;
+    if (Number(line.quantity || 0) <= 1) {
+      const removed = state.cart[i];
+      state.cart.splice(i, 1);
+      if (removed) showCartUndo(removed);
+    } else {
+      line.quantity -= 1;
+    }
+    renderCart();
+    renderMenu();
+    return;
+  }
 }
 
 let cartUndoTimer = null;
@@ -397,6 +422,210 @@ function showMain() {
   setNavMenu(false);
   startDraftNumberSync();
   void refreshPendingCount();
+  void loadBusinessShift();
+}
+
+async function loadBusinessShift() {
+  const menu = $("shift-menu");
+  const label = $("shift-chip-label");
+  const detail = $("shift-menu-detail");
+  const openBtn = $("shift-open-btn");
+  const closeBtn = $("shift-close-btn");
+  const changeBtn = $("shift-change-btn");
+  if (!menu || !label) return;
+
+  const canView = Boolean(
+    state.staff &&
+      (state.role === "admin" ||
+        state.permissions.includes("sales.orders.view") ||
+        state.permissions.includes("sales.order.create"))
+  );
+  menu.hidden = !canView;
+  if (!canView) return;
+
+  const res = await api("/v1/business-shift");
+  if (!res.ok) {
+    state.activeShift = null;
+    label.textContent = "Shift · —";
+    if (detail) detail.textContent = res.json?.error || "Could not load shift.";
+    return;
+  }
+  const active = res.json?.active || null;
+  state.activeShift = active;
+  state.shiftSuggestedDate = res.json?.suggestedBusinessDate || "";
+  const isAdmin = state.role === "admin";
+
+  if (active) {
+    label.textContent = `Shift · ${active.businessDate}`;
+    if (detail) {
+      detail.textContent = `Open until closed. Sales stay on ${active.businessDate} (even after midnight). Next token ${String(active.nextTokenNumber).padStart(3, "0")}.`;
+    }
+  } else {
+    label.textContent = "No shift";
+    if (detail) {
+      detail.textContent = res.json?.requiresManualStart
+        ? "Open a shift to take orders. Reports use the shift business date."
+        : "No open shift yet. First sale can auto-open a TEST shift, or Admin can open one.";
+    }
+  }
+
+  if (openBtn) openBtn.hidden = !(isAdmin && !active);
+  if (closeBtn) closeBtn.hidden = !(isAdmin && active);
+  if (changeBtn) changeBtn.hidden = !(isAdmin && active);
+}
+
+function localTimeValue(date = new Date()) {
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function closeShiftMenu() {
+  const menu = $("shift-menu");
+  if (menu) menu.open = false;
+}
+
+function closeShiftDialog() {
+  const dialog = $("shift-dialog");
+  if (dialog?.open) dialog.close();
+  const err = $("shift-dialog-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+}
+
+function openShiftDialog(mode) {
+  if (state.role !== "admin") return;
+  const dialog = $("shift-dialog");
+  if (!dialog) return;
+  state._shiftDialogMode = mode === "change" ? "change" : "open";
+  const title = $("shift-dialog-title");
+  const confirmBtn = $("shift-dialog-confirm");
+  const current = $("shift-dialog-current");
+  const dateInput = $("shift-dialog-date");
+  const timeInput = $("shift-dialog-time");
+  const err = $("shift-dialog-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+
+  if (state._shiftDialogMode === "change" && state.activeShift) {
+    if (title) title.textContent = "Change shift";
+    if (confirmBtn) confirmBtn.textContent = "Change shift";
+    if (current) {
+      current.hidden = false;
+      current.textContent = `Current business date: ${state.activeShift.businessDate}. Sales after midnight still count on that date until you change.`;
+    }
+    if (dateInput) dateInput.value = state.shiftSuggestedDate || state.activeShift.businessDate;
+  } else {
+    if (title) title.textContent = "Open shift";
+    if (confirmBtn) confirmBtn.textContent = "Open shift";
+    if (current) {
+      current.hidden = true;
+      current.textContent = "";
+    }
+    if (dateInput) dateInput.value = state.shiftSuggestedDate || "";
+  }
+  if (timeInput) timeInput.value = localTimeValue();
+  closeShiftMenu();
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  dateInput?.focus();
+}
+
+async function confirmShiftDialog() {
+  if (state.role !== "admin") return;
+  const dateInput = $("shift-dialog-date");
+  const timeInput = $("shift-dialog-time");
+  const err = $("shift-dialog-error");
+  const businessDate = String(dateInput?.value || "").trim();
+  const startTime = String(timeInput?.value || "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Choose a business date.";
+    }
+    return;
+  }
+  if (startTime && !/^\d{2}:\d{2}$/.test(startTime)) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Choose a valid start time.";
+    }
+    return;
+  }
+
+  const changing = state._shiftDialogMode === "change";
+  if (changing) {
+    if (!state.activeShift) return;
+    if (businessDate === state.activeShift.businessDate) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = "Pick a different business date to change shift.";
+      }
+      return;
+    }
+    const shiftId = state.activeShift.shiftId;
+    const closeRes = await api("/v1/business-shift/close", {
+      method: "POST",
+      body: JSON.stringify({ shiftId, confirm: true }),
+    });
+    if (!closeRes.ok) {
+      if (err) {
+        err.hidden = false;
+        err.textContent = closeRes.json?.error || "Could not close current shift.";
+      }
+      return;
+    }
+    state.activeShift = null;
+  }
+
+  const res = await api("/v1/business-shift/open", {
+    method: "POST",
+    body: JSON.stringify({
+      businessDate,
+      ...(startTime ? { startTime } : {}),
+    }),
+  });
+  if (!res.ok) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = res.json?.error || "Could not open shift.";
+    }
+    await loadBusinessShift();
+    return;
+  }
+  closeShiftDialog();
+  const timeNote = startTime ? ` · ${startTime}` : "";
+  showToast(
+    changing
+      ? `Shift changed to ${businessDate}${timeNote}. New sales use this date.`
+      : `Shift opened · ${businessDate}${timeNote}`,
+    { duration: 2500 }
+  );
+  await loadBusinessShift();
+}
+
+async function closeBusinessShiftFlow() {
+  if (state.role !== "admin" || !state.activeShift) return false;
+  const date = state.activeShift.businessDate;
+  const ok = window.confirm(
+    `Close shift ${date}?\n\nNew orders will be blocked until you open (or change to) another shift.\nSales already taken stay on ${date} in reports.\nThis does NOT settle cash or payments.`
+  );
+  if (!ok) return false;
+  const res = await api("/v1/business-shift/close", {
+    method: "POST",
+    body: JSON.stringify({ shiftId: state.activeShift.shiftId, confirm: true }),
+  });
+  if (!res.ok) {
+    showToast(res.json?.error || "Could not close shift.", { duration: 2500 });
+    return false;
+  }
+  showToast(`Shift ${date} closed.`, { duration: 2000 });
+  closeShiftMenu();
+  await loadBusinessShift();
+  return true;
 }
 
 function redirectKitchenToPreparation() {
@@ -1024,17 +1253,56 @@ function cartLineNotePreview(line) {
   return bits.join(" · ");
 }
 
+function categoryTheme(cat) {
+  const key = String(cat || "").trim().toLowerCase();
+  if (key.includes("grill")) return { bg: "#FFE9C7", dot: "#D0892E", slug: "grill" };
+  if (key.includes("food")) return { bg: "#DCE8FF", dot: "#3B6FD9", slug: "food" };
+  if (key.includes("juice")) return { bg: "#FFDDD0", dot: "#D96B4A", slug: "juice" };
+  if (key.includes("beverage") || key.includes("drink")) {
+    return { bg: "#D4F1E8", dot: "#2F9A78", slug: "bev" };
+  }
+  return { bg: "#EEF1F6", dot: "#7A8496", slug: "other" };
+}
+
+function ensureStockModeControl() {
+  const host = document.querySelector(".sales-view-controls");
+  if (!host) return;
+  let btn = $("sales-stock-btn");
+  if (!btn) {
+    btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "sales-stock-btn";
+    btn.className = "btn ghost small sales-view-btn";
+    btn.textContent = "Stock mode";
+    btn.addEventListener("click", () => {
+      state.stockMode = !state.stockMode;
+      btn.setAttribute("aria-pressed", state.stockMode ? "true" : "false");
+      btn.classList.toggle("is-active", Boolean(state.stockMode));
+      renderMenu();
+    });
+    host.appendChild(btn);
+  }
+  btn.setAttribute("aria-pressed", state.stockMode ? "true" : "false");
+  btn.classList.toggle("is-active", Boolean(state.stockMode));
+}
+
 function renderCategories() {
+  ensureStockModeControl();
   const cats = ["ALL", ...new Set(state.menu.map(categoryForItem))];
   const host = $("category-filters");
   host.innerHTML = "";
   for (const cat of cats) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `chip${state.category === cat ? " active" : ""}`;
+    const theme = cat === "ALL" ? null : categoryTheme(cat);
+    btn.className = `chip${state.category === cat ? " active" : ""}${theme ? ` cat-dot-${theme.slug}` : ""}`;
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-selected", state.category === cat ? "true" : "false");
-    btn.textContent = titleCaseLabel(cat);
+    if (theme) btn.style.setProperty("--cat-dot", theme.dot);
+    btn.innerHTML =
+      cat === "ALL"
+        ? escapeHtml(titleCaseLabel(cat))
+        : `<span class="chip-cat-dot" aria-hidden="true"></span>${escapeHtml(titleCaseLabel(cat))}`;
     btn.addEventListener("click", () => {
       state.category = cat;
       state.subcategory = "ALL";
@@ -1108,6 +1376,31 @@ function itemDisplayPrice(item) {
   };
 }
 
+function itemCardPriceParts(item) {
+  const vars = salesVariants(item);
+  const cents = vars.length
+    ? Math.min(...vars.map((v) => Number(v.priceCents || 0)))
+    : Number(item.price_cents || 0);
+  const decimals = Number(
+    state.money?.decimals ?? state.config?.shop?.currencyDecimals ?? 3
+  );
+  const label = String(
+    state.money?.currencyLabel || state.money?.currencyCode || "BD"
+  )
+    .trim()
+    .replace(/:$/, "");
+  const amount = state.money?.formatPlain
+    ? state.money.formatPlain(cents)
+    : (Number(cents) / 10 ** decimals).toFixed(decimals);
+  return {
+    from: vars.length > 1,
+    label,
+    amount,
+    aria: `${label} ${amount}`,
+    sizesChip: vars.length > 1 ? `${vars.length} sizes` : "",
+  };
+}
+
 function showToast(message, opts = {}) {
   const el = $("toast");
   if (!el) return;
@@ -1120,7 +1413,28 @@ function showToast(message, opts = {}) {
   }, duration);
 }
 
+function showSoldOutUndoToast(item) {
+  const el = $("toast");
+  if (!el) return;
+  clearTimeout(showToast._t);
+  clearTimeout(state._soldOutUndoTimer);
+  el.hidden = false;
+  el.innerHTML = `<span>${escapeHtml(item.name)} sold out.</span> <button type="button" class="btn ghost small" id="soldout-undo-btn">Undo</button>`;
+  const clear = () => {
+    el.hidden = true;
+    el.textContent = "";
+  };
+  $("soldout-undo-btn")?.addEventListener("click", () => {
+    clearTimeout(state._soldOutUndoTimer);
+    clear();
+    if (item.is_sold_out) void toggleSoldOut(item, { fromUndo: true });
+  });
+  state._soldOutUndoTimer = window.setTimeout(clear, 5000);
+}
+
 function renderMenu() {
+  ensureStockModeControl();
+  const stockMode = Boolean(state.stockMode);
   const q = state.search.trim().toLowerCase();
   const items = state.menu.filter((item) => {
     if (!item.is_active) return false;
@@ -1149,169 +1463,170 @@ function renderMenu() {
   }
   for (const item of items) {
     const soldOut = Boolean(item.is_sold_out);
-    const vars = salesVariants(item);
-    const price = itemDisplayPrice(item);
+    const price = itemCardPriceParts(item);
     const inCartQty = cartQtyForMenuItem(item);
     const canToggleSold =
       state.role === "admin" || state.permissions.includes("menu.sold_out.update");
-    const card = document.createElement("article");
-    const showPhotos = !state.salesView.hidePhotos;
-    const hasPhoto = Boolean(item.image_url) && showPhotos;
-    card.className = `menu-card${soldOut ? " sold-out" : ""}${hasPhoto ? "" : " menu-card-text-only"}`;
+    const theme = categoryTheme(categoryForItem(item));
+    const hasPhoto = Boolean(item.image_url);
+    const initial = String(item.name || "?").trim().charAt(0).toUpperCase() || "?";
+
+    const wrap = document.createElement("div");
+    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}`;
+
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = `mcard cat-${theme.slug}${soldOut ? " is-sold-out" : ""}`;
+    card.disabled = soldOut;
     card.setAttribute(
       "aria-label",
-      soldOut
-        ? `${item.name}, sold out`
-        : vars.length
-          ? `${item.name}, choose size`
-          : `Add ${item.name}`
+      soldOut ? `${item.name}, sold out` : `Add ${item.name}, ${price.aria}`
     );
-    if (!soldOut) {
-      card.tabIndex = 0;
-      card.setAttribute("role", "button");
-    }
-
-    if (hasPhoto) {
-      const media = document.createElement("div");
-      media.className = "menu-card-media";
-      const img = document.createElement("img");
-      img.className = "menu-card-img";
-      img.alt = "";
-      img.loading = "lazy";
-      img.src = item.image_url;
-      img.addEventListener("error", () => {
-        media.remove();
-        card.classList.add("menu-card-text-only");
-        if (!card.querySelector(".menu-card-ph")) {
-          const ph = document.createElement("div");
-          ph.className = "menu-card-media menu-card-media-ph";
-          ph.innerHTML = `<span class="menu-card-ph" aria-hidden="true">🍽</span>`;
-          card.insertBefore(ph, card.firstChild);
-        }
-      });
-      media.appendChild(img);
-      card.appendChild(media);
-    } else {
-      const ph = document.createElement("div");
-      ph.className = "menu-card-media menu-card-media-ph";
-      ph.innerHTML = `<span class="menu-card-ph" aria-hidden="true">🍽</span>`;
-      card.appendChild(ph);
-    }
 
     if (inCartQty > 0 && !soldOut) {
       const badge = document.createElement("span");
-      badge.className = "menu-card-qty-badge";
-      badge.textContent = `×${inCartQty}`;
+      badge.className = "mc-badge";
+      badge.textContent = String(inCartQty);
       badge.setAttribute("aria-label", `${inCartQty} in cart`);
       card.appendChild(badge);
     }
 
     if (soldOut) {
-      const soldBadge = document.createElement("span");
-      soldBadge.className = "menu-card-sold-badge";
-      soldBadge.textContent = "Sold out";
-      card.appendChild(soldBadge);
+      const tag = document.createElement("span");
+      tag.className = "mc-sold";
+      tag.textContent = "SOLD OUT";
+      card.appendChild(tag);
     }
 
-    const body = document.createElement("div");
-    body.className = "menu-card-body";
-    const titleRow = document.createElement("div");
-    titleRow.className = "menu-card-title-row";
-    const nameEl = document.createElement("strong");
-    nameEl.className = "menu-card-name";
-    nameEl.textContent = item.name;
-    titleRow.appendChild(nameEl);
-    body.appendChild(titleRow);
-    if (price.meta && !soldOut) {
-      const meta = document.createElement("span");
-      meta.className = "menu-card-meta";
-      meta.textContent = price.meta;
-      body.appendChild(meta);
+    const media = document.createElement("span");
+    media.className = "mc-media";
+    if (hasPhoto) {
+      const img = document.createElement("img");
+      img.className = "mc-photo";
+      img.alt = "";
+      img.loading = "lazy";
+      img.src = item.image_url;
+      img.addEventListener("error", () => {
+        img.remove();
+        const ph = document.createElement("span");
+        ph.className = "mc-letter";
+        ph.style.background = theme.bg;
+        ph.textContent = initial;
+        media.appendChild(ph);
+      });
+      media.appendChild(img);
+    } else {
+      const ph = document.createElement("span");
+      ph.className = "mc-letter";
+      ph.style.background = theme.bg;
+      ph.textContent = initial;
+      media.appendChild(ph);
     }
+    card.appendChild(media);
 
-    const footer = document.createElement("div");
-    footer.className = "menu-card-footer";
+    const body = document.createElement("span");
+    body.className = "mc-body";
+    const name = document.createElement("span");
+    name.className = "mc-name";
+    name.textContent = item.name;
+    body.appendChild(name);
+
+    const bottom = document.createElement("span");
+    bottom.className = "mc-bottom";
     const priceEl = document.createElement("span");
-    priceEl.className = "menu-card-price";
-    priceEl.textContent = price.label;
-    footer.appendChild(priceEl);
+    priceEl.className = "mc-price";
+    if (price.from && !soldOut) {
+      priceEl.innerHTML = `<small class="mc-from">from</small><b><i>${escapeHtml(price.label)}</i> ${escapeHtml(price.amount)}</b>`;
+    } else {
+      priceEl.innerHTML = `<b><i>${escapeHtml(price.label)}</i> ${escapeHtml(price.amount)}</b>`;
+    }
+    bottom.appendChild(priceEl);
+    if (!soldOut) {
+      const plus = document.createElement("span");
+      plus.className = "mc-plus";
+      plus.setAttribute("aria-hidden", "true");
+      plus.textContent = "+";
+      bottom.appendChild(plus);
+    }
+    body.appendChild(bottom);
 
-    const actions = document.createElement("div");
-    actions.className = "menu-card-actions";
+    if (!soldOut) {
+      const qtyRow = document.createElement("span");
+      qtyRow.className = "mc-qtyrow";
+      const dec = document.createElement("button");
+      dec.type = "button";
+      dec.className = "mc-qty-btn";
+      dec.setAttribute("aria-label", `Decrease ${item.name}`);
+      dec.textContent = "−";
+      dec.disabled = inCartQty <= 0;
+      dec.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        adjustMenuItemCartQty(item, -1);
+      });
+      const qty = document.createElement("span");
+      qty.className = "mc-qty";
+      qty.textContent = String(inCartQty);
+      const inc = document.createElement("button");
+      inc.type = "button";
+      inc.className = "mc-qty-btn";
+      inc.setAttribute("aria-label", `Increase ${item.name}`);
+      inc.textContent = "+";
+      inc.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        adjustMenuItemCartQty(item, 1);
+      });
+      qtyRow.append(dec, qty, inc);
+      body.appendChild(qtyRow);
+    }
+
+    card.appendChild(body);
+
+    if (!soldOut) {
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".mc-qtyrow")) return;
+        onMenuItemTap(item);
+      });
+    }
+    wrap.appendChild(card);
+
     const infoBtn = document.createElement("button");
     infoBtn.type = "button";
-    infoBtn.className = "menu-card-info";
+    infoBtn.className = "mc-info";
     infoBtn.setAttribute("aria-label", `View information about ${item.name}`);
-    infoBtn.innerHTML = `<span class="menu-card-info-icon" aria-hidden="true">ⓘ</span>`;
+    infoBtn.innerHTML = `<span aria-hidden="true">ⓘ</span>`;
     infoBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
       openProductKnowledge(item);
     });
-    actions.appendChild(infoBtn);
+    wrap.appendChild(infoBtn);
 
-    if (canToggleSold) {
+    if (stockMode && canToggleSold) {
       const soldBtn = document.createElement("button");
       soldBtn.type = "button";
-      soldBtn.className = `menu-card-soldout-toggle${soldOut ? " is-sold" : ""}`;
+      soldBtn.className = `mc-stock${soldOut ? " is-sold" : ""}`;
+      soldBtn.textContent = soldOut ? "Back in stock" : "";
       soldBtn.setAttribute(
         "aria-label",
         soldOut ? `Mark ${item.name} available` : `Mark ${item.name} sold out`
       );
-      soldBtn.title = soldOut ? "Mark available" : "Mark sold out";
+      soldBtn.title = soldOut ? "Back in stock" : "Mark sold out";
       soldBtn.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
-        toggleSoldOut(item);
+        void toggleSoldOut(item);
       });
-      actions.appendChild(soldBtn);
+      wrap.appendChild(soldBtn);
     }
-    footer.appendChild(actions);
 
-    card.appendChild(body);
-    card.appendChild(footer);
-
-    if (!soldOut) {
-      const addItem = () => onMenuItemTap(item);
-      card.addEventListener("click", (e) => {
-        if (
-          e.target.closest(
-            ".menu-card-info, .menu-card-soldout-toggle, .menu-card-soldout"
-          )
-        ) {
-          return;
-        }
-        addItem();
-      });
-      card.addEventListener("keydown", (e) => {
-        if (e.key !== "Enter" && e.key !== " ") return;
-        if (
-          e.target.closest(
-            ".menu-card-info, .menu-card-soldout-toggle, .menu-card-soldout"
-          )
-        ) {
-          return;
-        }
-        e.preventDefault();
-        addItem();
-      });
-    } else if (canToggleSold) {
-      card.addEventListener("click", (e) => {
-        if (e.target.closest(".menu-card-info, .menu-card-soldout-toggle")) return;
-      });
-    }
-    grid.appendChild(card);
+    grid.appendChild(wrap);
   }
 }
 
-async function toggleSoldOut(item) {
+async function toggleSoldOut(item, { fromUndo = false } = {}) {
   const markingSoldOut = !item.is_sold_out;
-  const ok = window.confirm(
-    markingSoldOut
-      ? `Mark “${item.name}” as sold out?`
-      : `Mark “${item.name}” as available again?`
-  );
-  if (!ok) return;
   const res = await api(
     `/v1/menu-items/${encodeURIComponent(item.item_id)}/availability`,
     {
@@ -1330,7 +1645,11 @@ async function toggleSoldOut(item) {
   }
   item.is_sold_out = Boolean(next?.is_sold_out);
   renderMenu();
-  setStatus(item.is_sold_out ? `${item.name} is sold out.` : `${item.name} is available.`);
+  if (!fromUndo && markingSoldOut && item.is_sold_out) {
+    showSoldOutUndoToast(item);
+  } else {
+    setStatus(item.is_sold_out ? `${item.name} is sold out.` : `${item.name} is available.`);
+  }
 }
 
 function onMenuItemTap(item) {
@@ -2064,7 +2383,7 @@ function renderSplitBar() {
   const ids = splitIds();
   bar.hidden = false;
   if (ids.length === 1) {
-    bar.innerHTML = `<button type="button" class="btn ghost small" data-split-add>Split order</button>`;
+    bar.innerHTML = `<button type="button" class="btn ghost small split-add" data-split-add>+ Order</button>`;
     return;
   }
   bar.innerHTML =
@@ -2072,10 +2391,10 @@ function renderSplitBar() {
       .map((n) => {
         const lines = linesForSplit(n);
         const active = lineSplitNo({ splitNo: state.activeSplit }) === n;
+        const totalLabel = formatPrice(splitItemsCents(lines));
         return `<span class="split-chip-wrap">
-          <button type="button" class="split-chip${active ? " active" : ""}" data-split="${n}" aria-pressed="${active ? "true" : "false"}">
+          <button type="button" class="split-chip${active ? " active" : ""}" data-split="${n}" aria-pressed="${active ? "true" : "false"}" title="${escapeHtml(totalLabel)}">
             <span>Order ${n}</span>
-            <strong>${formatPrice(splitItemsCents(lines))}</strong>
           </button>
           ${
             lines.length
@@ -2239,7 +2558,7 @@ function renderCart() {
           : ""
       }
       <div class="cart-line-row cart-line-row-meta">
-        <span class="cart-line-unit muted">${formatPrice(line.priceCents)} × ${line.quantity}</span>
+        <span class="cart-line-unit muted" title="${escapeHtml(formatPrice(unit))}">${formatPrice(unit)}</span>
         <div class="cart-line-toolbar">
           ${
             splitInUse()
@@ -3282,9 +3601,13 @@ function cancelCustomization() {
 
 function setStatus(message, ok = true) {
   const el = $("send-status");
-  el.hidden = !message;
-  el.textContent = message || "";
-  el.className = `status-line ${ok ? "ok" : "err"}`;
+  if (el) {
+    el.hidden = true;
+    el.textContent = "";
+    el.className = `status-line ${ok ? "ok" : "err"}`;
+  }
+  if (!message) return;
+  showToast(message, { duration: 2000 });
 }
 
 function fieldHtml(id, label, value, { wide = false, placeholder = "", inputMode = "" } = {}) {
@@ -3639,11 +3962,11 @@ function deliveryCustomerCardHtml(f) {
   return `<div class="cust-summary wide cust-delivery-card ${toneClass}" data-cust-tone="${blockStatus.ok ? "ok" : "warn"}">
     <div class="cust-delivery-row">
       <p class="cust-delivery-main"><span class="cust-status-icon" aria-hidden="true">✓</span> ${escapeHtml([name, phone].filter(Boolean).join(" · "))}</p>
-      <button type="button" id="cust-change" class="btn ghost delivery-details-toggle">Change customer</button>
+      <button type="button" id="cust-change" class="btn ghost delivery-details-toggle" aria-label="Change customer">Change customer</button>
     </div>
     <div class="cust-delivery-row">
       <p class="cust-delivery-main cust-delivery-block">${deliveryLine}</p>
-      <button type="button" id="dl-details-toggle" class="btn ghost delivery-details-toggle" aria-expanded="${expanded ? "true" : "false"}">${expanded ? "Done" : "Edit delivery"}</button>
+      <button type="button" id="dl-details-toggle" class="btn ghost delivery-details-toggle" aria-expanded="${expanded ? "true" : "false"}" aria-label="${expanded ? "Done editing delivery" : "Edit delivery"}">${expanded ? "Done" : "Edit delivery"}</button>
     </div>
     <div class="delivery-details-fields" ${expanded ? "" : "hidden"}>
       <div class="fee-row fee-row-compact">
@@ -6192,21 +6515,6 @@ function bindUi() {
     state.search = e.target.value;
     renderMenu();
   });
-  $("sales-density-btn")?.addEventListener("click", () => {
-    state.salesView.density =
-      state.salesView.density === "compact" ? "comfortable" : "compact";
-    writeSalesViewPrefs(state.salesView);
-    applySalesView();
-    renderMenu();
-    revealSalesMenuTop();
-  });
-  $("sales-photos-btn")?.addEventListener("click", () => {
-    state.salesView.hidePhotos = !state.salesView.hidePhotos;
-    writeSalesViewPrefs(state.salesView);
-    applySalesView();
-    renderMenu();
-    revealSalesMenuTop();
-  });
   const salesViewportMq = window.matchMedia("(max-width: 1023px)");
   const onSalesViewportChange = () => syncSalesViewForViewport();
   if (salesViewportMq.addEventListener) {
@@ -6268,6 +6576,21 @@ function bindUi() {
   $("pending-payments-btn")?.addEventListener("click", () => {
     setNavMenu(false);
     void openPendingPayments();
+  });
+  $("shift-menu-close")?.addEventListener("click", () => closeShiftMenu());
+  $("shift-open-btn")?.addEventListener("click", () => openShiftDialog("open"));
+  $("shift-change-btn")?.addEventListener("click", () => openShiftDialog("change"));
+  $("shift-close-btn")?.addEventListener("click", () => {
+    void closeBusinessShiftFlow();
+  });
+  $("shift-dialog-cancel")?.addEventListener("click", () => closeShiftDialog());
+  $("shift-dialog-x")?.addEventListener("click", () => closeShiftDialog());
+  $("shift-dialog-confirm")?.addEventListener("click", () => {
+    void confirmShiftDialog();
+  });
+  $("shift-dialog")?.addEventListener("cancel", (e) => {
+    e.preventDefault();
+    closeShiftDialog();
   });
   $("pending-payments-close")?.addEventListener("click", () => setPendingDrawer(false));
   $("pending-search")?.addEventListener("input", () => {
@@ -6609,7 +6932,8 @@ function bindUi() {
   $("print-jobs-backdrop")?.addEventListener("click", () => setPrintDrawer(false));
   $("mobile-cart-bar")?.addEventListener("click", () => {
     setNavMenu(false);
-    setCartDrawer(true);
+    if (!cartHasItems()) return;
+    void openReview();
   });
   $("close-cart-drawer")?.addEventListener("click", () => setCartDrawer(false));
   $("cart-add-more-items")?.addEventListener("click", () => setCartDrawer(false));
@@ -6746,24 +7070,7 @@ function revealSalesMenuTop() {
 }
 
 function applySalesView() {
-  const compact = state.salesView.density === "compact";
-  document.body.classList.toggle("sales-density-compact", compact);
-  document.body.classList.toggle("sales-hide-photos", state.salesView.hidePhotos);
-  const densityBtn = $("sales-density-btn");
-  if (densityBtn) {
-    densityBtn.setAttribute("aria-pressed", compact ? "true" : "false");
-    densityBtn.textContent = compact ? "Comfortable" : "Compact";
-  }
-  const photosBtn = $("sales-photos-btn");
-  if (photosBtn) {
-    photosBtn.setAttribute(
-      "aria-pressed",
-      state.salesView.hidePhotos ? "true" : "false"
-    );
-    photosBtn.textContent = state.salesView.hidePhotos
-      ? "Show photos"
-      : "Hide photos";
-  }
+  document.body.classList.remove("sales-density-compact", "sales-hide-photos");
 }
 
 async function init() {

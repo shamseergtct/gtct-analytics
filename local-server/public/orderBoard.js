@@ -15,6 +15,56 @@ function node(tag, className, textValue) {
   return e;
 }
 
+/** Inline confirm next to the action (card/button) — faster than a centered browser dialog. */
+function confirmNear(anchor, message, { confirmLabel = "OK", cancelLabel = "Cancel" } = {}) {
+  return new Promise((resolve) => {
+    document.querySelectorAll(".board-inline-confirm").forEach((el) => el.remove());
+    const host =
+      anchor?.closest?.(".monitor-order, .monitor-card-actions, .monitor-review-actions") ||
+      anchor?.parentElement ||
+      document.body;
+    const pop = node("div", "board-inline-confirm");
+    pop.setAttribute("role", "alertdialog");
+    pop.setAttribute("aria-modal", "true");
+    pop.append(node("p", "board-inline-confirm-msg", message));
+    const actions = node("div", "board-inline-confirm-actions");
+    const cancel = node("button", "btn ghost board-inline-confirm-cancel", cancelLabel);
+    cancel.type = "button";
+    const ok = node("button", "btn primary board-inline-confirm-ok", confirmLabel);
+    ok.type = "button";
+    actions.append(cancel, ok);
+    pop.append(actions);
+
+    let done = false;
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointer, true);
+      pop.remove();
+      resolve(value);
+      if (value === false) anchor?.focus?.();
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        finish(false);
+      }
+    };
+    const onPointer = (e) => {
+      if (!pop.contains(e.target) && e.target !== anchor) finish(false);
+    };
+    cancel.addEventListener("click", () => finish(false));
+    ok.addEventListener("click", () => finish(true));
+    document.addEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointer, true);
+
+    if (getComputedStyle(host).position === "static") host.style.position = "relative";
+    host.append(pop);
+    ok.focus();
+  });
+}
+
 function stageBadge(text, theme) {
   return node("span", `monitor-pill ${theme || ""}`, text);
 }
@@ -429,7 +479,12 @@ function appendActionsRow(article, order, ctx) {
     actionBtn = node("button", "btn primary monitor-ready", "Ready for delivery");
     actionBtn.type = "button";
     actionBtn.addEventListener("click", async () => {
-      if (!window.confirm(`Confirm all items packed for ${order.orderNumber}?`)) return;
+      const ok = await confirmNear(
+        actionBtn,
+        `Confirm all items packed for ${order.orderNumber}?`,
+        { confirmLabel: "Ready", cancelLabel: "Cancel" }
+      );
+      if (!ok) return;
       actionBtn.disabled = true;
       const result = await api(
         `/v1/order-monitor/${encodeURIComponent(order.orderId)}/ready`,
@@ -443,7 +498,12 @@ function appendActionsRow(article, order, ctx) {
     actionBtn = node("button", "btn ghost monitor-ready monitor-unready", "Back to pending");
     actionBtn.type = "button";
     actionBtn.addEventListener("click", async () => {
-      if (!window.confirm(`Move ${order.orderNumber} back to Pending?`)) return;
+      const ok = await confirmNear(
+        actionBtn,
+        `Move ${order.orderNumber} back to Pending?`,
+        { confirmLabel: "Move back", cancelLabel: "Cancel" }
+      );
+      if (!ok) return;
       actionBtn.disabled = true;
       const result = await api(
         `/v1/order-monitor/${encodeURIComponent(order.orderId)}/unready`,
@@ -624,8 +684,12 @@ function appendDetailBody(detailBody, order, ctx) {
       const btn = node("button", "btn ghost", caption);
       btn.type = "button";
       btn.addEventListener("click", async () => {
-        if (!confirm(`${caption} for ${order.orderNumber}? Invoice is NOT voided/refunded.`))
-          return;
+        const ok = await confirmNear(
+          btn,
+          `${caption} for ${order.orderNumber}? Invoice is NOT voided/refunded.`,
+          { confirmLabel: "Confirm", cancelLabel: "Cancel" }
+        );
+        if (!ok) return;
         btn.disabled = true;
         const res = await api(
           `/v1/delivery-review/${encodeURIComponent(order.orderId)}/cancellation`,

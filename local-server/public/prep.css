@@ -406,6 +406,20 @@ body.prep-focus-open { overflow: hidden; }
 .prep-focus-kicker { margin: 0 0 6px; color: #145c9f; font-weight: 800; font-size: .83rem; letter-spacing: .06em; }
 .prep-focus-head h2 { margin: 0; color: #16283e; font-size: clamp(1.55rem, 3.1vw, 2.55rem); line-height: 1.1; overflow-wrap: anywhere; }
 .prep-focus-meta { margin-top: 7px; color: #6a7b8c; font-size: .96rem; }
+.prep-focus-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.prep-focus-scroll {
+  height: 46px;
+  min-height: 46px;
+}
+.prep-focus-scroll .scroll-nav-btn {
+  min-height: 40px;
+  color: #145c9f;
+}
 .prep-focus-close { min-height: 46px; min-width: 92px; padding: 10px 15px; background: #f2f6fa; color: #1b476f; border: 1px solid #d5e2ed; border-radius: 10px; cursor: pointer; font: inherit; font-weight: 720; flex-shrink: 0; }
 .prep-focus-close:hover { background: #e7f1fb; }
 .prep-focus-body { padding: 24px 28px; overflow: auto; flex: 1; min-height: 120px; }
