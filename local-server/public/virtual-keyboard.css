@@ -1,0 +1,186 @@
+/* On-screen keyboard / numpad for POS touch entry */
+.vk-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 12000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.55rem 0.65rem calc(0.65rem + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(180deg, #e8eef5 0%, #d9e2ec 100%);
+  border-top: 1px solid #b7c4d4;
+  box-shadow: 0 -8px 28px rgba(20, 32, 51, 0.18);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+
+.vk-panel[hidden] {
+  display: none !important;
+}
+
+.vk-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-height: 36px;
+}
+
+.vk-title {
+  font-size: 0.85rem;
+  color: #1a2b44;
+  letter-spacing: 0.01em;
+}
+
+.vk-bar-actions {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.vk-bar-btn {
+  min-height: 36px;
+  padding: 0.25rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid #9aacbf;
+  background: #fff;
+  color: #142033;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.vk-bar-done {
+  background: var(--blue, #0b539e);
+  border-color: var(--blue, #0b539e);
+  color: #fff;
+}
+
+.vk-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.vk-row {
+  display: flex;
+  justify-content: center;
+  gap: 0.3rem;
+}
+
+.vk-row-letters {
+  padding-inline: 0.15rem;
+}
+
+.vk-row-bottom {
+  margin-top: 0.1rem;
+}
+
+.vk-key {
+  min-width: 2.15rem;
+  min-height: 48px;
+  padding: 0 0.35rem;
+  border-radius: 10px;
+  border: 1px solid #8fa0b5;
+  background: #fff;
+  color: #142033;
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 650;
+  box-shadow: 0 1px 0 rgba(20, 32, 51, 0.12);
+  cursor: pointer;
+}
+
+.vk-key:active {
+  transform: translateY(1px);
+  background: #eef3f9;
+}
+
+.vk-key-action {
+  min-width: 3.1rem;
+  font-size: 0.82rem;
+  background: #ced8e4;
+}
+
+.vk-key-shift.is-on,
+.vk-key-done {
+  background: rgba(11, 83, 158, 0.16);
+  border-color: rgba(11, 83, 158, 0.45);
+  color: var(--blue, #0b539e);
+}
+
+.vk-key-space {
+  flex: 1 1 auto;
+  min-width: 8rem;
+  max-width: 22rem;
+  font-size: 0.85rem;
+  text-transform: lowercase;
+}
+
+.vk-key-muted {
+  background: #e8edf3;
+}
+
+.vk-key-spacer {
+  visibility: hidden;
+  pointer-events: none;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.vk-numpad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.35rem;
+  max-width: 360px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.vk-numpad .vk-key {
+  min-width: 0;
+  width: 100%;
+  min-height: 54px;
+  font-size: 1.25rem;
+}
+
+body.vk-open {
+  padding-bottom: min(42vh, 340px);
+}
+
+body.vk-open .menu-pane,
+body.vk-open .cart-pane,
+body.vk-open .login-view,
+body.vk-open dialog[open] {
+  scroll-padding-bottom: min(42vh, 340px);
+}
+
+@media (min-width: 900px) {
+  .vk-panel {
+    left: 50%;
+    right: auto;
+    transform: translateX(-50%);
+    width: min(720px, calc(100vw - 1.5rem));
+    border-radius: 16px 16px 0 0;
+  }
+
+  .vk-key {
+    min-width: 2.55rem;
+  }
+}
+
+@media (max-width: 430px) {
+  .vk-key {
+    min-width: 1.7rem;
+    min-height: 44px;
+    font-size: 0.95rem;
+  }
+
+  .vk-numpad .vk-key {
+    min-height: 48px;
+  }
+}

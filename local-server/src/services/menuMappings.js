@@ -187,6 +187,63 @@ export function listMenuItems({ includeInactive = true } = {}) {
   );
 }
 
+/**
+ * Reorder a subset (or all) of menu items by id list.
+ * Preserves the sort_order slots used by those items when they are unique;
+ * otherwise assigns a fresh stepped sequence from the current minimum.
+ */
+export function reorderMenuItems(itemIds) {
+  if (!Array.isArray(itemIds) || itemIds.length === 0) {
+    throw Object.assign(new Error("Provide the item id list."), {
+      status: 400,
+      code: "REORDER_REQUIRED",
+    });
+  }
+  const ordered = itemIds.map((id) => String(id || "").trim()).filter(Boolean);
+  if (ordered.length !== itemIds.length || new Set(ordered).size !== ordered.length) {
+    throw Object.assign(new Error("Reorder must list each item once."), {
+      status: 400,
+      code: "REORDER_INVALID",
+    });
+  }
+
+  const db = getDb();
+  const getRow = db.prepare(
+    `SELECT item_id, sort_order FROM menu_items WHERE item_id = ?`
+  );
+  const rows = ordered.map((id) => {
+    const row = getRow.get(id);
+    if (!row) {
+      throw Object.assign(new Error(`Unknown menu item: ${id}`), {
+        status: 404,
+        code: "MENU_ITEM_NOT_FOUND",
+      });
+    }
+    return row;
+  });
+
+  const existing = rows.map((row) => Number(row.sort_order || 0));
+  const uniqueSlots = new Set(existing).size === existing.length;
+  const slots = uniqueSlots
+    ? [...existing].sort((a, b) => a - b)
+    : (() => {
+        const base = existing.length ? Math.min(...existing) : 0;
+        return ordered.map((_, index) => base + index * 10);
+      })();
+
+  const now = nowIso();
+  const update = db.prepare(
+    `UPDATE menu_items SET sort_order = ?, updated_at = ? WHERE item_id = ?`
+  );
+  db.transaction(() => {
+    ordered.forEach((id, index) => {
+      update.run(slots[index], now, id);
+    });
+  })();
+
+  return listMenuItems({ includeInactive: true });
+}
+
 export function getMenuItem(itemId) {
   const db = getDb();
   const item = db

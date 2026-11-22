@@ -6,6 +6,7 @@ import {
 } from "./money.js";
 import { registerPwa } from "./pwa.js";
 import { formatSplitGroupTotalLabel, renderOrderLineItemHtml } from "./orderLineItems.js";
+import { initVirtualKeyboard } from "./virtualKeyboard.js";
 const DEFAULT_MODIFIERS = ["Less", "More", "No", "Extra"];
 const DEFAULT_TARGETS = ["Sugar", "Sauce", "Onion", "Salt", "Ice", "Cheese"];
 
@@ -125,6 +126,12 @@ const state = {
   _pkTrigger: null,
   cartDrawerOpen: false,
   navMenuOpen: false,
+  stockMode: false,
+  layoutEditMode: false,
+  _layoutDrag: null,
+  _layoutSaveTimer: null,
+  virtualKeyboard: null,
+  virtualKeyboardOn: true,
   addingLock: false,
   cartFocusLineId: null,
   cartFollowLatest: false,
@@ -346,6 +353,9 @@ async function ensureDraftIdentity({ fresh = false } = {}) {
 function showLogin(error = "") {
   stopDraftNumberSync();
   closePaymentUi();
+  cancelLayoutDrag();
+  state.layoutEditMode = false;
+  document.body.classList.remove("menu-layout-edit");
   $("login-view").hidden = false;
   $("main-view").hidden = true;
   setLoginError(error);
@@ -420,6 +430,7 @@ function showMain() {
   const accountMenu = $("account-menu");
   if (accountMenu) accountMenu.open = false;
   setNavMenu(false);
+  ensureSalesViewControls();
   startDraftNumberSync();
   void refreshPendingCount();
   void loadBusinessShift();
@@ -1086,6 +1097,20 @@ function categoryForItem(item) {
   return item.category || "Other";
 }
 
+function menuItemInitials(name, maxLetters = 4) {
+  const parts = String(name || "")
+    .trim()
+    .split(/[\s/_-]+/)
+    .map((part) => part.replace(/[^A-Za-z0-9]/g, ""))
+    .filter(Boolean);
+  if (!parts.length) return "?";
+  const letters = parts
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("")
+    .slice(0, Math.max(1, maxLetters));
+  return letters || "?";
+}
+
 function menuMetaForLine(line) {
   const item = (state.menu || []).find((row) => row.item_id === line.itemId) || {};
   return {
@@ -1264,9 +1289,98 @@ function categoryTheme(cat) {
   return { bg: "#EEF1F6", dot: "#7A8496", slug: "other" };
 }
 
-function ensureStockModeControl() {
+function canEditMenuLayout() {
+  return state.role === "admin";
+}
+
+function setLayoutEditMode(on) {
+  const next = Boolean(on) && canEditMenuLayout();
+  if (state.layoutEditMode === next) {
+    ensureSalesViewControls();
+    return;
+  }
+  state.layoutEditMode = next;
+  if (next) {
+    state.stockMode = false;
+    setStatus("Layout edit: hold and drag items to rearrange. Tap Done when finished.");
+  } else {
+    cancelLayoutDrag();
+    if (state._layoutSaveTimer) {
+      window.clearTimeout(state._layoutSaveTimer);
+      state._layoutSaveTimer = null;
+      void persistMenuLayoutOrder(orderedIdsFromGrid());
+    }
+    setStatus("Layout edit closed.");
+  }
+  document.body.classList.toggle("menu-layout-edit", next);
+  ensureSalesViewControls();
+  renderMenu();
+}
+
+function ensureSalesViewControls() {
   const host = document.querySelector(".sales-view-controls");
   if (!host) return;
+
+  let layoutBtn = $("sales-layout-btn");
+  if (canEditMenuLayout()) {
+    if (!layoutBtn) {
+      layoutBtn = document.createElement("button");
+      layoutBtn.type = "button";
+      layoutBtn.id = "sales-layout-btn";
+      layoutBtn.className = "btn ghost small sales-view-btn sales-layout-btn";
+      layoutBtn.innerHTML = `<span class="sales-layout-gear" aria-hidden="true">⚙</span><span class="sales-layout-label">Layout</span>`;
+      layoutBtn.title = "Edit menu layout";
+      layoutBtn.addEventListener("click", () => {
+        setLayoutEditMode(!state.layoutEditMode);
+      });
+      host.appendChild(layoutBtn);
+    }
+    layoutBtn.hidden = false;
+    layoutBtn.setAttribute("aria-pressed", state.layoutEditMode ? "true" : "false");
+    layoutBtn.classList.toggle("is-active", Boolean(state.layoutEditMode));
+    layoutBtn.querySelector(".sales-layout-label").textContent = state.layoutEditMode
+      ? "Done"
+      : "Layout";
+    layoutBtn.title = state.layoutEditMode
+      ? "Finish layout editing"
+      : "Edit menu layout (hold and drag)";
+  } else if (layoutBtn) {
+    layoutBtn.hidden = true;
+    if (state.layoutEditMode) setLayoutEditMode(false);
+  }
+
+  let vkBtn = $("sales-vk-btn");
+  if (!vkBtn) {
+    vkBtn = document.createElement("button");
+    vkBtn.type = "button";
+    vkBtn.id = "sales-vk-btn";
+    vkBtn.className = "btn ghost small sales-view-btn";
+    vkBtn.textContent = "Keyboard";
+    vkBtn.title = "Show on-screen keyboard for search and entry fields";
+    vkBtn.addEventListener("click", () => {
+      state.virtualKeyboardOn = !state.virtualKeyboardOn;
+      try {
+        localStorage.setItem(
+          "gtct.virtualKeyboard",
+          state.virtualKeyboardOn ? "1" : "0"
+        );
+      } catch {
+        /* ignore */
+      }
+      state.virtualKeyboard?.setEnabled(state.virtualKeyboardOn);
+      ensureSalesViewControls();
+      setStatus(
+        state.virtualKeyboardOn
+          ? "On-screen keyboard on — tap a field to type."
+          : "On-screen keyboard off."
+      );
+    });
+    host.appendChild(vkBtn);
+  }
+  vkBtn.hidden = Boolean(state.layoutEditMode);
+  vkBtn.setAttribute("aria-pressed", state.virtualKeyboardOn ? "true" : "false");
+  vkBtn.classList.toggle("is-active", Boolean(state.virtualKeyboardOn));
+
   let btn = $("sales-stock-btn");
   if (!btn) {
     btn = document.createElement("button");
@@ -1275,6 +1389,7 @@ function ensureStockModeControl() {
     btn.className = "btn ghost small sales-view-btn";
     btn.textContent = "Stock mode";
     btn.addEventListener("click", () => {
+      if (state.layoutEditMode) setLayoutEditMode(false);
       state.stockMode = !state.stockMode;
       btn.setAttribute("aria-pressed", state.stockMode ? "true" : "false");
       btn.classList.toggle("is-active", Boolean(state.stockMode));
@@ -1282,8 +1397,13 @@ function ensureStockModeControl() {
     });
     host.appendChild(btn);
   }
+  btn.hidden = Boolean(state.layoutEditMode);
   btn.setAttribute("aria-pressed", state.stockMode ? "true" : "false");
   btn.classList.toggle("is-active", Boolean(state.stockMode));
+}
+
+function ensureStockModeControl() {
+  ensureSalesViewControls();
 }
 
 function renderCategories() {
@@ -1432,11 +1552,9 @@ function showSoldOutUndoToast(item) {
   state._soldOutUndoTimer = window.setTimeout(clear, 5000);
 }
 
-function renderMenu() {
-  ensureStockModeControl();
-  const stockMode = Boolean(state.stockMode);
+function visibleMenuItems() {
   const q = state.search.trim().toLowerCase();
-  const items = state.menu.filter((item) => {
+  return state.menu.filter((item) => {
     if (!item.is_active) return false;
     if (state.category !== "ALL" && categoryForItem(item) !== state.category) {
       return false;
@@ -1455,7 +1573,245 @@ function renderMenu() {
     }
     return true;
   });
+}
+
+function ensureLayoutHint(grid) {
+  let hint = $("menu-layout-hint");
+  if (!state.layoutEditMode) {
+    if (hint) hint.remove();
+    return;
+  }
+  if (!hint) {
+    hint = document.createElement("p");
+    hint.id = "menu-layout-hint";
+    hint.className = "menu-layout-hint";
+    hint.setAttribute("role", "status");
+  }
+  hint.textContent =
+    "Hold an item, then drag to a new spot. Filter by category first for a cleaner layout. Tap Done when finished.";
+  if (hint.parentElement !== grid.parentElement) {
+    grid.parentElement?.insertBefore(hint, grid);
+  }
+}
+
+function cancelLayoutDrag() {
+  const drag = state._layoutDrag;
+  if (!drag) return;
+  if (drag.timer) window.clearTimeout(drag.timer);
+  if (drag.wrap) {
+    drag.wrap.classList.remove("is-dragging");
+    drag.wrap.style.transform = "";
+    drag.wrap.style.zIndex = "";
+    drag.wrap.style.pointerEvents = "";
+  }
+  document.removeEventListener("pointermove", onLayoutPointerMove);
+  document.removeEventListener("pointerup", onLayoutPointerUp);
+  document.removeEventListener("pointercancel", onLayoutPointerUp);
+  state._layoutDrag = null;
+}
+
+function orderedIdsFromGrid() {
   const grid = $("menu-grid");
+  if (!grid) return [];
+  return [...grid.querySelectorAll(".mcard-wrap[data-item-id]")].map((el) =>
+    el.getAttribute("data-item-id")
+  );
+}
+
+function applyLocalMenuOrder(orderedIds) {
+  const rank = new Map(orderedIds.map((id, index) => [id, index]));
+  const touched = new Set(orderedIds);
+  const existing = state.menu
+    .filter((item) => touched.has(item.item_id))
+    .map((item) => Number(item.sort_order || 0));
+  const uniqueSlots = new Set(existing).size === existing.length && existing.length;
+  const slots = uniqueSlots
+    ? [...existing].sort((a, b) => a - b)
+    : orderedIds.map((_, index) => {
+        const base = existing.length ? Math.min(...existing) : 0;
+        return base + index * 10;
+      });
+  for (const item of state.menu) {
+    if (!rank.has(item.item_id)) continue;
+    item.sort_order = slots[rank.get(item.item_id)];
+  }
+  state.menu.sort((a, b) => {
+    const d = Number(a.sort_order || 0) - Number(b.sort_order || 0);
+    if (d) return d;
+    return String(a.name || "").localeCompare(String(b.name || ""));
+  });
+}
+
+async function persistMenuLayoutOrder(orderedIds) {
+  if (!orderedIds.length) return;
+  const res = await api("/v1/menu-items/reorder", {
+    method: "PUT",
+    body: JSON.stringify({ itemIds: orderedIds }),
+  });
+  if (!res.ok) {
+    setStatus(res.json?.error || "Could not save menu layout.", false);
+    return;
+  }
+  if (Array.isArray(res.json?.menuItems) && res.json.menuItems.length) {
+    state.menu = res.json.menuItems;
+  } else {
+    applyLocalMenuOrder(orderedIds);
+  }
+}
+
+function schedulePersistMenuLayout() {
+  if (state._layoutSaveTimer) window.clearTimeout(state._layoutSaveTimer);
+  const orderedIds = orderedIdsFromGrid();
+  applyLocalMenuOrder(orderedIds);
+  state._layoutSaveTimer = window.setTimeout(() => {
+    state._layoutSaveTimer = null;
+    void persistMenuLayoutOrder(orderedIds);
+  }, 280);
+}
+
+function moveLayoutWrapBefore(source, target) {
+  if (!source || !target || source === target) return false;
+  const grid = $("menu-grid");
+  if (!grid || source.parentElement !== grid || target.parentElement !== grid) {
+    return false;
+  }
+  const wraps = [...grid.querySelectorAll(".mcard-wrap[data-item-id]")];
+  const from = wraps.indexOf(source);
+  const to = wraps.indexOf(target);
+  if (from < 0 || to < 0 || from === to) return false;
+  if (from < to) {
+    grid.insertBefore(source, target.nextSibling);
+  } else {
+    grid.insertBefore(source, target);
+  }
+  return true;
+}
+
+function layoutWrapAtPoint(clientX, clientY, exclude) {
+  const stack = document.elementsFromPoint(clientX, clientY);
+  for (const el of stack) {
+    const wrap = el.closest?.(".mcard-wrap[data-item-id]");
+    if (wrap && wrap !== exclude) return wrap;
+  }
+  return null;
+}
+
+function onLayoutPointerMove(event) {
+  const drag = state._layoutDrag;
+  if (!drag || !drag.wrap) return;
+  if (!drag.active) {
+    const dist = Math.hypot(event.clientX - drag.originX, event.clientY - drag.originY);
+    if (dist > 10) cancelLayoutDrag();
+    return;
+  }
+  event.preventDefault();
+  const dx = event.clientX - drag.startX;
+  const dy = event.clientY - drag.startY;
+  drag.wrap.style.transform = `translate(${dx}px, ${dy}px) scale(1.04)`;
+  const over = layoutWrapAtPoint(event.clientX, event.clientY, drag.wrap);
+  if (over && over !== drag.lastOver) {
+    drag.lastOver = over;
+    if (moveLayoutWrapBefore(drag.wrap, over)) {
+      drag.moved = true;
+      drag.wrap.style.transform = "";
+      const base = drag.wrap.getBoundingClientRect();
+      drag.startX = base.left + drag.offsetX;
+      drag.startY = base.top + drag.offsetY;
+      const ndx = event.clientX - drag.startX;
+      const ndy = event.clientY - drag.startY;
+      drag.wrap.style.transform = `translate(${ndx}px, ${ndy}px) scale(1.04)`;
+    }
+  }
+}
+
+function onLayoutPointerUp(event) {
+  const drag = state._layoutDrag;
+  if (!drag) return;
+  if (drag.timer) {
+    window.clearTimeout(drag.timer);
+    drag.timer = null;
+  }
+  if (drag.active) {
+    event.preventDefault();
+    drag.wrap?.classList.remove("is-dragging");
+    if (drag.wrap) {
+      drag.wrap.style.transform = "";
+      drag.wrap.style.zIndex = "";
+      drag.wrap.style.pointerEvents = "";
+    }
+    document.removeEventListener("pointermove", onLayoutPointerMove);
+    document.removeEventListener("pointerup", onLayoutPointerUp);
+    document.removeEventListener("pointercancel", onLayoutPointerUp);
+    const moved = drag.moved;
+    state._layoutDrag = { suppressClick: true };
+    window.setTimeout(() => {
+      if (state._layoutDrag?.suppressClick) state._layoutDrag = null;
+    }, 220);
+    if (moved) schedulePersistMenuLayout();
+    return;
+  }
+  state._layoutDrag = null;
+  document.removeEventListener("pointermove", onLayoutPointerMove);
+  document.removeEventListener("pointerup", onLayoutPointerUp);
+  document.removeEventListener("pointercancel", onLayoutPointerUp);
+}
+
+function bindLayoutDrag(wrap, item) {
+  wrap.addEventListener("pointerdown", (event) => {
+    if (!state.layoutEditMode) return;
+    if (event.button != null && event.button !== 0) return;
+    if (event.target.closest(".mc-info")) return;
+    cancelLayoutDrag();
+    const rect = wrap.getBoundingClientRect();
+    state._layoutDrag = {
+      itemId: item.item_id,
+      wrap,
+      timer: null,
+      active: false,
+      moved: false,
+      originX: event.clientX,
+      originY: event.clientY,
+      startX: event.clientX,
+      startY: event.clientY,
+      offsetX: event.clientX - rect.left,
+      offsetY: event.clientY - rect.top,
+      lastOver: null,
+      pointerId: event.pointerId,
+    };
+    const drag = state._layoutDrag;
+    drag.timer = window.setTimeout(() => {
+      if (!state._layoutDrag || state._layoutDrag !== drag) return;
+      drag.active = true;
+      // Anchor translate so the card stays under the finger from activation.
+      drag.wrap.style.transform = "";
+      const base = drag.wrap.getBoundingClientRect();
+      drag.startX = base.left + drag.offsetX;
+      drag.startY = base.top + drag.offsetY;
+      wrap.classList.add("is-dragging");
+      wrap.style.zIndex = "40";
+      wrap.style.pointerEvents = "none";
+      if (navigator.vibrate) {
+        try {
+          navigator.vibrate(12);
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 420);
+    document.addEventListener("pointermove", onLayoutPointerMove, { passive: false });
+    document.addEventListener("pointerup", onLayoutPointerUp);
+    document.addEventListener("pointercancel", onLayoutPointerUp);
+  });
+}
+
+function renderMenu() {
+  ensureStockModeControl();
+  const stockMode = Boolean(state.stockMode);
+  const layoutEdit = Boolean(state.layoutEditMode) && canEditMenuLayout();
+  const items = visibleMenuItems();
+  const grid = $("menu-grid");
+  grid.classList.toggle("is-layout-edit", layoutEdit);
+  ensureLayoutHint(grid);
   grid.innerHTML = "";
   if (!items.length) {
     grid.innerHTML = `<p class="empty">No menu items match.</p>`;
@@ -1469,21 +1825,26 @@ function renderMenu() {
       state.role === "admin" || state.permissions.includes("menu.sold_out.update");
     const theme = categoryTheme(categoryForItem(item));
     const hasPhoto = Boolean(item.image_url);
-    const initial = String(item.name || "?").trim().charAt(0).toUpperCase() || "?";
+    const initial = menuItemInitials(item.name);
 
     const wrap = document.createElement("div");
-    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}`;
+    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}${layoutEdit ? " is-layout-editable" : ""}`;
+    wrap.dataset.itemId = item.item_id;
 
     const card = document.createElement("button");
     card.type = "button";
     card.className = `mcard cat-${theme.slug}${soldOut ? " is-sold-out" : ""}`;
-    card.disabled = soldOut;
+    card.disabled = soldOut && !layoutEdit;
     card.setAttribute(
       "aria-label",
-      soldOut ? `${item.name}, sold out` : `Add ${item.name}, ${price.aria}`
+      layoutEdit
+        ? `Reorder ${item.name}`
+        : soldOut
+          ? `${item.name}, sold out`
+          : `Add ${item.name}, ${price.aria}`
     );
 
-    if (inCartQty > 0 && !soldOut) {
+    if (inCartQty > 0 && !soldOut && !layoutEdit) {
       const badge = document.createElement("span");
       badge.className = "mc-badge";
       badge.textContent = String(inCartQty);
@@ -1541,7 +1902,7 @@ function renderMenu() {
       priceEl.innerHTML = `<b><i>${escapeHtml(price.label)}</i> ${escapeHtml(price.amount)}</b>`;
     }
     bottom.appendChild(priceEl);
-    if (!soldOut) {
+    if (!soldOut && !layoutEdit) {
       const plus = document.createElement("span");
       plus.className = "mc-plus";
       plus.setAttribute("aria-hidden", "true");
@@ -1550,7 +1911,7 @@ function renderMenu() {
     }
     body.appendChild(bottom);
 
-    if (!soldOut) {
+    if (!soldOut && !layoutEdit) {
       const qtyRow = document.createElement("span");
       qtyRow.className = "mc-qtyrow";
       const dec = document.createElement("button");
@@ -1583,7 +1944,14 @@ function renderMenu() {
 
     card.appendChild(body);
 
-    if (!soldOut) {
+    if (layoutEdit) {
+      card.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (state._layoutDrag?.suppressClick) return;
+      });
+      bindLayoutDrag(wrap, item);
+    } else if (!soldOut) {
       card.addEventListener("click", (e) => {
         if (e.target.closest(".mc-qtyrow")) return;
         onMenuItemTap(item);
@@ -1599,11 +1967,12 @@ function renderMenu() {
     infoBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (layoutEdit) return;
       openProductKnowledge(item);
     });
     wrap.appendChild(infoBtn);
 
-    if (stockMode && canToggleSold) {
+    if (stockMode && canToggleSold && !layoutEdit) {
       const soldBtn = document.createElement("button");
       soldBtn.type = "button";
       soldBtn.className = `mc-stock${soldOut ? " is-sold" : ""}`;
@@ -6485,6 +6854,14 @@ async function openPendingPayments() {
 }
 
 function bindUi() {
+  try {
+    state.virtualKeyboardOn = localStorage.getItem("gtct.virtualKeyboard") !== "0";
+  } catch {
+    state.virtualKeyboardOn = true;
+  }
+  state.virtualKeyboard = initVirtualKeyboard({ enabled: state.virtualKeyboardOn });
+  document.body.classList.toggle("vk-enabled", state.virtualKeyboardOn);
+
   $("login-btn").addEventListener("click", (e) => {
     e.preventDefault();
     login();

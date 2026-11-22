@@ -1,4 +1,5 @@
 import { createMoneyFormatter } from "./money.js";
+import { initVirtualKeyboard } from "./virtualKeyboard.js";
 
 const AVAIL = [
   { id: "ALL", label: "All" },
@@ -1984,6 +1985,7 @@ async function bootstrap() {
 }
 
 function bindUi() {
+  initVirtualKeyboard({ enabled: true });
   $("login-btn").addEventListener("click", login);
   for (const id of ["login-username", "login-password"]) {
     $(id).addEventListener("keydown", (e) => {

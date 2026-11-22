@@ -1808,9 +1808,14 @@ body.page-scroll-lock {
   height: 100%;
   align-items: center;
   justify-content: center;
-  font-size: 2rem;
+  padding: 0 0.4rem;
+  font-size: clamp(1.05rem, 2.6vw, 1.65rem);
   font-weight: 800;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-align: center;
   color: #142033;
+  word-break: keep-all;
 }
 
 .mc-body {
@@ -2176,6 +2181,82 @@ dialog[open] ~ * .mc-info,
   background: rgba(11, 83, 158, 0.12);
   border-color: rgba(11, 83, 158, 0.35);
   color: var(--blue);
+}
+
+.sales-layout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+}
+
+.sales-layout-gear {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.menu-layout-hint {
+  margin: 0.35rem 0 0;
+  padding: 0.55rem 0.75rem;
+  border-radius: 12px;
+  background: rgba(11, 83, 158, 0.08);
+  border: 1px solid rgba(11, 83, 158, 0.18);
+  color: #1a3a66;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.menu-grid.is-layout-edit {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.mcard-wrap.is-layout-editable {
+  touch-action: none;
+  cursor: grab;
+}
+
+.mcard-wrap.is-layout-editable .mcard {
+  cursor: grab;
+  animation: menu-layout-jiggle 0.45s ease-in-out infinite;
+  box-shadow: 0 2px 10px rgba(20, 32, 51, 0.12);
+}
+
+.mcard-wrap.is-layout-editable:nth-child(2n) .mcard {
+  animation-delay: -0.12s;
+}
+
+.mcard-wrap.is-layout-editable:nth-child(3n) .mcard {
+  animation-delay: -0.24s;
+}
+
+.mcard-wrap.is-dragging {
+  cursor: grabbing;
+  z-index: 40;
+}
+
+.mcard-wrap.is-dragging .mcard {
+  animation: none;
+  cursor: grabbing;
+  box-shadow: 0 18px 36px rgba(20, 32, 51, 0.22);
+  opacity: 0.96;
+}
+
+@keyframes menu-layout-jiggle {
+  0% {
+    transform: rotate(-0.55deg);
+  }
+  50% {
+    transform: rotate(0.55deg);
+  }
+  100% {
+    transform: rotate(-0.55deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mcard-wrap.is-layout-editable .mcard {
+    animation: none;
+  }
 }
 
 .nav-mobile-tools {

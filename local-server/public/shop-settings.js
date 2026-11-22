@@ -2,6 +2,7 @@
  * Shop Settings — admin UI (Phase 1.7).
  */
 import { createMoneyFormatter } from "./money.js";
+import { initVirtualKeyboard } from "./virtualKeyboard.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -18,6 +19,7 @@ const state = {
   editingRateId: null,
   bankAccounts: [],
   editingAccountId: null,
+  backupConfirmPhrase: "",
 };
 
 async function api(path, options = {}) {
@@ -197,15 +199,16 @@ function switchTab(tab) {
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-selected", active ? "true" : "false");
   });
-  ["profile", "tax", "currency", "receipt", "orders", "banks"].forEach((id) => {
+  ["profile", "tax", "currency", "receipt", "orders", "banks", "backup"].forEach((id) => {
     const panel = $(`panel-${id}`);
     if (panel) panel.hidden = id !== tab;
   });
   const saveBar = document.querySelector(".ss-save-bar");
-  if (saveBar) saveBar.hidden = tab === "orders" || tab === "banks";
+  if (saveBar) saveBar.hidden = tab === "orders" || tab === "banks" || tab === "backup";
   if (tab === "receipt") refreshPreview();
   if (tab === "orders") loadOrderDelivery();
   if (tab === "banks") void loadBankAccounts();
+  if (tab === "backup") void loadBackupPanel();
 }
 
 function updateOrderLockUi() {
@@ -478,7 +481,165 @@ async function login() {
   }
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      const comma = text.indexOf(",");
+      resolve(comma >= 0 ? text.slice(comma + 1) : text);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Could not read file"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function triggerDownloadBase64(filename, base64Data, mimeType) {
+  const binary = atob(base64Data);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const blob = new Blob([bytes], { type: mimeType || "application/octet-stream" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename || "gtct-backup.sqlite";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function loadBackupPanel() {
+  const healthLine = $("backup-health-line");
+  const hint = $("backup-import-hint");
+  const phrase = $("backup-import-phrase");
+  if (healthLine) healthLine.textContent = "Checking backup health…";
+
+  const info = await api("/v1/admin/backup/info");
+  if (info.ok) {
+    state.backupConfirmPhrase = info.json?.confirmPhrase || "";
+    if (hint && state.backupConfirmPhrase) {
+      hint.textContent = `Type exactly: ${state.backupConfirmPhrase}`;
+    }
+    if (phrase && !phrase.value && state.backupConfirmPhrase) {
+      phrase.placeholder = state.backupConfirmPhrase;
+    }
+  }
+
+  const health = await api("/v1/admin/backup-health");
+  if (!healthLine) return;
+  if (!health.ok) {
+    healthLine.textContent =
+      health.json?.error ||
+      "Scheduled backup health unavailable (download backup still works).";
+    return;
+  }
+  const status = health.json || {};
+  const latest = status.latestBackup?.createdAt
+    ? ` Last verified: ${new Date(status.latestBackup.createdAt).toLocaleString()}.`
+    : "";
+  healthLine.textContent = `${status.message || "Backup status unknown."}${latest}`;
+}
+
+async function downloadPortableBackup() {
+  const btn = $("backup-download-btn");
+  const status = $("backup-download-status");
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Creating backup…";
+  try {
+    const res = await api("/v1/admin/backup/export", {
+      method: "POST",
+      body: "{}",
+    });
+    if (!res.ok) {
+      if (status) status.textContent = "";
+      setStatus(res.json?.error || "Backup download failed.", false);
+      return;
+    }
+    triggerDownloadBase64(
+      res.json.filename,
+      res.json.base64Data,
+      res.json.mimeType
+    );
+    if (status) {
+      status.textContent = `Downloaded (${Math.round((res.json.bytes || 0) / 1024)} KB).`;
+    }
+    setStatus("Backup downloaded.");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function importPortableBackupFile() {
+  const error = $("backup-import-error");
+  const status = $("backup-import-status");
+  const btn = $("backup-import-btn");
+  const fileInput = $("backup-import-file");
+  const phraseInput = $("backup-import-phrase");
+  if (error) {
+    error.hidden = true;
+    error.textContent = "";
+  }
+  const file = fileInput?.files?.[0];
+  if (!file) {
+    if (error) {
+      error.hidden = false;
+      error.textContent = "Choose a .sqlite backup file first.";
+    }
+    return;
+  }
+  const confirmPhrase = String(phraseInput?.value || "").trim();
+  const expected = state.backupConfirmPhrase || "";
+  if (expected && confirmPhrase !== expected) {
+    if (error) {
+      error.hidden = false;
+      error.textContent = `Type exactly: ${expected}`;
+    }
+    return;
+  }
+  if (
+    !confirm(
+      "Import will replace the live TEST database with this backup. Continue?"
+    )
+  ) {
+    return;
+  }
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Importing…";
+  try {
+    const base64Data = await fileToBase64(file);
+    const res = await api("/v1/admin/backup/import", {
+      method: "POST",
+      body: JSON.stringify({ base64Data, confirmPhrase }),
+    });
+    if (!res.ok) {
+      if (status) status.textContent = "";
+      if (error) {
+        error.hidden = false;
+        error.textContent = res.json?.error || "Import failed.";
+      }
+      setStatus(res.json?.error || "Import failed.", false);
+      return;
+    }
+    if (status) status.textContent = "Import complete. Reloading…";
+    setStatus("Backup imported. Reloading…");
+    window.setTimeout(() => {
+      window.location.href = "/shop-settings.html";
+    }, 700);
+  } catch (err) {
+    if (status) status.textContent = "";
+    if (error) {
+      error.hidden = false;
+      error.textContent = err?.message || "Import failed.";
+    }
+    setStatus(err?.message || "Import failed.", false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
 function bindUi() {
+  initVirtualKeyboard({ enabled: true });
   $("login-btn").addEventListener("click", login);
   $("logout-btn")?.addEventListener("click", async () => {
     if (state.dirty && !confirm("Discard unsaved changes and sign out?")) return;
@@ -503,6 +664,8 @@ function bindUi() {
   document.querySelectorAll(".shop-tabs .ms-tab").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
+  $("backup-download-btn")?.addEventListener("click", () => void downloadPortableBackup());
+  $("backup-import-btn")?.addEventListener("click", () => void importPortableBackupFile());
   $("bank-save")?.addEventListener("click", () => void saveBankAccount());
   $("bank-cancel")?.addEventListener("click", resetBankForm);
   $("bank-account-list")?.addEventListener("click", (event) => {

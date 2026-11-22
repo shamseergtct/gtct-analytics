@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/menu-setup.css" />
     <link rel="stylesheet" href="/shop-settings.css" />
+    <link rel="stylesheet" href="/virtual-keyboard.css" />
   </head>
   <body class="menu-setup-page shop-settings-page">
     <div id="app">
@@ -91,6 +92,7 @@
             <button type="button" class="ms-tab" data-tab="receipt" role="tab" aria-selected="false">Receipt Settings</button>
             <button type="button" class="ms-tab" data-tab="orders" role="tab" aria-selected="false">Order &amp; Delivery</button>
             <button type="button" class="ms-tab" data-tab="banks" role="tab" aria-selected="false">Bank Accounts</button>
+            <button type="button" class="ms-tab" data-tab="backup" role="tab" aria-selected="false">Backup &amp; Import</button>
           </nav>
 
           <p id="save-status" class="status-line" hidden></p>
@@ -353,6 +355,53 @@
               </div>
               <div id="block-rate-list" class="od-list"></div>
               <p id="delivery-tax-note" class="hint">Each block delivery charge can include this shop’s tax. Set it when you add or edit the charge. Item and add-on tax is unchanged.</p>
+            </div>
+          </section>
+
+          <section id="panel-backup" class="ms-panel" hidden>
+            <div class="ms-card ss-card">
+              <h2>Full shop backup</h2>
+              <p class="muted">
+                Download a verified copy of this TEST database (menu, orders, customers, settings).
+                Menu photo <em>files</em> on disk are not included — only photo links inside the database.
+              </p>
+              <p id="backup-health-line" class="info-callout" aria-live="polite">Checking backup health…</p>
+              <div class="ss-actions" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+                <button type="button" id="backup-download-btn" class="btn primary">Download backup</button>
+                <span id="backup-download-status" class="muted" aria-live="polite"></span>
+              </div>
+            </div>
+
+            <div class="ms-card ss-card">
+              <h2>Import full backup</h2>
+              <p class="muted">
+                Replaces the live TEST database with a previously downloaded <code>.sqlite</code> backup for this shop.
+                A safety copy of the current database is kept on the server first. Sign in again after import.
+              </p>
+              <div class="ss-fields">
+                <label class="field">
+                  <span>Backup file (.sqlite)</span>
+                  <input id="backup-import-file" type="file" accept=".sqlite,application/octet-stream" />
+                </label>
+                <label class="field">
+                  <span>Confirm phrase</span>
+                  <input id="backup-import-phrase" type="text" autocomplete="off" spellcheck="false" placeholder="IMPORT …" />
+                </label>
+                <p id="backup-import-hint" class="hint">Type the confirm phrase shown after the tab loads.</p>
+              </div>
+              <p id="backup-import-error" class="error" hidden></p>
+              <div class="ss-actions" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:0.5rem;align-items:center">
+                <button type="button" id="backup-import-btn" class="btn ghost">Import backup</button>
+                <span id="backup-import-status" class="muted" aria-live="polite"></span>
+              </div>
+            </div>
+
+            <div class="ms-card ss-card">
+              <h2>Menu CSV only</h2>
+              <p class="muted">
+                To export or import menu items in Excel without touching orders, use
+                <a href="/menu.html">Menu Setup</a> → Export / Import.
+              </p>
             </div>
           </section>
 

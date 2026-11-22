@@ -34,6 +34,7 @@ import {
   listMenuItems,
   getMenuItem,
   upsertMenuItem,
+  reorderMenuItems,
   updateMenuItemAvailability,
   saveMenuItemImage,
   clearMenuItemImage,
@@ -171,6 +172,11 @@ import {
 import { tryServeStatic } from "./static.js";
 import { log } from "../util/logger.js";
 import { getTestBackupHealth } from "../backup/testBackupManagement.js";
+import {
+  exportPortableBackup,
+  importPortableBackup,
+  portableBackupConfirmPhrase,
+} from "../services/portableBackup.js";
 import { getPilotSetupStatus, bootstrapPilotSetup } from "../services/pilotSetup.js";
 import {
   getPrintSettings,
@@ -592,6 +598,70 @@ export function createServer(config) {
       if (method === "GET" && path === "/v1/admin/backup-health") {
         if (!requireStaffAdmin(req, res, config)) return;
         sendJson(res, 200, getTestBackupHealth());
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/admin/backup/info") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        sendJson(res, 200, {
+          confirmPhrase: portableBackupConfirmPhrase(config.testTenantId),
+          shopId: config.testTenantId,
+          scope: "SQLITE_ONLY",
+          note: "Menu photos stored as files are not inside the SQLite backup.",
+        });
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/admin/backup/export") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const payload = await exportPortableBackup(config);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "backup.export",
+            entityType: "database",
+            entityId: "portable",
+            detail: {
+              filename: payload.filename,
+              bytes: payload.bytes,
+              sha256: payload.sha256,
+            },
+          });
+          sendJson(res, 200, payload);
+        } catch (err) {
+          sendJson(res, err.status || 500, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/admin/backup/import") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req, { maxBytes: 340_000_000 });
+          const result = await importPortableBackup(config, {
+            base64Data: body.base64Data,
+            confirmPhrase: body.confirmPhrase,
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "backup.import",
+            entityType: "database",
+            entityId: "portable",
+            detail: {
+              bytes: result.bytes,
+              sha256: result.sha256,
+              safetyCopyKept: result.safetyCopyKept,
+            },
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
         return;
       }
 
@@ -1744,6 +1814,28 @@ export function createServer(config) {
           url.searchParams.get("includeInactive") !== "false";
         const menuItems = listMenuItems({ includeInactive });
         sendJson(res, 200, { menuItems });
+        return;
+      }
+
+      if (method === "PUT" && path === "/v1/menu-items/reorder") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const itemIds = body.itemIds || body.item_ids || [];
+          const menuItems = reorderMenuItems(itemIds);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "menu.reorder",
+            entityType: "menu_items",
+            entityId: "bulk",
+            detail: { count: itemIds.length },
+          });
+          sendJson(res, 200, { menuItems });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
         return;
       }
 
