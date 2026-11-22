@@ -132,6 +132,9 @@ const state = {
   _layoutSaveTimer: null,
   virtualKeyboard: null,
   virtualKeyboardOn: true,
+  callerPollTimer: null,
+  callerSeenAt: "",
+  callerPayload: null,
   addingLock: false,
   cartFocusLineId: null,
   cartFollowLatest: false,
@@ -352,6 +355,7 @@ async function ensureDraftIdentity({ fresh = false } = {}) {
 
 function showLogin(error = "") {
   stopDraftNumberSync();
+  stopCallerIdPolling();
   closePaymentUi();
   cancelLayoutDrag();
   state.layoutEditMode = false;
@@ -359,6 +363,8 @@ function showLogin(error = "") {
   $("login-view").hidden = false;
   $("main-view").hidden = true;
   setLoginError(error);
+  const callerBtn = $("caller-id-btn");
+  if (callerBtn) callerBtn.hidden = true;
 }
 
 function applySession(data) {
@@ -432,8 +438,246 @@ function showMain() {
   setNavMenu(false);
   ensureSalesViewControls();
   startDraftNumberSync();
+  startCallerIdPolling();
   void refreshPendingCount();
   void loadBusinessShift();
+  void consumeCallerQueryParam();
+}
+
+function canUseCallerId() {
+  return Boolean(
+    state.staff &&
+      (state.role === "admin" ||
+        state.permissions.includes("sales.order.create") ||
+        state.permissions.includes("customers.manage"))
+  );
+}
+
+function stopCallerIdPolling() {
+  if (state.callerPollTimer) {
+    window.clearInterval(state.callerPollTimer);
+    state.callerPollTimer = null;
+  }
+}
+
+function startCallerIdPolling() {
+  stopCallerIdPolling();
+  const btn = $("caller-id-btn");
+  if (btn) btn.hidden = !canUseCallerId();
+  if (!canUseCallerId()) return;
+  void pollCallerId({ openIfNew: true });
+  state.callerPollTimer = window.setInterval(() => {
+    void pollCallerId({ openIfNew: true });
+  }, 2500);
+}
+
+function formatCallerAddress(customer) {
+  if (!customer) return "";
+  return [
+    customer.blockNumber ? `Block ${customer.blockNumber}` : "",
+    customer.buildingNumber ? `Bldg ${customer.buildingNumber}` : "",
+    customer.roadNumber ? `Road ${customer.roadNumber}` : "",
+    customer.addressNote || "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function renderCallerIdDialog(payload) {
+  const call = payload?.call || null;
+  const customer = payload?.customer || null;
+  const status = $("caller-id-status");
+  const name = $("caller-id-name");
+  const phone = $("caller-id-phone");
+  const address = $("caller-id-address");
+  const useBtn = $("caller-id-use");
+  const input = $("caller-id-input");
+  const err = $("caller-id-error");
+  if (err) {
+    err.hidden = true;
+    err.textContent = "";
+  }
+  if (input && call?.phone && input.value.trim() !== call.phone) {
+    input.value = call.phone;
+  }
+  if (customer) {
+    if (status) {
+      status.textContent = "Saved customer";
+      status.dataset.tone = "known";
+    }
+    if (name) name.textContent = customer.name || "Saved customer";
+    if (phone) phone.textContent = customer.phone || call?.phone || "—";
+    const line = formatCallerAddress(customer);
+    if (address) {
+      address.hidden = !line;
+      address.textContent = line;
+    }
+    if (useBtn) useBtn.disabled = false;
+  } else {
+    if (status) {
+      status.textContent = call?.phone ? "New caller" : "Enter a number";
+      status.dataset.tone = "new";
+    }
+    if (name) name.textContent = call?.phone ? "Unknown caller" : "No caller yet";
+    if (phone) phone.textContent = call?.phone || "—";
+    if (address) {
+      address.hidden = true;
+      address.textContent = "";
+    }
+    if (useBtn) useBtn.disabled = !call?.phone;
+  }
+  const btn = $("caller-id-btn");
+  const dot = $("caller-id-dot");
+  const ringing = Boolean(call?.phone);
+  if (btn) btn.classList.toggle("is-ringing", ringing && Boolean(customer));
+  if (dot) dot.hidden = !ringing;
+}
+
+function openCallerIdDialog(payload) {
+  if (payload) {
+    state.callerPayload = payload;
+    renderCallerIdDialog(payload);
+  } else {
+    renderCallerIdDialog(state.callerPayload);
+  }
+  const dialog = $("caller-id-dialog");
+  if (dialog && !dialog.open) dialog.showModal();
+  $("caller-id-input")?.focus();
+}
+
+function closeCallerIdDialog() {
+  const dialog = $("caller-id-dialog");
+  if (dialog?.open) dialog.close();
+}
+
+async function pollCallerId({ openIfNew = false } = {}) {
+  if (!canUseCallerId()) return;
+  const res = await api("/v1/caller-id/latest");
+  if (!res.ok) return;
+  const payload = {
+    call: res.json?.call || null,
+    customer: res.json?.customer || null,
+  };
+  const receivedAt = payload.call?.receivedAt || "";
+  const isNew = Boolean(receivedAt && receivedAt !== state.callerSeenAt);
+  state.callerPayload = payload;
+  renderCallerIdDialog(payload);
+  if (openIfNew && isNew && payload.call?.phone) {
+    state.callerSeenAt = receivedAt;
+    openCallerIdDialog(payload);
+    setStatus(
+      payload.customer
+        ? `Incoming: ${payload.customer.name} · ${payload.call.phone}`
+        : `Incoming call · ${payload.call.phone}`
+    );
+  } else if (receivedAt) {
+    state.callerSeenAt = receivedAt;
+  }
+}
+
+async function lookupCallerFromInput() {
+  const input = $("caller-id-input");
+  const err = $("caller-id-error");
+  const phone = String(input?.value || "").trim();
+  if (!phone) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = "Enter a phone number.";
+    }
+    return;
+  }
+  const res = await api("/v1/caller-id/incoming", {
+    method: "POST",
+    body: JSON.stringify({ phone, source: "manual" }),
+  });
+  if (!res.ok) {
+    if (err) {
+      err.hidden = false;
+      err.textContent = res.json?.error || "Could not look up caller.";
+    }
+    return;
+  }
+  state.callerPayload = {
+    call: res.json?.call || null,
+    customer: res.json?.customer || null,
+  };
+  state.callerSeenAt = state.callerPayload.call?.receivedAt || state.callerSeenAt;
+  renderCallerIdDialog(state.callerPayload);
+  setStatus(
+    state.callerPayload.customer
+      ? `Found ${state.callerPayload.customer.name}`
+      : "Number not saved yet — you can still use it on the order."
+  );
+}
+
+async function useCallerOnOrder() {
+  const payload = state.callerPayload;
+  const call = payload?.call;
+  const customer = payload?.customer;
+  if (!call?.phone) return;
+
+  // Prefer Delivery when applying a phone caller.
+  const delivery = (state.orderTypes || []).find(
+    (row) => row.isActive !== false && String(row.behavior || "").toUpperCase() === "DELIVERY"
+  );
+  if (delivery) {
+    const select = $("order-type");
+    if (select) select.value = delivery.orderTypeId;
+    renderOrderTypeQuickButtons();
+    renderFulfillmentFields();
+  }
+
+  if (customer?.customerId) {
+    selectCustomer(customer);
+  } else {
+    state.fulfillment.customerId = "";
+    state.fulfillment.customerName = "";
+    state.fulfillment.customerPhone = call.phone;
+    normalizeFulfillmentCustomerFields();
+    renderFulfillmentFields();
+    renderCart();
+    persistActiveCart();
+  }
+  closeCallerIdDialog();
+  await api("/v1/caller-id/clear", { method: "POST", body: "{}" });
+  state.callerPayload = null;
+  renderCallerIdDialog(null);
+  setStatus(
+    customer?.name
+      ? `Caller applied: ${customer.name}`
+      : `Caller number applied: ${call.phone}`
+  );
+}
+
+async function dismissCallerId() {
+  closeCallerIdDialog();
+  await api("/v1/caller-id/clear", { method: "POST", body: "{}" });
+  state.callerPayload = null;
+  state.callerSeenAt = "";
+  renderCallerIdDialog(null);
+}
+
+async function consumeCallerQueryParam() {
+  try {
+    const url = new URL(window.location.href);
+    const phone = String(url.searchParams.get("caller") || "").trim();
+    if (!phone || !canUseCallerId()) return;
+    url.searchParams.delete("caller");
+    window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    const res = await api("/v1/caller-id/incoming", {
+      method: "POST",
+      body: JSON.stringify({ phone, source: "url" }),
+    });
+    if (!res.ok) return;
+    state.callerPayload = {
+      call: res.json?.call || null,
+      customer: res.json?.customer || null,
+    };
+    state.callerSeenAt = state.callerPayload.call?.receivedAt || "";
+    openCallerIdDialog(state.callerPayload);
+  } catch {
+    /* ignore */
+  }
 }
 
 async function loadBusinessShift() {
@@ -6891,6 +7135,19 @@ function bindUi() {
   $("menu-search").addEventListener("input", (e) => {
     state.search = e.target.value;
     renderMenu();
+  });
+  $("caller-id-btn")?.addEventListener("click", () => {
+    openCallerIdDialog(state.callerPayload);
+  });
+  $("caller-id-close")?.addEventListener("click", () => closeCallerIdDialog());
+  $("caller-id-dismiss")?.addEventListener("click", () => void dismissCallerId());
+  $("caller-id-lookup-btn")?.addEventListener("click", () => void lookupCallerFromInput());
+  $("caller-id-use")?.addEventListener("click", () => void useCallerOnOrder());
+  $("caller-id-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void lookupCallerFromInput();
+    }
   });
   const salesViewportMq = window.matchMedia("(max-width: 1023px)");
   const onSalesViewportChange = () => syncSalesViewForViewport();

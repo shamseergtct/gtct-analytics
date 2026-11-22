@@ -148,6 +148,64 @@ export function searchCustomers(shopId, query) {
   return rows.map((row) => mapCustomer(row, grouped.get(row.customer_id) || []));
 }
 
+function normalizePhoneKey(value) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return digits.startsWith("00") ? digits.slice(2) : digits;
+}
+
+/**
+ * Exact/suffix phone match for caller ID screen-pop.
+ * Tries full key, then last 8 digits (common local mobile length).
+ */
+export function findCustomerByPhone(shopId, phone) {
+  const key = normalizePhoneKey(phone);
+  if (key.length < 5) return null;
+  const db = getDb();
+  const byExact = db
+    .prepare(
+      `SELECT * FROM shop_customers WHERE shop_id = ? AND phone_key = ? LIMIT 1`
+    )
+    .get(shopId, key);
+  if (byExact) {
+    return mapCustomer(byExact, listAddressRows(shopId, byExact.customer_id));
+  }
+  const candidates = [];
+  if (key.length > 8) candidates.push(key.slice(-8));
+  // Incoming local number may be shorter than a stored international key.
+  const rows = db
+    .prepare(
+      `SELECT * FROM shop_customers
+       WHERE shop_id = ?
+         AND (
+           phone_key = ?
+           OR (? != '' AND phone_key LIKE ?)
+           OR (? != '' AND ? LIKE '%' || phone_key)
+         )
+       ORDER BY length(phone_key) DESC
+       LIMIT 5`
+    )
+    .all(
+      shopId,
+      key,
+      candidates[0] || "",
+      candidates[0] ? `%${candidates[0]}` : "",
+      key,
+      key
+    );
+  if (!rows.length) return null;
+  // Prefer unique strong matches only when ambiguous.
+  const strong = rows.filter(
+    (row) =>
+      row.phone_key === key ||
+      row.phone_key.endsWith(key) ||
+      key.endsWith(row.phone_key)
+  );
+  const row = (strong.length === 1 ? strong[0] : rows.length === 1 ? rows[0] : null);
+  if (!row) return null;
+  return mapCustomer(row, listAddressRows(shopId, row.customer_id));
+}
+
 function phoneOwner(shopId, phoneKey, exceptCustomerId = "") {
   return getDb()
     .prepare(

@@ -93,6 +93,10 @@
                 <button type="button" id="shift-close-btn" class="nav-dropdown-link" hidden>Close shift</button>
               </div>
             </details>
+            <button type="button" id="caller-id-btn" class="caller-id-btn" hidden aria-controls="caller-id-dialog" title="Look up incoming caller">
+              Caller
+              <span id="caller-id-dot" class="caller-id-dot" hidden aria-hidden="true"></span>
+            </button>
             <button type="button" id="pending-payments-btn" class="pending-payments-btn" hidden aria-controls="pending-payments-drawer" aria-expanded="false">
               Unpaid <span id="pending-payments-count" class="unpaid-count-badge" hidden>0</span>
             </button>
@@ -471,6 +475,34 @@
           <button type="button" id="shift-dialog-confirm" class="btn primary">Open shift</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="caller-id-dialog" class="caller-id-dialog" aria-labelledby="caller-id-title">
+      <div class="caller-id-inner">
+        <header class="caller-id-head">
+          <div>
+            <p class="caller-id-eyebrow">Incoming call</p>
+            <h3 id="caller-id-title">Caller</h3>
+          </div>
+          <button type="button" id="caller-id-close" class="btn ghost small" aria-label="Close caller">✕</button>
+        </header>
+        <p id="caller-id-status" class="caller-id-status" data-tone="new">New caller</p>
+        <p id="caller-id-name" class="caller-id-name">Unknown</p>
+        <p id="caller-id-phone" class="caller-id-phone">—</p>
+        <p id="caller-id-address" class="caller-id-address muted" hidden></p>
+        <div class="caller-id-lookup">
+          <label class="field">
+            <span>Phone number</span>
+            <input id="caller-id-input" type="tel" inputmode="tel" data-vk="tel" maxlength="30" placeholder="Paste or type caller number" autocomplete="tel" />
+          </label>
+          <button type="button" id="caller-id-lookup-btn" class="btn ghost">Look up</button>
+        </div>
+        <p id="caller-id-error" class="error" hidden></p>
+        <div class="dialog-actions caller-id-actions">
+          <button type="button" id="caller-id-dismiss" class="btn ghost">Dismiss</button>
+          <button type="button" id="caller-id-use" class="btn primary" disabled>Use on order</button>
+        </div>
+      </div>
     </dialog>
 
     <!-- Variant selector -->

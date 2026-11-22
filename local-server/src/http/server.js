@@ -96,6 +96,7 @@ import {
 } from "../services/orderSetup.js";
 import {
   searchCustomers,
+  findCustomerByPhone,
   getCustomer,
   createCustomer,
   updateCustomerAddress,
@@ -103,6 +104,11 @@ import {
   addCustomerAddress,
   updateCustomerAddressById,
 } from "../services/customers.js";
+import {
+  getLatestCaller,
+  recordIncomingCaller,
+  clearLatestCaller,
+} from "../services/callerId.js";
 import {
   peekNextOrderNumber,
   createTestOrder,
@@ -1001,6 +1007,54 @@ export function createServer(config) {
         if (!requireAuth(req, res, config)) return;
         const q = url.searchParams.get("q") || "";
         sendJson(res, 200, { customers: searchCustomers(config.testTenantId, q) });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/customers/by-phone") {
+        if (!requireAuth(req, res, config)) return;
+        const phone = url.searchParams.get("phone") || "";
+        const customer = findCustomerByPhone(config.testTenantId, phone);
+        sendJson(res, 200, { customer });
+        return;
+      }
+
+      if (method === "GET" && path === "/v1/caller-id/latest") {
+        if (!requireAuth(req, res, config)) return;
+        sendJson(res, 200, getLatestCaller(config.testTenantId));
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/caller-id/incoming") {
+        const auth = requireAuth(req, res, config);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const result = recordIncomingCaller(config.testTenantId, {
+            phone: body.phone,
+            source: body.source || "api",
+          });
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "caller_id.incoming",
+            entityType: "caller",
+            entityId: result.call.phoneKey,
+            detail: {
+              phone: result.call.phone,
+              matched: Boolean(result.customer),
+              customerId: result.customer?.customerId || "",
+            },
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (method === "POST" && path === "/v1/caller-id/clear") {
+        if (!requireAuth(req, res, config)) return;
+        sendJson(res, 200, clearLatestCaller(config.testTenantId));
         return;
       }
 
