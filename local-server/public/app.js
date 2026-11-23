@@ -3385,6 +3385,14 @@ function openInstructions(lineId) {
         /* ignore */
       }
     }
+    if (isMobileSalesUi()) {
+      // Phones/tablets: showModal() auto-focuses the first input (the quantity box),
+      // which pops up the keyboard. Focus the sheet itself; staff tap a field to type.
+      if (!dialog.hasAttribute("tabindex")) dialog.setAttribute("tabindex", "-1");
+      document.activeElement?.blur?.();
+      dialog.focus({ preventScroll: true });
+      return;
+    }
     const note = $("custom-note");
     note?.focus();
     note?.select?.();
