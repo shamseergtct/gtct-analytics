@@ -405,7 +405,9 @@ func insecureHTTPClient() *http.Client {
 }
 
 func discoverHealthyBase(prefs runtimePrefs, port int) (string, bool) {
-	candidates := []string{}
+	// This PC's browser prefers loopback: it keeps working when Wi-Fi drops or the
+	// LAN address changes (the server also listens on 127.0.0.1 in LAN mode).
+	candidates := []string{fmt.Sprintf("http://127.0.0.1:%d", port)}
 	if prefs.LastBaseURL != "" {
 		candidates = append(candidates, strings.TrimRight(prefs.LastBaseURL, "/"))
 	}

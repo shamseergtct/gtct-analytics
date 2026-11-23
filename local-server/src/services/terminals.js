@@ -330,7 +330,12 @@ export function attachTerminalToSession(shopId, sessionId, terminalId) {
     .run(terminalId, shopId, sessionId);
 }
 
-export function lanTerminalStatus(config) {
+export function lanTerminalStatus(requestConfig) {
+  // A request on this PC's loopback listener still reports the restaurant-network
+  // address (lanPeer) so the Terminals page can show the QR codes for tablets.
+  const config = requestConfig?.lanPeer
+    ? { ...requestConfig, ...requestConfig.lanPeer, lanAccessReady: true, tlsReady: true }
+    : requestConfig;
   return {
     loopback: Boolean(config.loopback),
     lanAccessReady: config.lanAccessReady === true,

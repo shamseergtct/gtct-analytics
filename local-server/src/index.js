@@ -41,6 +41,37 @@ async function boot() {
     });
   });
 
+  // When serving the restaurant network, also serve THIS computer on loopback
+  // (http://127.0.0.1) with the normal loopback-only rules, so the cashier PC keeps
+  // working when Wi-Fi drops or the LAN address changes. Only this PC can reach it.
+  let loopbackServer = null;
+  if (!config.loopback && config.lanAccessReady === true) {
+    const loopbackConfig = {
+      ...config,
+      host: "127.0.0.1",
+      loopback: true,
+      lanAccessReady: false,
+      tlsReady: false,
+      tls: null,
+      lanHostname: "",
+      lanPeer: { host: config.host, port: config.port, lanHostname: config.lanHostname || "" },
+    };
+    loopbackServer = createServer(loopbackConfig);
+    await new Promise((resolve) => {
+      loopbackServer.once("error", (err) => {
+        log.warn("Loopback listener not started; this PC must use the LAN address", {
+          error: err.message,
+        });
+        loopbackServer = null;
+        resolve();
+      });
+      loopbackServer.listen(config.port, "127.0.0.1", () => {
+        log.info("This computer can also use http://127.0.0.1", { port: config.port });
+        resolve();
+      });
+    });
+  }
+
   log.info("GTCT local server listening", {
     host: config.host,
     port: config.port,
@@ -59,6 +90,7 @@ async function boot() {
     dispatcher.stop();
     cloudBridge.stop();
     testBackups.stop();
+    loopbackServer?.close();
     server.close(() => {
       closeDatabase();
       log.info("Shutdown complete");
