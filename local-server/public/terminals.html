@@ -117,7 +117,7 @@
             <input type="hidden" id="terminal-id" />
             <div class="field">
               <label for="terminal-name">Display name</label>
-              <input id="terminal-name" type="text" maxlength="60" placeholder="Cashier 1" />
+              <input id="terminal-name" type="text" maxlength="60" placeholder="Type a name, e.g. Kitchen Monitor" required />
             </div>
             <div class="field">
               <label for="terminal-code">Code</label>
@@ -136,6 +136,7 @@
               <input id="terminal-active" type="checkbox" checked />
               <span>Active</span>
             </label>
+            <p id="editor-error" class="error" role="alert" hidden></p>
             <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
               <button type="button" id="save-terminal-btn" class="btn primary">Save</button>
               <button type="button" id="cancel-terminal-btn" class="btn ghost">Cancel</button>

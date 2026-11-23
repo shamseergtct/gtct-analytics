@@ -153,6 +153,7 @@ async function loadTerminals() {
 function openEditor(terminal = null) {
   $("terminal-editor").hidden = false;
   $("editor-title").textContent = terminal ? "Edit terminal" : "New terminal";
+  setEditorError("");
   $("terminal-id").value = terminal?.terminalId || "";
   $("terminal-name").value = terminal?.displayName || "";
   $("terminal-code").value = terminal?.code || "";
@@ -163,7 +164,19 @@ function openEditor(terminal = null) {
   $("terminal-name").focus({ preventScroll: true });
 }
 
+function setEditorError(message = "") {
+  const el = $("editor-error");
+  el.hidden = !message;
+  el.textContent = message;
+}
+
 async function saveTerminal() {
+  setEditorError("");
+  if ($("terminal-name").value.trim().length < 2) {
+    setEditorError("Enter a display name (at least 2 letters), for example \"Kitchen Monitor\".");
+    $("terminal-name").focus();
+    return;
+  }
   const body = {
     terminalId: $("terminal-id").value || undefined,
     displayName: $("terminal-name").value.trim(),
@@ -173,7 +186,7 @@ async function saveTerminal() {
   };
   const res = await api("/v1/terminals", { method: "PUT", body: JSON.stringify(body) });
   if (!res.ok) {
-    setStatus(res.json?.error || "Save failed.", false);
+    setEditorError(res.json?.error || "Save failed.");
     return;
   }
   $("terminal-editor").hidden = true;
