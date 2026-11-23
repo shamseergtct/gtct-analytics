@@ -5923,7 +5923,7 @@ a.btn {
   overflow: hidden;
   background: var(--card);
   color: var(--ink);
-  color-scheme: light dark;
+  color-scheme: light;
   font-size: 16px;
 }
 
