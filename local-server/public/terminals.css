@@ -1,0 +1,49 @@
+/* Connect devices card (Terminals page). */
+.connect-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+.connect-item {
+  border: 1px solid #d5dbe7;
+  border-radius: 14px;
+  padding: 1rem;
+  text-align: center;
+  background: #fff;
+}
+.connect-item h3 {
+  margin: 0 0 0.6rem;
+  font-size: 1.05rem;
+}
+.connect-qr {
+  width: min(100%, 220px);
+  margin: 0 auto;
+}
+.connect-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+.connect-url {
+  margin: 0.7rem 0 0;
+  font-weight: 700;
+  font-size: 0.95rem;
+  word-break: break-all;
+}
+.connect-offline {
+  margin-top: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  border: 1px solid #e9a23b;
+  background: #fff4e0;
+  color: #5a3a00;
+  font-weight: 600;
+}
+.connect-tips {
+  margin: 0.9rem 0 0;
+  padding-left: 1.2rem;
+}
+.connect-tips li {
+  margin: 0.25rem 0;
+}

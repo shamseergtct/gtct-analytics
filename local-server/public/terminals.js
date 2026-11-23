@@ -69,15 +69,46 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+function renderQr(el, text) {
+  el.innerHTML = "";
+  if (!text || typeof window.qrcode !== "function") return;
+  try {
+    const qr = window.qrcode(0, "M");
+    qr.addData(text);
+    qr.make();
+    el.innerHTML = qr.createSvgTag({ cellSize: 6, margin: 2, scalable: true });
+  } catch {
+    el.textContent = "";
+  }
+}
+
 function renderLan() {
   const lan = state.lan || {};
-  const lines = [
-    lan.lanAccessReady ? `LAN ready · ${lan.browseUrl}` : "LAN listener off (loopback only on this Mac until LAN start script is used).",
+  const ready = lan.lanAccessReady === true && Boolean(lan.browseUrl);
+  const offline = $("connect-offline");
+  const grid = $("connect-grid");
+  if (ready) {
+    offline.hidden = true;
+    grid.hidden = false;
+    $("url-browse").textContent = lan.browseUrl;
+    $("url-pair").textContent = lan.pairUrl || "";
+    renderQr($("qr-browse"), lan.browseUrl);
+    renderQr($("qr-pair"), lan.pairUrl || "");
+    $("lan-status").textContent = `Network ready · ${lan.browseUrl}`;
+  } else {
+    grid.hidden = true;
+    offline.hidden = false;
+    offline.textContent =
+      "Other devices cannot connect yet: this computer has no Wi-Fi/LAN address, so the app is running on this computer only. " +
+      "Connect this PC to the shop Wi-Fi or LAN cable. The app switches to the network by itself within about a minute; then open this page again.";
+    $("lan-status").textContent = lan.browseUrl ? `This computer only · ${lan.browseUrl}` : "This computer only.";
+  }
+  $("lan-note").textContent = [
+    lan.namedUrl ? `PC name address: ${lan.namedUrl}` : "",
     lan.physicalPrintEnabled ? "Physical print: ON" : "Physical print: off",
-    lan.pairUrl ? `Pair URL: ${lan.pairUrl}` : "",
-    lan.note || "",
-  ].filter(Boolean);
-  $("lan-status").textContent = lines.join(" · ");
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function renderList() {

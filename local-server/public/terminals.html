@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>GTCT Terminals</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/terminals.css" />
   </head>
   <body class="users-page">
     <div id="app">
@@ -79,9 +80,27 @@
 
         <div id="admin-shell" hidden>
           <section class="settings-card" style="margin: 1rem 1.1rem">
-            <h2>LAN / Wi‑Fi status</h2>
+            <h2>Connect devices</h2>
             <p id="lan-status" class="muted">Checking…</p>
-            <p class="hint">Tablets open the pair page, enter a code from below, then staff sign in with their own username.</p>
+            <div id="connect-offline" class="connect-offline" role="status" hidden></div>
+            <div id="connect-grid" class="connect-grid" hidden>
+              <div class="connect-item">
+                <h3>1. Open the app</h3>
+                <div id="qr-browse" class="connect-qr"></div>
+                <p id="url-browse" class="connect-url"></p>
+              </div>
+              <div class="connect-item">
+                <h3>2. Pair this device</h3>
+                <div id="qr-pair" class="connect-qr"></div>
+                <p id="url-pair" class="connect-url"></p>
+              </div>
+            </div>
+            <ul class="connect-tips">
+              <li>Scan the code with the tablet or phone camera. The first time, the browser shows a certificate warning: choose to continue (this is the restaurant's own server).</li>
+              <li>Then create a pairing code below (“Pair code”) and enter it on the device. Staff sign in with their own username.</li>
+              <li><strong>If the router or Wi-Fi is changed</strong>, the address changes. Open this page again and scan the new code. Devices need to be paired again on the new address.</li>
+            </ul>
+            <p id="lan-note" class="hint"></p>
           </section>
 
           <section class="settings-card" style="margin: 1rem 1.1rem">
@@ -133,6 +152,7 @@
         </div>
       </section>
     </div>
+    <script src="/vendor/qrcode-generator.js"></script>
     <script type="module" src="/terminals.js"></script>
       <script defer src="/scroll-nav.js"></script>
   </body>
