@@ -99,8 +99,8 @@ function renderLan() {
     grid.hidden = true;
     offline.hidden = false;
     offline.textContent =
-      "Other devices cannot connect yet: this computer has no Wi-Fi/LAN address, so the app is running on this computer only. " +
-      "Connect this PC to the shop Wi-Fi or LAN cable. The app switches to the network by itself within about a minute; then open this page again.";
+      "Other devices cannot connect yet: the app is running on this computer only. " +
+      "Make sure this PC is connected to the shop Wi-Fi or a LAN cable. The app switches to the network by itself within about a minute; then open this page again.";
     $("lan-status").textContent = lan.browseUrl ? `This computer only · ${lan.browseUrl}` : "This computer only.";
   }
   $("lan-note").textContent = [

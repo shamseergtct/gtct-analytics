@@ -47,3 +47,9 @@
 .connect-tips li {
   margin: 0.25rem 0;
 }
+
+/* A class that sets display must not override the hidden attribute. */
+.connect-grid[hidden],
+.connect-offline[hidden] {
+  display: none;
+}
