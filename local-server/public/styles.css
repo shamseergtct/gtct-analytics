@@ -31,11 +31,13 @@
   --cust-missing-bg: #fef3f2;
   --cust-missing-border: #f04438;
   --cust-missing-ink: #b42318;
-  color-scheme: light dark;
+  color-scheme: light;
   font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
+/* Dark theme disabled: it was incomplete (white cards and unreadable labels on a dark page).
+   Kept here for a future full dark theme. "not all" never matches. */
+@media not all {
   :root {
     --blue: #6cb2f2;
     --green: #b5c96a;

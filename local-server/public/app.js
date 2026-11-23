@@ -221,6 +221,12 @@ function cartQtyForMenuItem(item) {
 function adjustMenuItemCartQty(item, delta) {
   if (!item || state.addingLock) return;
   if (delta > 0) {
+    // "+" is a quick add. Items with sizes still ask for the size; notes/extras
+    // stay one tap away by tapping the item row (onMenuItemTap).
+    if (!item.hasVariants && item.is_active && !item.is_sold_out) {
+      addToCart(item, null);
+      return;
+    }
     onMenuItemTap(item);
     return;
   }
@@ -2072,7 +2078,7 @@ function renderMenu() {
     const initial = menuItemInitials(item.name);
 
     const wrap = document.createElement("div");
-    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}${layoutEdit ? " is-layout-editable" : ""}`;
+    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}${layoutEdit ? " is-layout-editable" : ""}${inCartQty > 0 ? " has-qty" : ""}`;
     wrap.dataset.itemId = item.item_id;
 
     const card = document.createElement("button");
@@ -7103,6 +7109,8 @@ function bindUi() {
   } catch {
     state.virtualKeyboardOn = true;
   }
+  // Phones already have their own keyboard; the on-screen POS keyboard would cover it.
+  if (window.matchMedia?.("(max-width: 599px)").matches) state.virtualKeyboardOn = false;
   state.virtualKeyboard = initVirtualKeyboard({ enabled: state.virtualKeyboardOn });
   document.body.classList.toggle("vk-enabled", state.virtualKeyboardOn);
 

@@ -1,0 +1,301 @@
+/* Phone layout (≤599px) for the Sales page: simple list, one clear action per row.
+   Loaded last so it wins over older phone rules in styles.css. */
+@media (max-width: 599px) {
+  /* ---------- Header ---------- */
+  .sales-app .topbar {
+    padding: 8px 12px;
+    gap: 8px;
+    background: #fff;
+    border-bottom: 1px solid var(--line);
+    box-shadow: none;
+  }
+  .sales-app .topbar-brand h1 {
+    display: none; /* "Restaurant Sales" was cut to "Resta…" */
+  }
+  .sales-app .topbar-brand .brand-inline {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    color: var(--blue);
+  }
+  .sales-app #scroll-nav {
+    display: none; /* phones scroll with a finger */
+  }
+  .sales-app .caller-id-btn,
+  .sales-app .pending-payments-btn {
+    min-height: 40px;
+    padding: 0 12px;
+    font-size: 0.9rem;
+  }
+
+  /* ---------- Search + tools ---------- */
+  .sales-app .pane-toolbar {
+    padding: 10px 12px 6px;
+    background: var(--bg);
+    border-bottom: 0;
+  }
+  .sales-app .sales-tools-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+  }
+  .sales-app #menu-search {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 44px;
+    border-radius: 12px;
+    font-size: 16px; /* stops iPhone zooming in on focus */
+  }
+  .sales-app .sales-view-controls {
+    flex: 0 0 auto;
+    width: auto;
+    display: flex;
+    gap: 6px;
+    margin: 0;
+  }
+  .sales-app #sales-layout-btn,
+  .sales-app #sales-vk-btn {
+    display: none; /* layout editing and the POS keyboard are for tablets/PCs */
+  }
+  .sales-app #sales-stock-btn {
+    height: 44px;
+    padding: 0 12px;
+    white-space: nowrap;
+  }
+  .sales-app #category-filters {
+    gap: 8px;
+    padding: 8px 0 2px;
+  }
+  .sales-app #category-filters .chip {
+    min-height: 38px;
+    padding: 0 14px;
+    font-size: 0.9rem;
+  }
+
+  /* ---------- Menu list ---------- */
+  .sales-app .menu-grid {
+    gap: 8px;
+    padding: 6px 12px calc(88px + env(safe-area-inset-bottom, 0px));
+  }
+  .sales-app .mcard-wrap {
+    position: relative;
+  }
+  .sales-app .mcard {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 72px;
+    height: auto;
+    padding: 12px;
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    box-shadow: none;
+    text-align: left;
+  }
+  .sales-app .mcard-wrap.has-qty .mcard {
+    border-color: var(--blue);
+    box-shadow: inset 3px 0 0 var(--blue);
+  }
+  .sales-app .mc-media {
+    flex: 0 0 48px;
+    width: 48px;
+    height: 48px;
+    min-height: 48px;
+    border-radius: 10px;
+    overflow: hidden;
+    align-self: center;
+  }
+  .sales-app .mc-letter {
+    font-size: 0.85rem;
+    font-weight: 700;
+  }
+  .sales-app .mc-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name step"
+      "price step";
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 2px;
+  }
+  .sales-app .mc-name {
+    grid-area: name;
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.25;
+    max-height: none;
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: normal;
+    word-break: normal;
+    color: var(--ink);
+  }
+  .sales-app .mc-bottom {
+    grid-area: price;
+    display: block;
+    margin: 0;
+  }
+  .sales-app .mc-price {
+    font-size: 0.95rem;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+  .sales-app .mc-price b {
+    font-weight: 700;
+    color: var(--ink);
+  }
+  .sales-app .mc-price i {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--muted);
+  }
+  .sales-app .mc-price .mc-from {
+    font-size: 0.8rem;
+    margin-right: 4px;
+  }
+  .sales-app .mc-plus,
+  .sales-app .mc-badge {
+    display: none; /* the stepper shows the quantity */
+  }
+
+  /* Stepper: only "+" until the item is in the cart, then "− 2 +". */
+  .sales-app .mc-qtyrow {
+    grid-area: step;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0;
+  }
+  .sales-app .mc-qty-btn {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    padding: 0;
+    border-radius: 12px;
+    border: 1px solid var(--line);
+    background: #fff;
+    color: var(--ink);
+    font-size: 1.35rem;
+    font-weight: 600;
+    line-height: 1;
+  }
+  .sales-app .mc-qty-btn:last-child {
+    background: var(--blue);
+    border-color: var(--blue);
+    color: #fff;
+  }
+  .sales-app .mc-qty {
+    min-width: 22px;
+    text-align: center;
+    font-weight: 700;
+    font-size: 1.05rem;
+    color: var(--ink);
+  }
+  .sales-app .mcard-wrap:not(.has-qty) .mc-qty-btn:first-child,
+  .sales-app .mcard-wrap:not(.has-qty) .mc-qty {
+    display: none;
+  }
+
+  /* Info button: small, on the photo corner, never over the text. */
+  .sales-app .mcard-wrap > .mc-info {
+    position: absolute;
+    top: auto;
+    right: auto;
+    left: 34px;
+    bottom: 2px;
+    width: 32px;
+    height: 32px;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    z-index: 1;
+  }
+  .sales-app .mcard-wrap > .mc-info span {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: #fff;
+    border: 1px solid var(--line);
+    color: var(--blue);
+    font-size: 0.85rem;
+    line-height: 1;
+  }
+
+  /* Sold out */
+  .sales-app .mcard-wrap.is-sold-out .mcard {
+    background: var(--surface-2);
+    opacity: 0.7;
+  }
+  .sales-app .mc-sold {
+    position: static;
+    order: 3;
+    margin-left: auto;
+    padding: 4px 8px;
+    border-radius: 8px;
+    background: #fde8e7;
+    color: var(--danger);
+    font-size: 0.75rem;
+    font-weight: 700;
+  }
+
+  /* ---------- Sign-in ---------- */
+  .sales-app .login-view {
+    padding: 16px;
+  }
+  .sales-app .login-card {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    padding: 20px;
+  }
+  .sales-app .login-card .banner {
+    display: block;
+    white-space: normal;
+    text-align: center;
+  }
+  .sales-app .login-card input {
+    font-size: 16px; /* no zoom on focus */
+  }
+
+  /* ---------- Bottom cart bar ---------- */
+  .sales-app .mobile-cart-bar {
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+    min-height: 56px;
+    padding: 0 8px 0 16px;
+    border: 0;
+    border-radius: 16px;
+    background: var(--blue);
+    color: #fff;
+    font-weight: 700;
+    box-shadow: 0 8px 24px rgba(11, 83, 158, 0.28);
+  }
+  .sales-app .mobile-cart-bar .mobile-cart-left,
+  .sales-app .mobile-cart-bar .mobile-cart-mid {
+    color: #fff;
+  }
+  .sales-app .mobile-cart-bar .mobile-cart-cta {
+    background: #fff;
+    color: var(--blue);
+    border-radius: 12px;
+    padding: 10px 16px;
+    font-weight: 800;
+  }
+}
