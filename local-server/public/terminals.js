@@ -157,6 +157,9 @@ function openEditor(terminal = null) {
   $("terminal-code").value = terminal?.code || "";
   $("terminal-purpose").value = terminal?.purpose || "any";
   $("terminal-active").checked = terminal ? Boolean(terminal.isActive) : true;
+  // The form opens below the list; bring it into view so the click visibly does something.
+  $("terminal-editor").scrollIntoView({ behavior: "smooth", block: "start" });
+  $("terminal-name").focus({ preventScroll: true });
 }
 
 async function saveTerminal() {
@@ -189,6 +192,7 @@ async function issuePair(terminalId) {
   $("pairing-box").hidden = false;
   $("pairing-meta").textContent = `${res.json.displayName} · expires ${res.json.expiresAt}`;
   $("pairing-code").textContent = res.json.code;
+  $("pairing-box").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function revokePair(terminalId) {
