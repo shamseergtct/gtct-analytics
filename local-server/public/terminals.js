@@ -120,7 +120,7 @@ function renderList() {
   host.innerHTML = state.terminals
     .map((t) => {
       const paired = t.paired ? "Paired" : "Not paired";
-      const active = t.isActive ? "Active" : "Inactive";
+      const active = t.isActive ? "Active" : "Inactive (turned off)";
       return `<article class="user-card" data-id="${escapeHtml(t.terminalId)}">
         <div>
           <strong>${escapeHtml(t.displayName)}</strong>
@@ -129,7 +129,8 @@ function renderList() {
         </div>
         <div class="user-card-actions">
           <button type="button" class="btn ghost" data-act="edit">Edit</button>
-          <button type="button" class="btn primary" data-act="pair">Pair code</button>
+          <button type="button" class="btn ${t.isActive ? "ghost" : "primary"}" data-act="toggle">${t.isActive ? "Deactivate" : "Activate"}</button>
+          <button type="button" class="btn primary" data-act="pair" ${t.isActive ? "" : 'disabled title="Activate this terminal first"'}>Pair code</button>
           <button type="button" class="btn ghost" data-act="revoke" ${t.paired ? "" : "disabled"}>Revoke</button>
         </div>
       </article>`;
@@ -177,6 +178,32 @@ async function saveTerminal() {
   }
   $("terminal-editor").hidden = true;
   setStatus("Terminal saved.", true);
+  await loadTerminals();
+}
+
+async function toggleActive(terminal) {
+  const turnOn = !terminal.isActive;
+  if (
+    !turnOn &&
+    !window.confirm(`Deactivate "${terminal.displayName}"? This device will stop working until you activate it again.`)
+  ) {
+    return;
+  }
+  const res = await api("/v1/terminals", {
+    method: "PUT",
+    body: JSON.stringify({
+      terminalId: terminal.terminalId,
+      displayName: terminal.displayName,
+      code: terminal.code,
+      purpose: terminal.purpose,
+      isActive: turnOn,
+    }),
+  });
+  if (!res.ok) {
+    setStatus(res.json?.error || "Could not change the terminal.", false);
+    return;
+  }
+  setStatus(turnOn ? `${terminal.displayName} is active. You can create a pairing code now.` : `${terminal.displayName} is turned off.`, true);
   await loadTerminals();
 }
 
@@ -286,6 +313,7 @@ function bindUi() {
     const terminal = state.terminals.find((t) => t.terminalId === id);
     if (!terminal) return;
     if (btn.dataset.act === "edit") openEditor(terminal);
+    if (btn.dataset.act === "toggle") toggleActive(terminal);
     if (btn.dataset.act === "pair") issuePair(id);
     if (btn.dataset.act === "revoke") revokePair(id);
   });
