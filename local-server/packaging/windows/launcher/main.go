@@ -112,7 +112,20 @@ func runHost() {
 		// Already running — success for Scheduled Task restarts.
 		os.Exit(0)
 	}
+	// Long-lived host: if the LAN address changes (new router / Wi-Fi) or the
+	// network comes back, hostCycle returns true and we start again on the
+	// current address. Returns only when the node server itself exits.
+	for {
+		if !hostCycle() {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
 
+// hostCycle runs one server lifetime. It returns true when the host should be
+// restarted because the network address changed.
+func hostCycle() bool {
 	installRoot, err := os.Executable()
 	if err != nil {
 		hostFatal("Could not locate the application folder.")
@@ -154,7 +167,16 @@ func runHost() {
 	}
 	lanEnabled := prefs.LanOn()
 
+	// The saved address is only a hint: it must be a private LAN address that
+	// still exists on this PC. Otherwise (router/Wi-Fi changed, no network)
+	// detect the current one. With no LAN address the host stays on loopback.
 	bindIP := strings.TrimSpace(prefs.BindAddress)
+	if bindIP != "" && !(isPrivateLanIPv4(bindIP) && ipOnThisPC(bindIP)) {
+		if isPrivateLanIPv4(bindIP) {
+			logf("Saved LAN address %s is not on this PC any more; detecting the current one", bindIP)
+		}
+		bindIP = ""
+	}
 	if bindIP == "" {
 		bindIP = detectPrivateIPv4()
 	}
@@ -186,8 +208,8 @@ func runHost() {
 		logf("Server already healthy at %s — host exiting (single instance)", baseProbe)
 		os.Exit(0)
 	}
-	if !portFreeOn(host, port) {
-		hostFatal(fmt.Sprintf("Port %d is already in use on %s.", port, host))
+	if err := tryListen(host, port); err != nil {
+		hostFatal(fmt.Sprintf("Cannot listen on %s:%d.\n%v", host, port, err))
 	}
 
 	env := os.Environ()
@@ -237,8 +259,33 @@ func runHost() {
 	_ = os.WriteFile(filepath.Join(data, "current-url.txt"), []byte(base+"\n"), 0o644)
 	logf("Healthy at %s  pair=%s/pair.html", base, base)
 
-	_, _ = cmd.Process.Wait()
-	logf("Node process exited")
+	done := make(chan struct{})
+	go func() {
+		_, _ = cmd.Process.Wait()
+		close(done)
+	}()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			logf("Node process exited")
+			return false
+		case <-ticker.C:
+			if useLAN && !ipOnThisPC(host) {
+				logf("LAN address %s is gone; restarting on the current address", host)
+				_ = cmd.Process.Kill()
+				<-done
+				return true
+			}
+			if !useLAN && lanEnabled && detectPrivateIPv4() != "" {
+				logf("Network is available again; restarting with LAN")
+				_ = cmd.Process.Kill()
+				<-done
+				return true
+			}
+		}
+	}
 }
 
 func openApp(base string) {
@@ -385,13 +432,47 @@ func discoverHealthyBase(prefs runtimePrefs, port int) (string, bool) {
 	return "", false
 }
 
-func portFreeOn(host string, port int) bool {
+func tryListen(host string, port int) error {
 	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", host, port))
+	if err != nil {
+		return err
+	}
+	_ = ln.Close()
+	return nil
+}
+
+// ipOnThisPC reports whether ip is currently assigned to an up interface.
+func ipOnThisPC(ip string) bool {
+	want := net.ParseIP(strings.TrimSpace(ip))
+	if want == nil {
+		return false
+	}
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return false
 	}
-	_ = ln.Close()
-	return true
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			switch v := addr.(type) {
+			case *net.IPNet:
+				if v.IP.Equal(want) {
+					return true
+				}
+			case *net.IPAddr:
+				if v.IP.Equal(want) {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func waitHealthy(url string, timeout time.Duration) bool {
@@ -567,7 +648,7 @@ func ensureLanCert(tlsDir, hostname, lanIP string) (certPath, keyPath string, er
 func ensureFirewallRule(port int, logf func(string, ...any)) {
 	name := "GTCT Restaurant Pilot HTTPS"
 	// Delete old rule (ignore errors), then allow inbound on all profiles.
-	// Many shop Wi‑Fi adapters are marked Public; profile=private alone blocks phones/Macs.
+	// Scope: private/domain networks and the local subnet only (never Public Wi-Fi or the internet).
 	del := exec.Command("netsh", "advfirewall", "firewall", "delete", "rule", "name="+name)
 	del.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	_ = del.Run()
@@ -578,13 +659,14 @@ func ensureFirewallRule(port int, logf func(string, ...any)) {
 		"action=allow",
 		"protocol=TCP",
 		fmt.Sprintf("localport=%d", port),
-		"profile=any",
+		"profile=private,domain",
+		"remoteip=localsubnet",
 	)
 	add.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	if out, err := add.CombinedOutput(); err != nil {
 		logf("Firewall rule failed (may need admin once): %v %s", err, strings.TrimSpace(string(out)))
 	} else {
-		logf("Firewall rule OK for TCP %d (any profile)", port)
+		logf("Firewall rule OK for TCP %d (private/domain, local subnet)", port)
 	}
 
 	// Best-effort: if pilot locked firewall-off (GPO machines), keep it off.
