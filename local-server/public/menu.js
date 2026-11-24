@@ -168,9 +168,12 @@ async function importMenuItemsFile(file) {
   const errors = summary?.errors || res.json?.errors || [];
   await loadAll();
   if (errors.length) {
-    toast(
-      `Imported ${created} new, ${updated} updated. ${errors.length} row issue(s): ${errors[0]}`,
-      true
+    toast(`Imported ${created} new, ${updated} updated. ${errors.length} item(s) NOT imported.`, true);
+    // Show every rejected item so nothing is silently missing from the menu.
+    const shown = errors.slice(0, 40).map((e) => `• ${e}`).join("\n");
+    const more = errors.length > 40 ? `\n…and ${errors.length - 40} more.` : "";
+    window.alert(
+      `Imported ${created} new, ${updated} updated.\n\n${errors.length} item(s) were NOT imported:\n\n${shown}${more}\n\nFix these rows in the file and upload it again.`
     );
   } else {
     toast(`Imported ${created} new, updated ${updated}.`);
