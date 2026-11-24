@@ -273,3 +273,28 @@
     flex-direction: column-reverse;
   }
 }
+
+/* Cloud bridge secret key: field + Save key on one row */
+.ss-secret-row {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+.ss-secret-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ss-secret-row .btn {
+  flex: none;
+  min-height: 44px;
+  padding: 0 16px;
+}
+#cloud-bridge-secret-status {
+  display: block;
+  margin-top: 6px;
+  color: #5a6a80;
+}
+#cloud-bridge-secret-status.ok {
+  color: #1f7a4d;
+  font-weight: 600;
+}

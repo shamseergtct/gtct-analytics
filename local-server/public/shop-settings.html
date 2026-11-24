@@ -225,7 +225,15 @@
                     <span>Bridge URL (optional override)</span>
                     <input id="f-cloud-bridge-url" type="url" maxlength="300" placeholder="Leave blank for default Cloud Function URL" autocomplete="off" />
                   </label>
-                  <p class="hint">Local POS always works with the bridge off. When enabled, sync runs in the background and backs off if the cloud is unreachable so Sales stays responsive. Use <strong>Sync now</strong> to push/pull immediately. Set server env <code>GTCT_CLOUD_BRIDGE_SECRET</code> to the same value as Firebase secret <code>RESTAURANT_DELIVERY_BRIDGE_SECRET</code>.</p>
+                  <div class="field">
+                    <span>Bridge secret key</span>
+                    <div class="ss-secret-row">
+                      <input id="f-cloud-bridge-secret" type="password" maxlength="256" placeholder="Paste the key from Firebase" autocomplete="new-password" spellcheck="false" />
+                      <button type="button" id="cloud-bridge-secret-btn" class="btn small">Save key</button>
+                    </div>
+                    <small id="cloud-bridge-secret-status" class="muted" aria-live="polite"></small>
+                  </div>
+                  <p class="hint">Local POS always works with the bridge off. When enabled, sync runs in the background and backs off if the cloud is unreachable so Sales stays responsive. Use <strong>Sync now</strong> to push/pull immediately. The key must be the same as the Firebase secret <code>RESTAURANT_DELIVERY_BRIDGE_SECRET</code>; it is stored only on this PC and is never shown again.</p>
                   <div class="ss-actions">
                     <button type="button" id="cloud-bridge-sync-btn" class="btn ghost small">Sync now</button>
                     <span id="cloud-bridge-sync-status" class="muted" aria-live="polite"></span>

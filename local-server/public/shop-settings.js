@@ -316,7 +316,7 @@ async function syncCloudBridge() {
       const why = result.reason || "disabled";
       msg =
         why === "missing_secret"
-          ? "Bridge skipped — set GTCT_CLOUD_BRIDGE_SECRET (same as RESTAURANT_DELIVERY_BRIDGE_SECRET) and restart the server."
+          ? "Bridge skipped — no secret key yet. Paste the key in “Bridge secret key” and tap Save key."
           : why === "missing_client_id"
             ? "Bridge skipped — clientId not saved."
             : `Bridge skipped (${why})`;
@@ -329,6 +329,65 @@ async function syncCloudBridge() {
     const msg = err?.message || "Bridge sync failed";
     if (statusEl) statusEl.textContent = msg;
     setStatus(msg, false);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+function showBridgeSecretStatus(secret, note = "") {
+  const el = $("cloud-bridge-secret-status");
+  const input = $("f-cloud-bridge-secret");
+  const btn = $("cloud-bridge-secret-btn");
+  if (!el || !input) return;
+  const fromEnv = secret?.source === "environment";
+  input.disabled = fromEnv;
+  if (btn) btn.disabled = fromEnv;
+  input.placeholder = secret?.set
+    ? "Key saved ✓ — paste a new key only to replace it"
+    : "Paste the key from Firebase";
+  el.textContent =
+    note ||
+    (fromEnv
+      ? "✓ Key is set by this PC's server settings."
+      : secret?.set
+        ? "✓ Key saved on this PC."
+        : "No key saved yet — sync cannot start without it.");
+  el.classList.toggle("ok", Boolean(secret?.set));
+}
+
+async function loadBridgeSecretStatus() {
+  try {
+    const res = await api("/v1/cloud-delivery-bridge/secret");
+    if (res.ok) showBridgeSecretStatus(res.json?.secret);
+  } catch {
+    /* optional */
+  }
+}
+
+async function saveBridgeSecret() {
+  const input = $("f-cloud-bridge-secret");
+  const btn = $("cloud-bridge-secret-btn");
+  const value = String(input?.value || "").trim();
+  if (!value) {
+    showBridgeSecretStatus(null, "Paste the key first.");
+    input?.focus();
+    return;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const res = await api("/v1/cloud-delivery-bridge/secret", {
+      method: "PUT",
+      body: JSON.stringify({ secret: value }),
+    });
+    if (!res.ok) {
+      showBridgeSecretStatus(null, res.json?.error || "Could not save the key.");
+      return;
+    }
+    input.value = "";
+    showBridgeSecretStatus(res.json?.secret, "✓ Key saved. Tap Sync now to test it.");
+    setStatus("Bridge key saved", true);
+  } catch (err) {
+    showBridgeSecretStatus(null, err?.message || "Could not save the key.");
   } finally {
     if (btn) btn.disabled = false;
   }
@@ -726,6 +785,8 @@ function bindUi() {
   $("clear-logo-btn").addEventListener("click", clearLogo);
   $("clear-orders-btn")?.addEventListener("click", clearTestOrders);
   $("cloud-bridge-sync-btn")?.addEventListener("click", () => void syncCloudBridge());
+  $("cloud-bridge-secret-btn")?.addEventListener("click", () => void saveBridgeSecret());
+  void loadBridgeSecretStatus();
 
   window.addEventListener("beforeunload", (e) => {
     if (!state.dirty) return;

@@ -80,20 +80,71 @@ function fail(status, message, code) {
   throw Object.assign(new Error(message), { status, code });
 }
 
-function readBridgeSecretFile() {
-  try {
-    const override = String(process.env.GTCT_CLOUD_BRIDGE_SECRET_FILE || "").trim();
-    const file =
-      override ||
-      path.join(
-        os.homedir(),
-        "Library/Application Support/GTCT/RestaurantLocalServer/cloud-bridge.secret"
-      );
-    if (!fs.existsSync(file)) return "";
-    return fs.readFileSync(file, "utf8").replace(/\r?\n/g, "").trim();
-  } catch {
-    return "";
+const SECRET_FILE_NAME = "cloud-bridge.secret";
+
+/** Key saved from Shop Settings lives next to the database (works on Windows and Mac). */
+function dataDirSecretPath(envConfig = {}) {
+  const dir = String(envConfig.dataDir || process.env.GTCT_LOCAL_DATA_DIR || "").trim();
+  return dir ? path.join(dir, SECRET_FILE_NAME) : "";
+}
+
+function bridgeSecretCandidates(envConfig = {}) {
+  const override = String(process.env.GTCT_CLOUD_BRIDGE_SECRET_FILE || "").trim();
+  return [
+    override,
+    dataDirSecretPath(envConfig),
+    path.join(os.homedir(), "Library/Application Support/GTCT/RestaurantLocalServer", SECRET_FILE_NAME),
+  ].filter(Boolean);
+}
+
+function readBridgeSecretFile(envConfig = {}) {
+  for (const file of bridgeSecretCandidates(envConfig)) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const value = fs.readFileSync(file, "utf8").replace(/\r?\n/g, "").trim();
+      if (value) return value;
+    } catch {
+      /* try the next place */
+    }
   }
+  return "";
+}
+
+/** Whether a bridge key is configured. Never returns the key itself. */
+export function cloudBridgeSecretStatus(envConfig = {}) {
+  if (String(process.env.GTCT_CLOUD_BRIDGE_SECRET || "").trim()) {
+    return { set: true, source: "environment", editable: false };
+  }
+  return { set: Boolean(readBridgeSecretFile(envConfig)), source: "file", editable: Boolean(dataDirSecretPath(envConfig)) };
+}
+
+/** Save (or clear, with an empty value) the bridge key from Shop Settings. Owner-only file. */
+export function saveCloudBridgeSecret(envConfig, rawSecret) {
+  if (String(process.env.GTCT_CLOUD_BRIDGE_SECRET || "").trim()) {
+    fail(409, "The key is set by the server environment on this PC; change it there.", "secret_from_env");
+  }
+  const file = dataDirSecretPath(envConfig);
+  if (!file) fail(500, "No data folder configured for this server.", "no_data_dir");
+  const secret = String(rawSecret ?? "").trim();
+  if (!secret) {
+    if (fs.existsSync(file)) fs.rmSync(file, { force: true });
+    return cloudBridgeSecretStatus(envConfig);
+  }
+  if (secret.length < 16 || secret.length > 256) {
+    fail(400, "The key must be 16 to 256 characters.", "invalid_secret");
+  }
+  if (/[\s\x00-\x1f\x7f]/.test(secret)) {
+    fail(400, "The key cannot contain spaces or line breaks.", "invalid_secret");
+  }
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${secret}\n`, { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    /* Windows: the data folder is already private to this PC */
+  }
+  return cloudBridgeSecretStatus(envConfig);
 }
 
 function bridgeConfig(shopId, envConfig = {}) {
@@ -112,7 +163,7 @@ function bridgeConfig(shopId, envConfig = {}) {
     "https://asia-south1-gtct-global-analytics.cloudfunctions.net/restaurantDeliveryBridge";
   const secret =
     String(process.env.GTCT_CLOUD_BRIDGE_SECRET || "").trim() ||
-    readBridgeSecretFile();
+    readBridgeSecretFile(envConfig);
   return { clientId, enabled, url, secret, shop };
 }
 

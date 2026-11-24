@@ -137,6 +137,8 @@ import { listAvailableDeliveries, listMyDeliveries, acceptAvailableDelivery, lis
 import {
   syncCloudDeliveryBridge,
   resetCloudBridgeBackoff,
+  cloudBridgeSecretStatus,
+  saveCloudBridgeSecret,
 } from "../services/cloudDeliveryBridge.js";
 import { markDeliveryPayment } from '../services/deliveryPaymentReports.js';
 import { listDeliveryCashHandovers, confirmDeliveryCashHandover }
@@ -764,6 +766,32 @@ export function createServer(config) {
             error: err.message,
             code: err.code,
           });
+        }
+        return;
+      }
+
+      if (path === "/v1/cloud-delivery-bridge/secret" && (method === "GET" || method === "PUT")) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          if (method === "GET") {
+            sendJson(res, 200, { secret: cloudBridgeSecretStatus(config) });
+            return;
+          }
+          const body = await readBody(req);
+          const status = saveCloudBridgeSecret(config, body?.secret);
+          resetCloudBridgeBackoff();
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: status.set ? "cloud_bridge.secret.set" : "cloud_bridge.secret.clear",
+            entityType: "shop_settings",
+            entityId: "cloud_bridge_secret",
+            detail: {}, // never log the key
+          });
+          sendJson(res, 200, { secret: status });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
         }
         return;
       }
