@@ -2403,6 +2403,7 @@ function renderMenu() {
     const name = document.createElement("span");
     name.className = "mc-name";
     name.textContent = item.name;
+    name.title = item.name;
     body.appendChild(name);
 
     const bottom = document.createElement("span");
