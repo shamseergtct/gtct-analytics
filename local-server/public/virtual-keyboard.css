@@ -210,17 +210,16 @@ body.vk-open dialog[open] {
   scroll-padding-bottom: calc(var(--vk-h, 300px) + 12px);
 }
 
-/* Sales screen: shrink the whole screen to the space above the keyboard, so the
-   search results scroll in view instead of sitting behind the keys. */
+/* Sales screen: never shrink the whole screen (that left an empty strip and
+   hid the cart). The page itself does not scroll; only the menu list gets room
+   to scroll past the keyboard. */
 body.sales-app.vk-open {
   padding-bottom: 0;
 }
-body.sales-app.vk-open .main-view:not([hidden]) {
-  height: calc(100dvh - var(--vk-h, 300px));
-}
 body.sales-app.vk-open .menu-grid {
-  padding-bottom: 12px !important;
+  padding-bottom: calc(var(--vk-h, 300px) + 12px) !important;
 }
+
 /* While typing a search, show short cards (small picture strip) so the
    names, prices and + buttons of the results fit above the keyboard. */
 body.sales-app.vk-open .mcard .mc-media {
@@ -282,4 +281,14 @@ body.sales-app.vk-open .mcard {
   .vk-panel {
     animation: none;
   }
+}
+
+/* Docked under the menu area on the Sales screen (left/width set in JS). */
+.vk-panel.vk-docked {
+  right: auto;
+  transform: none !important;
+  border-radius: 16px 16px 0 0;
+  border: 1px solid #c2c8d0;
+  border-bottom: 0;
+  animation-name: vk-slide-up;
 }

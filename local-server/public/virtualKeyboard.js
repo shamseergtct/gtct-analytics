@@ -312,6 +312,27 @@ function handleKey(key) {
   insertText(el, text);
 }
 
+/**
+ * On the Sales screen the keyboard sits under the menu area only, so the cart
+ * stays fully visible. Elsewhere it is a centred tray.
+ */
+function placePanel(el) {
+  const panel = STATE.panel;
+  if (!panel) return;
+  const pane = el?.closest?.("#menu-pane");
+  const dock = Boolean(pane) && window.innerWidth >= 900;
+  panel.classList.toggle("vk-docked", dock);
+  document.body.classList.toggle("vk-dock-menu", dock);
+  if (dock) {
+    const r = pane.getBoundingClientRect();
+    panel.style.left = `${Math.max(0, Math.round(r.left))}px`;
+    panel.style.width = `${Math.round(r.width)}px`;
+  } else {
+    panel.style.left = "";
+    panel.style.width = "";
+  }
+}
+
 function keyboardHeight() {
   return STATE.panel && !STATE.panel.hidden ? STATE.panel.getBoundingClientRect().height : 0;
 }
@@ -385,6 +406,7 @@ function showKeyboard(el) {
   }
   renderKeys();
   STATE.panel.hidden = false;
+  placePanel(el);
   document.body.classList.add("vk-open");
   window.setTimeout(() => scrollTargetIntoView(el), 50);
 }
@@ -397,7 +419,7 @@ function hideKeyboard({ blur = false } = {}) {
   STATE.savedInputMode = null;
   restoreInputMode(target, saved);
   if (STATE.panel) STATE.panel.hidden = true;
-  document.body.classList.remove("vk-open");
+  document.body.classList.remove("vk-open", "vk-dock-menu");
   document.documentElement.style.setProperty("--vk-h", "0px");
   if (blur && target) {
     STATE.suppressFocusUntil = Date.now() + 250;
@@ -455,6 +477,12 @@ export function initVirtualKeyboard(options = {}) {
   STATE.root.addEventListener("focusin", onFocusIn, true);
   STATE.root.addEventListener("focusout", onFocusOut, true);
   document.addEventListener("keydown", onKeyDown);
+  window.addEventListener("resize", () => {
+    if (STATE.target && STATE.panel && !STATE.panel.hidden) {
+      placePanel(STATE.target);
+      syncKeyboardSpace();
+    }
+  });
   return {
     show: showKeyboard,
     hide: hideKeyboard,
