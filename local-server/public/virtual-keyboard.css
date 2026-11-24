@@ -1,10 +1,21 @@
 /* On-screen keyboard / numpad for POS touch entry (iPad-style). */
 .vk-panel {
   position: fixed;
+  inset: auto 0 0 0;
   left: 0;
   right: 0;
   bottom: 0;
   z-index: 12000;
+  /* The panel is shown as a "popover" so it sits above open dialogs; these
+     reset the browser's default popover box. */
+  margin: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+  color: #142033;
+  border: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -203,9 +214,16 @@ body.vk-open {
   padding-bottom: var(--vk-h, 300px);
 }
 
+/* A dialog with the field being typed in moves up so it sits above the keyboard
+   (it is not stretched; its own content scrolls). */
+dialog.vk-host[open] {
+  margin-bottom: calc(var(--vk-h, 300px) + 8px) !important;
+  max-height: calc(100vh - var(--vk-h, 300px) - 16px) !important;
+  max-height: calc(100dvh - var(--vk-h, 300px) - 16px) !important;
+}
+
 body.vk-open .menu-grid,
-body.vk-open .ms-panel,
-body.vk-open dialog[open] {
+body.vk-open .ms-panel {
   padding-bottom: calc(var(--vk-h, 300px) + 12px) !important;
   scroll-padding-bottom: calc(var(--vk-h, 300px) + 12px);
 }

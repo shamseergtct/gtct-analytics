@@ -165,6 +165,7 @@ function ensureDom() {
     <strong class="vk-title" hidden>Keyboard</strong>
     <div class="vk-keys" data-vk-keys></div>
   `;
+  if (typeof panel.showPopover === "function") panel.popover = "manual";
   document.body.appendChild(panel);
   STATE.panel = panel;
   STATE.keysHost = panel.querySelector("[data-vk-keys]");
@@ -333,6 +334,42 @@ function placePanel(el) {
   }
 }
 
+function setDialogHost(dialog) {
+  document.querySelectorAll("dialog.vk-host").forEach((d) => {
+    if (d !== dialog) d.classList.remove("vk-host");
+  });
+  if (dialog) dialog.classList.add("vk-host");
+}
+
+/**
+ * An open modal dialog covers the page and blocks taps outside it. So while a
+ * dialog field is being typed in, the keyboard lives inside that dialog, and is
+ * shown in the browser's top layer (popover) so it is drawn above it and
+ * positioned against the screen, not the dialog.
+ */
+function bringPanelToFront(el) {
+  const panel = STATE.panel;
+  const dialog = el?.closest?.("dialog[open]") || null;
+  setDialogHost(dialog);
+  const host = dialog || document.body;
+  if (panel.parentElement !== host) {
+    try {
+      if (panel.matches(":popover-open")) panel.hidePopover();
+    } catch {
+      /* ignore */
+    }
+    host.appendChild(panel);
+  }
+  if (typeof panel.showPopover === "function") {
+    try {
+      if (panel.matches(":popover-open")) panel.hidePopover();
+      panel.showPopover();
+    } catch {
+      /* the panel is still fixed at the bottom of the screen */
+    }
+  }
+}
+
 function keyboardHeight() {
   return STATE.panel && !STATE.panel.hidden ? STATE.panel.getBoundingClientRect().height : 0;
 }
@@ -406,6 +443,7 @@ function showKeyboard(el) {
   }
   renderKeys();
   STATE.panel.hidden = false;
+  bringPanelToFront(el);
   placePanel(el);
   document.body.classList.add("vk-open");
   window.setTimeout(() => scrollTargetIntoView(el), 50);
@@ -418,7 +456,18 @@ function hideKeyboard({ blur = false } = {}) {
   STATE.target = null;
   STATE.savedInputMode = null;
   restoreInputMode(target, saved);
-  if (STATE.panel) STATE.panel.hidden = true;
+  if (STATE.panel) {
+    STATE.panel.hidden = true;
+    try {
+      if (STATE.panel.matches(":popover-open")) STATE.panel.hidePopover();
+    } catch {
+      /* ignore */
+    }
+  }
+  setDialogHost(null);
+  if (STATE.panel && STATE.panel.parentElement !== document.body) {
+    document.body.appendChild(STATE.panel);
+  }
   document.body.classList.remove("vk-open", "vk-dock-menu");
   document.documentElement.style.setProperty("--vk-h", "0px");
   if (blur && target) {
