@@ -1705,7 +1705,19 @@ function renderCategories() {
     host.appendChild(btn);
   }
   bindChipDrag(host, "category");
+  revealActiveChip(host);
   renderSubcategories();
+}
+
+/** Phones: keep the selected chip visible in its sliding row. */
+function revealActiveChip(host) {
+  if (!window.matchMedia?.("(max-width: 599px)").matches) return;
+  const active = host.querySelector(".chip.active");
+  if (!active) return;
+  const left = active.offsetLeft - 12;
+  const right = active.offsetLeft + active.offsetWidth + 40;
+  if (left < host.scrollLeft) host.scrollLeft = left;
+  else if (right > host.scrollLeft + host.clientWidth) host.scrollLeft = right - host.clientWidth;
 }
 
 /* ---------- Layout mode: hold and drag category / subcategory chips ---------- */
@@ -1849,6 +1861,7 @@ function renderSubcategories() {
     host.appendChild(btn);
   }
   bindChipDrag(host, "subcategory");
+  revealActiveChip(host);
 }
 
 function salesVariants(item) {
