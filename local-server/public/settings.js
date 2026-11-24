@@ -49,6 +49,7 @@ function showMain() {
   $("new-printer-btn").disabled = !isAdmin;
   $("save-printer-btn").disabled = !isAdmin;
   $("save-stations-btn").disabled = !isAdmin;
+  if ($("add-station-btn")) $("add-station-btn").disabled = !isAdmin;
   $("preview-btn").disabled = !isAdmin;
   $("test-btn").disabled = !isAdmin;
 }
@@ -273,6 +274,7 @@ function renderStations() {
       <div>
         <strong>${escapeHtml(s.name)}</strong>
         <div class="muted">${escapeHtml(s.station_id)}</div>
+        ${s.station_id === "station_cashier" ? "" : `<button type="button" class="btn ghost small" data-rename-station="${escapeHtml(s.station_id)}" style="margin-top:0.35rem">Rename</button>`}
       </div>
       <select data-station="${escapeHtml(s.station_id)}">${options}</select>
     `;
@@ -307,6 +309,49 @@ async function savePrinter() {
   await refreshAll();
   closePrinterEditor();
   clearEditor({ open: false });
+}
+
+async function putStation(body) {
+  const res = await api("/v1/stations", { method: "PUT", body: JSON.stringify(body) });
+  if (!res.ok) {
+    setStatus("station-status", res.json?.error || "Station save failed", false);
+    return false;
+  }
+  return true;
+}
+
+async function addStation() {
+  const input = $("new-station-name");
+  const name = input.value.trim();
+  if (name.length < 2) {
+    setStatus("station-status", "Type a station name first, e.g. SANDWICH.", false);
+    input.focus();
+    return;
+  }
+  if (!(await putStation({ name, isActive: true, printerId: null }))) return;
+  input.value = "";
+  await refreshAll();
+  setStatus("station-status", `Station ${name.toUpperCase()} added. Choose its printer, then Save assignments.`, true);
+}
+
+async function renameStation(stationId) {
+  const station = state.stations.find((s) => s.station_id === stationId);
+  if (!station) return;
+  const name = window.prompt(
+    `New name for ${station.name}.\nMenu items keep this station; only the name changes. Update the preparation_center column in your menu file to match.`,
+    station.name
+  );
+  if (name == null || !name.trim() || name.trim().toUpperCase() === station.name) return;
+  const ok = await putStation({
+    stationId,
+    name: name.trim(),
+    description: station.description || "",
+    isActive: Boolean(station.is_active),
+    printerId: station.printer_id || null,
+  });
+  if (!ok) return;
+  await refreshAll();
+  setStatus("station-status", `Renamed to ${name.trim().toUpperCase()}.`, true);
 }
 
 async function saveStations() {
@@ -532,6 +577,17 @@ function bindUi() {
   $("f-type").addEventListener("change", toggleTypeFields);
   $("save-printer-btn").addEventListener("click", savePrinter);
   $("save-stations-btn").addEventListener("click", saveStations);
+  $("add-station-btn").addEventListener("click", addStation);
+  $("new-station-name").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addStation();
+    }
+  });
+  $("station-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-rename-station]");
+    if (btn) renameStation(btn.getAttribute("data-rename-station"));
+  });
   $("preview-btn").addEventListener("click", previewTicket);
   for (const [section, printerId, mode] of [
     ["manual-kot", "mj330-manual-test", "manual_mj330_kot"],

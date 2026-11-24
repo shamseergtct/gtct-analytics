@@ -159,6 +159,14 @@
               <button type="button" id="save-stations-btn" class="btn primary">Save assignments</button>
             </div>
             <div id="station-list" class="station-list"></div>
+            <div class="station-add-row" style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:flex-end;margin-top:0.9rem">
+              <label class="field" style="flex:1 1 220px;margin:0">
+                <span>New preparation station</span>
+                <input id="new-station-name" type="text" maxlength="30" placeholder="e.g. SANDWICH" autocapitalize="characters" />
+              </label>
+              <button type="button" id="add-station-btn" class="btn ghost">Add station</button>
+            </div>
+            <p class="muted" style="margin:0.4rem 0 0;font-size:0.85rem">The name is also what you write in the menu file's preparation_center column.</p>
             <p id="station-status" class="status-line" hidden></p>
           </section>
 

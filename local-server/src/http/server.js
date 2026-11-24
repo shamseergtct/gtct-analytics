@@ -1644,9 +1644,45 @@ export function createServer(config) {
         const auth = requireAuth(req, res, config, ["admin"]);
         if (!auth) return;
         const body = await readBody(req);
+        // Validate name and create an id for a new station. Names must be unique
+        // because menu CSV import matches the preparation center by name.
+        const stationName = String(body?.name || "").trim().replace(/\s+/g, " ").toUpperCase();
+        if (stationName.length < 2 || stationName.length > 30) {
+          sendJson(res, 400, { error: "Station name must be 2–30 characters." });
+          return;
+        }
+        const allStations = listStations();
+        let stationId = String(body?.stationId || "").trim();
+        if (!stationId) {
+          const slug = stationName.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+          if (!slug) {
+            sendJson(res, 400, { error: "Use letters or numbers in the station name." });
+            return;
+          }
+          stationId = `station_${slug}`;
+          if (allStations.some((s) => s.station_id === stationId)) {
+            sendJson(res, 409, { error: `A station called ${stationName} already exists.` });
+            return;
+          }
+        } else if (!allStations.some((s) => s.station_id === stationId)) {
+          sendJson(res, 404, { error: "Station not found." });
+          return;
+        }
+        if (
+          allStations.some(
+            (s) => s.station_id !== stationId && String(s.name).toUpperCase() === stationName
+          )
+        ) {
+          sendJson(res, 409, { error: `A station called ${stationName} already exists.` });
+          return;
+        }
+        if (stationId === "station_cashier" && stationName !== "CASHIER") {
+          sendJson(res, 400, { error: "The CASHIER station cannot be renamed." });
+          return;
+        }
         const station = upsertStation({
-          stationId: body.stationId,
-          name: body.name,
+          stationId,
+          name: stationName,
           description: body.description || "",
           isActive: body.isActive !== false,
           printerId: body.printerId || null,
