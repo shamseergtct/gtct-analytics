@@ -7501,3 +7501,21 @@ body.customize-open {
 @media print {
   .scroll-nav { display: none !important; }
 }
+
+/* Layout mode: draggable category / subcategory chips */
+.is-chip-layout .chip[data-chip-name] {
+  cursor: grab;
+  touch-action: none;
+  border-style: dashed;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.chip.is-chip-dragging {
+  cursor: grabbing;
+  transform: scale(1.08);
+  box-shadow: 0 8px 20px rgba(11, 83, 158, 0.3);
+  border-style: solid;
+  border-color: var(--blue);
+  z-index: 5;
+  position: relative;
+}

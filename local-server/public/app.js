@@ -1552,7 +1552,7 @@ function setLayoutEditMode(on) {
   state.layoutEditMode = next;
   if (next) {
     state.stockMode = false;
-    setStatus("Layout edit: hold and drag items to rearrange. Tap Done when finished.");
+    setStatus("Layout edit: hold and drag items, categories or subcategories to rearrange. Tap Done when finished.");
   } else {
     cancelLayoutDrag();
     if (state._layoutSaveTimer) {
@@ -1564,6 +1564,7 @@ function setLayoutEditMode(on) {
   }
   document.body.classList.toggle("menu-layout-edit", next);
   ensureSalesViewControls();
+  renderCategories();
   renderMenu();
 }
 
@@ -1692,7 +1693,9 @@ function renderCategories() {
       cat === "ALL"
         ? escapeHtml(titleCaseLabel(cat))
         : `<span class="chip-cat-dot" aria-hidden="true"></span>${escapeHtml(titleCaseLabel(cat))}`;
+    if (cat !== "ALL") btn.dataset.chipName = cat;
     btn.addEventListener("click", () => {
+      if (Date.now() < (state._chipSuppressClick || 0)) return;
       state.category = cat;
       state.subcategory = "ALL";
       renderCategories();
@@ -1701,7 +1704,104 @@ function renderCategories() {
     });
     host.appendChild(btn);
   }
+  bindChipDrag(host, "category");
   renderSubcategories();
+}
+
+/* ---------- Layout mode: hold and drag category / subcategory chips ---------- */
+function bindChipDrag(host, kind) {
+  const on = Boolean(state.layoutEditMode) && canEditMenuLayout();
+  host.classList.toggle("is-chip-layout", on);
+  if (!on) return;
+  host.querySelectorAll(".chip[data-chip-name]").forEach((chip) => {
+    chip.addEventListener("pointerdown", (event) => {
+      if (event.button != null && event.button !== 0) return;
+      const drag = { active: false, moved: false, x0: event.clientX, y0: event.clientY, timer: null };
+      const cleanup = () => {
+        window.clearTimeout(drag.timer);
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", up);
+        document.removeEventListener("pointercancel", up);
+      };
+      const move = (e) => {
+        if (!drag.active) {
+          if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > 12) cleanup();
+          return;
+        }
+        e.preventDefault();
+        const over = document
+          .elementsFromPoint(e.clientX, e.clientY)
+          .map((el) => el.closest?.(".chip[data-chip-name]"))
+          .find((el) => el && el !== chip && host.contains(el));
+        if (!over) return;
+        const r = over.getBoundingClientRect();
+        const after = e.clientX > r.left + r.width / 2;
+        const ref = after ? over.nextSibling : over;
+        if (ref !== chip && ref !== chip.nextSibling) {
+          host.insertBefore(chip, ref);
+          drag.moved = true;
+        }
+      };
+      const up = () => {
+        cleanup();
+        if (!drag.active) return;
+        chip.classList.remove("is-chip-dragging");
+        state._chipSuppressClick = Date.now() + 400;
+        if (drag.moved) void saveChipOrder(host, kind);
+      };
+      drag.timer = window.setTimeout(() => {
+        drag.active = true;
+        chip.classList.add("is-chip-dragging");
+        try {
+          navigator.vibrate?.(12);
+        } catch {
+          /* ignore */
+        }
+      }, 350);
+      document.addEventListener("pointermove", move, { passive: false });
+      document.addEventListener("pointerup", up);
+      document.addEventListener("pointercancel", up);
+    });
+  });
+}
+
+async function saveChipOrder(host, kind) {
+  const names = [...host.querySelectorAll(".chip[data-chip-name]")].map((c) => c.dataset.chipName);
+  const norm = (s) => String(s || "").trim().toLowerCase();
+  const all = await api("/v1/menu-categories?includeInactive=1");
+  if (!all.ok) {
+    setStatus("Could not save the order. Refresh and try again.", false);
+    return;
+  }
+  const order = (rows) => {
+    const picked = names.map((n) => rows.find((r) => norm(r.name) === norm(n))).filter(Boolean);
+    return [...picked, ...rows.filter((r) => !picked.includes(r))];
+  };
+  let url;
+  let body;
+  if (kind === "category") {
+    url = "/v1/menu-categories/reorder";
+    body = { categoryIds: order(all.json.categories || []).map((c) => c.category_id) };
+  } else {
+    const parent = (all.json.categories || []).find((c) => norm(c.name) === norm(state.category));
+    if (!parent) {
+      setStatus("Could not save the order: category not found.", false);
+      return;
+    }
+    const subs = (all.json.subcategoriesByCategory || {})[parent.category_id] || [];
+    url = "/v1/menu-subcategories/reorder";
+    body = { categoryId: parent.category_id, subcategoryIds: order(subs).map((s) => s.subcategory_id) };
+  }
+  const res = await api(url, { method: "PUT", body: JSON.stringify(body) });
+  if (!res.ok) {
+    setStatus(res.json?.error || "Could not save the order.", false);
+    renderCategories();
+    return;
+  }
+  state.categories = (res.json.categories || []).filter((c) => c.is_active);
+  state.subcategories = (res.json.subcategories || []).filter((s) => s.is_active);
+  showToast(kind === "category" ? "Category order saved" : "Subcategory order saved");
+  renderCategories();
 }
 
 function renderSubcategories() {
@@ -1739,13 +1839,16 @@ function renderSubcategories() {
     btn.setAttribute("role", "tab");
     btn.setAttribute("aria-selected", state.subcategory === sub ? "true" : "false");
     btn.textContent = titleCaseLabel(sub);
+    if (sub !== "ALL") btn.dataset.chipName = sub;
     btn.addEventListener("click", () => {
+      if (Date.now() < (state._chipSuppressClick || 0)) return;
       state.subcategory = sub;
       renderSubcategories();
       renderMenu();
     });
     host.appendChild(btn);
   }
+  bindChipDrag(host, "subcategory");
 }
 
 function salesVariants(item) {
@@ -1863,7 +1966,7 @@ function ensureLayoutHint(grid) {
     hint.setAttribute("role", "status");
   }
   hint.textContent =
-    "Hold an item, then drag to a new spot. Filter by category first for a cleaner layout. Tap Done when finished.";
+    "Hold an item, category or subcategory, then drag it to a new spot. Tap Done when finished.";
   if (hint.parentElement !== grid.parentElement) {
     grid.parentElement?.insertBefore(hint, grid);
   }
