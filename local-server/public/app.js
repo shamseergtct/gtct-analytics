@@ -1528,15 +1528,35 @@ function cartLineNotePreview(line) {
   return bits.join(" · ");
 }
 
+const SALES_TOOL_ICONS = {
+  layout: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
+  kb: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>',
+  stock: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="M3 8l9 5 9-5M12 13v8"/></svg>',
+};
+
+const CATEGORY_PALETTE = [
+  { dot: "#E0742B", bg: "#FFE8D6" },
+  { dot: "#2F9A78", bg: "#D7F2E8" },
+  { dot: "#3B6FD9", bg: "#DDE7FF" },
+  { dot: "#C2416B", bg: "#FCE0EA" },
+  { dot: "#8A5CD1", bg: "#ECE3FB" },
+  { dot: "#B8860B", bg: "#FBF0CC" },
+  { dot: "#1C93B0", bg: "#D5F0F6" },
+  { dot: "#D94F3D", bg: "#FDE0DC" },
+  { dot: "#5B8A2E", bg: "#E5F1D6" },
+  { dot: "#6B7A99", bg: "#E6EAF2" },
+];
+
+/** Each category gets its own colour (chips + item tiles), following Menu Setup order. */
 function categoryTheme(cat) {
   const key = String(cat || "").trim().toLowerCase();
-  if (key.includes("grill")) return { bg: "#FFE9C7", dot: "#D0892E", slug: "grill" };
-  if (key.includes("food")) return { bg: "#DCE8FF", dot: "#3B6FD9", slug: "food" };
-  if (key.includes("juice")) return { bg: "#FFDDD0", dot: "#D96B4A", slug: "juice" };
-  if (key.includes("beverage") || key.includes("drink")) {
-    return { bg: "#D4F1E8", dot: "#2F9A78", slug: "bev" };
+  let index = setupOrderIndex(state.categories, key);
+  if (index === Number.MAX_SAFE_INTEGER) {
+    index = 0;
+    for (const ch of key) index = (index * 31 + ch.charCodeAt(0)) >>> 0;
   }
-  return { bg: "#EEF1F6", dot: "#7A8496", slug: "other" };
+  const slot = index % CATEGORY_PALETTE.length;
+  return { ...CATEGORY_PALETTE[slot], slug: `c${slot}` };
 }
 
 function canEditMenuLayout() {
@@ -1579,7 +1599,7 @@ function ensureSalesViewControls() {
       layoutBtn.type = "button";
       layoutBtn.id = "sales-layout-btn";
       layoutBtn.className = "btn ghost small sales-view-btn sales-layout-btn";
-      layoutBtn.innerHTML = `<span class="sales-layout-gear" aria-hidden="true">⚙</span><span class="sales-layout-label">Layout</span>`;
+      layoutBtn.innerHTML = `${SALES_TOOL_ICONS.layout}<span class="sales-layout-label">Layout</span>`;
       layoutBtn.title = "Edit menu layout";
       layoutBtn.addEventListener("click", () => {
         setLayoutEditMode(!state.layoutEditMode);
@@ -1606,7 +1626,7 @@ function ensureSalesViewControls() {
     vkBtn.type = "button";
     vkBtn.id = "sales-vk-btn";
     vkBtn.className = "btn ghost small sales-view-btn";
-    vkBtn.textContent = "Keyboard";
+    vkBtn.innerHTML = `${SALES_TOOL_ICONS.kb}<span>Keyboard</span>`;
     vkBtn.title = "Show on-screen keyboard for search and entry fields";
     vkBtn.addEventListener("click", () => {
       state.virtualKeyboardOn = !state.virtualKeyboardOn;
@@ -1638,7 +1658,8 @@ function ensureSalesViewControls() {
     btn.type = "button";
     btn.id = "sales-stock-btn";
     btn.className = "btn ghost small sales-view-btn";
-    btn.textContent = "Stock mode";
+    btn.innerHTML = `${SALES_TOOL_ICONS.stock}<span>Stock</span>`;
+    btn.title = "Stock mode: mark items sold out / available";
     btn.addEventListener("click", () => {
       if (state.layoutEditMode) setLayoutEditMode(false);
       state.stockMode = !state.stockMode;
@@ -1679,6 +1700,13 @@ function renderCategories() {
     "ALL",
     ...sortBySetupOrder([...new Set(state.menu.map(categoryForItem))], state.categories),
   ];
+  const counts = new Map([["ALL", 0]]);
+  for (const item of state.menu) {
+    if (!item.is_active) continue;
+    const c = categoryForItem(item);
+    counts.set(c, (counts.get(c) || 0) + 1);
+    counts.set("ALL", counts.get("ALL") + 1);
+  }
   const host = $("category-filters");
   host.innerHTML = "";
   for (const cat of cats) {
@@ -1693,9 +1721,13 @@ function renderCategories() {
       cat === "ALL"
         ? escapeHtml(titleCaseLabel(cat))
         : `<span class="chip-cat-dot" aria-hidden="true"></span>${escapeHtml(titleCaseLabel(cat))}`;
+    const count = counts.get(cat) || 0;
+    btn.insertAdjacentHTML("beforeend", `<span class="chip-count">${count}</span>`);
+    btn.setAttribute("aria-label", `${titleCaseLabel(cat)}, ${count} items`);
     if (cat !== "ALL") btn.dataset.chipName = cat;
     btn.addEventListener("click", () => {
       if (Date.now() < (state._chipSuppressClick || 0)) return;
+      clearMenuSearch(false);
       state.category = cat;
       state.subcategory = "ALL";
       renderCategories();
@@ -1854,6 +1886,7 @@ function renderSubcategories() {
     if (sub !== "ALL") btn.dataset.chipName = sub;
     btn.addEventListener("click", () => {
       if (Date.now() < (state._chipSuppressClick || 0)) return;
+      clearMenuSearch(false);
       state.subcategory = sub;
       renderSubcategories();
       renderMenu();
@@ -1943,27 +1976,109 @@ function showSoldOutUndoToast(item) {
   state._soldOutUndoTimer = window.setTimeout(clear, 5000);
 }
 
+function normalizeSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+}
+
+/**
+ * Search looks through the WHOLE menu (not just the open category), needs every
+ * typed word to match, and puts names that start with the words first.
+ */
 function visibleMenuItems() {
-  const q = state.search.trim().toLowerCase();
-  return state.menu.filter((item) => {
-    if (!item.is_active) return false;
-    if (state.category !== "ALL" && categoryForItem(item) !== state.category) {
-      return false;
-    }
-    if (
-      state.subcategory !== "ALL" &&
-      subcategoryForItem(item) !== state.subcategory
-    ) {
-      return false;
-    }
-    if (q) {
-      const hay = [item.name, item.code, item.sku, item.category, item.subcategory]
-        .join(" ")
-        .toLowerCase();
-      if (!hay.includes(q)) return false;
-    }
-    return true;
+  const q = normalizeSearchText(state.search);
+  const active = state.menu.filter((item) => item.is_active);
+  if (!q) {
+    return active.filter((item) => {
+      if (state.category !== "ALL" && categoryForItem(item) !== state.category) return false;
+      if (state.subcategory !== "ALL" && subcategoryForItem(item) !== state.subcategory) {
+        return false;
+      }
+      return true;
+    });
+  }
+  const words = q.split(" ");
+  const scored = [];
+  active.forEach((item, order) => {
+    const name = normalizeSearchText(item.name);
+    const hay = normalizeSearchText(
+      [item.name, item.code, item.sku, item.category, item.subcategory].join(" ")
+    );
+    if (!words.every((w) => hay.includes(w))) return;
+    const nameWords = name.split(" ");
+    let score = 3;
+    if (name.startsWith(q)) score = 0;
+    else if (words.every((w) => nameWords.some((nw) => nw.startsWith(w)))) score = 1;
+    else if (words.every((w) => name.includes(w))) score = 2;
+    scored.push({ item, score, order });
   });
+  if (!(state.layoutEditMode && canEditMenuLayout())) {
+    scored.sort((a, b) => a.score - b.score || a.order - b.order);
+  }
+  return scored.map((x) => x.item);
+}
+
+function clearMenuSearch(rerender = true) {
+  if (!state.search) return;
+  state.search = "";
+  const input = $("menu-search");
+  if (input) input.value = "";
+  syncMenuSearchUi(0);
+  if (rerender) renderMenu();
+}
+
+/** Search box extras: magnifier, clear (×) button and a "N results" line. */
+function ensureMenuSearchUi() {
+  const input = $("menu-search");
+  if (!input || input.parentElement?.classList.contains("menu-search-box")) return;
+  const box = document.createElement("div");
+  box.className = "menu-search-box";
+  input.parentElement.insertBefore(box, input);
+  box.innerHTML =
+    '<svg class="menu-search-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>';
+  box.appendChild(input);
+  input.placeholder = window.matchMedia?.("(max-width: 599px)").matches
+    ? "Search menu…"
+    : "Search item name or code…";
+  const clear = document.createElement("button");
+  clear.type = "button";
+  clear.id = "menu-search-clear";
+  clear.className = "menu-search-clear";
+  clear.hidden = true;
+  clear.setAttribute("aria-label", "Clear search");
+  clear.innerHTML = "&times;";
+  clear.addEventListener("pointerdown", (e) => e.preventDefault());
+  clear.addEventListener("click", () => clearMenuSearch());
+  box.appendChild(clear);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      clearMenuSearch();
+    }
+  });
+  const info = document.createElement("div");
+  info.id = "menu-search-info";
+  info.className = "menu-search-info";
+  info.hidden = true;
+  info.setAttribute("role", "status");
+  $("subcategory-filters")?.after(info);
+}
+
+function syncMenuSearchUi(resultCount) {
+  const q = String(state.search || "").trim();
+  const clear = $("menu-search-clear");
+  if (clear) clear.hidden = !state.search;
+  document.querySelector("#menu-pane .pane-toolbar")?.classList.toggle("is-searching", Boolean(q));
+  const info = $("menu-search-info");
+  if (!info) return;
+  info.hidden = !q;
+  if (!q) return;
+  info.innerHTML = `<span><strong>${resultCount}</strong> ${resultCount === 1 ? "item" : "items"} for “${escapeHtml(q)}” <span class="muted">· all categories</span></span><button type="button" class="menu-search-info-clear">Clear search</button>`;
+  info.querySelector("button").addEventListener("click", () => clearMenuSearch());
 }
 
 function ensureLayoutHint(grid) {
@@ -2199,13 +2314,17 @@ function renderMenu() {
   ensureStockModeControl();
   const stockMode = Boolean(state.stockMode);
   const layoutEdit = Boolean(state.layoutEditMode) && canEditMenuLayout();
+  ensureMenuSearchUi();
   const items = visibleMenuItems();
+  syncMenuSearchUi(items.length);
   const grid = $("menu-grid");
   grid.classList.toggle("is-layout-edit", layoutEdit);
   ensureLayoutHint(grid);
   grid.innerHTML = "";
   if (!items.length) {
-    grid.innerHTML = `<p class="empty">No menu items match.</p>`;
+    grid.innerHTML = state.search.trim()
+      ? `<div class="empty menu-empty"><strong>No item found for “${escapeHtml(state.search.trim())}”</strong><span>Check the spelling or try fewer letters.</span></div>`
+      : `<p class="empty">No menu items in this category.</p>`;
     return;
   }
   for (const item of items) {
@@ -2224,7 +2343,7 @@ function renderMenu() {
 
     const card = document.createElement("button");
     card.type = "button";
-    card.className = `mcard cat-${theme.slug}${soldOut ? " is-sold-out" : ""}`;
+    card.className = `mcard cat-${theme.slug}${soldOut ? " is-sold-out" : ""}${hasPhoto ? "" : " no-photo"}`;
     card.disabled = soldOut && !layoutEdit;
     card.setAttribute(
       "aria-label",
@@ -2260,6 +2379,7 @@ function renderMenu() {
       img.src = item.image_url;
       img.addEventListener("error", () => {
         img.remove();
+        card.classList.add("no-photo");
         const ph = document.createElement("span");
         ph.className = "mc-letter";
         ph.style.background = theme.bg;

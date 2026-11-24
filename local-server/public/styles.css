@@ -7520,86 +7520,286 @@ body.customize-open {
   position: relative;
 }
 
-/* ===== Sales: category / subcategory filters (two clear levels) ===== */
+/* ===== Sales: find-an-item area (search, tools, categories, subcategories) ===== */
+body.sales-app .pane-toolbar.sticky-tools {
+  gap: 10px;
+  padding-bottom: 10px;
+}
+
+/* Search box with magnifier and clear button */
+body.sales-app .sales-tools-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+}
+body.sales-app .menu-search-box {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+body.sales-app .menu-search-icon {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  width: 19px;
+  height: 19px;
+  transform: translateY(-50%);
+  fill: none;
+  stroke: #6b7a90;
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+body.sales-app #menu-search {
+  width: 100%;
+  height: 44px;
+  padding: 0 44px 0 42px;
+  border: 1px solid #d3dce7;
+  border-radius: 12px;
+  background: #fff;
+  color: #142033;
+  font-size: 16px;
+  box-shadow: none;
+  -webkit-appearance: none;
+  appearance: none;
+}
+body.sales-app #menu-search::placeholder {
+  color: #8592a5;
+}
+body.sales-app #menu-search:focus {
+  outline: none;
+  border-color: #0b539e;
+  box-shadow: 0 0 0 3px rgba(11, 83, 158, 0.15);
+}
+body.sales-app #menu-search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  display: none;
+}
+body.sales-app .menu-search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  transform: translateY(-50%);
+  border: 0;
+  border-radius: 50%;
+  background: #e8edf4;
+  color: #3b4a5e;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+body.sales-app .menu-search-clear[hidden] {
+  display: none;
+}
+body.sales-app .menu-search-clear:hover {
+  background: #d6dfea;
+}
+
+/* Tools: one quiet group; "on" = solid blue so the state is obvious */
+body.sales-app .sales-view-controls {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid #d3dce7;
+  border-radius: 12px;
+  background: #fff;
+}
+body.sales-app .sales-view-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #3b4a5e;
+  font-size: 0.82rem;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: none;
+}
+body.sales-app .sales-view-btn[hidden] {
+  display: none;
+}
+body.sales-app .sales-view-btn svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+body.sales-app .sales-view-btn:hover {
+  background: #eef2f7;
+}
+body.sales-app .sales-view-btn.is-active,
+body.sales-app .sales-view-btn[aria-pressed="true"] {
+  background: #0b539e;
+  border-color: #0b539e;
+  color: #fff;
+}
+
+/* Shared: both filter rows wrap (no hidden sideways scrolling on PC/tablet) */
 body.sales-app #category-filters,
 body.sales-app #subcategory-filters {
   display: flex;
-  flex-wrap: wrap; /* never hide a button behind sideways scrolling */
+  flex-wrap: wrap;
   overflow: visible;
   margin: 0;
   padding: 0;
 }
+body.sales-app #subcategory-filters[hidden] {
+  display: none;
+}
 
 /* Level 1: categories */
 body.sales-app #category-filters {
-  gap: 8px;
+  gap: 6px;
 }
 body.sales-app #category-filters .chip {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding: 0 18px;
-  border: 1px solid #d7e0ea;
-  border-radius: 12px;
+  gap: 7px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid #d3dce7;
+  border-radius: 10px;
   background: #fff;
   color: #142033;
-  font-size: 0.98rem;
+  font-size: 0.9rem;
   font-weight: 650;
-  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.06);
+  box-shadow: none;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 body.sales-app #category-filters .chip:hover {
   border-color: #9fb3cb;
+  background: #f7f9fc;
+}
+body.sales-app #category-filters .chip-cat-dot {
+  width: 9px;
+  height: 9px;
+  margin: 0;
+  flex: none;
+  border-radius: 50%;
+  background: var(--cat-dot, #7a8496);
+  box-shadow: none;
+}
+body.sales-app #category-filters .chip-count {
+  min-width: 22px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #5a6a80;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
 }
 body.sales-app #category-filters .chip.active {
   background: #0b539e;
   border-color: #0b539e;
   color: #fff;
-  box-shadow: 0 4px 12px rgba(11, 83, 158, 0.25);
-}
-body.sales-app #category-filters .chip-cat-dot {
-  width: 10px;
-  height: 10px;
-  margin: 0;
-  flex: none;
+  box-shadow: none;
 }
 body.sales-app #category-filters .chip.active .chip-cat-dot {
-  box-shadow: 0 0 0 2px #fff;
+  background: #fff;
+  box-shadow: none;
+}
+body.sales-app #category-filters .chip.active .chip-count {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
 }
 
-/* Level 2: subcategories — a lighter segmented strip under the categories */
+/* Level 2: subcategories — a lighter segmented strip, only as wide as needed */
 body.sales-app #subcategory-filters:not([hidden]) {
-  gap: 4px;
-  margin-top: 8px;
-  padding: 4px;
-  border-radius: 12px;
+  align-self: flex-start;
+  max-width: 100%;
+  gap: 2px;
+  margin-top: -2px;
+  padding: 3px;
+  border-radius: 11px;
   background: #e9eef5;
 }
 body.sales-app #subcategory-filters .chip,
 body.sales-app #subcategory-filters .chip.green {
-  min-height: 38px;
-  padding: 0 14px;
+  min-height: 34px;
+  padding: 0 12px;
   border: 0;
-  border-radius: 9px;
+  border-radius: 8px;
   background: transparent;
   color: #3b4a5e;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 600;
   box-shadow: none;
 }
 body.sales-app #subcategory-filters .chip:hover {
-  background: rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.65);
 }
 body.sales-app #subcategory-filters .chip.active,
 body.sales-app #subcategory-filters .chip.green.active {
   background: #fff;
   color: #0b539e;
-  box-shadow: 0 1px 3px rgba(20, 32, 51, 0.18);
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.16);
 }
-body.sales-app .pane-toolbar.sticky-tools {
+
+/* While searching, the whole menu is searched: the filter rows make way for results */
+body.sales-app .pane-toolbar.is-searching #category-filters,
+body.sales-app .pane-toolbar.is-searching #subcategory-filters:not([hidden]) {
+  display: none;
+}
+body.sales-app .menu-search-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding-bottom: 12px;
+  min-height: 40px;
+  padding: 0 6px 0 14px;
+  border-radius: 10px;
+  background: #e8f1fb;
+  color: #0b3d73;
+  font-size: 0.9rem;
+}
+body.sales-app .menu-search-info[hidden] {
+  display: none;
+}
+body.sales-app .menu-search-info .muted {
+  color: #5a6a80;
+}
+body.sales-app .menu-search-info-clear {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid #b9cde4;
+  border-radius: 8px;
+  background: #fff;
+  color: #0b539e;
+  font-size: 0.82rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+body.sales-app .menu-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 28px 16px;
+  text-align: center;
+  color: #5a6a80;
+}
+body.sales-app .menu-empty strong {
+  color: #142033;
+  font-size: 1rem;
+}
+
+@media (max-width: 1023px) {
+  body.sales-app .sales-view-btn {
+    min-height: 34px;
+    padding: 0 8px;
+  }
 }
 
 @media (max-width: 599px) {
@@ -7615,6 +7815,9 @@ body.sales-app .pane-toolbar.sticky-tools {
     mask-image: linear-gradient(90deg, #000 85%, transparent);
     padding-right: 32px;
   }
+  body.sales-app #subcategory-filters:not([hidden]) {
+    align-self: stretch;
+  }
   body.sales-app #category-filters::-webkit-scrollbar,
   body.sales-app #subcategory-filters::-webkit-scrollbar {
     display: none;
@@ -7625,14 +7828,43 @@ body.sales-app .pane-toolbar.sticky-tools {
     white-space: nowrap;
   }
   body.sales-app #category-filters .chip {
-    min-height: 40px;
-    padding: 0 14px;
-    font-size: 0.92rem;
+    min-height: 38px;
+    padding: 0 12px;
+    font-size: 0.88rem;
+  }
+  body.sales-app #category-filters .chip-count {
+    display: none; /* keeps phone chips short */
   }
   body.sales-app #subcategory-filters .chip,
   body.sales-app #subcategory-filters .chip.green {
-    min-height: 36px;
-    padding: 0 12px;
-    font-size: 0.85rem;
+    min-height: 34px;
+    padding: 0 11px;
+    font-size: 0.84rem;
+  }
+  body.sales-app .sales-view-controls {
+    padding: 2px;
+  }
+  body.sales-app #sales-stock-btn {
+    height: 40px;
+    padding: 0 10px;
+  }
+  body.sales-app .menu-search-info {
+    font-size: 0.84rem;
+  }
+}
+
+/* Items without a photo: a short colour tile instead of a big empty square,
+   so many more items fit on screen (PC / tablet). */
+@media (min-width: 600px) {
+  body.sales-app .mcard.no-photo {
+    min-height: 0;
+  }
+  body.sales-app .mcard.no-photo .mc-media {
+    aspect-ratio: auto;
+    height: 76px;
+    min-height: 76px;
+  }
+  body.sales-app .mcard.no-photo .mc-letter {
+    font-size: 1.25rem;
   }
 }
