@@ -360,3 +360,43 @@ export function resolveCategoryAssignment(
     subcategory,
   };
 }
+
+function applyOrder(table, idColumn, ids, scopeSql = "", scopeArgs = []) {
+  const db = getDb();
+  const list = Array.isArray(ids) ? ids.map((x) => String(x || "").trim()).filter(Boolean) : [];
+  if (!list.length || new Set(list).size !== list.length) {
+    throw Object.assign(new Error("Send each id once, in the new order."), { status: 400 });
+  }
+  const existing = db
+    .prepare(`SELECT ${idColumn} AS id FROM ${table} WHERE 1 = 1 ${scopeSql}`)
+    .all(...scopeArgs)
+    .map((r) => r.id);
+  if (list.length !== existing.length || list.some((id) => !existing.includes(id))) {
+    throw Object.assign(new Error("The list changed. Refresh the page and try again."), {
+      status: 409,
+    });
+  }
+  const ts = nowIso();
+  const update = db.prepare(
+    `UPDATE ${table} SET sort_order = ?, updated_at = ? WHERE ${idColumn} = ?`
+  );
+  db.transaction(() => {
+    list.forEach((id, index) => update.run((index + 1) * 10, ts, id));
+  })();
+}
+
+/** Save the display order of all categories (active and inactive). */
+export function reorderCategories(categoryIds) {
+  applyOrder("menu_categories", "category_id", categoryIds);
+  return listCategories({ includeInactive: true });
+}
+
+/** Save the display order of the subcategories of one category. */
+export function reorderSubcategories(categoryId, subcategoryIds) {
+  const id = String(categoryId || "").trim();
+  if (!id || !getCategory(id)) {
+    throw Object.assign(new Error("Valid parent category is required"), { status: 400 });
+  }
+  applyOrder("menu_subcategories", "subcategory_id", subcategoryIds, "AND category_id = ?", [id]);
+  return listCategories({ includeInactive: true });
+}

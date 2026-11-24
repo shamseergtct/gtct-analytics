@@ -49,6 +49,8 @@ import {
   listCategories,
   upsertCategory,
   upsertSubcategory,
+  reorderCategories,
+  reorderSubcategories,
 } from "../services/categories.js";
 import {
   getShopSettings,
@@ -1871,6 +1873,33 @@ export function createServer(config) {
           url.searchParams.get("includeInactive") !== "0" &&
           url.searchParams.get("includeInactive") !== "false";
         sendJson(res, 200, listCategories({ includeInactive }));
+        return;
+      }
+
+      if (
+        method === "PUT" &&
+        (path === "/v1/menu-categories/reorder" || path === "/v1/menu-subcategories/reorder")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const body = await readBody(req);
+          const isSub = path === "/v1/menu-subcategories/reorder";
+          const result = isSub
+            ? reorderSubcategories(body?.categoryId, body?.subcategoryIds)
+            : reorderCategories(body?.categoryIds);
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: isSub ? "menu.subcategory.reorder" : "menu.category.reorder",
+            entityType: isSub ? "menu_subcategory" : "menu_category",
+            entityId: isSub ? String(body?.categoryId || "") : "all",
+            detail: { count: (isSub ? body?.subcategoryIds : body?.categoryIds)?.length || 0 },
+          });
+          sendJson(res, 200, result);
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message || "Could not save the order." });
+        }
         return;
       }
 

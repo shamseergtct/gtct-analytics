@@ -380,6 +380,14 @@
           <!-- CATEGORIES -->
           <section id="panel-categories" class="ms-panel" role="tabpanel" hidden>
             <div class="ms-card">
+              <p class="muted" style="margin:0 0 10px">Use ▲ ▼ to set the order of categories and subcategories on the Sales screen.</p>
+              <style>
+                .order-btns{display:inline-flex;gap:4px;margin-right:6px}
+                .order-btn{min-width:40px;min-height:40px;padding:0;font-size:.85rem;line-height:1}
+                .order-btn:disabled{opacity:.3;cursor:default}
+                .cat-card.order-flash,.sub-row.order-flash{background:#e8f5ee;transition:background .6s}
+                #category-admin-list [hidden]{display:none !important}
+              </style>
               <div class="ms-toolbar">
                 <button type="button" id="add-category-btn" class="btn primary small">+ Add category</button>
                 <label class="check-inline" style="margin-left:auto">

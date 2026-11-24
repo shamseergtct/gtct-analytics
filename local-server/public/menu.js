@@ -1773,6 +1773,30 @@ function adoptSavedItemIdentity(item) {
   renderPhotoPreview();
 }
 
+/** Move one id up/down in a list and save the new order. */
+async function moveInOrder(ids, id, delta, url, extraBody = {}) {
+  const from = ids.indexOf(id);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= ids.length) return;
+  const next = ids.slice();
+  next.splice(to, 0, next.splice(from, 1)[0]);
+  const key = url.includes("subcategories") ? "subcategoryIds" : "categoryIds";
+  const res = await api(url, { method: "PUT", body: JSON.stringify({ ...extraBody, [key]: next }) });
+  if (!res.ok) {
+    toast(res.json?.error || "Could not save the order.", true);
+    return;
+  }
+  state.flashOrderId = id;
+  await loadAll();
+}
+
+function orderButtons(index, total, label) {
+  return `<span class="order-btns" role="group" aria-label="Move ${escapeHtml(label)}">
+    <button type="button" class="btn ghost small order-btn" data-act="move-up" ${index === 0 ? "disabled" : ""} aria-label="Move ${escapeHtml(label)} up">▲</button>
+    <button type="button" class="btn ghost small order-btn" data-act="move-down" ${index === total - 1 ? "disabled" : ""} aria-label="Move ${escapeHtml(label)} down">▼</button>
+  </span>`;
+}
+
 function renderCategoriesTab() {
   const host = $("category-admin-list");
   host.innerHTML = "";
@@ -1782,13 +1806,15 @@ function renderCategoriesTab() {
     host.innerHTML = `<div class="empty-state">No categories yet.</div>`;
     return;
   }
-  for (const cat of cats) {
+  const allCatIds = state.categories.map((c) => c.category_id);
+  cats.forEach((cat, catIndex) => {
     const open = state.expandedCats.has(cat.category_id);
     const card = document.createElement("div");
-    card.className = "cat-card";
+    card.className = `cat-card${state.flashOrderId === cat.category_id ? " order-flash" : ""}`;
     const editing = state.editingCatId === cat.category_id;
     card.innerHTML = `
       <div class="cat-card-head" data-act="toggle">
+        ${orderButtons(catIndex, cats.length, cat.name)}
         <strong>${escapeHtml(cat.name)}</strong>
         <span class="badge status-${cat.is_active ? "active" : "inactive"}">● ${
           cat.is_active ? "Active" : "Inactive"
@@ -1818,6 +1844,12 @@ function renderCategoriesTab() {
       else state.expandedCats.add(cat.category_id);
       renderCategoriesTab();
     });
+    card.querySelector('.cat-card-head [data-act="move-up"]').addEventListener("click", () =>
+      moveInOrder(allCatIds, cat.category_id, -1, "/v1/menu-categories/reorder")
+    );
+    card.querySelector('.cat-card-head [data-act="move-down"]').addEventListener("click", () =>
+      moveInOrder(allCatIds, cat.category_id, 1, "/v1/menu-categories/reorder")
+    );
     card.querySelector('[data-act="edit-cat"]').addEventListener("click", () => {
       state.editingCatId = cat.category_id;
       state.expandedCats.add(cat.category_id);
@@ -1883,10 +1915,11 @@ function renderCategoriesTab() {
     if (!subs.length) {
       subsHost.innerHTML = `<p class="muted">No subcategories</p>`;
     } else {
-      for (const sub of subs) {
-        if (!showInactive && !sub.is_active) continue;
+      const allSubIds = subs.map((s) => s.subcategory_id);
+      const shownSubs = subs.filter((s) => showInactive || s.is_active);
+      shownSubs.forEach((sub, subIndex) => {
         const row = document.createElement("div");
-        row.className = "sub-row";
+        row.className = `sub-row${state.flashOrderId === sub.subcategory_id ? " order-flash" : ""}`;
         const editingSub = state.editingSubId === sub.subcategory_id;
         row.innerHTML = editingSub
           ? `<div class="inline-edit">
@@ -1894,7 +1927,8 @@ function renderCategoriesTab() {
                <button type="button" class="btn primary small" data-act="save-sub">Save</button>
                <button type="button" class="btn ghost small" data-act="cancel-sub">Cancel</button>
              </div>`
-          : `<strong style="flex:1">${escapeHtml(sub.name)}</strong>
+          : `${orderButtons(subIndex, shownSubs.length, sub.name)}
+             <strong style="flex:1">${escapeHtml(sub.name)}</strong>
              <span class="muted">${sub.itemCount || 0} items</span>
              <span class="badge status-${sub.is_active ? "active" : "inactive"}">● ${
                sub.is_active ? "Active" : "Inactive"
@@ -1929,6 +1963,16 @@ function renderCategoriesTab() {
             renderCategoriesTab();
           });
         } else {
+          row.querySelector('[data-act="move-up"]').addEventListener("click", () =>
+            moveInOrder(allSubIds, sub.subcategory_id, -1, "/v1/menu-subcategories/reorder", {
+              categoryId: cat.category_id,
+            })
+          );
+          row.querySelector('[data-act="move-down"]').addEventListener("click", () =>
+            moveInOrder(allSubIds, sub.subcategory_id, 1, "/v1/menu-subcategories/reorder", {
+              categoryId: cat.category_id,
+            })
+          );
           row.querySelector('[data-act="edit-sub"]').addEventListener("click", () => {
             state.editingSubId = sub.subcategory_id;
             renderCategoriesTab();
@@ -1952,9 +1996,15 @@ function renderCategoriesTab() {
           });
         }
         subsHost.appendChild(row);
-      }
+      });
     }
     host.appendChild(card);
+  });
+  if (state.flashOrderId) {
+    setTimeout(() => {
+      state.flashOrderId = null;
+      document.querySelectorAll(".order-flash").forEach((el) => el.classList.remove("order-flash"));
+    }, 1200);
   }
 }
 

@@ -1656,9 +1656,28 @@ function ensureStockModeControl() {
   ensureSalesViewControls();
 }
 
+/** Position of a category/subcategory as set in Menu Setup (unknown ones go last). */
+function setupOrderIndex(list, name, extra = () => true) {
+  const needle = String(name || "").trim().toLowerCase();
+  const index = (list || []).findIndex(
+    (row) => extra(row) && String(row.name || "").trim().toLowerCase() === needle
+  );
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
+}
+
+function sortBySetupOrder(names, list, extra) {
+  return names
+    .map((name, i) => ({ name, i, rank: setupOrderIndex(list, name, extra) }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((x) => x.name);
+}
+
 function renderCategories() {
   ensureStockModeControl();
-  const cats = ["ALL", ...new Set(state.menu.map(categoryForItem))];
+  const cats = [
+    "ALL",
+    ...sortBySetupOrder([...new Set(state.menu.map(categoryForItem))], state.categories),
+  ];
   const host = $("category-filters");
   host.innerHTML = "";
   for (const cat of cats) {
@@ -1692,14 +1711,20 @@ function renderSubcategories() {
     host.innerHTML = "";
     return;
   }
-  const subs = [
-    ...new Set(
-      state.menu
-        .filter((i) => categoryForItem(i) === state.category)
-        .map(subcategoryForItem)
-        .filter(Boolean)
-    ),
-  ];
+  const parent = setupOrderIndex(state.categories, state.category);
+  const parentId = state.categories?.[parent]?.category_id;
+  const subs = sortBySetupOrder(
+    [
+      ...new Set(
+        state.menu
+          .filter((i) => categoryForItem(i) === state.category)
+          .map(subcategoryForItem)
+          .filter(Boolean)
+      ),
+    ],
+    state.subcategories,
+    (row) => !parentId || row.category_id === parentId
+  );
   if (!subs.length) {
     host.hidden = true;
     host.innerHTML = "";
