@@ -519,7 +519,7 @@ async function createStation(rawName) {
 function renderStationAdmin() {
   const host = $("station-admin-list");
   if (!host) return;
-  const list = state.stations.filter((s) => s.station_id !== "station_cashier" && s.is_active);
+  const list = state.stations.filter((s) => s.station_id && s.station_id !== "station_cashier" && s.is_active);
   if (!list.length) {
     host.innerHTML = `<p class="muted">No preparation centers yet.</p>`;
     return;

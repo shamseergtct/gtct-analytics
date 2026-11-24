@@ -260,7 +260,7 @@ function renderPrinters() {
 function renderStations() {
   const host = $("station-list");
   host.innerHTML = "";
-  for (const s of state.stations.filter((x) => x.is_active)) {
+  for (const s of state.stations.filter((x) => x.is_active && x.station_id)) {
     const row = document.createElement("div");
     row.className = `station-row${state.highlightStation === s.station_id ? " is-new" : ""}`;
     const options = [
