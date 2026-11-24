@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { getDb } from "../db/db.js";
 import { nowIso } from "../util/time.js";
-import { getShopSettings } from "./shopSettings.js";
+import { getShopSettings, updateShopSettings } from "./shopSettings.js";
 import { getDeliveryBillSnapshot } from "./deliveryPool.js";
 import { readOrderOperationalState } from "./orderOperationalState.js";
 import { getOrderPayment } from "./settlements.js";
@@ -110,6 +110,112 @@ function readBridgeSecretFile(envConfig = {}) {
   return "";
 }
 
+/* ---------- Per-shop activation (one-time code -> this POS's own key) ---------- */
+const DEVICE_FILE_NAME = "cloud-bridge-device.json";
+
+function deviceFilePath(envConfig = {}) {
+  const dir = String(envConfig.dataDir || process.env.GTCT_LOCAL_DATA_DIR || "").trim();
+  return dir ? path.join(dir, DEVICE_FILE_NAME) : "";
+}
+
+function readBridgeDevice(envConfig = {}) {
+  const file = deviceFilePath(envConfig);
+  if (!file || !fs.existsSync(file)) return null;
+  try {
+    const row = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!/^pos_[A-Za-z0-9_-]{8,40}$/.test(String(row.deviceId || ""))) return null;
+    if (String(row.deviceKey || "").length < 32 || !String(row.clientId || "").trim()) return null;
+    return row;
+  } catch {
+    return null;
+  }
+}
+
+function writePrivateFile(file, text) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(tmp, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    /* Windows */
+  }
+}
+
+function activationUrl(bridgeUrl) {
+  const url = new URL(bridgeUrl);
+  url.pathname = url.pathname.replace(/[^/]*$/, "activateRestaurantPos");
+  return url.toString();
+}
+
+/** Status of this POS's activation (never includes the key). */
+export function cloudBridgeActivationStatus(envConfig = {}) {
+  const device = readBridgeDevice(envConfig);
+  if (!device) return { activated: false };
+  return {
+    activated: true,
+    clientId: device.clientId,
+    clientName: device.clientName || device.clientId,
+    deviceId: device.deviceId,
+    activatedAt: device.activatedAt || null,
+  };
+}
+
+/**
+ * Exchange a one-time activation code (from GTCT cloud admin) for this POS's
+ * own key, then turn the bridge on for that shop.
+ */
+export async function activateCloudBridge(shopId, envConfig, rawCode) {
+  const code = String(rawCode || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (code.length !== 10) fail(400, "Enter the 10-character activation code (like ABCDE-FGH23).", "invalid_code");
+  const file = deviceFilePath(envConfig);
+  if (!file) fail(500, "No data folder configured for this server.", "no_data_dir");
+  const cfg = bridgeConfig(shopId, envConfig);
+  const shop = getShopSettings(shopId);
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 15000);
+  let res;
+  try {
+    res = await fetch(activationUrl(cfg.url), {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ code, deviceLabel: String(shop.displayName || "").slice(0, 60) }),
+      signal: ac.signal,
+    });
+  } catch (err) {
+    fail(503, err?.name === "AbortError" ? "The cloud did not answer. Check the internet and try again." : "Cannot reach the cloud. Check the internet and try again.", "BRIDGE_UNREACHABLE");
+  } finally {
+    clearTimeout(timer);
+  }
+  let json = {};
+  try {
+    json = await res.json();
+  } catch {
+    json = {};
+  }
+  if (!res.ok || !json.ok) fail(res.status || 400, json.error || "Activation failed.", "activation_failed");
+  const device = {
+    clientId: String(json.clientId || "").trim(),
+    clientName: String(json.clientName || "").trim(),
+    deviceId: String(json.deviceId || "").trim(),
+    deviceKey: String(json.deviceKey || "").trim(),
+    activatedAt: nowIso(),
+  };
+  if (!device.clientId || !/^pos_[A-Za-z0-9_-]{8,40}$/.test(device.deviceId) || device.deviceKey.length < 32) {
+    fail(502, "The cloud sent an unexpected answer.", "activation_bad_response");
+  }
+  writePrivateFile(file, `${JSON.stringify(device)}\n`);
+  updateShopSettings(shopId, { cloudClientId: device.clientId, cloudBridgeEnabled: true }, { role: "admin" });
+  return cloudBridgeActivationStatus(envConfig);
+}
+
+/** Forget this POS's activation (the cloud key should also be revoked by the admin). */
+export function deactivateCloudBridge(envConfig = {}) {
+  const file = deviceFilePath(envConfig);
+  if (file && fs.existsSync(file)) fs.rmSync(file, { force: true });
+  return cloudBridgeActivationStatus(envConfig);
+}
+
 /** Whether a bridge key is configured. Never returns the key itself. */
 export function cloudBridgeSecretStatus(envConfig = {}) {
   if (String(process.env.GTCT_CLOUD_BRIDGE_SECRET || "").trim()) {
@@ -164,7 +270,16 @@ function bridgeConfig(shopId, envConfig = {}) {
   const secret =
     String(process.env.GTCT_CLOUD_BRIDGE_SECRET || "").trim() ||
     readBridgeSecretFile(envConfig);
-  return { clientId, enabled, url, secret, shop };
+  // An activated POS uses its own key, locked to the shop it was activated for.
+  const device = readBridgeDevice(envConfig);
+  return {
+    clientId: device ? device.clientId : clientId,
+    enabled,
+    url,
+    secret,
+    device,
+    shop,
+  };
 }
 
 function sanitizeBoyId(cloudBoyId) {
@@ -275,7 +390,7 @@ function buildPublishPayload(shopId, order) {
   };
 }
 
-async function postBridge(url, secret, body) {
+async function postBridge(url, auth, body) {
   const timeoutMs = Math.max(
     2000,
     Number(process.env.GTCT_CLOUD_BRIDGE_TIMEOUT_MS || 8000)
@@ -289,7 +404,12 @@ async function postBridge(url, secret, body) {
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        "X-GTCT-BRIDGE-SECRET": secret,
+        ...(auth.device
+          ? {
+              "X-GTCT-DEVICE-ID": auth.device.deviceId,
+              "X-GTCT-DEVICE-KEY": auth.device.deviceKey,
+            }
+          : { "X-GTCT-BRIDGE-SECRET": auth.secret }),
       },
       body: JSON.stringify(body),
       signal: ac.signal,
@@ -481,7 +601,7 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
   if (!cfg.clientId) {
     return { skipped: true, reason: "missing_client_id" };
   }
-  if (!cfg.secret) {
+  if (!cfg.secret && !cfg.device) {
     log.warn("cloud delivery bridge skipped", { reason: "missing_secret" });
     return { skipped: true, reason: "missing_secret" };
   }
@@ -493,7 +613,7 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
     buildPublishPayload(shopId, order)
   );
 
-  const response = await postBridge(cfg.url, cfg.secret, {
+  const response = await postBridge(cfg.url, cfg, {
     clientId: cfg.clientId,
     publishOrders,
   });
@@ -535,7 +655,7 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
   }
 
   if (ackClaimIds.length || ackStatusIds.length || ackPaymentIds.length) {
-    await postBridge(cfg.url, cfg.secret, {
+    await postBridge(cfg.url, cfg, {
       clientId: cfg.clientId,
       publishOrders: [],
       ackClaimIds,

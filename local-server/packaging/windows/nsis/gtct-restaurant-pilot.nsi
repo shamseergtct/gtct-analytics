@@ -11,7 +11,7 @@ SetCompressor /SOLID lzma
 !define PRODUCT_NAME "GTCT Restaurant Pilot"
 !define PRODUCT_NAME_FULL "GTCT Restaurant Pilot (TEST)"
 !define PRODUCT_PUBLISHER "GTCT"
-!define PRODUCT_VERSION "0.1.23"
+!define PRODUCT_VERSION "0.1.26"
 !define PRODUCT_DIR_REGKEY "Software\Microsoft\Windows\CurrentVersion\App Paths\GTCTRestaurantPilot.exe"
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\GTCTRestaurantPilot"
 !define HOST_TASK_NAME "GTCT Restaurant Host"

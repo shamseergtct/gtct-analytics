@@ -13,6 +13,57 @@ const restaurantBridgeSecret = defineString("RESTAURANT_DELIVERY_BRIDGE_SECRET",
 });
 const RESTAURANT_DELIVERY_ORDERS = "restaurant_delivery_orders";
 
+/* ---------- Restaurant POS activation (per-shop keys) ----------
+ * New, separate collections, only reachable through these functions
+ * (firestore.rules already denies all client access to unknown collections).
+ */
+const crypto = require("crypto");
+const RESTAURANT_POS_CODES = "restaurant_pos_activation_codes";
+const RESTAURANT_POS_DEVICES = "restaurant_pos_devices";
+const POS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 32 chars, no 0/O/1/I
+const POS_CODE_LENGTH = 10;
+
+function sha256Hex(value) {
+  return crypto.createHash("sha256").update(String(value)).digest("hex");
+}
+
+function normalizePosCode(raw) {
+  return String(raw || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function newPosActivationCode() {
+  const bytes = crypto.randomBytes(POS_CODE_LENGTH);
+  let code = "";
+  for (let i = 0; i < POS_CODE_LENGTH; i += 1) code += POS_CODE_ALPHABET[bytes[i] & 31];
+  return code;
+}
+
+function formatPosCode(code) {
+  return `${code.slice(0, 5)}-${code.slice(5)}`;
+}
+
+/** Per-shop POS key check. Returns { clientId } or null. Never throws on bad input. */
+async function verifyRestaurantPosDevice(deviceIdRaw, keyRaw) {
+  const deviceId = String(deviceIdRaw || "").trim();
+  const key = String(keyRaw || "").trim();
+  if (!/^pos_[A-Za-z0-9_-]{8,40}$/.test(deviceId) || key.length < 32 || key.length > 128) {
+    return null;
+  }
+  const ref = db.collection(RESTAURANT_POS_DEVICES).doc(deviceId);
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+  const device = snap.data() || {};
+  if (device.revokedAt || !device.keyHash || !device.clientId) return null;
+  const a = Buffer.from(sha256Hex(key), "hex");
+  const b = Buffer.from(String(device.keyHash), "hex");
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
+  const now = Date.now();
+  if (!device.lastSeenAt || now - Number(device.lastSeenAt) > 5 * 60 * 1000) {
+    await ref.set({ lastSeenAt: now }, { merge: true });
+  }
+  return { clientId: String(device.clientId) };
+}
+
 /**
  * Verify caller is a valid super_admin from Firestore users/{uid}
  * (No need for custom claims to start.)
@@ -552,7 +603,10 @@ exports.restaurantDeliveryBridge = onRequest(
   { region: "asia-south1" },
   async (req, res) => {
     res.set("Access-Control-Allow-Origin", "*");
-    res.set("Access-Control-Allow-Headers", "Content-Type, X-GTCT-BRIDGE-SECRET");
+    res.set(
+      "Access-Control-Allow-Headers",
+      "Content-Type, X-GTCT-BRIDGE-SECRET, X-GTCT-DEVICE-ID, X-GTCT-DEVICE-KEY"
+    );
     if (req.method === "OPTIONS") {
       res.status(204).send("");
       return;
@@ -561,11 +615,25 @@ exports.restaurantDeliveryBridge = onRequest(
       res.status(405).json({ error: "POST only" });
       return;
     }
-    const expected = String(restaurantBridgeSecret.value() || "").trim();
-    const provided = String(req.get("X-GTCT-BRIDGE-SECRET") || "").trim();
-    if (!expected || provided !== expected) {
-      res.status(401).json({ error: "Unauthorized bridge." });
-      return;
+    // A POS activated with a code sends its own key; others use the shared key (unchanged).
+    let boundClientId = "";
+    if (req.get("X-GTCT-DEVICE-ID")) {
+      const device = await verifyRestaurantPosDevice(
+        req.get("X-GTCT-DEVICE-ID"),
+        req.get("X-GTCT-DEVICE-KEY")
+      );
+      if (!device) {
+        res.status(401).json({ error: "Unauthorized POS. Activate it again with a new code." });
+        return;
+      }
+      boundClientId = device.clientId;
+    } else {
+      const expected = String(restaurantBridgeSecret.value() || "").trim();
+      const provided = String(req.get("X-GTCT-BRIDGE-SECRET") || "").trim();
+      if (!expected || provided !== expected) {
+        res.status(401).json({ error: "Unauthorized bridge." });
+        return;
+      }
     }
     const body = req.body || {};
     const clientId = String(body.clientId || "").trim();
@@ -573,6 +641,12 @@ exports.restaurantDeliveryBridge = onRequest(
       res.status(400).json({ error: "clientId is required." });
       return;
     }
+    if (boundClientId && clientId !== boundClientId) {
+      res.status(403).json({ error: "This POS is activated for a different shop." });
+      return;
+    }
+    // An activated POS may only acknowledge its own shop's orders.
+    const ownAckId = (id) => !boundClientId || String(id).startsWith(`${clientId}_`);
     const now = Date.now();
     const published = [];
     for (const order of Array.isArray(body.publishOrders) ? body.publishOrders : []) {
@@ -662,15 +736,15 @@ exports.restaurantDeliveryBridge = onRequest(
       (row) => row.localPaymentApplied === false
     );
 
-    for (const id of Array.isArray(body.ackClaimIds) ? body.ackClaimIds : []) {
+    for (const id of (Array.isArray(body.ackClaimIds) ? body.ackClaimIds : []).filter(ownAckId)) {
       const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
       await ref.set({ localClaimApplied: true, updatedAt: now }, { merge: true });
     }
-    for (const id of Array.isArray(body.ackStatusIds) ? body.ackStatusIds : []) {
+    for (const id of (Array.isArray(body.ackStatusIds) ? body.ackStatusIds : []).filter(ownAckId)) {
       const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
       await ref.set({ localStatusApplied: true, updatedAt: now }, { merge: true });
     }
-    for (const id of Array.isArray(body.ackPaymentIds) ? body.ackPaymentIds : []) {
+    for (const id of (Array.isArray(body.ackPaymentIds) ? body.ackPaymentIds : []).filter(ownAckId)) {
       const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
       await ref.set({ localPaymentApplied: true, updatedAt: now }, { merge: true });
     }
@@ -684,3 +758,135 @@ exports.restaurantDeliveryBridge = onRequest(
     });
   }
 );
+
+/**
+ * Super admin: create a one-time activation code for a shop's POS.
+ * The code is returned once and only its hash is stored.
+ */
+exports.createRestaurantPosActivationCode = onCall({ region: "asia-south1" }, async (request) => {
+  const { uid } = await assertSuperAdmin(request);
+  const clientId = String(request.data?.clientId || "").trim();
+  const label = String(request.data?.label || "").trim().slice(0, 60);
+  const hours = Math.min(72, Math.max(1, Number(request.data?.validHours || 24) || 24));
+  if (!clientId) throw new HttpsError("invalid-argument", "Choose a shop (clientId).");
+  const client = await db.collection("clients").doc(clientId).get();
+  if (!client.exists) throw new HttpsError("not-found", "Shop not found.");
+  const code = newPosActivationCode();
+  const now = Date.now();
+  const expiresAt = now + hours * 60 * 60 * 1000;
+  await db.collection(RESTAURANT_POS_CODES).doc(sha256Hex(code)).set({
+    clientId,
+    label,
+    createdBy: uid,
+    createdAt: now,
+    expiresAt,
+    usedAt: null,
+    usedByDeviceId: "",
+  });
+  return {
+    code: formatPosCode(code),
+    clientId,
+    clientName: String(client.data()?.name || client.data()?.shopName || clientId),
+    expiresAt,
+  };
+});
+
+/**
+ * POS (no Firebase login): exchange a one-time code for this POS's own key.
+ * Body: { code, deviceLabel }. Each code works once and expires.
+ */
+exports.activateRestaurantPos = onRequest({ region: "asia-south1" }, async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "POST only" });
+    return;
+  }
+  const code = normalizePosCode(req.body?.code);
+  const deviceLabel = String(req.body?.deviceLabel || "").trim().slice(0, 60);
+  const invalid = async () => {
+    await new Promise((r) => setTimeout(r, 600)); // slow down guessing
+    res.status(400).json({ error: "This activation code is not valid, already used, or expired." });
+  };
+  if (code.length !== POS_CODE_LENGTH) {
+    await invalid();
+    return;
+  }
+  const codeRef = db.collection(RESTAURANT_POS_CODES).doc(sha256Hex(code));
+  const deviceId = `pos_${crypto.randomBytes(12).toString("base64url")}`;
+  const deviceKey = crypto.randomBytes(32).toString("base64url");
+  let result = null;
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(codeRef);
+    if (!snap.exists) return;
+    const row = snap.data() || {};
+    const now = Date.now();
+    if (row.usedAt || Number(row.expiresAt || 0) < now || !row.clientId) return;
+    tx.set(db.collection(RESTAURANT_POS_DEVICES).doc(deviceId), {
+      clientId: row.clientId,
+      keyHash: sha256Hex(deviceKey),
+      label: deviceLabel || row.label || "",
+      activatedAt: now,
+      activatedByCodeCreator: row.createdBy || "",
+      revokedAt: null,
+      lastSeenAt: null,
+    });
+    tx.set(codeRef, { usedAt: now, usedByDeviceId: deviceId }, { merge: true });
+    result = { clientId: row.clientId };
+  });
+  if (!result) {
+    await invalid();
+    return;
+  }
+  const client = await db.collection("clients").doc(result.clientId).get();
+  res.status(200).json({
+    ok: true,
+    clientId: result.clientId,
+    clientName: String(client.data()?.name || client.data()?.shopName || result.clientId),
+    deviceId,
+    deviceKey,
+  });
+});
+
+/** Super admin: list activated POS devices (no keys) and open codes for a shop. */
+exports.listRestaurantPos = onCall({ region: "asia-south1" }, async (request) => {
+  await assertSuperAdmin(request);
+  const clientId = String(request.data?.clientId || "").trim();
+  let devQuery = db.collection(RESTAURANT_POS_DEVICES);
+  let codeQuery = db.collection(RESTAURANT_POS_CODES);
+  if (clientId) {
+    devQuery = devQuery.where("clientId", "==", clientId);
+    codeQuery = codeQuery.where("clientId", "==", clientId);
+  }
+  const [devices, codes] = await Promise.all([devQuery.limit(200).get(), codeQuery.limit(200).get()]);
+  const now = Date.now();
+  return {
+    devices: devices.docs.map((d) => {
+      const x = d.data() || {};
+      return {
+        deviceId: d.id,
+        clientId: x.clientId,
+        label: x.label || "",
+        activatedAt: x.activatedAt || null,
+        lastSeenAt: x.lastSeenAt || null,
+        revokedAt: x.revokedAt || null,
+      };
+    }),
+    openCodes: codes.docs
+      .map((d) => d.data() || {})
+      .filter((x) => !x.usedAt && Number(x.expiresAt || 0) > now)
+      .map((x) => ({ clientId: x.clientId, label: x.label || "", createdAt: x.createdAt, expiresAt: x.expiresAt })),
+  };
+});
+
+/** Super admin: block one POS immediately (other shops are not affected). */
+exports.revokeRestaurantPos = onCall({ region: "asia-south1" }, async (request) => {
+  const { uid } = await assertSuperAdmin(request);
+  const deviceId = String(request.data?.deviceId || "").trim();
+  if (!/^pos_[A-Za-z0-9_-]{8,40}$/.test(deviceId)) {
+    throw new HttpsError("invalid-argument", "Invalid POS id.");
+  }
+  const ref = db.collection(RESTAURANT_POS_DEVICES).doc(deviceId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError("not-found", "POS not found.");
+  await ref.set({ revokedAt: Date.now(), revokedBy: uid }, { merge: true });
+  return { ok: true };
+});

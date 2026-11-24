@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>GTCT · POS Activation</title>
+  <style>
+    :root { color-scheme: light; --blue:#0b539e; --line:#d3dce7; --muted:#5a6a80; --ink:#142033; --ok:#1f7a4d; --bad:#b42318; }
+    * { box-sizing: border-box; }
+    body { margin:0; font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; color:var(--ink); background:#f3f6fa; }
+    main { max-width: 760px; margin: 0 auto; padding: 24px 16px 60px; }
+    header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:18px; }
+    h1 { font-size:1.35rem; margin:0; }
+    .sub { color:var(--muted); font-size:.9rem; margin:2px 0 0; }
+    .card { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+    .card h2 { font-size:1.05rem; margin:0 0 12px; }
+    label { display:block; font-weight:600; font-size:.85rem; color:#3b4a5e; margin:10px 0 6px; }
+    input, select { width:100%; height:44px; padding:0 12px; border:1px solid var(--line); border-radius:10px; font:inherit; background:#fff; color:var(--ink); }
+    input:focus, select:focus { outline:none; border-color:var(--blue); box-shadow:0 0 0 3px rgba(11,83,158,.15); }
+    .row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+    .row > * { flex:1 1 220px; }
+    button { height:44px; padding:0 18px; border-radius:10px; border:1px solid var(--line); background:#fff; color:var(--blue); font:inherit; font-weight:650; cursor:pointer; }
+    button.primary { background:var(--blue); border-color:var(--blue); color:#fff; }
+    button.danger { color:var(--bad); }
+    button:disabled { opacity:.55; cursor:default; }
+    .msg { min-height:1.3em; margin:10px 0 0; font-size:.9rem; color:var(--muted); }
+    .msg.err { color:var(--bad); } .msg.ok { color:var(--ok); }
+    .code-box { margin-top:14px; padding:18px; border-radius:12px; background:#e8f1fb; text-align:center; }
+    .code { font:700 2rem/1.2 ui-monospace,"SF Mono",Consolas,monospace; letter-spacing:.12em; color:#0b3d73; user-select:all; }
+    .code-meta { color:var(--muted); font-size:.88rem; margin:6px 0 12px; }
+    table { width:100%; border-collapse:collapse; font-size:.9rem; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid #edf1f6; vertical-align:middle; }
+    th { color:var(--muted); font-weight:600; font-size:.8rem; }
+    .pill { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.78rem; font-weight:700; }
+    .pill.on { background:#dcf3e6; color:var(--ok); } .pill.off { background:#fde4e1; color:var(--bad); }
+    code { font-size:.82rem; color:#3b4a5e; }
+    [hidden] { display:none !important; }
+    .empty { color:var(--muted); padding:8px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>POS Activation</h1>
+      <p class="sub">Create one-time codes so a restaurant POS can connect to its own shop.</p>
+    </div>
+    <button id="signout" hidden>Sign out</button>
+  </header>
+
+  <section class="card" id="login-card">
+    <h2>Super admin sign in</h2>
+    <form id="login-form">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required />
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required />
+      <div style="margin-top:14px"><button class="primary" type="submit" id="login-btn">Sign in</button></div>
+      <p class="msg" id="login-msg"></p>
+    </form>
+  </section>
+
+  <section id="app" hidden>
+    <div class="card">
+      <h2>1. Create an activation code</h2>
+      <div class="row">
+        <div>
+          <label for="shop">Shop</label>
+          <select id="shop"></select>
+        </div>
+        <div>
+          <label for="label">POS name (optional)</label>
+          <input id="label" maxlength="60" placeholder="e.g. Cashier PC" />
+        </div>
+      </div>
+      <div style="margin-top:14px"><button class="primary" id="create-btn">Create code</button></div>
+      <p class="msg" id="create-msg"></p>
+      <div class="code-box" id="code-box" hidden>
+        <div class="code" id="code"></div>
+        <div class="code-meta" id="code-meta"></div>
+        <button id="copy-btn">Copy code</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2. POS devices for this shop</h2>
+      <div id="devices"></div>
+      <p class="msg" id="dev-msg"></p>
+    </div>
+  </section>
+</main>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
+
+  // Same public project config as the GTCT Analytics app, but a separately
+  // named app so this page has its own sign-in and never affects the main app.
+  const app = initializeApp({
+    apiKey: "AIzaSyBrNIsJihV5XxsCx6VSUg2_SPpgqLK4QjE",
+    authDomain: "gtct-global-analytics.firebaseapp.com",
+    projectId: "gtct-global-analytics",
+    storageBucket: "gtct-global-analytics.firebasestorage.app",
+    messagingSenderId: "311665553348",
+    appId: "1:311665553348:web:ffcd2bcf8ae36bf0477e91",
+  }, "gtct-pos-activation");
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const fns = getFunctions(app, "asia-south1");
+  const call = (name, data) => httpsCallable(fns, name)(data).then((r) => r.data);
+
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+  const when = (ms) => (ms ? new Date(ms).toLocaleString() : "—");
+  const say = (id, text, kind = "") => { const el = $(id); el.textContent = text; el.className = `msg ${kind}`; };
+  const shopNames = new Map();
+
+  $("login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("login-btn").disabled = true;
+    say("login-msg", "Signing in…");
+    try {
+      await signInWithEmailAndPassword(auth, $("email").value.trim(), $("password").value);
+    } catch (err) {
+      say("login-msg", "Sign in failed. Check email and password.", "err");
+    } finally {
+      $("login-btn").disabled = false;
+    }
+  });
+  $("signout").addEventListener("click", () => signOut(auth));
+
+  onAuthStateChanged(auth, async (user) => {
+    $("login-card").hidden = Boolean(user);
+    $("app").hidden = !user;
+    $("signout").hidden = !user;
+    if (!user) return;
+    $("password").value = "";
+    try {
+      await call("listRestaurantPos", { clientId: "" }); // confirms super admin
+      await loadShops();
+    } catch (err) {
+      await signOut(auth);
+      say("login-msg", "Only a GTCT super admin can use this page.", "err");
+    }
+  });
+
+  async function loadShops() {
+    const snap = await getDocs(collection(db, "clients"));
+    const shops = snap.docs.map((d) => ({ id: d.id, name: d.data()?.name || d.id }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    shopNames.clear();
+    $("shop").innerHTML = shops.map((s) => {
+      shopNames.set(s.id, s.name);
+      return `<option value="${esc(s.id)}">${esc(s.name)} (${esc(s.id)})</option>`;
+    }).join("");
+    await loadDevices();
+  }
+
+  $("shop").addEventListener("change", () => { $("code-box").hidden = true; void loadDevices(); });
+
+  $("create-btn").addEventListener("click", async () => {
+    const clientId = $("shop").value;
+    if (!clientId) return;
+    $("create-btn").disabled = true;
+    say("create-msg", "Creating…");
+    try {
+      const r = await call("createRestaurantPosActivationCode", { clientId, label: $("label").value.trim() });
+      $("code").textContent = r.code;
+      $("code-meta").textContent = `For ${r.clientName} · works once · expires ${when(r.expiresAt)}`;
+      $("code-box").hidden = false;
+      say("create-msg", "Give this code to the shop. They enter it in POS → Shop Settings → Currency & Regional → Activate.", "ok");
+      await loadDevices();
+    } catch (err) {
+      say("create-msg", err?.message || "Could not create a code.", "err");
+    } finally {
+      $("create-btn").disabled = false;
+    }
+  });
+
+  $("copy-btn").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText($("code").textContent);
+      $("copy-btn").textContent = "Copied ✓";
+      setTimeout(() => ($("copy-btn").textContent = "Copy code"), 1500);
+    } catch { /* select manually */ }
+  });
+
+  async function loadDevices() {
+    const clientId = $("shop").value;
+    if (!clientId) return;
+    try {
+      const r = await call("listRestaurantPos", { clientId });
+      const rows = (r.devices || []).sort((a, b) => (b.activatedAt || 0) - (a.activatedAt || 0));
+      const open = (r.openCodes || []).length;
+      $("devices").innerHTML = (rows.length
+        ? `<table><thead><tr><th>POS</th><th>Activated</th><th>Last seen</th><th>Status</th><th></th></tr></thead><tbody>${
+            rows.map((d) => `<tr>
+              <td><strong>${esc(d.label || "POS")}</strong><br><code>${esc(d.deviceId)}</code></td>
+              <td>${esc(when(d.activatedAt))}</td>
+              <td>${esc(when(d.lastSeenAt))}</td>
+              <td>${d.revokedAt ? '<span class="pill off">Revoked</span>' : '<span class="pill on">Active</span>'}</td>
+              <td>${d.revokedAt ? "" : `<button class="danger" data-revoke="${esc(d.deviceId)}">Revoke</button>`}</td>
+            </tr>`).join("")
+          }</tbody></table>`
+        : `<p class="empty">No POS activated for this shop yet.</p>`) +
+        (open ? `<p class="empty">${open} unused code${open === 1 ? "" : "s"} waiting (they expire by themselves).</p>` : "");
+      say("dev-msg", "");
+    } catch (err) {
+      say("dev-msg", err?.message || "Could not load POS list.", "err");
+    }
+  }
+
+  $("devices").addEventListener("click", async (e) => {
+    const id = e.target.closest("[data-revoke]")?.dataset.revoke;
+    if (!id) return;
+    if (!confirm("Revoke this POS? It stops syncing immediately. The shop will need a new code to connect again.")) return;
+    try {
+      await call("revokeRestaurantPos", { deviceId: id });
+      say("dev-msg", "POS revoked.", "ok");
+      await loadDevices();
+    } catch (err) {
+      say("dev-msg", err?.message || "Could not revoke.", "err");
+    }
+  });
+</script>
+</body>
+</html>

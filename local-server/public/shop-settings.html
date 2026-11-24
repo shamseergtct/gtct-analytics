@@ -225,6 +225,24 @@
                     <span>Bridge URL (optional override)</span>
                     <input id="f-cloud-bridge-url" type="url" maxlength="300" placeholder="Leave blank for default Cloud Function URL" autocomplete="off" />
                   </label>
+                  <div class="ss-activate" id="cloud-activate-box">
+                    <div id="cloud-activate-off">
+                      <strong class="ss-activate-title">Activate this POS</strong>
+                      <p class="hint">Ask GTCT admin for an activation code for this shop. Each code works once and expires in 24 hours.</p>
+                      <div class="ss-secret-row">
+                        <input id="f-cloud-activation-code" type="text" maxlength="14" placeholder="ABCDE-FGH23" autocomplete="off" autocapitalize="characters" spellcheck="false" />
+                        <button type="button" id="cloud-activate-btn" class="btn primary small">Activate</button>
+                      </div>
+                    </div>
+                    <div id="cloud-activate-on" hidden>
+                      <strong class="ss-activate-title ok">✓ Activated for <span id="cloud-activate-shop"></span></strong>
+                      <p class="hint">This POS has its own private key for this shop. POS ID: <code id="cloud-activate-device"></code></p>
+                      <button type="button" id="cloud-deactivate-btn" class="btn ghost small">Disconnect this POS</button>
+                    </div>
+                    <small id="cloud-activate-status" class="muted" aria-live="polite"></small>
+                  </div>
+                  <details class="ss-advanced" id="cloud-secret-advanced">
+                  <summary>Advanced: shared key (old method)</summary>
                   <div class="field">
                     <span>Bridge secret key</span>
                     <div class="ss-secret-row">
@@ -233,7 +251,8 @@
                     </div>
                     <small id="cloud-bridge-secret-status" class="muted" aria-live="polite"></small>
                   </div>
-                  <p class="hint">Local POS always works with the bridge off. When enabled, sync runs in the background and backs off if the cloud is unreachable so Sales stays responsive. Use <strong>Sync now</strong> to push/pull immediately. The key must be the same as the Firebase secret <code>RESTAURANT_DELIVERY_BRIDGE_SECRET</code>; it is stored only on this PC and is never shown again.</p>
+                  </details>
+                  <p class="hint">Local POS always works with the bridge off. When enabled, sync runs in the background and backs off if the cloud is unreachable so Sales stays responsive. Use <strong>Sync now</strong> to push/pull immediately. Keys are stored only on this PC and are never shown again.</p>
                   <div class="ss-actions">
                     <button type="button" id="cloud-bridge-sync-btn" class="btn ghost small">Sync now</button>
                     <span id="cloud-bridge-sync-status" class="muted" aria-live="polite"></span>

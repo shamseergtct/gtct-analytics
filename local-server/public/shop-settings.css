@@ -298,3 +298,52 @@
   color: #1f7a4d;
   font-weight: 600;
 }
+
+/* Activate this POS (one-time code) */
+.ss-activate {
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid #d3dce7;
+  border-radius: 12px;
+  background: #f7faff;
+}
+.ss-activate .hint {
+  margin: 2px 0 8px;
+}
+.ss-activate-title {
+  font-size: 1rem;
+  color: #142033;
+}
+.ss-activate-title.ok,
+#cloud-activate-status.ok {
+  color: #1f7a4d;
+}
+#f-cloud-activation-code {
+  font-family: ui-monospace, "SF Mono", Consolas, monospace;
+  font-size: 1.1rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.ss-advanced {
+  margin-top: 4px;
+}
+.ss-advanced > summary {
+  cursor: pointer;
+  color: #5a6a80;
+  font-size: 0.88rem;
+  padding: 6px 0;
+}
+#f-cloud-activation-code {
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid #c9d4e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #142033;
+}
+#f-cloud-activation-code:focus {
+  outline: none;
+  border-color: #0b539e;
+  box-shadow: 0 0 0 3px rgba(11, 83, 158, 0.15);
+}

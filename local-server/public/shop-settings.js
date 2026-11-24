@@ -316,7 +316,7 @@ async function syncCloudBridge() {
       const why = result.reason || "disabled";
       msg =
         why === "missing_secret"
-          ? "Bridge skipped — no secret key yet. Paste the key in “Bridge secret key” and tap Save key."
+          ? "Bridge skipped — this POS is not activated yet. Enter the activation code and tap Activate."
           : why === "missing_client_id"
             ? "Bridge skipped — clientId not saved."
             : `Bridge skipped (${why})`;
@@ -332,6 +332,90 @@ async function syncCloudBridge() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+function showActivation(activation, note = "") {
+  const on = Boolean(activation?.activated);
+  $("cloud-activate-off").hidden = on;
+  $("cloud-activate-on").hidden = !on;
+  if (on) {
+    $("cloud-activate-shop").textContent = activation.clientName || activation.clientId;
+    $("cloud-activate-device").textContent = activation.deviceId;
+  }
+  // The shop is fixed by the activation; the clientId box only shows it.
+  const clientInput = $("f-cloud-client-id");
+  if (clientInput) {
+    clientInput.readOnly = on;
+    if (on) clientInput.value = activation.clientId;
+  }
+  const status = $("cloud-activate-status");
+  if (status) {
+    status.textContent = note;
+    status.classList.toggle("ok", note.startsWith("✓"));
+  }
+}
+
+async function loadActivationStatus() {
+  try {
+    const res = await api("/v1/cloud-delivery-bridge/activation");
+    if (res.ok) showActivation(res.json?.activation);
+  } catch {
+    /* optional */
+  }
+}
+
+async function activateThisPos() {
+  const input = $("f-cloud-activation-code");
+  const btn = $("cloud-activate-btn");
+  const code = String(input?.value || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (code.length !== 10) {
+    showActivation(null, "Enter the 10-character code, like ABCDE-FGH23.");
+    input?.focus();
+    return;
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Activating…";
+  }
+  try {
+    const res = await api("/v1/cloud-delivery-bridge/activate", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    if (!res.ok) {
+      showActivation(null, res.json?.error || "Activation failed.");
+      return;
+    }
+    input.value = "";
+    if (res.json?.shop) {
+      state.shop = res.json.shop;
+      fillForm(state.shop);
+      state.savedSnapshot = snapshotForm();
+      markDirty();
+    }
+    showActivation(res.json?.activation, "✓ Activated. Tap Sync now to test.");
+    setStatus("POS activated", true);
+  } catch (err) {
+    showActivation(null, err?.message || "Activation failed.");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "Activate";
+    }
+  }
+}
+
+async function deactivateThisPos() {
+  if (!window.confirm("Disconnect this POS from the cloud? Delivery orders will stop syncing until it is activated again with a new code.")) {
+    return;
+  }
+  const res = await api("/v1/cloud-delivery-bridge/activation", { method: "DELETE" });
+  if (!res.ok) {
+    showActivation({ activated: true }, res.json?.error || "Could not disconnect.");
+    await loadActivationStatus();
+    return;
+  }
+  showActivation(res.json?.activation, "Disconnected. Ask GTCT admin to also revoke this POS in the cloud.");
 }
 
 function showBridgeSecretStatus(secret, note = "") {
@@ -786,7 +870,16 @@ function bindUi() {
   $("clear-orders-btn")?.addEventListener("click", clearTestOrders);
   $("cloud-bridge-sync-btn")?.addEventListener("click", () => void syncCloudBridge());
   $("cloud-bridge-secret-btn")?.addEventListener("click", () => void saveBridgeSecret());
+  $("cloud-activate-btn")?.addEventListener("click", () => void activateThisPos());
+  $("f-cloud-activation-code")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void activateThisPos();
+    }
+  });
+  $("cloud-deactivate-btn")?.addEventListener("click", () => void deactivateThisPos());
   void loadBridgeSecretStatus();
+  void loadActivationStatus();
 
   window.addEventListener("beforeunload", (e) => {
     if (!state.dirty) return;

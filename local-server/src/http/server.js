@@ -139,6 +139,9 @@ import {
   resetCloudBridgeBackoff,
   cloudBridgeSecretStatus,
   saveCloudBridgeSecret,
+  cloudBridgeActivationStatus,
+  activateCloudBridge,
+  deactivateCloudBridge,
 } from "../services/cloudDeliveryBridge.js";
 import { markDeliveryPayment } from '../services/deliveryPaymentReports.js';
 import { listDeliveryCashHandovers, confirmDeliveryCashHandover }
@@ -766,6 +769,42 @@ export function createServer(config) {
             error: err.message,
             code: err.code,
           });
+        }
+        return;
+      }
+
+      if (path === "/v1/cloud-delivery-bridge/activation" || path === "/v1/cloud-delivery-bridge/activate") {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          if (method === "GET" && path.endsWith("/activation")) {
+            sendJson(res, 200, { activation: cloudBridgeActivationStatus(config) });
+            return;
+          }
+          let activation;
+          if (method === "POST" && path.endsWith("/activate")) {
+            const body = await readBody(req);
+            activation = await activateCloudBridge(config.testTenantId, config, body?.code);
+          } else if (method === "DELETE" && path.endsWith("/activation")) {
+            activation = deactivateCloudBridge(config);
+          } else {
+            sendJson(res, 405, { error: "Method not allowed" });
+            return;
+          }
+          resetCloudBridgeBackoff();
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: activation.activated ? "cloud_bridge.activate" : "cloud_bridge.deactivate",
+            entityType: "shop_settings",
+            entityId: "cloud_bridge_activation",
+            detail: activation.activated
+              ? { clientId: activation.clientId, deviceId: activation.deviceId }
+              : {}, // never log codes or keys
+          });
+          sendJson(res, 200, { activation, shop: getShopSettings(config.testTenantId) });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message, code: err.code });
         }
         return;
       }
