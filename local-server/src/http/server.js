@@ -24,7 +24,7 @@ import {
   readSessionId,
   isTrustedBrowserOrigin,
 } from "../sessions.js";
-import { listStations, getStation, upsertStation } from "../services/stations.js";
+import { listStations, getStation, upsertStation, removeStation } from "../services/stations.js";
 import {
   listPrinters,
   getPrinter,
@@ -1640,6 +1640,30 @@ export function createServer(config) {
         return;
       }
 
+      const stationDelete = /^\/v1\/stations\/([^/]+)$/.exec(path);
+      if (method === "DELETE" && stationDelete) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        try {
+          const result = removeStation(decodeURIComponent(stationDelete[1]));
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: "station.remove",
+            entityType: "station",
+            entityId: result.stationId,
+            detail: { mode: result.mode, name: result.name },
+          });
+          sendJson(res, 200, { ok: true, ...result });
+        } catch (err) {
+          sendJson(res, err.status || 400, {
+            error: err.message,
+            ...(err.code ? { code: err.code, items: err.items } : {}),
+          });
+        }
+        return;
+      }
+
       if (method === "PUT" && path === "/v1/stations") {
         const auth = requireAuth(req, res, config, ["admin"]);
         if (!auth) return;
@@ -1668,11 +1692,13 @@ export function createServer(config) {
           sendJson(res, 404, { error: "Station not found." });
           return;
         }
-        if (
-          allStations.some(
-            (s) => s.station_id !== stationId && String(s.name).toUpperCase() === stationName
-          )
-        ) {
+        const sameName = allStations.find(
+          (s) => s.station_id !== stationId && String(s.name).toUpperCase() === stationName
+        );
+        if (sameName && !sameName.is_active && !String(body?.stationId || "").trim()) {
+          // Adding a name that was removed earlier: bring that station back.
+          stationId = sameName.station_id;
+        } else if (sameName) {
           sendJson(res, 409, { error: `A station called ${stationName} already exists.` });
           return;
         }

@@ -511,14 +511,15 @@ async function createStation(rawName) {
   const station = await saveStation({ name, isActive: true, printerId: null });
   if (!station) return null;
   await reloadStations();
-  toast(`${station.name} added. Choose its printer in Printer Settings.`);
+  state.highlightStation = station.station_id;
+  toast(`✓ ${station.name} added successfully. Choose its printer in Printer Settings.`);
   return station;
 }
 
 function renderStationAdmin() {
   const host = $("station-admin-list");
   if (!host) return;
-  const list = state.stations.filter((s) => s.station_id !== "station_cashier");
+  const list = state.stations.filter((s) => s.station_id !== "station_cashier" && s.is_active);
   if (!list.length) {
     host.innerHTML = `<p class="muted">No preparation centers yet.</p>`;
     return;
@@ -526,15 +527,36 @@ function renderStationAdmin() {
   host.innerHTML = list
     .map((s) => {
       const count = state.items.filter((it) => (it.stationIds || []).includes(s.station_id)).length;
-      return `<div class="station-admin-row" style="display:flex;align-items:center;gap:12px;padding:12px 4px;border-top:1px solid var(--line)">
-        <div style="flex:1;min-width:0">
-          <strong style="font-size:1.05rem">${escapeHtml(s.name)}</strong>
-          <div class="muted" style="font-size:0.85rem">${count} item${count === 1 ? "" : "s"}${s.is_active ? "" : " · inactive"}</div>
+      const isNew = state.highlightStation === s.station_id;
+      return `<div class="station-admin-row${isNew ? " is-new" : ""}" data-station-row="${escapeHtml(s.station_id)}">
+        <div class="station-admin-main">
+          <strong>${escapeHtml(s.name)}</strong>
+          <span class="muted">${count ? `${count} item${count === 1 ? "" : "s"}` : "No items yet"}</span>
         </div>
         <button type="button" class="btn ghost small" data-station-rename="${escapeHtml(s.station_id)}">Rename</button>
+        <button type="button" class="btn ghost small station-remove-btn" data-station-remove="${escapeHtml(s.station_id)}" ${count ? `title="Move its items to another center first"` : ""}>Remove</button>
       </div>`;
     })
     .join("");
+}
+
+async function removeStationFromMenu(stationId) {
+  const s = state.stations.find((x) => x.station_id === stationId);
+  if (!s) return;
+  const count = state.items.filter((it) => (it.stationIds || []).includes(stationId)).length;
+  if (count) {
+    toast(`${s.name} is used by ${count} item${count === 1 ? "" : "s"}. Move them to another preparation center first.`, true);
+    return;
+  }
+  if (!window.confirm(`Remove preparation center ${s.name}?`)) return;
+  const res = await api(`/v1/stations/${encodeURIComponent(stationId)}`, { method: "DELETE" });
+  if (!res.ok) {
+    toast(res.json?.error || "Could not remove it.", true);
+    return;
+  }
+  await reloadStations();
+  renderStationAdmin();
+  toast(`✓ ${s.name} removed.`);
 }
 
 async function renameStationFromMenu(stationId) {
@@ -2084,9 +2106,20 @@ function bindUi() {
   $("logout-btn").addEventListener("click", logout);
   $("new-station-btn")?.addEventListener("click", async () => {
     const input = $("new-station-input");
-    if (await createStation(input.value)) {
-      input.value = "";
-      renderStationAdmin();
+    const btn = $("new-station-btn");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    try {
+      if (await createStation(input.value)) {
+        input.value = "";
+        renderStationAdmin();
+        setTimeout(() => {
+          state.highlightStation = null;
+          document.querySelector(".station-admin-row.is-new")?.classList.remove("is-new");
+        }, 2500);
+      }
+    } finally {
+      btn.disabled = false;
     }
   });
   $("new-station-input")?.addEventListener("keydown", (e) => {
@@ -2098,6 +2131,8 @@ function bindUi() {
   $("station-admin-list")?.addEventListener("click", (e) => {
     const btn = e.target.closest("[data-station-rename]");
     if (btn) renameStationFromMenu(btn.getAttribute("data-station-rename"));
+    const rm = e.target.closest("[data-station-remove]");
+    if (rm) removeStationFromMenu(rm.getAttribute("data-station-remove"));
   });
   $("f-add-station-btn")?.addEventListener("click", async () => {
     const name = window.prompt("Name of the new preparation center (e.g. SANDWICH):", "");

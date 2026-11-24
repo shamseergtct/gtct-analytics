@@ -157,6 +157,7 @@ function resolveStationId(nameOrId, stations) {
   const byName = stations.find(
     (s) =>
       s.station_id !== "station_cashier" &&
+      s.is_active &&
       String(s.name || "")
         .trim()
         .toLowerCase() === needle

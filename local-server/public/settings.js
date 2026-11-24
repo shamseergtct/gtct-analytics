@@ -260,9 +260,9 @@ function renderPrinters() {
 function renderStations() {
   const host = $("station-list");
   host.innerHTML = "";
-  for (const s of state.stations) {
+  for (const s of state.stations.filter((x) => x.is_active)) {
     const row = document.createElement("div");
-    row.className = "station-row";
+    row.className = `station-row${state.highlightStation === s.station_id ? " is-new" : ""}`;
     const options = [
       `<option value="">— none —</option>`,
       ...state.printers.map(
@@ -274,7 +274,7 @@ function renderStations() {
       <div>
         <strong>${escapeHtml(s.name)}</strong>
         <div class="muted">${escapeHtml(s.station_id)}</div>
-        ${s.station_id === "station_cashier" ? "" : `<button type="button" class="btn ghost small" data-rename-station="${escapeHtml(s.station_id)}" style="margin-top:0.35rem">Rename</button>`}
+        ${s.station_id === "station_cashier" ? "" : `<div style="display:flex;gap:6px;margin-top:0.35rem"><button type="button" class="btn ghost small" data-rename-station="${escapeHtml(s.station_id)}">Rename</button><button type="button" class="btn ghost small station-remove-btn" data-remove-station="${escapeHtml(s.station_id)}">Remove</button></div>`}
       </div>
       <select data-station="${escapeHtml(s.station_id)}">${options}</select>
     `;
@@ -328,10 +328,46 @@ async function addStation() {
     input.focus();
     return;
   }
-  if (!(await putStation({ name, isActive: true, printerId: null }))) return;
-  input.value = "";
+  const btn = $("add-station-btn");
+  if (btn.disabled) return;
+  btn.disabled = true;
+  try {
+    const res = await api("/v1/stations", {
+      method: "PUT",
+      body: JSON.stringify({ name, isActive: true, printerId: null }),
+    });
+    if (!res.ok) {
+      setStatus("station-status", res.json?.error || "Station save failed", false);
+      return;
+    }
+    input.value = "";
+    state.highlightStation = res.json.station?.station_id || null;
+    await refreshAll();
+    setStatus(
+      "station-status",
+      `✓ Station ${res.json.station?.name || name.toUpperCase()} added successfully. Choose its printer, then press Save assignments.`,
+      true
+    );
+    setTimeout(() => {
+      state.highlightStation = null;
+      document.querySelector(".station-row.is-new")?.classList.remove("is-new");
+    }, 2500);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeStationSetting(stationId) {
+  const station = state.stations.find((s) => s.station_id === stationId);
+  if (!station) return;
+  if (!window.confirm(`Remove station ${station.name}?`)) return;
+  const res = await api(`/v1/stations/${encodeURIComponent(stationId)}`, { method: "DELETE" });
+  if (!res.ok) {
+    setStatus("station-status", res.json?.error || "Could not remove the station.", false);
+    return;
+  }
   await refreshAll();
-  setStatus("station-status", `Station ${name.toUpperCase()} added. Choose its printer, then Save assignments.`, true);
+  setStatus("station-status", `✓ Station ${station.name} removed.`, true);
 }
 
 async function renameStation(stationId) {
@@ -587,6 +623,8 @@ function bindUi() {
   $("station-list").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-rename-station]");
     if (btn) renameStation(btn.getAttribute("data-rename-station"));
+    const rm = e.target.closest("[data-remove-station]");
+    if (rm) removeStationSetting(rm.getAttribute("data-remove-station"));
   });
   $("preview-btn").addEventListener("click", previewTicket);
   for (const [section, printerId, mode] of [

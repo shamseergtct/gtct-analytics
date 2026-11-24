@@ -403,6 +403,14 @@
                 <button type="button" id="new-station-btn" class="btn primary">+ Add</button>
               </div>
               <div id="station-admin-list" class="station-admin-list"></div>
+              <style>
+                .station-admin-row{display:flex;align-items:center;gap:8px;padding:12px 8px;border-top:1px solid var(--line);border-radius:10px;transition:background .6s}
+                .station-admin-row.is-new{background:#e8f5ee}
+                .station-admin-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+                .station-admin-main strong{font-size:1.05rem}
+                .station-admin-main .muted{font-size:.85rem}
+                .station-remove-btn{color:#b42318 !important}
+              </style>
             </div>
           </section>
 

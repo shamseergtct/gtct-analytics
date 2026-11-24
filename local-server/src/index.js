@@ -5,6 +5,7 @@ import { initLogger, log } from "./util/logger.js";
 import { createServer } from "./http/server.js";
 import { startDispatchLoop } from "./print/dispatcher.js";
 import { seedIfEmpty } from "./seed/sampleData.js";
+import { repairStations } from "./services/stations.js";
 import { startTestAutoBackups } from "./backup/testBackup.js";
 import { recordTestBackupAttempt } from "./backup/testBackupManagement.js";
 import { startCloudDeliveryBridgeLoop } from "./services/cloudDeliveryBridge.js";
@@ -23,6 +24,10 @@ async function boot() {
   await runMigrations(getDb());
   stampMigratedTestDatabase(getDb(), config);
   seedIfEmpty(config);
+  const removedBrokenStations = repairStations();
+  if (removedBrokenStations) {
+    log.warn("Removed preparation stations saved without an id", { count: removedBrokenStations });
+  }
   // P2-C1: TEST-only; opt-in, checked hot SQLite backup BEFORE serving requests.
   const testBackups = await startTestAutoBackups({ logger: log, onAttempt: recordTestBackupAttempt });
 

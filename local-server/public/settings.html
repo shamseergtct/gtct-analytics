@@ -167,6 +167,12 @@
               <button type="button" id="add-station-btn" class="btn ghost">Add station</button>
             </div>
             <p class="muted" style="margin:0.4rem 0 0;font-size:0.85rem">The name is also what you write in the menu file's preparation_center column.</p>
+            <style>
+              #station-list .station-row{display:flex;flex-direction:column;align-items:stretch;gap:10px;transition:background .6s}
+              #station-list .station-row select{width:100%;max-width:none}
+              #station-list .station-row.is-new{background:#e8f5ee;border-color:#3b9b6e}
+              .station-remove-btn{color:#b42318 !important}
+            </style>
             <p id="station-status" class="status-line" hidden></p>
           </section>
 
