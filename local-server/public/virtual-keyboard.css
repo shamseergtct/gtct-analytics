@@ -7,8 +7,8 @@
   z-index: 12000;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px calc(12px + env(safe-area-inset-bottom, 0px));
+  gap: 6px;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
   background: #d5dae1;
   border-top: 1px solid #c2c8d0;
   box-shadow: 0 -10px 30px rgba(20, 32, 51, 0.16);
@@ -81,7 +81,7 @@
 .vk-keys {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   max-width: 1000px;
   margin: 0 auto;
@@ -90,21 +90,21 @@
 .vk-row {
   display: flex;
   justify-content: center;
-  gap: 7px;
+  gap: 6px;
 }
 
 .vk-key {
   flex: 1 1 0;
   min-width: 0;
-  max-width: 92px;
-  height: 56px;
+  max-width: 84px;
+  height: 46px;
   padding: 0 4px;
   border: 0;
   border-radius: 10px;
   background: #fff;
   color: #142033;
   font: inherit;
-  font-size: 1.3rem;
+  font-size: 1.2rem;
   font-weight: 500;
   box-shadow: 0 1px 0 rgba(20, 32, 51, 0.28);
   cursor: pointer;
@@ -118,7 +118,7 @@
 }
 
 .vk-row-digits .vk-key {
-  height: 48px;
+  height: 38px;
   font-size: 1.15rem;
   background: #eef1f5;
 }
@@ -188,7 +188,7 @@
 .vk-numpad .vk-key {
   max-width: none;
   width: 100%;
-  height: 60px;
+  height: 50px;
   font-size: 1.5rem;
 }
 
@@ -198,15 +198,68 @@
   margin: 0 auto;
 }
 
+/* Leave room for the keyboard so nothing useful hides behind it. */
 body.vk-open {
-  padding-bottom: min(46vh, 380px);
+  padding-bottom: var(--vk-h, 300px);
 }
 
-body.vk-open .menu-pane,
-body.vk-open .cart-pane,
-body.vk-open .login-view,
+body.vk-open .menu-grid,
+body.vk-open .ms-panel,
 body.vk-open dialog[open] {
-  scroll-padding-bottom: min(46vh, 380px);
+  padding-bottom: calc(var(--vk-h, 300px) + 12px) !important;
+  scroll-padding-bottom: calc(var(--vk-h, 300px) + 12px);
+}
+
+/* Sales screen: shrink the whole screen to the space above the keyboard, so the
+   search results scroll in view instead of sitting behind the keys. */
+body.sales-app.vk-open {
+  padding-bottom: 0;
+}
+body.sales-app.vk-open .main-view:not([hidden]) {
+  height: calc(100dvh - var(--vk-h, 300px));
+}
+body.sales-app.vk-open .menu-grid {
+  padding-bottom: 12px !important;
+}
+/* While typing a search, show short cards (small picture strip) so the
+   names, prices and + buttons of the results fit above the keyboard. */
+body.sales-app.vk-open .mcard .mc-media {
+  height: 44px !important;
+  min-height: 44px !important;
+  flex: 0 0 44px !important;
+  aspect-ratio: auto !important;
+}
+body.sales-app.vk-open .mcard .mc-letter {
+  font-size: 1rem !important;
+}
+body.sales-app.vk-open .mcard {
+  min-height: 0 !important;
+  height: auto !important;
+}
+
+/* On larger screens the keyboard is a compact centred tray, not full width. */
+@media (min-width: 900px) {
+  .vk-panel {
+    left: 50%;
+    right: auto;
+    width: min(820px, calc(100vw - 24px));
+    transform: translateX(-50%);
+    border-radius: 16px 16px 0 0;
+    border: 1px solid #c2c8d0;
+    border-bottom: 0;
+    animation: vk-slide-up-centered 0.16s ease-out;
+  }
+}
+
+@keyframes vk-slide-up-centered {
+  from {
+    transform: translate(-50%, 24px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
 }
 
 @media (max-width: 600px) {
@@ -217,11 +270,11 @@ body.vk-open dialog[open] {
     gap: 5px;
   }
   .vk-key {
-    height: 48px;
-    font-size: 1.1rem;
+    height: 44px;
+    font-size: 1.05rem;
   }
   .vk-row-digits .vk-key {
-    height: 42px;
+    height: 36px;
   }
 }
 

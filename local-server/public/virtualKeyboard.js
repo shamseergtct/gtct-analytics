@@ -162,16 +162,7 @@ function ensureDom() {
   panel.setAttribute("role", "group");
   panel.setAttribute("aria-label", "On-screen keyboard");
   panel.innerHTML = `
-    <div class="vk-bar">
-      <strong class="vk-title">Keyboard</strong>
-      <div class="vk-bar-actions">
-        <button type="button" class="vk-bar-btn" data-vk-act="clear" title="Clear field">Clear</button>
-        <button type="button" class="vk-bar-btn vk-bar-hide" data-vk-act="done" aria-label="Hide keyboard" title="Hide keyboard">
-          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M6.7 9.3a1 1 0 0 1 1.4 0L12 13.2l3.9-3.9a1 1 0 1 1 1.4 1.4l-4.6 4.6a1 1 0 0 1-1.4 0L6.7 10.7a1 1 0 0 1 0-1.4z"/></svg>
-          Hide
-        </button>
-      </div>
-    </div>
+    <strong class="vk-title" hidden>Keyboard</strong>
     <div class="vk-keys" data-vk-keys></div>
   `;
   document.body.appendChild(panel);
@@ -230,8 +221,8 @@ function renderKeys() {
       </div>
       <div class="vk-row vk-row-bottom">
         ${keyButton("ABC", "mode-text", "vk-key-action")}
-        ${keyButton("space", "space", "vk-key-space")}
-        ${keyButton("Done", "done", "vk-key-action vk-key-done")}
+        ${keyButton("Clear", "clear", "vk-key-action")}
+        ${keyButton("Done", "done", "vk-key-done vk-key-wide")}
       </div>
     `;
     return;
@@ -266,6 +257,7 @@ function renderKeys() {
       ${keyButton("@", "@", "vk-key-muted")}
       ${keyButton("space", "space", "vk-key-space")}
       ${keyButton(".", ".", "vk-key-muted")}
+      ${keyButton("Clear", "clear", "vk-key-action")}
       ${keyButton("Done", "done", "vk-key-done vk-key-wide")}
     </div>
   `;
@@ -274,6 +266,10 @@ function renderKeys() {
 function handleKey(key) {
   const el = STATE.target;
   if (!el) return;
+  if (key === "clear") {
+    clearValue(el);
+    return;
+  }
   if (key === "backspace") {
     deleteBackward(el);
     return;
@@ -316,12 +312,51 @@ function handleKey(key) {
   insertText(el, text);
 }
 
+function keyboardHeight() {
+  return STATE.panel && !STATE.panel.hidden ? STATE.panel.getBoundingClientRect().height : 0;
+}
+
+/** Publish the keyboard height so lists can leave room for it (CSS var --vk-h). */
+function syncKeyboardSpace() {
+  const h = Math.round(keyboardHeight());
+  document.documentElement.style.setProperty("--vk-h", `${h}px`);
+}
+
+function scrollableParent(el) {
+  let node = el?.parentElement;
+  while (node && node !== document.body) {
+    const style = getComputedStyle(node);
+    if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+    node = node.parentElement;
+  }
+  return document.scrollingElement || document.documentElement;
+}
+
+/**
+ * Keep the field visible above the keyboard. Search boxes go near the top so
+ * the results under them stay in view; other fields only move if covered.
+ */
 function scrollTargetIntoView(el) {
-  if (!el?.scrollIntoView) return;
-  try {
-    el.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
-  } catch {
-    el.scrollIntoView();
+  if (!el) return;
+  syncKeyboardSpace();
+  const rect = el.getBoundingClientRect();
+  const visibleBottom = window.innerHeight - keyboardHeight() - 12;
+  const isSearch =
+    String(el.type || "").toLowerCase() === "search" ||
+    String(el.getAttribute("data-vk") || "").toLowerCase() === "search";
+  let delta = 0;
+  if (isSearch && rect.top > 96) delta = rect.top - 96;
+  else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
+  else if (rect.top < 8) delta = rect.top - 8;
+  if (!delta) return;
+  const scroller = scrollableParent(el);
+  scroller.scrollBy({ top: delta, behavior: "smooth" });
+  if (scroller !== document.scrollingElement) {
+    window.setTimeout(() => {
+      const r = el.getBoundingClientRect();
+      const vb = window.innerHeight - keyboardHeight() - 12;
+      if (r.bottom > vb) window.scrollBy({ top: r.bottom - vb, behavior: "smooth" });
+    }, 250);
   }
 }
 
@@ -363,6 +398,7 @@ function hideKeyboard({ blur = false } = {}) {
   restoreInputMode(target, saved);
   if (STATE.panel) STATE.panel.hidden = true;
   document.body.classList.remove("vk-open");
+  document.documentElement.style.setProperty("--vk-h", "0px");
   if (blur && target) {
     STATE.suppressFocusUntil = Date.now() + 250;
     target.blur();
