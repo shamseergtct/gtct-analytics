@@ -87,6 +87,7 @@
           <nav class="ms-tabs" role="tablist" aria-label="Menu Setup sections">
             <button type="button" class="ms-tab active" data-tab="items" role="tab" aria-selected="true">Items</button>
             <button type="button" class="ms-tab" data-tab="categories" role="tab" aria-selected="false">Categories</button>
+            <button type="button" class="ms-tab" data-tab="stations" role="tab" aria-selected="false">Preparation Centers</button>
             <button type="button" class="ms-tab" data-tab="notes" role="tab" aria-selected="false">Kitchen Instructions</button>
             <button type="button" class="ms-tab" data-tab="addons" role="tab" aria-selected="false">Add-ons</button>
           </nav>
@@ -167,9 +168,12 @@
                     </label>
                     <label class="field">
                       <span>Kitchen station</span>
-                      <select id="f-station">
-                        <option value="">None — No Preparation</option>
-                      </select>
+                      <div class="select-with-add">
+                        <select id="f-station">
+                          <option value="">None — No Preparation</option>
+                        </select>
+                        <button type="button" id="f-add-station-btn" class="btn ghost small" title="Add new preparation center">+ New</button>
+                      </div>
                       <p class="info-callout">Use None for packaged items (e.g. bottled drinks). They skip prep tickets and still appear on the cashier receipt.</p>
                     </label>
                     <div class="form-grid-2">
@@ -383,6 +387,22 @@
                 </label>
               </div>
               <div id="category-admin-list"></div>
+            </div>
+          </section>
+
+          <!-- PREPARATION CENTERS -->
+          <section id="panel-stations" class="ms-panel" role="tabpanel" hidden>
+            <div class="ms-card">
+              <h2 style="margin:0 0 6px;font-size:1.1rem">Preparation Centers</h2>
+              <p class="muted" style="margin:0 0 12px">Where each item is made (Juice, Shawarma, Sandwich…). The name is what you write in the menu file's <strong>preparation_center</strong> column. Choose each center's printer in Printer Settings.</p>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:14px">
+                <label class="field" style="flex:1 1 220px;margin:0">
+                  <span>New preparation center</span>
+                  <input id="new-station-input" type="text" maxlength="30" placeholder="e.g. SANDWICH" autocapitalize="characters" />
+                </label>
+                <button type="button" id="new-station-btn" class="btn primary">+ Add</button>
+              </div>
+              <div id="station-admin-list" class="station-admin-list"></div>
             </div>
           </section>
 

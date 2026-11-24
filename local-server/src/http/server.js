@@ -1659,10 +1659,10 @@ export function createServer(config) {
             sendJson(res, 400, { error: "Use letters or numbers in the station name." });
             return;
           }
+          // The id can be taken by a station that was later renamed: pick a free one.
           stationId = `station_${slug}`;
-          if (allStations.some((s) => s.station_id === stationId)) {
-            sendJson(res, 409, { error: `A station called ${stationName} already exists.` });
-            return;
+          for (let n = 2; allStations.some((s) => s.station_id === stationId); n += 1) {
+            stationId = `station_${slug}_${n}`;
           }
         } else if (!allStations.some((s) => s.station_id === stationId)) {
           sendJson(res, 404, { error: "Station not found." });

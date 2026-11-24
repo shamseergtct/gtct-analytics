@@ -296,6 +296,8 @@ function setTab(tab) {
   $("panel-items").hidden = tab !== "items";
   $("panel-categories").hidden = tab !== "categories";
   $("panel-notes").hidden = tab !== "notes";
+  if ($("panel-stations")) $("panel-stations").hidden = tab !== "stations";
+  if (tab === "stations") renderStationAdmin();
   if ($("panel-addons")) $("panel-addons").hidden = tab !== "addons";
   if (tab === "notes") renderKitchenLibrary();
   if (tab === "addons") renderAddonsLibrary();
@@ -479,6 +481,81 @@ function renderStations(selected = "") {
     sel.appendChild(opt);
   }
   sel.value = selected || "";
+}
+
+/* ---------- Preparation centers (stations) ---------- */
+async function saveStation(body) {
+  const res = await api("/v1/stations", { method: "PUT", body: JSON.stringify(body) });
+  if (res.status === 401) {
+    showLogin("Session expired.");
+    return null;
+  }
+  if (!res.ok) {
+    toast(res.json?.error || "Could not save the preparation center.", true);
+    return null;
+  }
+  return res.json.station;
+}
+
+async function reloadStations() {
+  const res = await api("/v1/stations");
+  if (res.ok) state.stations = res.json.stations || [];
+}
+
+async function createStation(rawName) {
+  const name = String(rawName || "").trim();
+  if (name.length < 2) {
+    toast("Type a name first, e.g. SANDWICH.", true);
+    return null;
+  }
+  const station = await saveStation({ name, isActive: true, printerId: null });
+  if (!station) return null;
+  await reloadStations();
+  toast(`${station.name} added. Choose its printer in Printer Settings.`);
+  return station;
+}
+
+function renderStationAdmin() {
+  const host = $("station-admin-list");
+  if (!host) return;
+  const list = state.stations.filter((s) => s.station_id !== "station_cashier");
+  if (!list.length) {
+    host.innerHTML = `<p class="muted">No preparation centers yet.</p>`;
+    return;
+  }
+  host.innerHTML = list
+    .map((s) => {
+      const count = state.items.filter((it) => (it.stationIds || []).includes(s.station_id)).length;
+      return `<div class="station-admin-row" style="display:flex;align-items:center;gap:12px;padding:12px 4px;border-top:1px solid var(--line)">
+        <div style="flex:1;min-width:0">
+          <strong style="font-size:1.05rem">${escapeHtml(s.name)}</strong>
+          <div class="muted" style="font-size:0.85rem">${count} item${count === 1 ? "" : "s"}${s.is_active ? "" : " · inactive"}</div>
+        </div>
+        <button type="button" class="btn ghost small" data-station-rename="${escapeHtml(s.station_id)}">Rename</button>
+      </div>`;
+    })
+    .join("");
+}
+
+async function renameStationFromMenu(stationId) {
+  const s = state.stations.find((x) => x.station_id === stationId);
+  if (!s) return;
+  const name = window.prompt(
+    `New name for ${s.name}.\nItems stay on this center; only the name changes.`,
+    s.name
+  );
+  if (name == null || !name.trim() || name.trim().toUpperCase() === s.name) return;
+  const station = await saveStation({
+    stationId,
+    name: name.trim(),
+    description: s.description || "",
+    isActive: Boolean(s.is_active),
+    printerId: s.printer_id || null,
+  });
+  if (!station) return;
+  await reloadStations();
+  renderStationAdmin();
+  toast(`Renamed to ${station.name}. Use this name in the menu file from now on.`);
 }
 
 function renderSegment() {
@@ -2005,6 +2082,31 @@ function bindUi() {
     $("toggle-password-btn").textContent = show ? "Hide" : "Show";
   });
   $("logout-btn").addEventListener("click", logout);
+  $("new-station-btn")?.addEventListener("click", async () => {
+    const input = $("new-station-input");
+    if (await createStation(input.value)) {
+      input.value = "";
+      renderStationAdmin();
+    }
+  });
+  $("new-station-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("new-station-btn").click();
+    }
+  });
+  $("station-admin-list")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-station-rename]");
+    if (btn) renameStationFromMenu(btn.getAttribute("data-station-rename"));
+  });
+  $("f-add-station-btn")?.addEventListener("click", async () => {
+    const name = window.prompt("Name of the new preparation center (e.g. SANDWICH):", "");
+    if (name == null) return;
+    const station = await createStation(name);
+    if (!station) return;
+    renderStations(station.station_id);
+    markDirty();
+  });
   document.querySelectorAll(".ms-tabs > .ms-tab[data-tab]").forEach((btn) => {
     btn.addEventListener("click", () => setTab(btn.dataset.tab));
   });
