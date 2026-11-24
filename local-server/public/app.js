@@ -2338,12 +2338,13 @@ function renderMenu() {
     const initial = menuItemInitials(item.name);
 
     const wrap = document.createElement("div");
-    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}${layoutEdit ? " is-layout-editable" : ""}${inCartQty > 0 ? " has-qty" : ""}`;
+    wrap.className = `mcard-wrap${soldOut ? " is-sold-out" : ""}${layoutEdit ? " is-layout-editable" : ""}${inCartQty > 0 ? " has-qty" : ""}${hasPhoto ? "" : " no-photo"}`;
     wrap.dataset.itemId = item.item_id;
 
     const card = document.createElement("button");
     card.type = "button";
     card.className = `mcard cat-${theme.slug}${soldOut ? " is-sold-out" : ""}${hasPhoto ? "" : " no-photo"}`;
+    card.style.setProperty("--cat-color", theme.dot);
     card.disabled = soldOut && !layoutEdit;
     card.setAttribute(
       "aria-label",
@@ -2380,6 +2381,7 @@ function renderMenu() {
       img.addEventListener("error", () => {
         img.remove();
         card.classList.add("no-photo");
+        wrap.classList.add("no-photo");
         const ph = document.createElement("span");
         ph.className = "mc-letter";
         ph.style.background = theme.bg;

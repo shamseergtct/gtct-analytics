@@ -7853,18 +7853,85 @@ body.sales-app .menu-empty strong {
   }
 }
 
-/* Items without a photo: a short colour tile instead of a big empty square,
-   so many more items fit on screen (PC / tablet). */
+/* Items without a photo (PC / tablet): a compact text card with the category
+   colour as a bar on the left — no big letter tile, so twice as many items fit. */
 @media (min-width: 600px) {
   body.sales-app .mcard.no-photo {
     min-height: 0;
+    border: 1px solid #e1e7ef;
+    border-radius: 14px;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(20, 32, 51, 0.05);
+  }
+  body.sales-app .mcard.no-photo::before {
+    content: "";
+    position: absolute;
+    left: -1px;
+    top: -1px;
+    bottom: -1px;
+    width: 6px;
+    border-radius: 14px 0 0 14px;
+    background: var(--cat-color, #7a8496);
+  }
+  body.sales-app .mcard.no-photo:not(:disabled):hover {
+    border-color: #b9c8da;
   }
   body.sales-app .mcard.no-photo .mc-media {
-    aspect-ratio: auto;
-    height: 76px;
-    min-height: 76px;
+    display: none;
   }
-  body.sales-app .mcard.no-photo .mc-letter {
-    font-size: 1.25rem;
+  body.sales-app .mcard.no-photo .mc-body {
+    gap: 10px;
+    padding: 12px 12px 12px 18px;
+  }
+  body.sales-app .mcard.no-photo .mc-name {
+    padding-right: 26px;
+    font-size: 15.5px;
+  }
+  body.sales-app .mcard.no-photo .mc-bottom {
+    align-items: center;
+  }
+  body.sales-app .mcard.no-photo .mc-price {
+    font-size: 17px;
+  }
+  body.sales-app .mcard.no-photo .mc-plus {
+    width: 38px;
+    height: 38px;
+  }
+  body.sales-app .mcard-wrap.no-photo .mc-info {
+    top: 2px;
+    right: 2px;
+    width: 40px;
+    height: 40px;
+  }
+  body.sales-app .mcard-wrap.no-photo .mc-info > span {
+    width: 24px;
+    height: 24px;
+    background: transparent;
+    box-shadow: none;
+    color: #8592a5;
+    font-size: 17px;
+  }
+  body.sales-app .mcard-wrap.no-photo .mc-info:hover > span {
+    color: #0b539e;
+  }
+  body.sales-app .mcard.no-photo .mc-sold {
+    top: auto;
+    left: auto;
+    bottom: 18px;
+    right: 12px;
+  }
+  body.sales-app .mcard-wrap.no-photo .mc-stock {
+    top: 4px;
+    left: auto;
+    right: 40px;
+    width: 36px;
+    height: 36px;
+    min-width: 36px;
+  }
+  body.sales-app .mcard-wrap.no-photo .mc-stock.is-sold {
+    top: 4px;
+  }
+  body.sales-app .mcard-wrap.no-photo:has(.mc-stock) .mc-name {
+    padding-right: 70px;
   }
 }
