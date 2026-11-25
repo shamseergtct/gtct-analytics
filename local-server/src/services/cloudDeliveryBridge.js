@@ -467,6 +467,40 @@ export function ensureLocalDriverForCloudBoy(shopId, cloudBoyId, name = "") {
   return userId;
 }
 
+/** Last successful publish fingerprint per local order id (skip unchanged ticks). */
+const lastPublishFp = new Map();
+
+function publishPayloadFingerprint(payload) {
+  try {
+    return JSON.stringify({
+      orderNumber: payload.orderNumber || "",
+      tokenNumber: payload.tokenNumber ?? null,
+      businessDate: payload.businessDate || "",
+      customerName: payload.customerName || "",
+      customerPhone: payload.customerPhone || "",
+      blockNumber: payload.blockNumber || "",
+      roadNumber: payload.roadNumber || "",
+      buildingNumber: payload.buildingNumber || "",
+      addressNote: payload.addressNote || "",
+      currencyCode: payload.currencyCode || "",
+      currencyDecimals: Number(payload.currencyDecimals ?? 2),
+      totalCents: Number(payload.totalCents || 0),
+      goodsCents: Number(payload.goodsCents || 0),
+      deliveryChargeCents: Number(payload.deliveryChargeCents || 0),
+      taxCents: Number(payload.taxCents || 0),
+      taxName: payload.taxName || "",
+      shopPayment: payload.shopPayment || null,
+      paymentStatus: payload.paymentStatus || "",
+      splitReview: payload.splitReview || null,
+      claimRevision: payload.claimRevision || "",
+      prepRevision: payload.prepRevision || "",
+      lines: payload.lines || [],
+    });
+  } catch {
+    return String(Date.now());
+  }
+}
+
 function buildPublishPayload(shopId, order) {
   let bill = null;
   try {
@@ -797,10 +831,23 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
 
   // Bridge actor is synthetic; listAvailableDeliveries requires delivery guard.
   // Publish ready pool + claimed open orders so shop payment updates sync.
+  // Only send payloads that changed since last successful sync (stops POS thrash
+  // and Delivery App blink from rewriting the same Firestore docs every tick).
   const publishSource = listPublishableDeliveryOrders(shopId);
-  const publishOrders = publishSource.map((order) =>
-    buildPublishPayload(shopId, order)
-  );
+  const publishOrders = [];
+  const seenPublishIds = new Set();
+  for (const order of publishSource) {
+    const payload = buildPublishPayload(shopId, order);
+    const id = String(payload.localOrderId || "");
+    if (!id) continue;
+    seenPublishIds.add(id);
+    const fp = publishPayloadFingerprint(payload);
+    if (lastPublishFp.get(id) === fp) continue;
+    publishOrders.push(payload);
+  }
+  for (const id of [...lastPublishFp.keys()]) {
+    if (!seenPublishIds.has(id)) lastPublishFp.delete(id);
+  }
 
   // Cashier answers to rider "release order" requests (resent until the cloud confirms).
   const releaseDecisions = unsentReleaseDecisions(shopId);
@@ -821,6 +868,10 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
     ...(releaseDecisions.length ? { releaseDecisions } : {}),
   });
   markReleaseDecisionsSent(shopId, response.releaseDecided);
+  for (const payload of publishOrders) {
+    const id = String(payload.localOrderId || "");
+    if (id) lastPublishFp.set(id, publishPayloadFingerprint(payload));
+  }
 
   const ackClaimIds = [];
   for (const claim of response.pendingClaims || []) {
