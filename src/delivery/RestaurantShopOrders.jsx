@@ -1210,15 +1210,21 @@ export default function RestaurantShopOrders({
   function shopActionErrorMessage(err) {
     const code = String(err?.code || "").replace(/^functions\//, "");
     const raw = String(err?.message || "");
-    // Firebase callables format network failures as "internal [0]" (HTTP status 0 =
-    // no response: offline, blocked, or the function never answered).
+    // Firebase callables format true network failures as "internal [0]" (HTTP status 0).
     if (
-      code === "internal" ||
-      code === "not-found" ||
       code === "unavailable" ||
-      /^internal\s*\[\d+\]$/i.test(raw.trim())
+      /^internal\s*\[0\]$/i.test(raw.trim()) ||
+      (code === "internal" && /\[0\]/.test(raw))
     ) {
-      return "Could not reach the server. Check your internet and try again. If it keeps happening, tell the shop (the server may need an update).";
+      return "Could not reach the server. Check your internet and try again.";
+    }
+    if (code === "not-found") {
+      return "This action is not available yet. Refresh the app, or ask the shop to update the cloud functions.";
+    }
+    if (code === "internal") {
+      return raw && !/^internal$/i.test(raw.trim())
+        ? raw
+        : "Something went wrong. Try again.";
     }
     return raw || "Action failed.";
   }

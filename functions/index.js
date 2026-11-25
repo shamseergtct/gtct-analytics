@@ -710,6 +710,8 @@ exports.restaurantDeliveryBridge = onRequest(
     const now = Date.now();
 
     // Keep Delivery App business date in lockstep with this shop's open POS shift.
+    // Also mirror onto the Analytics operations shift so riders following
+    // operationsShiftId (including older app builds) see the same date.
     if (body.businessShift && typeof body.businessShift === "object") {
       const shiftStatus = String(body.businessShift.status || "").toUpperCase();
       const shiftDate = String(body.businessShift.businessDate || "").slice(0, 10);
@@ -735,6 +737,26 @@ exports.restaurantDeliveryBridge = onRequest(
             },
             { merge: true }
           );
+        }
+        const opsId = String(prev.operationsShiftId || "").trim();
+        if (opsId) {
+          const opsRef = db.collection("shifts").doc(opsId);
+          const opsSnap = await opsRef.get();
+          const ops = opsSnap.exists ? opsSnap.data() || {} : null;
+          if (
+            ops &&
+            ops.clientId === clientId &&
+            String(ops.status || "").toUpperCase() === "OPEN" &&
+            String(ops.businessDate || "").slice(0, 10) !== shiftDate
+          ) {
+            await opsRef.set(
+              {
+                businessDate: shiftDate,
+                restaurantPosMirroredAt: now,
+              },
+              { merge: true }
+            );
+          }
         }
       } else if (shiftStatus === "CLOSED") {
         const existing = await settingsRef.get();
