@@ -67,11 +67,11 @@ function filters() {
   return params.toString();
 }
 
-async function refresh() {
+async function refresh({ quiet = false } = {}) {
   if (!state.session || state.busy || document.hidden) return;
   state.busy = true;
   try {
-    $("monitor-status").textContent = "Loading orders…";
+    if (!quiet) $("monitor-status").textContent = "Loading orders…";
     const result = await api(`/v1/order-monitor?${filters()}`);
     if (result.status === 401) return showLogin("Sign in to continue.");
     if (result.status === 403) {
@@ -145,6 +145,6 @@ $("next-page").addEventListener("click", () => {
   void refresh();
 });
 window.setInterval(() => {
-  if (state.session && !document.hidden) void refresh();
+  if (state.session && !document.hidden) void refresh({ quiet: true });
 }, 8000);
 await startSession();

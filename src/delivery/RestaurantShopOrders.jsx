@@ -1084,6 +1084,29 @@ export default function RestaurantShopOrders({
 
     let availableRows = [];
     let mineRows = [];
+    let lastOrdersFp = "";
+    const ordersFingerprint = (rows) => {
+      try {
+        return JSON.stringify(
+          rows.map((o) => [
+            o.id,
+            o.status,
+            o.tokenNumber ?? "",
+            o.paymentReport?.status || "",
+            o.paymentReport?.version ?? "",
+            o.shopPayment?.status || "",
+            o.deliveryLifecycle?.status || "",
+            o.releaseRequest?.status || "",
+            o.releaseRequest?.requestId || "",
+            o.splitReview?.complete ?? "",
+            o.totalCents ?? "",
+            o.claimedByDeliveryBoyId || "",
+          ])
+        );
+      } catch {
+        return String(Date.now());
+      }
+    };
     const publish = () => {
       const byId = new Map();
       for (const row of [...availableRows, ...mineRows]) {
@@ -1093,6 +1116,9 @@ export default function RestaurantShopOrders({
       rows.sort(
         (a, b) => Number(b.publishedAt || 0) - Number(a.publishedAt || 0)
       );
+      const fp = ordersFingerprint(rows);
+      if (fp === lastOrdersFp) return;
+      lastOrdersFp = fp;
       setOrders(rows);
     };
 

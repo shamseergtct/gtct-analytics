@@ -827,6 +827,43 @@ exports.restaurantDeliveryBridge = onRequest(
       releaseDecided.push(requestId);
     }
 
+    // Stable compare so unchanged POS publishes do not rewrite Firestore every
+    // few seconds (that was making the Delivery App blink on every bridge tick).
+    const publishFingerprint = (row) => {
+      try {
+        return JSON.stringify({
+          orderNumber: row.orderNumber || "",
+          tokenNumber: row.tokenNumber ?? null,
+          businessDate: row.businessDate || "",
+          customerName: row.customerName || "",
+          customerPhone: row.customerPhone || "",
+          blockNumber: row.blockNumber || "",
+          roadNumber: row.roadNumber || "",
+          buildingNumber: row.buildingNumber || "",
+          addressNote: row.addressNote || "",
+          currencyCode: row.currencyCode || "",
+          currencyDecimals: Number(row.currencyDecimals ?? 2),
+          totalCents: Number(row.totalCents || 0),
+          goodsCents: Number(row.goodsCents || 0),
+          deliveryChargeCents: Number(row.deliveryChargeCents || 0),
+          taxCents: Number(row.taxCents || 0),
+          taxName: row.taxName || "",
+          shopPayment: row.shopPayment || null,
+          paymentStatus: row.paymentStatus || "",
+          splitReview: row.splitReview || null,
+          claimRevision: row.claimRevision || "",
+          prepRevision: row.prepRevision || "",
+          lines: row.lines || [],
+          status: row.status || "",
+          claimedByDeliveryBoyId: row.claimedByDeliveryBoyId || "",
+          paymentReport: row.paymentReport || null,
+          deliveryLifecycle: row.deliveryLifecycle || null,
+        });
+      } catch {
+        return "";
+      }
+    };
+
     const published = [];
     for (const order of Array.isArray(body.publishOrders) ? body.publishOrders : []) {
       const localOrderId = String(order.localOrderId || "").trim();
@@ -835,60 +872,57 @@ exports.restaurantDeliveryBridge = onRequest(
       const existing = await ref.get();
       const prev = existing.exists ? existing.data() || {} : {};
       // Never overwrite an active claim with AVAILABLE.
+      let next;
       if (
         existing.exists &&
         ["CLAIMED", "DELIVERED", "CANCEL_REQUESTED", "CANCELLED"].includes(prev.status)
       ) {
-        await ref.set(
-          {
-            ...order,
-            clientId,
-            localOrderId,
-            status: prev.status,
-            claimedByDeliveryBoyId: prev.claimedByDeliveryBoyId || "",
-            claimedByName: prev.claimedByName || "",
-            claimedByUid: prev.claimedByUid || "",
-            claimedAt: prev.claimedAt || null,
-            // Keep rider marks; always refresh cashier settlement from POS.
-            paymentReport: prev.paymentReport || order.paymentReport || null,
-            shopPayment: order.shopPayment || prev.shopPayment || null,
-            deliveryLifecycle: prev.deliveryLifecycle || order.deliveryLifecycle || null,
-            localClaimApplied: prev.localClaimApplied === true,
-            localStatusApplied: prev.localStatusApplied === true,
-            localPaymentApplied: prev.localPaymentApplied === true,
-            updatedAt: now,
-            publishedAt: prev.publishedAt || now,
-          },
-          { merge: true }
-        );
+        next = {
+          ...order,
+          clientId,
+          localOrderId,
+          status: prev.status,
+          claimedByDeliveryBoyId: prev.claimedByDeliveryBoyId || "",
+          claimedByName: prev.claimedByName || "",
+          claimedByUid: prev.claimedByUid || "",
+          claimedAt: prev.claimedAt || null,
+          // Keep rider marks; refresh cashier settlement from POS when it changes.
+          paymentReport: prev.paymentReport || order.paymentReport || null,
+          shopPayment: order.shopPayment || prev.shopPayment || null,
+          deliveryLifecycle: prev.deliveryLifecycle || order.deliveryLifecycle || null,
+          localClaimApplied: prev.localClaimApplied === true,
+          localStatusApplied: prev.localStatusApplied === true,
+          localPaymentApplied: prev.localPaymentApplied === true,
+          publishedAt: prev.publishedAt || now,
+        };
       } else {
-        await ref.set(
-          {
-            ...order,
-            clientId,
-            localOrderId,
-            status: "AVAILABLE",
-            claimedByDeliveryBoyId: "",
-            claimedByName: "",
-            claimedByUid: "",
-            claimedAt: null,
-            paymentReport: order.paymentReport || {
-              status: "UNMARKED",
-              version: 0,
-            },
-            deliveryLifecycle: order.deliveryLifecycle || {
-              status: "PENDING",
-              version: 0,
-            },
-            localClaimApplied: false,
-            localStatusApplied: true,
-            localPaymentApplied: true,
-            updatedAt: now,
-            publishedAt: prev.publishedAt || now,
+        next = {
+          ...order,
+          clientId,
+          localOrderId,
+          status: "AVAILABLE",
+          claimedByDeliveryBoyId: "",
+          claimedByName: "",
+          claimedByUid: "",
+          claimedAt: null,
+          paymentReport: order.paymentReport || {
+            status: "UNMARKED",
+            version: 0,
           },
-          { merge: true }
-        );
+          deliveryLifecycle: order.deliveryLifecycle || {
+            status: "PENDING",
+            version: 0,
+          },
+          localClaimApplied: false,
+          localStatusApplied: true,
+          localPaymentApplied: true,
+          publishedAt: prev.publishedAt || now,
+        };
       }
+      if (existing.exists && publishFingerprint(prev) === publishFingerprint(next)) {
+        continue;
+      }
+      await ref.set({ ...next, updatedAt: now }, { merge: true });
       published.push(localOrderId);
     }
 

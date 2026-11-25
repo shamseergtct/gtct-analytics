@@ -1112,12 +1112,40 @@ function laneHeading(label, count) {
   return h;
 }
 
+/** Stable board signature so silent polls do not rebuild the DOM (avoids blink). */
+export function boardFingerprint(orders) {
+  try {
+    return JSON.stringify(
+      (orders || []).map((o) => [
+        o.orderId || o.order_id || "",
+        o.status || "",
+        o.tokenNumber ?? o.token_number ?? "",
+        o.paymentStatus || o.payment_status || "",
+        o.dispatch?.ready ?? o.readyForDelivery ?? false,
+        o.deliveryLifecycle?.status || "",
+        o.releaseRequest?.status || "",
+        o.releaseRequest?.requestId || "",
+        o.updatedAt || o.updated_at || "",
+        Number(o.totalCents ?? o.total_cents ?? 0),
+        o.driverUserId || o.driver_user_id || "",
+      ])
+    );
+  } catch {
+    return String(Date.now());
+  }
+}
+
 /**
  * @param {HTMLElement} host
  * @param {object[]} orders
  * @param {{ session: object, expandedOrderIds: Set, api: Function, onRefresh: Function }} ctx
  */
 export function renderBoard(host, orders, ctx) {
+  const nextFp = boardFingerprint(orders);
+  if (host.dataset.boardFp === nextFp && host.childElementCount > 0) {
+    return false;
+  }
+  host.dataset.boardFp = nextFp;
   host.replaceChildren();
   const byType = new Map();
   for (const order of orders || []) {
@@ -1137,7 +1165,7 @@ export function renderBoard(host, orders, ctx) {
   });
   if (!types.length) {
     host.append(node("p", "monitor-empty", "No orders for this filter."));
-    return;
+    return true;
   }
   for (const type of types) {
     const buckets = byType.get(type);
@@ -1172,4 +1200,5 @@ export function renderBoard(host, orders, ctx) {
     }
     host.append(section);
   }
+  return true;
 }

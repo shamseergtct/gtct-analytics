@@ -669,9 +669,17 @@ function resolveClaimedDriver(shopId, row) {
   );
 }
 
+function localOrderMissing(shopId, orderId) {
+  return !getDb()
+    .prepare(`SELECT 1 AS ok FROM orders WHERE tenant_id = ? AND order_id = ?`)
+    .get(shopId, orderId);
+}
+
 function applyStatus(shopId, row) {
   const orderId = String(row.localOrderId || "").trim();
   if (!orderId) return false;
+  // Orphan cloud rows (cleared/test DB) must be acked or every bridge tick retries them.
+  if (localOrderMissing(shopId, orderId)) return true;
   const life = row.deliveryLifecycle || {};
   const cloudStatus = String(life.status || row.status || "").toUpperCase();
   if (!["DELIVERED", "CANCEL_REQUESTED"].includes(cloudStatus)) {
@@ -705,6 +713,7 @@ function applyStatus(shopId, row) {
 function applyPayment(shopId, row) {
   const orderId = String(row.localOrderId || "").trim();
   if (!orderId) return false;
+  if (localOrderMissing(shopId, orderId)) return true;
   const report = row.paymentReport || {};
   const kind = String(report.status || "").toUpperCase();
   if (!kind || kind === "UNMARKED") return true;
@@ -751,14 +760,21 @@ function applyPayment(shopId, row) {
     // fall through to normal apply
   }
   const expectedVersion = Number(existing?.version || 0);
-  markDeliveryPayment(
-    shopId,
-    orderId,
-    kind,
-    expectedVersion,
-    cloudDriverActor(driverUserId),
-    split ? { split } : {}
-  );
+  try {
+    markDeliveryPayment(
+      shopId,
+      orderId,
+      kind,
+      expectedVersion,
+      cloudDriverActor(driverUserId),
+      split ? { split } : {}
+    );
+  } catch (err) {
+    // Stale cloud payment against a claim the POS no longer owns — ack and stop thrashing.
+    if (err?.status === 404 || err?.code === "ORDER_NOT_FOUND") return true;
+    if (/not assigned/i.test(String(err?.message || ""))) return true;
+    throw err;
+  }
   return true;
 }
 

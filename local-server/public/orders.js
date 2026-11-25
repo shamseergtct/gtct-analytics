@@ -121,10 +121,10 @@ function boardCtx() {
   };
 }
 
-async function loadBoard() {
+async function loadBoard({ quiet = false } = {}) {
   if (!canView() || state.boardBusy) return;
   state.boardBusy = true;
-  setStatus("Loading board…");
+  if (!quiet) setStatus("Loading board…");
   try {
     const result = await api(`/v1/order-monitor?${boardQueryString()}`);
     if (result.status === 401) {
@@ -150,7 +150,7 @@ async function loadBoard() {
       : "No orders";
     $("board-page-prev").disabled = data.page <= 1;
     $("board-page-next").disabled = data.page * data.pageSize >= data.total;
-    setStatus("");
+    if (!quiet) setStatus("");
   } catch {
     setStatus("Connection lost. Try again.");
   } finally {
@@ -676,7 +676,7 @@ $("board-page-next")?.addEventListener("click", () => {
 });
 window.setInterval(() => {
   if (state.view !== "board" || !canView() || document.hidden) return;
-  void loadBoard();
+  void loadBoard({ quiet: true });
 }, 8000);
 $("orders-list").addEventListener("click", (event) => {
   const edit = event.target.closest("[data-edit]");
