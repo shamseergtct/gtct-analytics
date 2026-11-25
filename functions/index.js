@@ -749,12 +749,49 @@ exports.restaurantDeliveryBridge = onRequest(
       await ref.set({ localPaymentApplied: true, updatedAt: now }, { merge: true });
     }
 
+    // Commission settings of the delivery boys working this shop's orders (from
+    // their GTCT Analytics profile) so the POS settles with the same percentage.
+    const boyIds = [
+      ...new Set(
+        clientOrders.map((row) => String(row.claimedByDeliveryBoyId || "").trim()).filter(Boolean)
+      ),
+    ].slice(0, 100);
+    let riders = [];
+    if (boyIds.length) {
+      const snaps = await db.getAll(...boyIds.map((id) => db.collection("delivery_boys").doc(id)));
+      riders = snaps
+        .filter((snap) => snap.exists)
+        .map((snap) => {
+          const boy = snap.data() || {};
+          const nested = boy.deliveryCommission || {};
+          const enabled =
+            boy.commissionEnabled != null ? Boolean(boy.commissionEnabled) : Boolean(nested.enabled);
+          const rawRate = boy.commissionRate != null ? boy.commissionRate : nested.rate;
+          const rate = Math.max(0, Number(rawRate) || 0);
+          const type = String(boy.commissionType || "").toUpperCase();
+          const out = {
+            deliveryBoyId: snap.id,
+            commissionEnabled: enabled,
+            commissionRate: Number.isFinite(rate) ? rate : 0,
+          };
+          // New commission types only (old docs keep the original reply shape).
+          if (type === "BILL_TOTAL" || type === "DAILY_TARGET") out.commissionType = type;
+          if (type === "DAILY_TARGET") {
+            out.commissionTiers = (Array.isArray(boy.commissionTiers) ? boy.commissionTiers : [])
+              .slice(0, 20)
+              .map((t) => ({ fromAmount: Number(t?.fromAmount) || 0, amount: Number(t?.amount) || 0 }));
+          }
+          return out;
+        });
+    }
+
     res.status(200).json({
       ok: true,
       publishedCount: published.length,
       pendingClaims,
       pendingStatuses,
       pendingPayments,
+      riders,
     });
   }
 );

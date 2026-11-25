@@ -48,6 +48,7 @@ import {
   normalizeExternalSaleType,
   parseBillSequence,
   resolveDeliveryBoyCommission,
+  dailyTargetCommission,
   summarizeDeliveryBoysForCollection,
 } from "../../utils/externalSales.js";
 import {
@@ -337,6 +338,25 @@ export default function DeliveryBoyCollection({
 
   const currencyPrefix = currency ? `${currency} ` : "";
 
+  /** One line explaining a daily target commission for a boy on this day, or "". */
+  function dailyTargetNote(boyId) {
+    const day = dailyTargetCommission(dayBills, boyId).days[0];
+    if (!day) return "";
+    const fmt = (v) => `${currencyPrefix}${formatMoney(v, currencyDecimals)}`;
+    const parts = [`Daily target: delivered ${fmt(day.deliveredTotal)}`];
+    parts.push(
+      day.tier
+        ? `reached ${fmt(day.tier.fromAmount)} → ${fmt(day.tier.amount)}`
+        : "no range reached yet"
+    );
+    if (day.nextTier) {
+      parts.push(
+        `next ${fmt(day.nextTier.fromAmount)} → ${fmt(day.nextTier.amount)}`
+      );
+    }
+    return parts.join(" · ");
+  }
+
   function openPrintPreview(row) {
     if (!row?.deliveryBoyId) return;
     setPrintMode("THERMAL");
@@ -348,6 +368,7 @@ export default function DeliveryBoyCollection({
       shopPaidAmount: row.shopCollectionAmount ?? row.shopPaidAmount,
       creditAmount: row.creditAmount,
       commission: row.commission,
+      targetBonus: row.targetBonus || 0,
       payableAmount: row.balance,
     });
   }
@@ -367,6 +388,7 @@ export default function DeliveryBoyCollection({
           shopPaidAmount: printPreview.shopPaidAmount,
           creditAmount: printPreview.creditAmount,
           commission: printPreview.commission,
+          targetBonus: printPreview.targetBonus || 0,
           payableAmount: printPreview.payableAmount,
         },
         currency,
@@ -1421,6 +1443,15 @@ export default function DeliveryBoyCollection({
                                   ) : null}
                                 </div>
 
+                                {dailyTargetNote(row.deliveryBoyId) ? (
+                                  <div className="rounded-lg border border-amber-900/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-100">
+                                    {dailyTargetNote(row.deliveryBoyId)}
+                                    {numMoney(row.targetBonus) > 0
+                                      ? " (included in Commission above)"
+                                      : ""}
+                                  </div>
+                                ) : null}
+
                                 {(collectionsByBoyId.get(row.deliveryBoyId)
                                   ?.length || 0) > 0 ? (
                                   <div className="space-y-2">
@@ -1626,6 +1657,11 @@ export default function DeliveryBoyCollection({
                 className={`${FIELD_NUMBER_CLASS} border-slate-700 text-amber-200`}
                 tabIndex={-1}
               />
+              {!editingId && dailyTargetNote(deliveryBoyId) ? (
+                <span className="mt-1 block text-[11px] normal-case tracking-normal text-amber-200/80">
+                  {dailyTargetNote(deliveryBoyId)}
+                </span>
+              ) : null}
             </label>
           ) : null}
 

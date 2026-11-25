@@ -404,6 +404,7 @@ function renderItemList() {
       stationLabel(item) === "— NONE" ? "No preparation" : stationLabel(item),
       st.text,
       item.taxApplicable !== false ? "Taxable" : "No tax",
+      item.openCustomize === false ? "Quick add" : "",
     ].filter(Boolean);
     row.innerHTML = `
       <div class="item-thumb">${
@@ -1083,6 +1084,7 @@ function openEditor(item = null, { keepTab = false } = {}) {
     resetPhotoDraft("");
     state.formStatus = "active";
     if ($("f-tax-applicable")) $("f-tax-applicable").checked = true;
+    if ($("f-open-customize")) $("f-open-customize").checked = true;
     if ($("f-has-variants")) $("f-has-variants").checked = false;
     state.formVariants = [];
     state.formIngredients = [];
@@ -1115,6 +1117,9 @@ function openEditor(item = null, { keepTab = false } = {}) {
     state.formStatus = statusLabel(item).key;
     if ($("f-tax-applicable")) {
       $("f-tax-applicable").checked = item.taxApplicable !== false;
+    }
+    if ($("f-open-customize")) {
+      $("f-open-customize").checked = item.openCustomize !== false;
     }
     if ($("f-has-variants")) {
       $("f-has-variants").checked = Boolean(item.hasVariants);
@@ -1434,6 +1439,7 @@ function collectForm() {
     taxApplicable: $("f-tax-applicable")
       ? $("f-tax-applicable").checked
       : true,
+    openCustomize: $("f-open-customize") ? $("f-open-customize").checked : true,
     hasVariants: $("f-has-variants") ? $("f-has-variants").checked : false,
     variants: (() => {
       syncVariantsFromDom();

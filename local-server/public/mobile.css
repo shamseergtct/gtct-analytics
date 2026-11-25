@@ -299,3 +299,19 @@
     font-weight: 800;
   }
 }
+
+/* Subcategory cards on phones: count under the name, arrow where the + is */
+@media (max-width: 599px) {
+  .sales-app .mcard.is-folder .mc-bottom {
+    display: contents;
+  }
+  .sales-app .mcard.is-folder .mc-price {
+    grid-area: price;
+  }
+  .sales-app .mcard.is-folder .mc-open {
+    grid-area: step;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+  }
+}

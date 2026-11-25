@@ -19,6 +19,7 @@ import {
   normalizeBillNumber,
   resolveDeliveryBoyCommission,
   calculateDeliveryCommission,
+  commissionTypeFields,
 } from "./externalSales.js";
 import { writeExternalSalesBill } from "./externalSalesBillWrite.js";
 import { assertOperationalBankAccount } from "./bankAccountTypes.js";
@@ -116,6 +117,8 @@ export async function upsertDeliveryBillSubmission({
     name: record.deliveryBoyNameSnapshot,
     commissionEnabled: record.commissionEnabled,
     commissionRate: record.commissionRate,
+    commissionType: record.commissionType,
+    commissionTiers: record.commissionTiers,
   };
   if (!clean(boy?.id)) throw new Error("Delivery boy is required.");
 
@@ -125,6 +128,9 @@ export async function upsertDeliveryBillSubmission({
     deliveryCharge: chargeNum,
     commissionEnabled: boyCommission.enabled,
     commissionRate: boyCommission.rate,
+    commissionType: boyCommission.type,
+    commissionTiers: boyCommission.tiers,
+    billAmount: amountNum,
     decimals: currencyDecimals,
   });
 
@@ -180,6 +186,7 @@ export async function upsertDeliveryBillSubmission({
           commissionEnabled: commissionSnap.commissionEnabled,
           commissionRate: commissionSnap.commissionRate,
           commissionAmount: commissionSnap.commissionAmount,
+          ...commissionTypeFields(commissionSnap),
           notes: clean(record.notes),
           updatedAt: serverTimestamp(),
           updatedAtMs: nowMs,
@@ -208,6 +215,7 @@ export async function upsertDeliveryBillSubmission({
       commissionEnabled: commissionSnap.commissionEnabled,
       commissionRate: commissionSnap.commissionRate,
       commissionAmount: commissionSnap.commissionAmount,
+      ...commissionTypeFields(commissionSnap),
       currency: clean(currency || record.currency),
       currencyDecimals:
         currencyDecimals ?? record.currencyDecimals ?? 3,
@@ -287,6 +295,8 @@ function buildSubmissionFieldPatch({
     name: record.deliveryBoyNameSnapshot,
     commissionEnabled: record.commissionEnabled,
     commissionRate: record.commissionRate,
+    commissionType: record.commissionType,
+    commissionTiers: record.commissionTiers,
   };
   if (!clean(boy?.id)) throw new Error("Delivery boy is required.");
 
@@ -296,6 +306,9 @@ function buildSubmissionFieldPatch({
     deliveryCharge: chargeNum,
     commissionEnabled: boyCommission.enabled,
     commissionRate: boyCommission.rate,
+    commissionType: boyCommission.type,
+    commissionTiers: boyCommission.tiers,
+    billAmount: amountNum,
     decimals: currencyDecimals,
   });
 
@@ -315,6 +328,7 @@ function buildSubmissionFieldPatch({
     commissionEnabled: commissionSnap.commissionEnabled,
     commissionRate: commissionSnap.commissionRate,
     commissionAmount: commissionSnap.commissionAmount,
+    ...commissionTypeFields(commissionSnap),
     currency: clean(currency || record.currency),
     currencyDecimals: currencyDecimals ?? record.currencyDecimals ?? 3,
     notes: clean(record.notes),
@@ -432,6 +446,8 @@ export async function approveDeliveryBillSubmission({
       name: submission.deliveryBoyNameSnapshot,
       commissionEnabled: submission.commissionEnabled,
       commissionRate: submission.commissionRate,
+      commissionType: submission.commissionType,
+      commissionTiers: submission.commissionTiers,
     };
 
   const reApprove = Boolean(clean(submission.approvedBillId));

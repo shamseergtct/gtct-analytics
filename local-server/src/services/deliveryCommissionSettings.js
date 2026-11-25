@@ -60,10 +60,16 @@ export function sanitizePolicy(obj) {
     if (!Array.isArray(obj.tiers)||obj.tiers.length<1||obj.tiers.length>20) fail(400,'1–20 tiers required.','INVALID_TIERS');
     p.tiers=obj.tiers.map(t=>({thresholdMinor:t?.thresholdMinor,rewardMinor:t?.rewardMinor}));
   }
-  if (method==='PERCENTAGE'){p.basis=obj.basis;p.rateBps=obj.rateBps;}
+  if (method==='PERCENTAGE'){
+    p.basis=obj.basis;p.rateBps=obj.rateBps;
+    if (obj.rounding!==undefined && obj.rounding!=='PER_ORDER' && obj.rounding!=='TOTAL')
+      fail(400,'Invalid rounding.','INVALID_POLICY');
+    if (obj.rounding==='PER_ORDER') p.rounding='PER_ORDER';
+  }
   // Evaluate with an eligible 1-delivery zero-value sample so every field is validated
   // even when the selected rider has no delivered orders yet.
-  try {evaluateDeliveryCommission(p,{currencyDecimals:3,eligibleDeliveryCount:1,totalBillMinor:0,deliveryChargeMinor:0});}
+  try {evaluateDeliveryCommission(p,{currencyDecimals:3,eligibleDeliveryCount:1,totalBillMinor:0,deliveryChargeMinor:0,
+    orderTotalsMinor:[0],orderChargesMinor:[0]});}
   catch(e){fail(400,e.message,'INVALID_POLICY');}
   return p;
 }
@@ -144,6 +150,7 @@ export function commissionPreview(shopId,riderId,businessDate,actor) {
       AND NOT EXISTS(SELECT 1 FROM order_void_events v WHERE v.shop_id=c.shop_id AND v.order_id=c.order_id)
     ORDER BY o.order_number LIMIT 5000`).all(shopId,riderId,day);
   let totalBillMinor=0,deliveryChargeMinor=0,count=0,skipped=0;
+  const orderTotalsMinor=[],orderChargesMinor=[];
   for(const order of orders){
     const total=Number(order.total_cents),charge=Number(order.delivery_charge_cents||0);
     if(order.currency_code!==money.currencyCode||Number(order.currency_decimals)!==money.currencyDecimals ||
@@ -153,8 +160,10 @@ export function commissionPreview(shopId,riderId,businessDate,actor) {
     if(!Number.isSafeInteger(totalBillMinor+total)||!Number.isSafeInteger(deliveryChargeMinor+charge))
       fail(409,'Delivery totals exceed safe integer limit.','AMOUNT_OVERFLOW');
     totalBillMinor+=total;deliveryChargeMinor+=charge;count++;
+    orderTotalsMinor.push(total);orderChargesMinor.push(charge);
   }
-  const facts={currencyDecimals:money.currencyDecimals,eligibleDeliveryCount:count,totalBillMinor,deliveryChargeMinor};
+  const facts={currencyDecimals:money.currencyDecimals,eligibleDeliveryCount:count,totalBillMinor,deliveryChargeMinor,
+    orderTotalsMinor,orderChargesMinor};
   const policy=row&&row.currency_code===money.currencyCode&&Number(row.currency_decimals)===money.currencyDecimals
     ? JSON.parse(row.policy_json):null;
   const calculated=policy?evaluateDeliveryCommission(policy,facts):null;

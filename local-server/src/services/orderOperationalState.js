@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { getOrderPrepProgress } from './prepBoard.js';
 import { readDeliveryPaymentReport } from './deliveryPaymentReports.js';
 import { readDeliveryLifecycle } from './deliveryLifecycle.js';
+import { readSplitReview } from './deliverySplitReview.js';
 
 /**
  * Stage-1 temporary: prep station screens are not in daily use yet.
@@ -44,6 +45,10 @@ export function readOrderOperationalState(db, shopId, order) {
   const deliveryPaymentReport = isDelivery && deliveryClaim
     ? readDeliveryPaymentReport(db, shopId, order.order_id, deliveryClaim.driver_user_id, order.total_cents)
     : null;
+  // Rider multiple payment: state of the cash / shop-paid / credit parts.
+  // Rider payment review: every shop-paid / credit part (single mode or multiple payment).
+  const deliverySplitReview = isDelivery && deliveryPaymentReport
+    ? readSplitReview(db, shopId, order.order_id) : null;
   const deliveryLifecycle = isDelivery && deliveryClaim
     ? readDeliveryLifecycle(db, shopId, order.order_id) : null;
   const isOpenTest = order.status === 'OPEN' && Number(order.is_test) === 1;
@@ -77,6 +82,7 @@ export function readOrderOperationalState(db, shopId, order) {
     deliveryBoyName: deliveryClaim?.full_name || null,
     deliveryAcceptedAt: deliveryClaim?.accepted_at || null,
     deliveryPaymentReport,
+    deliverySplitReview,
     deliveryLifecycle,
     shopCreditAuthorization,
     preparation: prep,

@@ -1507,6 +1507,12 @@ export default function DeliveryApp() {
       deliveryBoyNameSnapshot: deliveryBoy?.name || displayName || "",
       commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
       commissionRate: Number(deliveryBoy?.commissionRate) || 0,
+      ...(deliveryBoy?.commissionType
+        ? { commissionType: deliveryBoy.commissionType }
+        : {}),
+      ...(Array.isArray(deliveryBoy?.commissionTiers)
+        ? { commissionTiers: deliveryBoy.commissionTiers }
+        : {}),
       currency,
       currencyDecimals,
       notes: "",

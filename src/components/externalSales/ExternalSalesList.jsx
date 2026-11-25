@@ -285,8 +285,15 @@ function TerminalBillsPanel({
                   {formatMoney(bill.deliveryCharge, currencyDecimals)}
                 </td>
                 <td className="px-4 py-3 whitespace-nowrap">
-                  {currencyPrefix}
-                  {formatMoney(bill.commissionAmount, currencyDecimals)}
+                  {String(bill.commissionType || "").toUpperCase() ===
+                    "DAILY_TARGET" && bill.commissionEnabled !== false ? (
+                    <span className="text-xs text-amber-200/80">Daily target</span>
+                  ) : (
+                    <>
+                      {currencyPrefix}
+                      {formatMoney(bill.commissionAmount, currencyDecimals)}
+                    </>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right">
                   {bill.voided ? (

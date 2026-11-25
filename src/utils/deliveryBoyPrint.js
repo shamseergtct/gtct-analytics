@@ -167,6 +167,9 @@ function summaryBlockHtml({ summary, currencyPrefix, currencyDecimals, compact }
     item("Shop Paid", money(summary.shopPaidAmount)),
     item("Credit", money(summary.creditAmount)),
     item("Commission", money(summary.commission)),
+    ...(Number(summary.targetBonus) > 0
+      ? [item("incl. Daily target", money(summary.targetBonus))]
+      : []),
     item("Payable", money(summary.payableAmount)),
   ].join("");
 

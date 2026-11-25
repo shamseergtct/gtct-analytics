@@ -69,7 +69,20 @@ export function evaluateDeliveryCommission(policy, facts) {
     const rateBps = amount(policy.rateBps,'percentage basis points');
     if (rateBps > 10000) inputError('percentage above 100%');
     const eligibleMinor = basis === 'TOTAL_BILL' ? totalBillMinor : deliveryChargeMinor;
-    reward = roundHalfUpDivision(checkedMultiply(eligibleMinor, rateBps,'percentage'), 10000);
+    if (policy.rounding === 'PER_ORDER') {
+      // Same as GTCT Analytics: commission rounded on each order, then added up.
+      const perOrder = basis === 'TOTAL_BILL' ? facts.orderTotalsMinor : facts.orderChargesMinor;
+      if (!Array.isArray(perOrder) || perOrder.length !== deliveryCount) inputError('per-order amounts');
+      let sum = 0;
+      for (const each of perOrder) {
+        if (!Number.isSafeInteger(each) || each < 0) inputError('per-order amount');
+        sum += roundHalfUpDivision(checkedMultiply(each, rateBps, 'percentage'), 10000);
+      }
+      if (!Number.isSafeInteger(sum) || perOrder.reduce((n, x) => n + x, 0) !== eligibleMinor) inputError('per-order totals');
+      reward = sum;
+    } else {
+      reward = roundHalfUpDivision(checkedMultiply(eligibleMinor, rateBps,'percentage'), 10000);
+    }
   } else if (method === 'MANUAL') {
     // Manager authorization MUST be enforced by the future posting layer.
     reward = amount(policy.amountMinor,'manual amount');

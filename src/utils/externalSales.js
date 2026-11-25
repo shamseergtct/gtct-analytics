@@ -12,7 +12,53 @@ const SALE_TYPE_SET = new Set(EXTERNAL_SALE_TYPES.map((item) => item.value));
 export const DEFAULT_DELIVERY_COMMISSION = {
   enabled: false,
   rate: 0,
+  type: "DELIVERY_CHARGE",
+  tiers: [],
 };
+
+/**
+ * Commission types (one per delivery boy):
+ *  DELIVERY_CHARGE — % of the delivery charge, per bill (original; default for old docs)
+ *  BILL_TOTAL      — % of the full bill amount (delivery charge included), per bill
+ *  DAILY_TARGET    — fixed amount by the boy's delivered total for the business day;
+ *                    the highest range reached is paid (not added up)
+ */
+export const COMMISSION_TYPE_DELIVERY_CHARGE = "DELIVERY_CHARGE";
+export const COMMISSION_TYPE_BILL_TOTAL = "BILL_TOTAL";
+export const COMMISSION_TYPE_DAILY_TARGET = "DAILY_TARGET";
+export const COMMISSION_TYPES = [
+  COMMISSION_TYPE_DELIVERY_CHARGE,
+  COMMISSION_TYPE_BILL_TOTAL,
+  COMMISSION_TYPE_DAILY_TARGET,
+];
+export const MAX_COMMISSION_TIERS = 20; // same limit as the POS
+
+export function normalizeCommissionType(value) {
+  const type = String(value || "").trim().toUpperCase();
+  return COMMISSION_TYPES.includes(type) ? type : COMMISSION_TYPE_DELIVERY_CHARGE;
+}
+
+/** Valid ranges only, sorted by "from" amount; duplicate "from" keeps the last one. */
+export function normalizeCommissionTiers(raw) {
+  if (!Array.isArray(raw)) return [];
+  const byFrom = new Map();
+  for (const tier of raw.slice(0, MAX_COMMISSION_TIERS)) {
+    const fromAmount = numMoney(tier?.fromAmount);
+    const amount = numMoney(tier?.amount);
+    if (!(fromAmount > 0) || !(amount >= 0)) continue;
+    byFrom.set(fromAmount, { fromAmount, amount });
+  }
+  return [...byFrom.values()].sort((a, b) => a.fromAmount - b.fromAmount);
+}
+
+/** Highest range reached by `total`, or null. */
+export function dailyTargetTierFor(total, tiers) {
+  let reached = null;
+  for (const tier of normalizeCommissionTiers(tiers)) {
+    if (numMoney(total) + 1e-9 >= tier.fromAmount) reached = tier;
+  }
+  return reached;
+}
 
 export function normalizeExternalSaleType(value) {
   const key = String(value || "")
@@ -324,7 +370,20 @@ export function resolveDeliveryBoyCommission(deliveryBoy) {
   return {
     enabled,
     rate: Number.isFinite(rate) ? rate : 0,
+    type: normalizeCommissionType(deliveryBoy.commissionType),
+    tiers: normalizeCommissionTiers(deliveryBoy.commissionTiers),
   };
+}
+
+/** Short label for lists, e.g. "10% of delivery", "1% of bill", "Daily target (3)". */
+export function describeDeliveryBoyCommission(deliveryBoy) {
+  const c = resolveDeliveryBoyCommission(deliveryBoy);
+  if (!c.enabled) return "Off";
+  if (c.type === COMMISSION_TYPE_BILL_TOTAL) return `${c.rate}% of bill`;
+  if (c.type === COMMISSION_TYPE_DAILY_TARGET) {
+    return `Daily target (${c.tiers.length} range${c.tiers.length === 1 ? "" : "s"})`;
+  }
+  return `${c.rate}% of delivery`;
 }
 
 /** @deprecated Use resolveDeliveryBoyCommission — shop-level commission removed. */
@@ -574,6 +633,9 @@ export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
     else shopPaidAmount += amount;
   }
   const grossAmount = roundMoney(accountGross);
+  // Daily target commission (fixed amount by day's delivered total), on top of per-bill.
+  const targetBonusAmount = dailyTargetCommission(bills, boyId).total;
+  totalCommission += targetBonusAmount;
   const totalCommissionAmount = roundMoney(totalCommission);
   const shopCollectionAmount = roundMoney(shopPaidAmount);
   const creditTotal = roundMoney(creditAmount);
@@ -590,6 +652,8 @@ export function deliveryBoyPayableFromBills(bills = [], deliveryBoyId) {
     shopAndCreditPaidAmount: roundMoney(shopCollectionAmount + creditTotal),
     // Display / Daily List alignment (all delivery bills).
     totalCommissionAmount,
+    // Part of totalCommissionAmount that comes from daily target ranges.
+    targetBonusAmount,
     // Deducted from Collect payable (all delivery bills for the boy).
     commissionAmount: totalCommissionAmount,
     payableAmount: roundMoney(
@@ -643,6 +707,7 @@ export function summarizeDeliveryBoysForCollection({
       creditAmount: outstanding.creditAmount,
       // Same total as Daily List Delivery Boy Summary commission.
       commission: outstanding.totalCommissionAmount,
+      targetBonus: outstanding.targetBonusAmount || 0,
       balance: outstanding.remainingPayable,
       alreadyCollected: outstanding.alreadyCollected,
     });
@@ -705,13 +770,21 @@ export function deliveryBoyOutstandingPayable({
 }
 
 /**
- * Commission is calculated on delivery charge only (never bill amount).
+ * Per-bill commission.
+ * DELIVERY_CHARGE (default, unchanged): % of delivery charge.
+ * BILL_TOTAL: % of the full bill amount (delivery charge included).
+ * DAILY_TARGET: 0 per bill — paid once per day by dailyTargetCommission();
+ *   the bill keeps a snapshot of the ranges.
+ * Old callers that pass no commissionType get exactly the original result.
  */
 export function calculateDeliveryCommission({
   saleType,
   deliveryCharge,
+  billAmount,
   commissionEnabled,
   commissionRate,
+  commissionType,
+  commissionTiers,
   decimals,
 }) {
   if (!isDeliverySaleType(saleType) || !commissionEnabled) {
@@ -721,14 +794,87 @@ export function calculateDeliveryCommission({
       commissionAmount: 0,
     };
   }
-  const charge = Math.max(0, numMoney(deliveryCharge));
+  const type = normalizeCommissionType(commissionType);
   const rate = Math.max(0, numMoney(commissionRate));
+  if (type === COMMISSION_TYPE_DAILY_TARGET) {
+    return {
+      commissionEnabled: true,
+      commissionRate: 0,
+      commissionAmount: 0,
+      commissionType: type,
+      commissionTiers: normalizeCommissionTiers(commissionTiers),
+    };
+  }
+  if (type === COMMISSION_TYPE_BILL_TOTAL) {
+    const base = Math.max(0, numMoney(billAmount));
+    return {
+      commissionEnabled: true,
+      commissionRate: rate,
+      commissionAmount: roundMoney((base * rate) / 100, decimals),
+      commissionType: type,
+    };
+  }
+  const charge = Math.max(0, numMoney(deliveryCharge));
   const amount = roundMoney((charge * rate) / 100, decimals);
-  return {
+  const out = {
     commissionEnabled: true,
     commissionRate: rate,
     commissionAmount: amount,
   };
+  if (commissionType != null) out.commissionType = type;
+  return out;
+}
+
+/** Extra bill/submission fields recording the commission type (none when commission is off). */
+export function commissionTypeFields(snap) {
+  const type = String(snap?.commissionType || "").toUpperCase();
+  if (type === COMMISSION_TYPE_BILL_TOTAL) return { commissionType: type };
+  if (type === COMMISSION_TYPE_DAILY_TARGET) {
+    return { commissionType: type, commissionTiers: normalizeCommissionTiers(snap.commissionTiers) };
+  }
+  // Explicit original type: clears a type left on a bill edited after the boy's type changed.
+  if (type === COMMISSION_TYPE_DELIVERY_CHARGE) {
+    return { commissionType: type, commissionTiers: [] };
+  }
+  return {};
+}
+
+/**
+ * Daily target commission for one boy, from his saved bills.
+ * Per business date: total of his non-voided DELIVERY bills saved as DAILY_TARGET,
+ * ranges taken from the latest such bill that day; the highest range reached is paid.
+ * Returns { total, days:[{businessDate, deliveredTotal, amount, tier, nextTier}] }.
+ */
+export function dailyTargetCommission(bills = [], deliveryBoyId) {
+  const boyId = String(deliveryBoyId || "").trim();
+  const byDate = new Map();
+  for (const bill of bills) {
+    if (!boyId || bill?.voided === true) continue;
+    if (normalizeExternalSaleType(bill.saleType) !== "DELIVERY") continue;
+    if (bill.deliveryBoyId !== boyId) continue;
+    if (bill.commissionEnabled === false) continue;
+    if (String(bill.commissionType || "").toUpperCase() !== COMMISSION_TYPE_DAILY_TARGET) continue;
+    const date = String(bill.businessDate || "").slice(0, 10);
+    if (!byDate.has(date)) byDate.set(date, { total: 0, tiers: [], at: -Infinity });
+    const day = byDate.get(date);
+    day.total += numMoney(bill.billAmount);
+    const at = Number(bill.updatedAtMs || bill.createdAtMs || 0);
+    if (at >= day.at) {
+      day.at = at;
+      day.tiers = normalizeCommissionTiers(bill.commissionTiers);
+    }
+  }
+  const days = [];
+  let total = 0;
+  for (const [businessDate, day] of [...byDate.entries()].sort()) {
+    const deliveredTotal = roundMoney(day.total);
+    const tier = dailyTargetTierFor(deliveredTotal, day.tiers);
+    const nextTier = day.tiers.find((t) => t.fromAmount > deliveredTotal + 1e-9) || null;
+    const amount = roundMoney(tier ? tier.amount : 0);
+    total += amount;
+    days.push({ businessDate, deliveredTotal, amount, tier, nextTier });
+  }
+  return { total: roundMoney(total), days };
 }
 
 /**
@@ -979,6 +1125,17 @@ export function summarizeExternalBills(bills = []) {
     Math.max(0, summary.grossSales - summary.creditSales)
   );
   summary.totalDeliveryCharges = roundMoney(summary.totalDeliveryCharges);
+  // Daily target commission per boy (paid once per day, not on any single bill).
+  for (const boyKey of Object.keys(summary.byDeliveryBoy)) {
+    const bonus = dailyTargetCommission(bills, boyKey).total;
+    if (bonus > 0) {
+      summary.byDeliveryBoy[boyKey].commission = roundMoney(
+        summary.byDeliveryBoy[boyKey].commission + bonus
+      );
+      summary.byDeliveryBoy[boyKey].targetBonus = bonus;
+      summary.totalCommission += bonus;
+    }
+  }
   summary.totalCommission = roundMoney(summary.totalCommission);
 
   return summary;

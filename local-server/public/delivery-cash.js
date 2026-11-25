@@ -631,6 +631,11 @@ function showPending(items) {
     const body = element('div', 'cash-invoice-details');
     body.append(element('span', 'cash-driver', o.driverName),
       element('strong', 'cash-money', money(o.amountCents, o.currencyDecimals, o.currencyCode)));
+    if (o.split) {
+      // Rider multiple payment: only this cash part is with the rider.
+      body.append(element('span', 'cash-split-note',
+        `Cash part of ${money(o.orderTotalCents, o.currencyDecimals, o.currencyCode)} · multiple payment`));
+    }
     const btn = element('button', 'btn primary cash-confirm', 'Confirm cash received');
     btn.type = 'button';
     btn.addEventListener('click', () => void confirmItem(o, btn));

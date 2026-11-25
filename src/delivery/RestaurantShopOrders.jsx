@@ -7,7 +7,11 @@ import {
 } from "firebase/firestore";
 import { httpsCallable } from "firebase/functions";
 import { db, functions } from "../firebase";
-import { calculateDeliveryCommission } from "../utils/externalSales.js";
+import {
+  calculateDeliveryCommission,
+  dailyTargetTierFor,
+  resolveDeliveryBoyCommission,
+} from "../utils/externalSales.js";
 import {
   formatMoney,
   parseMoneyInput,
@@ -19,6 +23,7 @@ import {
   POOL_STATUS,
   RESTAURANT_DELIVERY_ORDERS,
   formatPoolMoney,
+  orderCurrencyDecimals,
   paymentStatusLabel,
   poolStatusLabel,
 } from "../utils/restaurantDeliveryOrders.js";
@@ -132,23 +137,51 @@ function groupBillLines(lines) {
 }
 
 function orderAmount(order) {
-  const decimals = Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4);
+  const decimals = orderCurrencyDecimals(order);
   return Number(order?.totalCents || 0) / 10 ** decimals;
 }
 
 function orderDeliveryCharge(order) {
-  const decimals = Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4);
+  const decimals = orderCurrencyDecimals(order);
   return Number(order?.deliveryChargeCents || 0) / 10 ** decimals;
 }
 
 function orderCommission(order, deliveryBoy) {
+  // The rider's GTCT Analytics commission (also used by the POS rider settlement).
+  // Daily target pays 0 per order; it is added once per day in summarizeShopOrders.
+  const setting = resolveDeliveryBoyCommission(deliveryBoy);
   return calculateDeliveryCommission({
     saleType: "DELIVERY",
     deliveryCharge: orderDeliveryCharge(order),
-    commissionEnabled: Boolean(deliveryBoy?.commissionEnabled),
-    commissionRate: Number(deliveryBoy?.commissionRate) || 0,
-    decimals: Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4),
+    billAmount: orderAmount(order),
+    commissionEnabled: setting.enabled,
+    commissionRate: setting.rate,
+    commissionType: setting.type,
+    commissionTiers: setting.tiers,
+    decimals: orderCurrencyDecimals(order),
   }).commissionAmount;
+}
+
+/** Daily target commission: highest range reached per business day, summed. */
+function dailyTargetTotal(orders, deliveryBoy) {
+  const setting = resolveDeliveryBoyCommission(deliveryBoy);
+  if (!setting.enabled || setting.type !== "DAILY_TARGET") return 0;
+  const byDay = new Map();
+  for (const order of orders) {
+    const day = String(order?.businessDate || "").slice(0, 10);
+    byDay.set(day, (byDay.get(day) || 0) + orderAmount(order));
+  }
+  let total = 0;
+  for (const dayTotal of byDay.values()) {
+    total += dailyTargetTierFor(dayTotal, setting.tiers)?.amount || 0;
+  }
+  return total;
+}
+
+function commissionLabel(setting) {
+  if (setting.type === "DAILY_TARGET") return "daily target";
+  if (setting.type === "BILL_TOTAL") return `${setting.rate}% of bill`;
+  return `${setting.rate}% of delivery`;
 }
 
 function paymentBucket(status) {
@@ -244,6 +277,69 @@ function resolveShopPayment(order) {
   };
 }
 
+const SPLIT_PART_TEXT = {
+  cash: {
+    WITH_RIDER: ["With you · hand over to shop", "text-teal-200 bg-teal-500/10 ring-teal-400/25"],
+    HANDED_OVER: ["Handed over ✓", "text-emerald-200 bg-emerald-500/10 ring-emerald-400/25"],
+  },
+  shopPaid: {
+    PENDING: ["Waiting for cashier", "text-amber-200 bg-amber-500/10 ring-amber-400/25"],
+    CONFIRMED: ["Confirmed by shop ✓", "text-emerald-200 bg-emerald-500/10 ring-emerald-400/25"],
+  },
+  credit: {
+    PENDING: ["Waiting for approval", "text-amber-200 bg-amber-500/10 ring-amber-400/25"],
+    APPROVED: ["Approved ✓", "text-emerald-200 bg-emerald-500/10 ring-emerald-400/25"],
+    REJECTED: ["Rejected · change the payment", "text-rose-200 bg-rose-500/10 ring-rose-400/30"],
+  },
+};
+
+/** Shop's review of a multiple payment: one line per part (cash / shop paid / credit). */
+function SplitReviewStatus({ order }) {
+  const review = order?.splitReview;
+  const report = order?.paymentReport || {};
+  const status = String(report.status || "").toUpperCase();
+  const total = Number(order?.totalCents || 0);
+  // What the rider reported now, as parts (single mode = the whole bill in one part).
+  const multi = report.multi === true || status === PAYMENT_STATUS.PARTIAL_SHOP;
+  const expected = multi
+    ? { cashCents: report.cashCents, shopPaidCents: report.shopPaidCents, creditCents: report.creditCents }
+    : status === PAYMENT_STATUS.SHOP_PAID_REPORTED
+      ? { cashCents: 0, shopPaidCents: total, creditCents: 0 }
+      : status === PAYMENT_STATUS.CREDIT_REPORTED
+        ? { cashCents: 0, shopPaidCents: 0, creditCents: total }
+        : null;
+  // Show the shop's review only while it is about what the rider reported now.
+  const same = (k) => Number(review?.[k] || 0) === Number(expected?.[k] || 0);
+  if (!review || !expected || !same("cashCents") || !same("shopPaidCents") || !same("creditCents")) return null;
+  const rows = [
+    ["Cash", "cash", review.cashCents],
+    ["Shop paid", "shopPaid", review.shopPaidCents],
+    ["Credit", "credit", review.creditCents],
+  ].filter(([, key]) => review[key] && review[key] !== "NONE");
+  if (!rows.length) return null;
+  return (
+    <div className="mt-3 space-y-1.5 rounded-2xl border border-white/10 bg-white/[0.03] p-3">
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+        {multi ? "Multiple payment · shop review" : "Shop review"}
+      </div>
+      {rows.map(([label, key, cents]) => {
+        const [text, cls] = SPLIT_PART_TEXT[key]?.[review[key]] || [review[key], "text-slate-300 bg-white/5 ring-white/10"];
+        return (
+          <div key={key} className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-slate-300">
+              {label} <span className="tabular-nums text-slate-400">{formatPoolMoney(order, Number(cents || 0))}</span>
+            </span>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ${cls}`}>{text}</span>
+          </div>
+        );
+      })}
+      {review.credit === "REJECTED" && review.creditRejectNote ? (
+        <p className="text-[11px] text-rose-200/90">Shop: {review.creditRejectNote}</p>
+      ) : null}
+    </div>
+  );
+}
+
 function DeliveredTotals({ summary, currencyDecimals, currencyCode }) {
   const money = (value) => {
     const formatted = formatMoney(value, currencyDecimals);
@@ -254,8 +350,10 @@ function DeliveredTotals({ summary, currencyDecimals, currencyCode }) {
     { label: "Cash collection", value: summary.collection },
     { label: "Paid at shop", value: summary.shopPaid },
     { label: "Customer credit", value: summary.credit },
+    ...(summary.unmarked > 0 ? [{ label: "Payment not marked", value: summary.unmarked }] : []),
     { label: "Commission", value: summary.commission },
   ];
+  const shopOwesRider = summary.balanceToShop < 0;
   return (
     <section className="space-y-4">
       <div className="rounded-3xl border border-white/10 bg-gradient-to-br from-slate-900 via-slate-900 to-teal-950/40 p-5 shadow-[0_20px_50px_rgba(0,0,0,0.35)]">
@@ -278,10 +376,10 @@ function DeliveredTotals({ summary, currencyDecimals, currencyCode }) {
           </div>
           <div className="rounded-2xl bg-orange-500/10 px-4 py-4 ring-1 ring-orange-400/25">
             <div className="text-[11px] font-medium uppercase tracking-wide text-orange-200/80">
-              Balance to shop
+              {shopOwesRider ? "Shop owes you" : "Balance to shop"}
             </div>
             <div className="mt-2 text-2xl font-semibold tabular-nums tracking-tight text-white">
-              {money(summary.balanceToShop)}
+              {money(Math.abs(summary.balanceToShop))}
             </div>
           </div>
         </div>
@@ -309,63 +407,93 @@ function DeliveredTotals({ summary, currencyDecimals, currencyCode }) {
   );
 }
 
+/**
+ * How one delivered order's money splits, in minor units. Both sources are used:
+ * - the shop's own records from the POS (authoritative for what the shop received:
+ *   counter cash/bank, credit, and cash the rider already handed in), and
+ * - the rider's report (authoritative for the cash he collected himself).
+ * Anything neither source explains is "not yet marked".
+ */
+export function splitDeliveredOrder(order) {
+  const total = Math.max(0, Math.round(Number(order?.totalCents || 0)));
+  const shop = order?.shopPayment || {};
+  const posCredit = Math.max(0, Number(shop.creditCents || 0));
+  const hasSource = shop.counterCents != null;
+  // Older POS versions do not say which recorded cash came from the rider.
+  const counter = Math.max(
+    0,
+    hasSource ? Number(shop.counterCents || 0) : Number(shop.cashCents || 0) + Number(shop.bankCents || 0)
+  );
+  const riderHanded = hasSource ? Math.max(0, Number(shop.riderCashCents || 0)) : 0;
+  const report = order?.paymentReport || {};
+  const status = String(report.status || "").toUpperCase();
+  const hasSplit =
+    (report.multi === true || status === PAYMENT_STATUS.PARTIAL_SHOP) &&
+    ["cashCents", "shopPaidCents", "creditCents"].some((k) => report[k] != null);
+
+  let riderCash = 0;
+  let shopPaid = counter;
+  let credit = posCredit;
+  if (hasSplit) {
+    riderCash = Math.max(0, Number(report.cashCents || 0));
+    if (!counter) shopPaid = Math.max(0, Number(report.shopPaidCents || 0));
+    if (!posCredit) credit = Math.max(0, Number(report.creditCents || 0));
+  } else if (status === PAYMENT_STATUS.CASH_WITH_BOY) {
+    riderCash = Math.max(0, total - counter - posCredit);
+  } else if (status === PAYMENT_STATUS.SHOP_PAID_REPORTED || status === PAYMENT_STATUS.PAID_CONFIRMED) {
+    if (!counter && !riderHanded) shopPaid = Math.max(0, total - posCredit);
+  } else if (status === PAYMENT_STATUS.CREDIT_REPORTED || status === PAYMENT_STATUS.CREDIT_APPROVED) {
+    if (!posCredit) credit = Math.max(0, total - counter);
+  }
+  // Cash the rider already handed in at the shop is proof of what he collected.
+  riderCash = Math.max(riderCash, riderHanded);
+  // The shop's records win: never count more than the order total.
+  riderCash = Math.min(riderCash, Math.max(0, total - shopPaid - credit));
+  const unmarked = Math.max(0, total - riderCash - shopPaid - credit);
+  return { total, riderCash, shopPaid, credit, unmarked };
+}
+
 function summarizeShopOrders(orders, deliveryBoy) {
   let collection = 0;
   let shopPaid = 0;
   let credit = 0;
+  let unmarked = 0;
   let commission = 0;
   let all = 0;
+  let decimals = 2;
   for (const order of orders) {
-    const amount = orderAmount(order);
-    const decimals = Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4);
+    decimals = orderCurrencyDecimals(order);
     const scale = 10 ** decimals;
-    all += amount;
+    const parts = splitDeliveredOrder(order);
+    all += parts.total / scale;
+    collection += parts.riderCash / scale;
+    shopPaid += parts.shopPaid / scale;
+    credit += parts.credit / scale;
+    unmarked += parts.unmarked / scale;
     commission += orderCommission(order, deliveryBoy);
-    const shop = resolveShopPayment(order);
-    if (shop.kind === "PAID") {
-      shopPaid += amount;
-      continue;
-    }
-    if (shop.kind === "CREDIT") {
-      credit += amount;
-      continue;
-    }
-    if (shop.kind === "PARTIAL") {
-      collection += Number(shop.cashCents || 0) / scale;
-      shopPaid += Number(shop.bankCents || 0) / scale;
-      credit += Number(shop.creditCents || 0) / scale;
-      continue;
-    }
-    const report = order.paymentReport || {};
-    if (report.multi || report.status === PAYMENT_STATUS.PARTIAL_SHOP) {
-      collection += Number(report.cashCents || 0) / scale;
-      shopPaid += Number(report.shopPaidCents || 0) / scale;
-      credit += Number(report.creditCents || 0) / scale;
-      continue;
-    }
-    const bucket = paymentBucket(report.status);
-    if (bucket === "collection") collection += amount;
-    else if (bucket === "shopPaid") shopPaid += amount;
-    else if (bucket === "credit") credit += amount;
   }
-  collection = roundMoney(collection);
-  shopPaid = roundMoney(shopPaid);
-  credit = roundMoney(credit);
-  commission = roundMoney(commission);
-  all = roundMoney(all);
+  commission += dailyTargetTotal(orders, deliveryBoy);
+  collection = roundMoney(collection, decimals);
+  shopPaid = roundMoney(shopPaid, decimals);
+  credit = roundMoney(credit, decimals);
+  unmarked = roundMoney(unmarked, decimals);
+  commission = roundMoney(commission, decimals);
+  all = roundMoney(all, decimals);
   return {
     count: orders.length,
     collection,
     shopPaid,
     credit,
+    unmarked,
     commission,
     all,
-    balanceToShop: roundMoney(Math.max(0, collection - commission)),
+    // Negative = the shop owes the rider (e.g. commission on shop-paid orders).
+    balanceToShop: roundMoney(collection - commission, decimals),
   };
 }
 
 function buildPaymentPayload(order, form) {
-  const decimals = Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4);
+  const decimals = orderCurrencyDecimals(order);
   const totalCents = Number(order.totalCents || 0);
 
   if (form.multi) {
@@ -444,8 +572,9 @@ function OrderCard({
       }
     : paymentChip(payment.status);
   const commissionAmount = orderCommission(order, deliveryBoy);
-  const commissionEnabled = Boolean(deliveryBoy?.commissionEnabled);
-  const commissionRate = Number(deliveryBoy?.commissionRate) || 0;
+  const commissionSetting = resolveDeliveryBoyCommission(deliveryBoy);
+  const commissionEnabled = commissionSetting.enabled;
+  const commissionRate = commissionSetting.rate;
   const token = tokenLabel(order);
   const canMarkDelivered = tab === "view" && order.status === POOL_STATUS.CLAIMED;
   const lockedPayment =
@@ -556,11 +685,17 @@ function OrderCard({
         )}
         {commissionEnabled ? (
           <span className="rounded-full bg-cyan-500/15 px-2.5 py-1 text-[10px] font-semibold text-cyan-200 ring-1 ring-cyan-400/30">
-            Commission {formatMoney(commissionAmount, currencyDecimals)}
-            {commissionRate > 0 ? ` · ${commissionRate}%` : ""}
+            {commissionSetting.type === "DAILY_TARGET"
+              ? "Commission · daily target"
+              : `Commission ${formatMoney(commissionAmount, currencyDecimals)}${
+                  commissionRate > 0
+                    ? ` · ${commissionRate}%${commissionSetting.type === "BILL_TOTAL" ? " of bill" : ""}`
+                    : ""
+                }`}
           </span>
         ) : null}
       </div>
+      <SplitReviewStatus order={order} />
 
       <div className={`mt-3.5 grid gap-2 ${tab === "delivered" && paymentEditable ? "grid-cols-2" : "grid-cols-1"}`}>
         <button
@@ -659,9 +794,15 @@ function OrderCard({
               <div className="flex justify-between">
                 <span>
                   Commission
-                  {commissionRate > 0 ? ` (${commissionRate}% of delivery)` : ""}
+                  {commissionSetting.type === "DAILY_TARGET" || commissionRate > 0
+                    ? ` (${commissionLabel(commissionSetting)})`
+                    : ""}
                 </span>
-                <span>{formatMoney(commissionAmount, currencyDecimals)}</span>
+                <span>
+                  {commissionSetting.type === "DAILY_TARGET"
+                    ? "In day total"
+                    : formatMoney(commissionAmount, currencyDecimals)}
+                </span>
               </div>
             ) : null}
             {shopPay.settled || shopPay.kind === "PARTIAL" ? (
@@ -973,13 +1114,7 @@ export default function RestaurantShopOrders({
     () => summarizeShopOrders(filteredDeliveredOrders, deliveryBoy),
     [filteredDeliveredOrders, deliveryBoy]
   );
-  const currencyDecimals = Math.min(
-    Math.max(
-      Number(list[0]?.currencyDecimals || deliveredOrders[0]?.currencyDecimals) || 2,
-      0
-    ),
-    4
-  );
+  const currencyDecimals = orderCurrencyDecimals(list[0] || deliveredOrders[0]);
 
   const sameBlockAvailable = useMemo(() => {
     if (!blockSuggest?.block) return [];

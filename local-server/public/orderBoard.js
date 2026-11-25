@@ -623,6 +623,13 @@ function renderDeliveryCard(order, ctx) {
     rowPay.append(node("strong", "monitor-collect", `Collect ${formatApiTotal(order)}`));
     rowPay.append(smallBadge("UNPAID", "is-neutral"));
   }
+  const review = order.deliverySplitReview;
+  if (review && (review.shopPaid.state === "PENDING" || review.credit.state === "PENDING")) {
+    // Delivery boy reported shop-paid / credit: the cashier must approve it.
+    rowPay.append(smallBadge("NEEDS APPROVAL", "is-danger"));
+  } else if (review?.credit.state === "REJECTED") {
+    rowPay.append(smallBadge("CREDIT REJECTED", "is-danger"));
+  }
   if (life.status === "CANCEL_REQUESTED") {
     rowPay.append(smallBadge("CANCEL REQUESTED", "is-danger"));
   } else if (life.status === "CANCELLED") {
@@ -633,6 +640,187 @@ function renderDeliveryCard(order, ctx) {
   // Slot 7 — actions (pinned to bottom via CSS)
   appendActionsRow(article, order, ctx);
   return article;
+}
+
+/**
+ * Rider "multiple payment": the cashier confirms the part paid at the shop,
+ * approves or rejects the credit part; the cash part stays with the rider until
+ * Cash handover / Rider settlement.
+ */
+function appendSplitReviewPanel(detailBody, order, ctx) {
+  const { api, onRefresh } = ctx;
+  const r = order.deliverySplitReview;
+  const money = (cents) => moneyLabel(order, cents);
+  const box = node("div", "monitor-split-review");
+  const who = order.deliveryBoyName || "Delivery boy";
+  const title =
+    r.kind === "SHOP_PAID"
+      ? "Delivery boy says: paid at shop"
+      : r.kind === "CREDIT"
+        ? "Delivery boy asks: customer credit"
+        : "Multiple payment from delivery boy";
+  box.append(node("h3", "monitor-split-title", title));
+  box.append(
+    node(
+      "p",
+      "monitor-meta",
+      r.kind === "MULTI"
+        ? `${who} reported: cash ${money(r.cash.requiredCents)} · shop paid ${money(
+            r.shopPaid.requiredCents
+          )} · credit ${money(r.credit.requiredCents)} (total ${money(r.totalCents)})`
+        : `${who} reported the whole bill (${money(r.totalCents)}) as ${
+            r.kind === "SHOP_PAID" ? "paid at the shop. Confirm only if the shop really received it." : "credit. Approve only if this customer may pay later."
+          }`
+    )
+  );
+  const submission = (tag) =>
+    `split-${tag}-${order.orderId}-v${r.reportVersion}`.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 78);
+  const post = async (btn, body) => {
+    btn.disabled = true;
+    const res = await api(
+      `/v1/delivery-review/${encodeURIComponent(order.orderId)}/split`,
+      "POST",
+      { reportVersion: r.reportVersion, ...body }
+    );
+    if (!res.ok) {
+      alert(res.json?.error || "Could not save.");
+      btn.disabled = false;
+      return;
+    }
+    await onRefresh();
+  };
+  const row = (label, amount, stateText, stateClass) => {
+    const el = node("div", "monitor-split-row");
+    const left = node("div", "monitor-split-part");
+    left.append(node("strong", "", label), node("span", "monitor-split-amount", money(amount)));
+    el.append(left, node("span", `monitor-split-state ${stateClass}`, stateText));
+    box.append(el);
+    return el;
+  };
+
+  // Cash: rider's account.
+  if (r.cash.state !== "NONE") {
+    row(
+      "Cash (delivery boy)",
+      r.cash.requiredCents,
+      r.cash.state === "HANDED_OVER" ? "Handed over ✓" : "With delivery boy — take it in Cash handover",
+      r.cash.state === "HANDED_OVER" ? "is-done" : "is-wait"
+    );
+  }
+
+  // Shop paid: cashier confirms (cash or bank) unless already recorded.
+  if (r.shopPaid.state !== "NONE") {
+    const el = row(
+      "Paid at shop",
+      r.shopPaid.requiredCents,
+      r.shopPaid.state === "CONFIRMED" ? "Confirmed ✓" : `To confirm: ${money(r.shopPaid.dueCents)}`,
+      r.shopPaid.state === "CONFIRMED" ? "is-done" : "is-todo"
+    );
+    if (r.shopPaid.state === "PENDING") {
+      const actions = node("div", "monitor-split-actions");
+      const cash = node("button", "btn primary", "Confirm · Cash");
+      cash.type = "button";
+      cash.addEventListener("click", async () => {
+        const ok = await confirmNear(cash, `Record ${money(r.shopPaid.dueCents)} paid in cash at the shop for ${order.orderNumber}?`, {
+          confirmLabel: "Confirm",
+          cancelLabel: "Cancel",
+        });
+        if (ok) await post(cash, { action: "CONFIRM_SHOP_PAID", tender: "CASH", submissionId: submission("shopcash") });
+      });
+      const bankSel = node("select", "monitor-split-bank");
+      bankSel.append(new Option("Bank account…", ""));
+      const bank = node("button", "btn ghost", "Confirm · Bank");
+      bank.type = "button";
+      bank.disabled = true;
+      bankSel.addEventListener("change", () => {
+        bank.disabled = !bankSel.value;
+      });
+      api("/v1/bank-accounts", "GET").then((res) => {
+        for (const a of res.ok ? res.json?.accounts || [] : []) {
+          if (a.accountType === "OPERATIONAL" && a.isActive) {
+            bankSel.append(new Option(`${a.displayName} · ${a.bankName}`, a.accountId));
+          }
+        }
+      });
+      bank.addEventListener("click", async () => {
+        if (!bankSel.value) return;
+        const ok = await confirmNear(bank, `Record ${money(r.shopPaid.dueCents)} paid by bank for ${order.orderNumber}?`, {
+          confirmLabel: "Confirm",
+          cancelLabel: "Cancel",
+        });
+        if (ok) {
+          await post(bank, {
+            action: "CONFIRM_SHOP_PAID",
+            tender: "BANK",
+            bankAccountId: bankSel.value,
+            submissionId: submission("shopbank"),
+          });
+        }
+      });
+      actions.append(cash, bankSel, bank);
+      el.after(actions);
+    }
+  }
+
+  // Credit: shop approves (customer pays later) or rejects (rider must correct).
+  if (r.credit.state !== "NONE") {
+    const text =
+      r.credit.state === "APPROVED"
+        ? "Approved ✓"
+        : r.credit.state === "REJECTED"
+          ? `Rejected — waiting for delivery boy${r.credit.rejectNote ? ` (${r.credit.rejectNote})` : ""}`
+          : "Needs approval";
+    const el = row(
+      "Credit (customer pays later)",
+      r.credit.requiredCents,
+      text,
+      r.credit.state === "APPROVED" ? "is-done" : r.credit.state === "REJECTED" ? "is-bad" : "is-todo"
+    );
+    if (r.credit.state === "PENDING" || r.credit.state === "REJECTED") {
+      const actions = node("div", "monitor-split-actions");
+      const approve = node("button", "btn primary", "Approve credit");
+      approve.type = "button";
+      approve.addEventListener("click", async () => {
+        const who = order.customerName ? ` to ${order.customerName}` : "";
+        const ok = await confirmNear(approve, `Give ${money(r.credit.dueCents)} credit${who} for ${order.orderNumber}?`, {
+          confirmLabel: "Approve",
+          cancelLabel: "Cancel",
+        });
+        if (ok) await post(approve, { action: "APPROVE_CREDIT", submissionId: submission("credit") });
+      });
+      actions.append(approve);
+      if (r.credit.state === "PENDING") {
+        const reject = node("button", "btn ghost danger", "Reject credit");
+        reject.type = "button";
+        reject.addEventListener("click", async () => {
+          const note = prompt(`Why is credit refused for ${order.orderNumber}? (the delivery boy sees this)`);
+          if (note === null) return;
+          if (note.trim().length < 3) {
+            alert("Enter a short reason (at least 3 characters).");
+            return;
+          }
+          await post(reject, { action: "REJECT_CREDIT", note: note.trim() });
+        });
+        actions.append(reject);
+      }
+      el.after(actions);
+    }
+    if (!r.hasOrderCustomer && r.credit.state !== "APPROVED") {
+      box.append(node("p", "monitor-meta", "Add the customer to this order before approving credit."));
+    }
+  }
+  box.append(
+    node(
+      "p",
+      `monitor-split-summary ${r.complete ? "is-done" : ""}`,
+      r.complete
+        ? r.kind === "MULTI" ? "All parts settled ✓" : "Settled ✓"
+        : r.shopActionsDone
+          ? "Shop part done — cash still with delivery boy"
+          : "Waiting for shop review"
+    )
+  );
+  detailBody.append(box);
 }
 
 function appendDetailBody(detailBody, order, ctx) {
@@ -704,7 +892,9 @@ function appendDetailBody(detailBody, order, ctx) {
     detailBody.append(actions);
   }
   const p = riderPay;
-  if (p.status === "SHOP_PAID_REPORTED") {
+  const reviewPanel = Boolean(order.deliverySplitReview);
+  if (reviewPanel) appendSplitReviewPanel(detailBody, order, ctx);
+  if (p.status === "SHOP_PAID_REPORTED" && !reviewPanel) {
     const info = node("div", "monitor-review-actions");
     info.append(
       node(
@@ -762,6 +952,7 @@ function appendDetailBody(detailBody, order, ctx) {
     info.append(revoke);
     detailBody.append(info);
   } else if (
+    !reviewPanel &&
     order.paymentStatus !== "PAID" &&
     !["CANCELLED", "CANCEL_REQUESTED"].includes(life.status)
   ) {
@@ -769,7 +960,7 @@ function appendDetailBody(detailBody, order, ctx) {
     link.href = "/orders.html?view=list";
     detailBody.append(link);
   }
-  if (p.status === "CREDIT_REPORTED") {
+  if (p.status === "CREDIT_REPORTED" && !reviewPanel) {
     const info = node("div", "monitor-review-actions");
     info.append(
       node(

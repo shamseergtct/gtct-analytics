@@ -9,6 +9,7 @@ import { getDb } from '../db/db.js';
 import { newId } from '../util/ids.js';
 import { nowIso } from '../util/time.js';
 import { readAllocationSummary } from './paymentAllocations.js';
+import { riderOriginCents } from './deliverySplitReview.js';
 import { recordAudit } from './audit.js';
 
 function fail(status, message, code) {
@@ -71,6 +72,29 @@ export function listDeliveryCashHandovers(shopId, actor) {
       AND NOT EXISTS (SELECT 1 FROM delivery_credit_reviews cr
         WHERE cr.shop_id=r.shop_id AND cr.order_id=r.order_id AND cr.decision='CREDIT_APPROVED')
     ORDER BY r.reported_at, o.order_number LIMIT 150`).all(shopId);
+  // Rider multiple payment: only the cash part is in the rider's custody.
+  const splitPending = db.prepare(`SELECT o.order_id, o.order_number, o.token_number, o.business_date,
+      o.total_cents, o.currency_code, o.currency_decimals, o.customer_name, o.block_number,
+      o.delivery_charge_cents, r.driver_user_id, r.cash_cents, r.version AS report_version,
+      r.reported_at, u.full_name AS driver_name
+    FROM delivery_order_payment_reports r
+    JOIN orders o ON o.order_id=r.order_id AND o.tenant_id=r.shop_id
+    JOIN order_delivery_claims c ON c.order_id=o.order_id AND c.shop_id=o.tenant_id
+      AND c.driver_user_id=r.driver_user_id
+    LEFT JOIN staff_users u ON u.shop_id=r.shop_id AND u.user_id=r.driver_user_id
+    LEFT JOIN delivery_order_lifecycle l ON l.shop_id=r.shop_id AND l.order_id=r.order_id
+    WHERE r.shop_id=? AND r.report_type='PARTIAL_SHOP' AND r.cash_cents > 0
+      AND o.is_test=1 AND o.status='OPEN' AND o.fulfillment_behavior='DELIVERY'
+      AND l.status='DELIVERED'
+      AND NOT EXISTS (SELECT 1 FROM delivery_cash_handovers h
+        WHERE h.shop_id=r.shop_id AND h.order_id=r.order_id)
+      AND NOT EXISTS (SELECT 1 FROM delivery_rider_net_settlement_orders x
+        WHERE x.shop_id=r.shop_id AND x.order_id=r.order_id)
+      AND NOT EXISTS (SELECT 1 FROM order_settlements s
+        WHERE s.shop_id=r.shop_id AND s.order_id=r.order_id)
+    ORDER BY r.reported_at, o.order_number LIMIT 150`).all(shopId)
+    .filter((r) => readAllocationSummary(db, shopId, r.order_id, Number(r.total_cents))
+      .unallocatedCents >= Number(r.cash_cents));
   // P2-E3B UI1: scoped delivery roster, including riders without pending cash.
   // Expose only IDs, display names and active flags to authorized cashiers;
   // the existing list permission check and shop_id constraint remain in force.
@@ -102,7 +126,17 @@ export function listDeliveryCashHandovers(shopId, actor) {
         currencyDecimals:Number(r.currency_decimals ?? 3),
         reportVersion:Number(r.report_version),reportedAt:r.reported_at,
         customerName:r.customer_name||null,blockNumber:r.block_number||null,
-        deliveryChargeMinor:Number(r.delivery_charge_cents||0),commissionMinor:0})),
+        deliveryChargeMinor:Number(r.delivery_charge_cents||0),commissionMinor:0}))
+      .concat(splitPending.map(r=>({orderId:r.order_id,orderNumber:r.order_number,
+        tokenNumber:r.token_number==null?null:Number(r.token_number),
+        businessDate:r.business_date,
+        driverUserId:r.driver_user_id,driverName:r.driver_name || 'Delivery Boy',
+        amountCents:Number(r.cash_cents),orderTotalCents:Number(r.total_cents),split:true,
+        currencyCode:r.currency_code,
+        currencyDecimals:Number(r.currency_decimals ?? 3),
+        reportVersion:Number(r.report_version),reportedAt:r.reported_at,
+        customerName:r.customer_name||null,blockNumber:r.block_number||null,
+        deliveryChargeMinor:Number(r.delivery_charge_cents||0),commissionMinor:0}))),
     history:history.map(r=>({handoverId:r.handover_id,orderId:r.order_id,
       orderNumber:r.order_number,driverUserId:r.driver_user_id,
       driverName:r.driver_name || 'Delivery Boy',amountCents:Number(r.amount_cents),
@@ -151,19 +185,23 @@ export function confirmDeliveryCashHandover(shopId, orderIdInput, input, actor) 
       order.fulfillment_behavior!=='DELIVERY')
       fail(409,'Only open TEST delivery invoices qualify.','ORDER_NOT_ELIGIBLE');
     const total=Number(order.total_cents);
-    if (!Number.isSafeInteger(total) || total<=0 ||
-      total!==amountCents || order.currency_code!==currencyCode)
-      fail(409,'Amount/currency has changed. Refresh.','AMOUNT_MISMATCH');
     const claim=db.prepare(`SELECT driver_user_id FROM order_delivery_claims
       WHERE shop_id=? AND order_id=?`).get(shopId,orderId);
     const report=db.prepare(`SELECT * FROM delivery_order_payment_reports
       WHERE shop_id=? AND order_id=?`).get(shopId,orderId);
+    // Rider multiple payment: hand over only his cash part (other parts are the shop's).
+    const isSplit=report?.report_type==='PARTIAL_SHOP' && Number(report?.cash_cents)>0;
+    const riderCash=isSplit ? Number(report.cash_cents) : total;
+    if (!Number.isSafeInteger(total) || total<=0 ||
+      riderCash!==amountCents || order.currency_code!==currencyCode)
+      fail(409,'Amount/currency has changed. Refresh.','AMOUNT_MISMATCH');
     if (!claim || claim.driver_user_id!==driverUserId ||
       !report || report.driver_user_id!==driverUserId ||
-      report.report_type!=='CASH_WITH_BOY')
+      (report.report_type!=='CASH_WITH_BOY' && !isSplit))
       fail(409,'Order ownership or rider cash report changed.','CUSTODY_NOT_CONFIRMED');
     if (Number(report.version)!==expectedReportVersion ||
-      Number(report.amount_cents)!==amountCents || report.currency_code!==currencyCode ||
+      (isSplit ? Number(report.cash_cents) : Number(report.amount_cents))!==amountCents ||
+      report.currency_code!==currencyCode ||
       Number(report.currency_decimals)!==Number(order.currency_decimals))
       fail(409,'Rider report changed. Refresh.','STALE_RIDER_REPORT');
     const life=db.prepare(`SELECT status FROM delivery_order_lifecycle
@@ -179,14 +217,21 @@ export function confirmDeliveryCashHandover(shopId, orderIdInput, input, actor) 
       .get(shopId,orderId))
       fail(409,'Cash already handed over for this order.','ALREADY_HANDED_OVER');
     const before=readAllocationSummary(db,shopId,orderId,total);
-    if (before.hasAllocations || before.legacySettlement ||
-      before.paidCents!==0 || before.creditCents!==0 || before.unallocatedCents!==total)
-      fail(409,'Payment or credit already recorded. Reconcile before handover.','FINANCIAL_CONFLICT');
-    const balance=db.prepare(`SELECT * FROM order_payment_balances
-      WHERE shop_id=? AND order_id=?`).get(shopId,orderId);
-    if(balance && (balance.payment_status!=='UNPAID' ||
-      Number(balance.paid_cents)!==0 || Number(balance.balance_cents)!==total))
-      fail(409,'Payment balance needs reconciliation.','BALANCE_CONFLICT');
+    if (isSplit) {
+      // Shop-paid / credit parts may already be recorded; the rider's part must still be open.
+      if (before.legacySettlement || riderOriginCents(db,shopId,orderId)>0 ||
+        before.unallocatedCents<amountCents)
+        fail(409,'Payment or credit already recorded for the rider\'s part. Reconcile before handover.','FINANCIAL_CONFLICT');
+    } else {
+      if (before.hasAllocations || before.legacySettlement ||
+        before.paidCents!==0 || before.creditCents!==0 || before.unallocatedCents!==total)
+        fail(409,'Payment or credit already recorded. Reconcile before handover.','FINANCIAL_CONFLICT');
+      const balance=db.prepare(`SELECT * FROM order_payment_balances
+        WHERE shop_id=? AND order_id=?`).get(shopId,orderId);
+      if(balance && (balance.payment_status!=='UNPAID' ||
+        Number(balance.paid_cents)!==0 || Number(balance.balance_cents)!==total))
+        fail(409,'Payment balance needs reconciliation.','BALANCE_CONFLICT');
+    }
     const allocationSubmissionId=`rider_${submissionId}`;
     if(db.prepare(`SELECT 1 FROM order_payment_allocations
       WHERE shop_id=? AND submission_id=?`).get(shopId,allocationSubmissionId))
@@ -211,17 +256,23 @@ export function confirmDeliveryCashHandover(shopId, orderIdInput, input, actor) 
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(handoverId,shopId,orderId,driverUserId,expectedReportVersion,
         submissionId,fingerprint,allocationId,currencyCode,amountCents,actor.userId,at);
+    const after=readAllocationSummary(db,shopId,orderId,total);
     db.prepare(`INSERT INTO order_payment_balances
       (shop_id,order_id,currency_code,order_total_cents,paid_cents,balance_cents,
         payment_status,updated_at)
-      VALUES (?,?,?,?,?,0,'PAID',?)
+      VALUES (?,?,?,?,?,?,?,?)
       ON CONFLICT(shop_id,order_id) DO UPDATE SET
         currency_code=excluded.currency_code,order_total_cents=excluded.order_total_cents,
-        paid_cents=excluded.paid_cents,balance_cents=0,
-        payment_status='PAID',updated_at=excluded.updated_at`)
-      .run(shopId,orderId,currencyCode,total,total,at);
-    const after=readAllocationSummary(db,shopId,orderId,total);
-    if(after.cashCents!==total || after.paidCents!==total ||
+        paid_cents=excluded.paid_cents,balance_cents=excluded.balance_cents,
+        payment_status=excluded.payment_status,updated_at=excluded.updated_at`)
+      .run(shopId,orderId,currencyCode,total,after.paidCents,after.balanceCents,
+        after.paymentStatus==='PAID'?'PAID':'UNPAID',at);
+    if (isSplit) {
+      if(after.cashCents!==before.cashCents+amountCents ||
+        after.unallocatedCents!==before.unallocatedCents-amountCents ||
+        after.allocationCount!==before.allocationCount+1)
+        fail(409,'Payment reconciliation failed. Transaction rolled back.','RECONCILIATION_FAILED');
+    } else if(after.cashCents!==total || after.paidCents!==total ||
       after.unallocatedCents!==0 || after.allocationCount!==1)
       fail(409,'Payment reconciliation failed. Transaction rolled back.','RECONCILIATION_FAILED');
     recordAudit({actorRole:actor.role,actorUserId:actor.userId,

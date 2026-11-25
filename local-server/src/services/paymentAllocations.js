@@ -142,6 +142,23 @@ export function recordPaymentAllocation(shopId, orderId, input, actor) {
     const before=readAllocationSummary(db,shopId,orderId,order.total_cents);
     if (before.legacySettlement) fail(409,'Order already settled by legacy payment.', 'ALREADY_PAID');
     if (total>before.unallocatedCents) fail(409,'Allocation exceeds remaining unallocated amount. Refresh.', 'OVERPAYMENT');
+    // Rider multiple payment: his cash share is in his custody and may only reach the
+    // shop through Cash handover / Rider settlement, never as counter money.
+    if (order.fulfillment_behavior === 'DELIVERY') {
+      const split=db.prepare(`SELECT cash_cents FROM delivery_order_payment_reports
+        WHERE shop_id=? AND order_id=? AND report_type='PARTIAL_SHOP'`).get(shopId,orderId);
+      const riderShare=Number(split?.cash_cents || 0);
+      if (riderShare>0) {
+        const handed=db.prepare(`SELECT COALESCE(SUM(a.cash_cents+a.bank_cents),0) AS cents
+          FROM order_payment_allocations a WHERE a.shop_id=? AND a.order_id=?
+            AND (a.allocation_id IN (SELECT allocation_id FROM delivery_cash_handovers WHERE shop_id=? AND order_id=?)
+              OR a.allocation_id IN (SELECT allocation_id FROM delivery_rider_net_settlement_orders WHERE shop_id=? AND order_id=?))`)
+          .get(shopId,orderId,shopId,orderId,shopId,orderId).cents;
+        const reserve=Math.max(0,riderShare-Number(handed));
+        if (total>before.unallocatedCents-reserve)
+          fail(409,'Part of this bill is cash with the Delivery Boy. Take it with Cash handover, not at the counter.','RIDER_CASH_CUSTODY');
+      }
+    }
     const at=nowIso(); const allocationId=newId('alloc');
     db.prepare(`INSERT INTO order_payment_allocations
       (allocation_id,shop_id,order_id,submission_id,submission_fingerprint,currency_code,

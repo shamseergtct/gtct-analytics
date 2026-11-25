@@ -25,8 +25,16 @@ export function restaurantOrderDocId(clientId, localOrderId) {
   return `${String(clientId || "").trim()}_${String(localOrderId || "").trim()}`;
 }
 
+/** Currency decimals of a pool order (0–4). Missing → 2; a real 0 stays 0. */
+export function orderCurrencyDecimals(order) {
+  const raw = order?.currencyDecimals;
+  const n = Number(raw);
+  if (raw === null || raw === undefined || raw === "" || !Number.isFinite(n)) return 2;
+  return Math.min(Math.max(Math.trunc(n), 0), 4);
+}
+
 export function formatPoolMoney(order, amountCents = order?.totalCents) {
-  const decimals = Math.min(Math.max(Number(order?.currencyDecimals) || 2, 0), 4);
+  const decimals = orderCurrencyDecimals(order);
   const code = String(order?.currencyCode || "").trim();
   const amount = (Number(amountCents || 0) / 10 ** decimals).toFixed(decimals);
   return code ? `${amount} ${code}` : amount;

@@ -8,6 +8,7 @@ import { getDb } from '../db/db.js';
 import { newId } from '../util/ids.js';
 import { nowIso } from '../util/time.js';
 import { recordAudit } from './audit.js';
+import { riderOriginCents } from './deliverySplitReview.js';
 import { readAllocationSummary } from './paymentAllocations.js';
 import { listDeliveryCashHandovers } from './deliveryCashHandover.js';
 import { approveCommissionAccrual, previewCommissionAccrual } from './deliveryCommissionAccruals.js';
@@ -94,33 +95,40 @@ function checkRider(db,shopId,riderId){
 function cashOrders(db,shopId,riderId,day){
   const rows=db.prepare(`SELECT o.order_id,o.order_number,o.token_number,o.business_date,o.total_cents,
       o.currency_code,o.currency_decimals,o.customer_name,o.block_number,o.delivery_charge_cents,
-      r.version AS report_version,r.amount_cents
+      r.version AS report_version,r.amount_cents,r.report_type,r.cash_cents
     FROM delivery_order_payment_reports r
     JOIN orders o ON o.order_id=r.order_id AND o.tenant_id=r.shop_id
     JOIN order_delivery_claims c ON c.shop_id=r.shop_id AND c.order_id=r.order_id
       AND c.driver_user_id=r.driver_user_id
     JOIN delivery_order_lifecycle l ON l.shop_id=r.shop_id AND l.order_id=r.order_id
     WHERE r.shop_id=? AND r.driver_user_id=? AND o.business_date=?
-      AND r.report_type='CASH_WITH_BOY' AND l.status='DELIVERED'
+      AND (r.report_type='CASH_WITH_BOY' OR (r.report_type='PARTIAL_SHOP' AND r.cash_cents>0))
+      AND l.status='DELIVERED'
       AND o.is_test=1 AND o.status='OPEN' AND o.fulfillment_behavior='DELIVERY'
       AND NOT EXISTS(SELECT 1 FROM delivery_rider_net_settlement_orders x WHERE x.shop_id=r.shop_id AND x.order_id=r.order_id)
       AND NOT EXISTS(SELECT 1 FROM delivery_cash_handovers h WHERE h.shop_id=r.shop_id AND h.order_id=r.order_id)
-      AND NOT EXISTS(SELECT 1 FROM order_payment_allocations a WHERE a.shop_id=r.shop_id AND a.order_id=r.order_id)
+      AND (r.report_type='PARTIAL_SHOP' OR NOT EXISTS(SELECT 1 FROM order_payment_allocations a WHERE a.shop_id=r.shop_id AND a.order_id=r.order_id))
       AND NOT EXISTS(SELECT 1 FROM order_settlements s WHERE s.shop_id=r.shop_id AND s.order_id=r.order_id)
       AND NOT EXISTS(SELECT 1 FROM delivery_shop_credit_authorizations c2
          WHERE c2.shop_id=r.shop_id AND c2.order_id=r.order_id AND c2.state='APPROVED')
       AND NOT EXISTS(SELECT 1 FROM delivery_credit_reviews cr
          WHERE cr.shop_id=r.shop_id AND cr.order_id=r.order_id AND cr.decision='CREDIT_APPROVED')
       AND NOT EXISTS(SELECT 1 FROM order_void_events v WHERE v.shop_id=r.shop_id AND v.order_id=r.order_id)
-      AND NOT EXISTS(SELECT 1 FROM order_payment_balances b WHERE b.shop_id=r.shop_id AND b.order_id=r.order_id
-         AND (b.paid_cents>0 OR b.balance_cents!=o.total_cents OR b.payment_status!='UNPAID'))
+      AND (r.report_type='PARTIAL_SHOP' OR NOT EXISTS(SELECT 1 FROM order_payment_balances b WHERE b.shop_id=r.shop_id AND b.order_id=r.order_id
+         AND (b.paid_cents>0 OR b.balance_cents!=o.total_cents OR b.payment_status!='UNPAID')))
     ORDER BY o.order_number,o.order_id LIMIT 501`).all(shopId,riderId,day);
   if(rows.length>500) fail(409,'Too many pending invoices; split dates or contact administrator.','BATCH_LIMIT');
   for(const o of rows){
+    // Rider multiple payment: only the cash part is in the rider's custody.
+    o.split=o.report_type==='PARTIAL_SHOP';
+    o.rider_cash=o.split?Number(o.cash_cents):Number(o.total_cents);
     if(!moneyNumber(o.total_cents) || o.total_cents===0 ||
-      o.amount_cents!==o.total_cents || !Number.isSafeInteger(Number(o.report_version)) ||
-      Number(o.report_version)<1)
+      (!o.split && o.amount_cents!==o.total_cents) ||
+      (o.split && (!moneyNumber(o.rider_cash) || o.rider_cash===0 || o.rider_cash>o.total_cents)) ||
+      !Number.isSafeInteger(Number(o.report_version)) || Number(o.report_version)<1)
       fail(409,`Invoice ${o.order_number} has an invalid rider cash report. Reconcile first.`,'CASH_REPORT_CONFLICT');
+    if(o.split && readAllocationSummary(db,shopId,o.order_id,o.total_cents).unallocatedCents<o.rider_cash)
+      fail(409,`Invoice ${o.order_number}: shop already recorded the rider's cash part. Reconcile first.`,'CASH_REPORT_CONFLICT');
   }
   return rows;
 }
@@ -140,10 +148,9 @@ function dailySummary(db,shopId,riderId,day){
   for(const o of orders){
     if(!moneyNumber(o.total_cents))fail(409,'Invalid delivered invoice amount.','BAD_INVOICE');
     total+=o.total_cents;
-    const settledByRider=db.prepare(`SELECT 1 FROM delivery_cash_handovers WHERE shop_id=? AND order_id=?
-      UNION SELECT 1 FROM delivery_rider_net_settlement_orders WHERE shop_id=? AND order_id=?`).get(shopId,o.order_id,shopId,o.order_id);
     const allocated=readAllocationSummary(db,shopId,o.order_id,o.total_cents);
-    if(!settledByRider)paidDirect+=allocated.paidCents;
+    // Money paid at the shop directly = recorded payments minus what came from the rider.
+    paidDirect+=allocated.paidCents-Math.min(riderOriginCents(db,shopId,o.order_id),allocated.paidCents);
     creditAllocated+=allocated.creditCents;
   }
   if(![total,paidDirect,creditAllocated].every(Number.isSafeInteger))fail(409,'Amount overflow.','OVERFLOW');
@@ -166,12 +173,12 @@ function quote(db,shopId,riderId,day){
   const rows=cashOrders(db,shopId,riderId,day);
   const currencySet=new Set(rows.map(o=>`${o.currency_code}:${o.currency_decimals}`));
   if(currencySet.size>1) fail(409,'Pending invoices have mixed currencies; cannot settle together.','MIXED_CURRENCY');
-  const gross=rows.reduce((n,o)=>n+o.total_cents,0);
+  const gross=rows.reduce((n,o)=>n+o.rider_cash,0);
   if(!Number.isSafeInteger(gross)) fail(409,'Cash total overflow.','OVERFLOW');
   const currencyCode=rows[0]?.currency_code||null;
   const currencyDecimals=rows[0]?.currency_decimals??null;
   const receipt=rows.map(o=>({orderId:o.order_id,orderNumber:o.order_number,
-    reportVersion:o.report_version,amountMinor:o.total_cents}));
+    reportVersion:o.report_version,amountMinor:o.rider_cash}));
   const overview=dailySummary(db,shopId,riderId,day);
   const frozen=db.prepare(`SELECT eligible_delivery_count FROM delivery_commission_accruals
     WHERE shop_id=? AND rider_user_id=? AND business_date=?`).get(shopId,riderId,day);
@@ -186,6 +193,7 @@ function quote(db,shopId,riderId,day){
       tokenNumber:rows[i].token_number==null?null:Number(rows[i].token_number),
       customerName:rows[i].customer_name||null,blockNumber:rows[i].block_number||null,
       deliveryChargeMinor:Number(rows[i].delivery_charge_cents||0),
+      riderPartOnly:rows[i].split,orderTotalMinor:Number(rows[i].total_cents),
       commissionMinor:null})),
     accrual:accrualFor(db,shopId,riderId,day),
     snapshotHash:digest({shopId,riderId,day,currencyCode,currencyDecimals,receipt}),
@@ -310,17 +318,35 @@ export function confirmRiderNetSettlement(shopId,input,actor){
     for(const o of current.orders){
       const order=db.prepare(`SELECT total_cents,currency_code FROM orders WHERE order_id=? AND tenant_id=?`)
         .get(o.orderId,shopId);
-      if(!order||Number(order.total_cents)!==o.amountMinor||order.currency_code!==current.currencyCode)
+      if(!order||order.currency_code!==current.currencyCode||
+        (o.riderPartOnly?Number(order.total_cents)!==o.orderTotalMinor:Number(order.total_cents)!==o.amountMinor))
         fail(409,'Order changed. Refresh.','ORDER_CHANGED');
-      const prior=readAllocationSummary(db,shopId,o.orderId,o.amountMinor);
-      if(prior.hasAllocations||prior.legacySettlement||prior.paidCents||prior.creditCents||prior.unallocatedCents!==o.amountMinor)
+      const orderTotal=Number(order.total_cents);
+      const prior=readAllocationSummary(db,shopId,o.orderId,orderTotal);
+      if(o.riderPartOnly){
+        // Shop-paid / credit parts may already be recorded; the rider's part must still be open.
+        if(prior.legacySettlement||riderOriginCents(db,shopId,o.orderId)>0||prior.unallocatedCents<o.amountMinor)
+          fail(409,'Order now has payment or credit. Refresh.','PAYMENT_CONFLICT');
+      } else if(prior.hasAllocations||prior.legacySettlement||prior.paidCents||prior.creditCents||prior.unallocatedCents!==o.amountMinor)
         fail(409,'Order now has payment or credit. Refresh.','PAYMENT_CONFLICT');
       const allocId=newId('alloc'),sub=`rnet_${id}_${o.orderId}`;
       insertAllocation.run(allocId,shopId,o.orderId,sub,fingerprint,current.currencyCode,o.amountMinor,actor.userId,at);
-      insertBalance.run(shopId,o.orderId,current.currencyCode,o.amountMinor,o.amountMinor,at);
+      if(o.riderPartOnly){
+        const now=readAllocationSummary(db,shopId,o.orderId,orderTotal);
+        db.prepare(`INSERT INTO order_payment_balances
+          (shop_id,order_id,currency_code,order_total_cents,paid_cents,balance_cents,payment_status,updated_at)
+          VALUES (?,?,?,?,?,?,?,?)
+          ON CONFLICT(shop_id,order_id) DO UPDATE SET currency_code=excluded.currency_code,
+            order_total_cents=excluded.order_total_cents,paid_cents=excluded.paid_cents,
+            balance_cents=excluded.balance_cents,payment_status=excluded.payment_status,
+            updated_at=excluded.updated_at`).run(shopId,o.orderId,current.currencyCode,orderTotal,
+            now.paidCents,now.balanceCents,now.paymentStatus==='PAID'?'PAID':'UNPAID',at);
+      } else insertBalance.run(shopId,o.orderId,current.currencyCode,o.amountMinor,o.amountMinor,at);
       line.run(id,shopId,o.orderId,o.reportVersion,o.amountMinor,allocId);
-      const after=readAllocationSummary(db,shopId,o.orderId,o.amountMinor);
-      if(after.cashCents!==o.amountMinor||after.paidCents!==o.amountMinor||after.unallocatedCents!==0)
+      const after=readAllocationSummary(db,shopId,o.orderId,orderTotal);
+      if(o.riderPartOnly
+        ? (after.cashCents!==prior.cashCents+o.amountMinor||after.unallocatedCents!==prior.unallocatedCents-o.amountMinor)
+        : (after.cashCents!==o.amountMinor||after.paidCents!==o.amountMinor||after.unallocatedCents!==0))
         fail(409,'Invoice payment not balanced.','INVOICE_RECONCILIATION_FAILED');
     }
     const journal=db.prepare(`INSERT INTO delivery_rider_settlement_journal

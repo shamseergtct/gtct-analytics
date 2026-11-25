@@ -230,21 +230,23 @@ function adjustMenuItemCartQty(item, delta) {
     onMenuItemTap(item);
     return;
   }
-  const id = item.item_id;
+  // "−" only lowers a quantity down to 1; removing an item is done with the bin button.
+  const line = lastReducibleLine(item);
+  if (!line) return;
+  line.quantity -= 1;
+  renderCart();
+  renderMenu();
+}
+
+/** Latest cart line of this menu item whose quantity is above 1 (null if none). */
+function lastReducibleLine(item) {
+  const id = item?.item_id;
   for (let i = state.cart.length - 1; i >= 0; i -= 1) {
     const line = state.cart[i];
     if (line.itemId !== id && line.item_id !== id) continue;
-    if (Number(line.quantity || 0) <= 1) {
-      const removed = state.cart[i];
-      state.cart.splice(i, 1);
-      if (removed) showCartUndo(removed);
-    } else {
-      line.quantity -= 1;
-    }
-    renderCart();
-    renderMenu();
-    return;
+    if (Number(line.quantity || 0) > 1) return line;
   }
+  return null;
 }
 
 let cartUndoTimer = null;
@@ -1945,42 +1947,61 @@ function folderCardsForView() {
   ];
 }
 
+/** Subcategory card: same design as an item card, with the item count instead of a price. */
 function buildFolderCard(folder) {
   const theme = categoryTheme(state.category);
+  const hasPhoto = Boolean(folder.imageUrl);
   const wrap = document.createElement("div");
-  wrap.className = "mcard-wrap mfolder-wrap";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = `mfolder${folder.imageUrl ? " has-photo" : ""}${folder.all ? " is-all" : ""}`;
-  btn.style.setProperty("--cat-color", theme.dot);
-  btn.style.setProperty("--cat-bg", theme.bg);
-  btn.setAttribute("aria-label", `Open ${folder.name}, ${folder.count} items`);
-  const icon = folder.all
-    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>'
-    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
-  btn.innerHTML = `
-    <span class="mfolder-media">${
-      folder.imageUrl
-        ? `<img src="${escapeHtml(folder.imageUrl)}" alt="" loading="lazy" />`
-        : `<span class="mfolder-icon">${icon}</span>`
-    }</span>
-    <span class="mfolder-body">
-      <span class="mfolder-name">${escapeHtml(folder.name)}</span>
-      <span class="mfolder-count">${folder.count} ${folder.count === 1 ? "item" : "items"}</span>
-    </span>
-    <span class="mfolder-chevron" aria-hidden="true">›</span>`;
-  const img = btn.querySelector("img");
-  img?.addEventListener("error", () => {
-    btn.classList.remove("has-photo");
-    img.parentElement.innerHTML = `<span class="mfolder-icon">${icon}</span>`;
-  });
-  btn.addEventListener("click", () => {
+  wrap.className = `mcard-wrap is-folder${hasPhoto ? "" : " no-photo"}`;
+  const card = document.createElement("button");
+  card.type = "button";
+  card.className = `mcard is-folder cat-${theme.slug}${hasPhoto ? "" : " no-photo"}${folder.all ? " is-all" : ""}`;
+  card.style.setProperty("--cat-color", theme.dot);
+  card.setAttribute("aria-label", `Open ${folder.name}, ${folder.count} items`);
+
+  const media = document.createElement("span");
+  media.className = "mc-media";
+  const letter = () => {
+    const ph = document.createElement("span");
+    ph.className = "mc-letter";
+    ph.style.background = theme.bg;
+    ph.textContent = menuItemInitials(folder.name);
+    return ph;
+  };
+  if (hasPhoto) {
+    const img = document.createElement("img");
+    img.className = "mc-photo";
+    img.alt = "";
+    img.loading = "lazy";
+    img.src = folder.imageUrl;
+    img.addEventListener("error", () => {
+      img.remove();
+      card.classList.add("no-photo");
+      wrap.classList.add("no-photo");
+      media.appendChild(letter());
+    });
+    media.appendChild(img);
+  } else {
+    media.appendChild(letter());
+  }
+  card.appendChild(media);
+
+  const body = document.createElement("span");
+  body.className = "mc-body";
+  body.innerHTML = `<span class="mc-name" title="${escapeHtml(folder.name)}">${escapeHtml(folder.name)}</span>
+    <span class="mc-bottom">
+      <span class="mc-price mc-count"><b>${folder.count}</b> ${folder.count === 1 ? "item" : "items"}</span>
+      <span class="mc-open" aria-hidden="true">›</span>
+    </span>`;
+  card.appendChild(body);
+
+  card.addEventListener("click", () => {
     state.subcategory = folder.key;
     renderSubcategories();
     renderMenu();
     $("menu-grid")?.scrollTo?.({ top: 0 });
   });
-  wrap.appendChild(btn);
+  wrap.appendChild(card);
   return wrap;
 }
 
@@ -2589,7 +2610,7 @@ function renderMenu() {
       dec.className = "mc-qty-btn";
       dec.setAttribute("aria-label", `Decrease ${item.name}`);
       dec.textContent = "−";
-      dec.disabled = inCartQty <= 0;
+      dec.disabled = !lastReducibleLine(item);
       dec.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -2710,11 +2731,13 @@ function onMenuItemTap(item) {
     openVariantPicker(item, vars);
     return;
   }
-  if (isMobileSalesUi()) {
-    addToCartForCustomize(item, null);
+  // Preparation screen first (every screen size), unless the item is set to "quick add"
+  // in Menu Setup — then it goes straight into the cart (notes stay editable from the cart).
+  if (item.openCustomize === false) {
+    addToCart(item, null);
     return;
   }
-  addToCart(item, null);
+  addToCartForCustomize(item, null);
 }
 
 function openVariantPicker(item, variants) {
@@ -2737,11 +2760,8 @@ function openVariantPicker(item, variants) {
       if (state.addingLock) return;
       state.addingLock = true;
       try {
-        if (isMobileSalesUi()) {
-          addToCartForCustomize(item, v);
-        } else {
-          addToCart(item, v);
-        }
+        if (item.openCustomize === false) addToCart(item, v);
+        else addToCartForCustomize(item, v);
         closeVariantPicker();
       } finally {
         setTimeout(() => {
@@ -3610,7 +3630,9 @@ function renderCart() {
               : ""
           }
           <div class="qty-controls">
-            <button type="button" data-act="dec" aria-label="Decrease quantity">−</button>
+            <button type="button" data-act="dec" aria-label="Decrease quantity"${
+              Number(line.quantity || 0) <= 1 ? ' disabled title="Use the bin to remove"' : ""
+            }>−</button>
             <span class="qty-value" aria-live="polite">${line.quantity}</span>
             <button type="button" data-act="inc" aria-label="Increase quantity">+</button>
           </div>
@@ -3650,16 +3672,9 @@ function renderCart() {
     el.querySelector(".cart-line-toolbar")?.addEventListener("keydown", (e) => e.stopPropagation());
     el.querySelector('[data-act="dec"]').addEventListener("click", (e) => {
       e.stopPropagation();
-      if (line.quantity <= 1) {
-        const removed = state.cart.find((l) => l.lineId === line.lineId);
-        state.cart = state.cart.filter((l) => l.lineId !== line.lineId);
-        if (removed) showCartUndo(removed);
-        if (state.cartFocusLineId === line.lineId) {
-          focusCartLine(null);
-        }
-      } else {
-        line.quantity -= 1;
-      }
+      // Never below 1: removing is only done with the bin button.
+      if (Number(line.quantity || 0) <= 1) return;
+      line.quantity -= 1;
       renderCart();
       renderMenu();
     });
@@ -3805,9 +3820,9 @@ function openInstructions(lineId) {
         /* ignore */
       }
     }
-    if (isMobileSalesUi()) {
-      // Phones/tablets: showModal() auto-focuses the first input (the quantity box),
-      // which pops up the keyboard. Focus the sheet itself; staff tap a field to type.
+    if (isMobileSalesUi() || state.customizeDraft?.isNew) {
+      // New items (all screens) and phones/tablets: showModal() would auto-focus the
+      // first input and pop up a keyboard. Focus the sheet; staff tap a field to type.
       if (!dialog.hasAttribute("tabindex")) dialog.setAttribute("tabindex", "-1");
       document.activeElement?.blur?.();
       dialog.focus({ preventScroll: true });

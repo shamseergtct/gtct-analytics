@@ -23,6 +23,9 @@ import {
   buildDeliveryBoyPaymentModeChoices,
   resolveDeliveryBoyAssignedPaymentModes,
   resolveDeliveryBoyCommission,
+  describeDeliveryBoyCommission,
+  normalizeCommissionTiers,
+  MAX_COMMISSION_TIERS,
 } from "../../utils/externalSales.js";
 import {
   BTN_PRIMARY,
@@ -42,6 +45,8 @@ const EMPTY = {
   isActive: true,
   commissionEnabled: false,
   commissionRate: "",
+  commissionType: "DELIVERY_CHARGE",
+  commissionTiers: [{ fromAmount: "", amount: "" }],
   assignedTerminalIds: [],
   assignedPaymentModes: [],
   loginEmail: "",
@@ -199,6 +204,13 @@ export default function DeliveryBoyManager({
       isActive: row.isActive !== false,
       commissionEnabled: commission.enabled,
       commissionRate: commission.rate ? String(commission.rate) : "",
+      commissionType: commission.type,
+      commissionTiers: commission.tiers.length
+        ? commission.tiers.map((t) => ({
+            fromAmount: String(t.fromAmount),
+            amount: String(t.amount),
+          }))
+        : [{ fromAmount: "", amount: "" }],
       assignedTerminalIds: Array.isArray(row.assignedTerminalIds)
         ? row.assignedTerminalIds.map(String)
         : [],
@@ -273,8 +285,43 @@ export default function DeliveryBoyManager({
     }
 
     const commissionEnabled = Boolean(form.commissionEnabled);
-    const rateNum = numMoney(form.commissionRate);
-    if (commissionEnabled) {
+    const commissionType = ["BILL_TOTAL", "DAILY_TARGET"].includes(
+      form.commissionType
+    )
+      ? form.commissionType
+      : "DELIVERY_CHARGE";
+    const usesRate = commissionType !== "DAILY_TARGET";
+    const rateNum = usesRate ? numMoney(form.commissionRate) : 0;
+    let commissionTiers = [];
+    if (commissionEnabled && commissionType === "DAILY_TARGET") {
+      const filled = (form.commissionTiers || []).filter(
+        (t) => String(t.fromAmount ?? "").trim() !== "" || String(t.amount ?? "").trim() !== ""
+      );
+      if (!filled.length) {
+        setModalError("Add at least one daily target range.");
+        return;
+      }
+      const seen = new Set();
+      for (const t of filled) {
+        const from = numMoney(t.fromAmount);
+        const amt = numMoney(t.amount);
+        if (String(t.fromAmount ?? "").trim() === "" || !(from > 0)) {
+          setModalError("Each range needs a delivered amount above 0.");
+          return;
+        }
+        if (String(t.amount ?? "").trim() === "" || amt < 0) {
+          setModalError("Each range needs a commission amount (0 or more).");
+          return;
+        }
+        if (seen.has(from)) {
+          setModalError("Two ranges have the same delivered amount.");
+          return;
+        }
+        seen.add(from);
+      }
+      commissionTiers = normalizeCommissionTiers(filled);
+    }
+    if (commissionEnabled && usesRate) {
       if (form.commissionRate === "" || form.commissionRate == null) {
         setModalError("Commission rate is required when commission is enabled.");
         return;
@@ -364,6 +411,8 @@ export default function DeliveryBoyManager({
         isActive: Boolean(form.isActive),
         commissionEnabled,
         commissionRate: commissionEnabled ? rateNum : 0,
+        commissionType,
+        commissionTiers: commissionEnabled ? commissionTiers : [],
         assignedTerminalIds,
         assignedPaymentModes,
         assignedPaymentModesConfigured: true,
@@ -701,7 +750,7 @@ export default function DeliveryBoyManager({
                       <td className="px-4 py-3">
                         {commission.enabled ? (
                           <span className="text-emerald-300">
-                            {commission.rate}%
+                            {describeDeliveryBoyCommission(row)}
                           </span>
                         ) : (
                           <span className="text-slate-500">Off</span>
@@ -940,8 +989,8 @@ export default function DeliveryBoyManager({
                   Delivery Commission
                 </div>
                 <p className="text-xs text-slate-500">
-                  Calculated on delivery charge only. Changing this rate does
-                  not alter historical bills.
+                  Choose how this delivery boy earns commission. Changes apply
+                  to new bills only; saved bills keep their commission.
                 </p>
                 <label className="flex items-center gap-2 text-sm text-slate-300">
                   <input
@@ -957,25 +1006,187 @@ export default function DeliveryBoyManager({
                   />
                   Enable commission for this delivery boy
                 </label>
-                <label className={LABEL_CLASS}>
-                  Commission Rate (%)
-                  <input
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.01"
-                    disabled={!form.commissionEnabled}
-                    value={form.commissionRate}
-                    onChange={(event) =>
-                      setForm((current) => ({
-                        ...current,
-                        commissionRate: event.target.value,
-                      }))
-                    }
-                    className={FIELD_NUMBER_CLASS}
-                    placeholder="e.g. 10"
-                  />
-                </label>
+
+                <fieldset
+                  disabled={!form.commissionEnabled}
+                  className={`space-y-3 ${form.commissionEnabled ? "" : "opacity-50"}`}
+                >
+                  <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label="Commission type">
+                    {[
+                      {
+                        value: "DELIVERY_CHARGE",
+                        title: "% of delivery charge",
+                        hint: "Per bill",
+                      },
+                      {
+                        value: "BILL_TOTAL",
+                        title: "% of bill total",
+                        hint: "Per bill, delivery charge included",
+                      },
+                      {
+                        value: "DAILY_TARGET",
+                        title: "Daily target",
+                        hint: "Fixed amount by day's total",
+                      },
+                    ].map((opt) => {
+                      const active = form.commissionType === opt.value;
+                      return (
+                        <button
+                          key={opt.value}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          onClick={() =>
+                            setForm((current) => ({
+                              ...current,
+                              commissionType: opt.value,
+                            }))
+                          }
+                          className={`rounded-lg border px-3 py-2 text-left transition ${
+                            active
+                              ? "border-blue-500 bg-blue-950/40 text-white"
+                              : "border-slate-700 bg-slate-950/60 text-slate-300 hover:border-slate-500"
+                          }`}
+                        >
+                          <span className="block text-sm font-semibold">
+                            {opt.title}
+                          </span>
+                          <span className="block text-[11px] text-slate-400">
+                            {opt.hint}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {form.commissionType !== "DAILY_TARGET" ? (
+                    <label className={LABEL_CLASS}>
+                      Commission Rate (%)
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        value={form.commissionRate}
+                        onChange={(event) =>
+                          setForm((current) => ({
+                            ...current,
+                            commissionRate: event.target.value,
+                          }))
+                        }
+                        className={FIELD_NUMBER_CLASS}
+                        placeholder={
+                          form.commissionType === "BILL_TOTAL" ? "e.g. 1" : "e.g. 10"
+                        }
+                      />
+                      <span className="mt-1 block text-[11px] normal-case tracking-normal text-slate-500">
+                        {form.commissionType === "BILL_TOTAL"
+                          ? "Example: 1% of a 100.000 bill = 1.000"
+                          : "Example: 10% of a 0.500 delivery charge = 0.050"}
+                      </span>
+                    </label>
+                  ) : (
+                    <div className="space-y-2">
+                      <p className="text-xs text-slate-400">
+                        Add delivered-amount ranges for one business day (full
+                        bill amounts, delivery charge included). The highest
+                        range reached is paid once for the day.
+                      </p>
+                      <div className="grid grid-cols-[1fr_1fr_auto] gap-2 text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                        <span>Delivered from</span>
+                        <span>Commission</span>
+                        <span className="w-9" />
+                      </div>
+                      {(form.commissionTiers || []).map((tier, index) => (
+                        <div
+                          key={index}
+                          className="grid grid-cols-[1fr_1fr_auto] items-center gap-2"
+                        >
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.001"
+                            inputMode="decimal"
+                            aria-label={`Range ${index + 1} delivered from`}
+                            value={tier.fromAmount}
+                            onChange={(event) =>
+                              setForm((current) => ({
+                                ...current,
+                                commissionTiers: current.commissionTiers.map(
+                                  (row, i) =>
+                                    i === index
+                                      ? { ...row, fromAmount: event.target.value }
+                                      : row
+                                ),
+                              }))
+                            }
+                            className={FIELD_NUMBER_CLASS}
+                            placeholder="e.g. 50"
+                          />
+                          <input
+                            type="number"
+                            min="0"
+                            step="0.001"
+                            inputMode="decimal"
+                            aria-label={`Range ${index + 1} commission`}
+                            value={tier.amount}
+                            onChange={(event) =>
+                              setForm((current) => ({
+                                ...current,
+                                commissionTiers: current.commissionTiers.map(
+                                  (row, i) =>
+                                    i === index
+                                      ? { ...row, amount: event.target.value }
+                                      : row
+                                ),
+                              }))
+                            }
+                            className={FIELD_NUMBER_CLASS}
+                            placeholder="e.g. 0.500"
+                          />
+                          <button
+                            type="button"
+                            aria-label={`Remove range ${index + 1}`}
+                            disabled={(form.commissionTiers || []).length <= 1}
+                            onClick={() =>
+                              setForm((current) => ({
+                                ...current,
+                                commissionTiers: current.commissionTiers.filter(
+                                  (_, i) => i !== index
+                                ),
+                              }))
+                            }
+                            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-400 hover:border-rose-700 hover:text-rose-300 disabled:opacity-30"
+                          >
+                            <X className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        disabled={
+                          (form.commissionTiers || []).length >= MAX_COMMISSION_TIERS
+                        }
+                        onClick={() =>
+                          setForm((current) => ({
+                            ...current,
+                            commissionTiers: [
+                              ...(current.commissionTiers || []),
+                              { fromAmount: "", amount: "" },
+                            ],
+                          }))
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-slate-600 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:border-blue-500 hover:text-white disabled:opacity-40"
+                      >
+                        <Plus className="h-3.5 w-3.5" /> Add range
+                      </button>
+                      <p className="text-[11px] text-slate-500">
+                        Example: from 50 → 0.500 and from 80 → 1.000. A day of
+                        85 pays 1.000; a day of 60 pays 0.500; below 50 pays 0.
+                      </p>
+                    </div>
+                  )}
+                </fieldset>
               </div>
 
               <div className="space-y-3 rounded-xl border border-sky-900/50 bg-sky-950/20 p-3">

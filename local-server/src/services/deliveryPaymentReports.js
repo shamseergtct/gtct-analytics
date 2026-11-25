@@ -8,6 +8,7 @@ import { getDb } from '../db/db.js';
 import { nowIso } from '../util/time.js';
 import { recordAudit } from './audit.js';
 import { readAllocationSummary } from './paymentAllocations.js';
+import { riderOriginCents } from './deliverySplitReview.js';
 
 const TYPES = new Set([
   'CASH_WITH_BOY',
@@ -91,11 +92,32 @@ export function readDeliveryPaymentReport(db, shopId, orderId, driverUserId, ord
     amountCents: Number(row.amount_cents), currencyCode: row.currency_code,
     currencyDecimals: Number(row.currency_decimals),
     amountChanged: orderTotalCents != null && Number(orderTotalCents) !== Number(row.amount_cents),
+    split: row.cash_cents == null ? null : {
+      cashCents: Number(row.cash_cents), shopPaidCents: Number(row.shop_paid_cents || 0),
+      creditCents: Number(row.credit_cents || 0) },
     reportedAt: row.updated_at };
 }
+
+/**
+ * Validate a rider's multiple-payment split (minor units). Returns null for none.
+ * Parts must be whole, non-negative, use at least two modes and add up to the total.
+ */
+export function normalizeRiderSplit(split, totalCents) {
+  if (split == null) return null;
+  const parts = ['cashCents', 'shopPaidCents', 'creditCents'].map((k) => split[k] ?? 0);
+  if (!parts.every((n) => Number.isSafeInteger(n) && n >= 0))
+    fail(400, 'Split amounts must be whole non-negative minor units.', 'INVALID_SPLIT');
+  if (parts.filter((n) => n > 0).length < 2)
+    fail(400, 'A multiple payment needs at least two modes.', 'INVALID_SPLIT');
+  if (parts[0] + parts[1] + parts[2] !== Number(totalCents))
+    fail(409, 'Split does not add up to the order total. Refresh.', 'SPLIT_TOTAL_MISMATCH');
+  return { cashCents: parts[0], shopPaidCents: parts[1], creditCents: parts[2] };
+}
 /** Atomic compare-and-set version, with duplicate retry protection. */
-export function markDeliveryPayment(shopId, orderId, reportType, expectedVersion, actor) {
+export function markDeliveryPayment(shopId, orderId, reportType, expectedVersion, actor, options = {}) {
   const kind = String(reportType || '').trim().toUpperCase();
+  if (options.split != null && kind !== 'PARTIAL_SHOP')
+    fail(400, 'A payment split is only valid for a multiple payment.', 'INVALID_SPLIT');
   if (!TYPES.has(kind)) fail(400, 'Choose a valid payment observation.', 'INVALID_REPORT_TYPE');
   if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 0) {
     fail(400, 'Refresh the order before marking payment.', 'VERSION_REQUIRED');
@@ -121,15 +143,27 @@ export function markDeliveryPayment(shopId, orderId, reportType, expectedVersion
     if (!Number.isSafeInteger(Number(order.total_cents)) || Number(order.total_cents) <= 0) {
       fail(409, 'Invalid order total. Ask the cashier.', 'INVALID_ORDER_AMOUNT');
     }
+    const riderSplit = normalizeRiderSplit(options.split, Number(order.total_cents));
     const split = readAllocationSummary(db,shopId,orderId,Number(order.total_cents));
-    if (split.hasAllocations) fail(409,'Cashier has already allocated payment. Contact the shop for remaining balance.','SHOP_PARTIAL_PAYMENT');
+    // A rider's multiple payment may arrive after the cashier recorded the shop's part.
+    // Allowed only while the rider's cash share is still unrecorded (observation only).
+    // Once the rider handed his cash in, his report is final.
+    if (riderOriginCents(db, shopId, orderId) > 0)
+      fail(409, 'Cash already handed over for this order. Ask the cashier to correct it.', 'RIDER_CASH_SETTLED');
+    // A new split can never be smaller than what the shop already recorded.
+    const counterCents = split.cashCents + split.bankCents;
+    const shopPartAlreadyRecorded = Boolean(riderSplit) && split.hasAllocations &&
+      riderSplit.shopPaidCents >= counterCents && riderSplit.creditCents >= split.creditCents;
+    if (split.hasAllocations && !shopPartAlreadyRecorded) fail(409,'Cashier has already allocated payment. Contact the shop for remaining balance.','SHOP_PARTIAL_PAYMENT');
     const actual = actualPayment(db, shopId, orderId);
-    if (actual?.payment_status === 'PAID' || actual?.balance_cents === 0 && actual?.payment_status) {
-      fail(409, 'Shop payment is already recorded. Refresh.', 'ALREADY_PAID');
-    }
-    // Full outstanding only: no partial amounts or payment splitting in this phase.
-    if (actual && Number(actual.balance_cents) !== Number(order.total_cents)) {
-      fail(409, 'Partial payment requires cashier review.', 'PARTIAL_PAYMENT_UNSUPPORTED');
+    if (!shopPartAlreadyRecorded) {
+      if (actual?.payment_status === 'PAID' || actual?.balance_cents === 0 && actual?.payment_status) {
+        fail(409, 'Shop payment is already recorded. Refresh.', 'ALREADY_PAID');
+      }
+      // Single-mode reports: full outstanding only.
+      if (actual && Number(actual.balance_cents) !== Number(order.total_cents)) {
+        fail(409, 'Partial payment requires cashier review.', 'PARTIAL_PAYMENT_UNSUPPORTED');
+      }
     }
     const old = db.prepare(`SELECT * FROM delivery_order_payment_reports
       WHERE shop_id = ? AND order_id = ?`).get(shopId, orderId);
@@ -137,8 +171,12 @@ export function markDeliveryPayment(shopId, orderId, reportType, expectedVersion
       fail(409, 'Another delivery owner recorded this order.', 'PAYMENT_OWNER_CONFLICT');
     }
     // Idempotent retry of the immediately previous successful request.
+    const sameSplit = (riderSplit == null && old?.cash_cents == null) || (riderSplit != null &&
+      Number(old?.cash_cents) === riderSplit.cashCents &&
+      Number(old?.shop_paid_cents) === riderSplit.shopPaidCents &&
+      Number(old?.credit_cents) === riderSplit.creditCents);
     if (old && old.version === expectedVersion + 1 && old.report_type === kind
-      && Number(old.amount_cents) === Number(order.total_cents)) {
+      && Number(old.amount_cents) === Number(order.total_cents) && sameSplit) {
       return { created: false, replayed: true, status: kind, version: old.version, orderId };
     }
     if (Number(old?.version || 0) !== expectedVersion) {
@@ -148,23 +186,29 @@ export function markDeliveryPayment(shopId, orderId, reportType, expectedVersion
     if (!old) {
       db.prepare(`INSERT INTO delivery_order_payment_reports
         (shop_id, order_id, driver_user_id, report_type, amount_cents, currency_code,
-         currency_decimals, version, reported_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+         currency_decimals, version, reported_at, updated_at,
+         cash_cents, shop_paid_cents, credit_cents)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)`)
         .run(shopId, orderId, actor.userId, kind, Number(order.total_cents),
-          order.currency_code || '', Number(order.currency_decimals ?? 2), now, now);
+          order.currency_code || '', Number(order.currency_decimals ?? 2), now, now,
+          riderSplit?.cashCents ?? null, riderSplit?.shopPaidCents ?? null,
+          riderSplit?.creditCents ?? null);
     } else {
       db.prepare(`UPDATE delivery_order_payment_reports
         SET report_type = ?, amount_cents = ?, currency_code = ?, currency_decimals = ?,
-            version = version + 1, updated_at = ?
+            version = version + 1, updated_at = ?,
+            cash_cents = ?, shop_paid_cents = ?, credit_cents = ?
         WHERE shop_id = ? AND order_id = ? AND driver_user_id = ?`)
         .run(kind, Number(order.total_cents), order.currency_code || '',
-          Number(order.currency_decimals ?? 2), now, shopId, orderId, actor.userId);
+          Number(order.currency_decimals ?? 2), now,
+          riderSplit?.cashCents ?? null, riderSplit?.shopPaidCents ?? null,
+          riderSplit?.creditCents ?? null, shopId, orderId, actor.userId);
     }
     recordAudit({ actorRole: 'delivery', actorUserId: actor.userId,
       action: 'delivery.payment.report', entityType: 'delivery_payment_report', entityId: orderId,
       detail: { shopId, orderId, reportType: kind, previousType: old?.report_type || '',
         version: expectedVersion + 1, amountCents: Number(order.total_cents),
-        note: 'OBSERVATION_ONLY_NO_LEDGER_POSTING' } });
+        split: riderSplit, note: 'OBSERVATION_ONLY_NO_LEDGER_POSTING' } });
     return { created: !old, replayed: false, status: kind,
       version: expectedVersion + 1, orderId };
   });

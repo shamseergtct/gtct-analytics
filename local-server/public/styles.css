@@ -7943,113 +7943,43 @@ body.sales-app .menu-empty strong {
   }
 }
 
-/* ===== Subcategory "folder" cards in the Sales grid ===== */
-body.sales-app .mfolder {
-  position: relative;
-  display: grid;
-  /* PC/tablet: photo + arrow on top, full name underneath (never split words) */
-  grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-areas:
-    "media chevron"
-    "body body";
-  align-items: start;
-  align-content: start;
-  gap: 10px;
-  width: 100%;
-  height: 100%;
-  min-height: 113px;
-  padding: 12px 12px 12px 14px;
-  border: 1px solid rgba(20, 32, 51, 0.08);
-  border-radius: 14px;
-  background: var(--cat-bg, #eef2f7);
-  color: #142033;
-  text-align: left;
-  cursor: pointer;
-  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.06);
-  transition: transform 0.08s, box-shadow 0.12s, border-color 0.12s;
-}
-body.sales-app .mfolder:hover {
-  border-color: var(--cat-color, #7a8496);
-  box-shadow: 0 3px 10px rgba(20, 32, 51, 0.1);
-}
-body.sales-app .mfolder:active {
-  transform: scale(0.98);
-}
-body.sales-app .mfolder:focus-visible {
-  outline: 3px solid rgba(11, 83, 158, 0.45);
-  outline-offset: 2px;
-}
-body.sales-app .mfolder-media {
-  grid-area: media;
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  border-radius: 12px;
-  overflow: hidden;
-  background: #fff;
-}
-body.sales-app .mfolder-media img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-body.sales-app .mfolder-icon svg {
-  width: 30px;
-  height: 30px;
-  fill: none;
-  stroke: var(--cat-color, #7a8496);
-  stroke-width: 2;
-  stroke-linejoin: round;
-}
-body.sales-app .mfolder-body {
-  grid-area: body;
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-body.sales-app .mfolder-name {
-  font-size: 15.5px;
-  font-weight: 750;
-  line-height: 1.2;
-  overflow-wrap: normal;
-  word-break: normal;
-  hyphens: none;
-}
-body.sales-app .mfolder-count {
-  font-size: 0.82rem;
-  font-weight: 600;
+/* ===== Subcategory cards in the Sales grid =====
+   Same card as an item; the item count replaces the price and an arrow
+   replaces the + button, so it is clear the card opens, not adds. */
+body.sales-app .mc-count {
   color: #4d5c70;
+  font-size: 15px;
+  font-weight: 600;
 }
-body.sales-app .mfolder-chevron {
-  grid-area: chevron;
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
+body.sales-app .mc-count b {
+  color: #0b539e;
+  font-size: 18px;
+  font-weight: 800;
+}
+body.sales-app .mc-open {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 2px solid #0b539e;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.75);
-  color: var(--cat-color, #3b4a5e);
-  font-size: 22px;
+  background: #fff;
+  color: #0b539e;
+  font-size: 26px;
   font-weight: 700;
   line-height: 1;
+  padding-bottom: 3px;
 }
-/* "All items" card: white, so it reads as "show everything", not a folder */
-body.sales-app .mfolder.is-all {
-  background: #fff;
+body.sales-app .mcard.is-folder:not(:disabled):hover .mc-open {
+  background: #0b539e;
+  color: #fff;
+}
+/* "All items": dashed border so it reads as "show everything" */
+body.sales-app .mcard.is-folder.is-all {
   border-style: dashed;
   border-color: #b9c8da;
-}
-body.sales-app .mfolder.is-all .mfolder-media {
-  background: #eef3f9;
-}
-body.sales-app .mfolder.is-all .mfolder-icon svg {
-  stroke: #0b539e;
-}
-body.sales-app .mfolder.is-all .mfolder-chevron {
-  background: #eef3f9;
-  color: #0b539e;
 }
 
 /* "◀ Back  Sandwiches › Burgers" line while a subcategory card is open */
@@ -8120,28 +8050,21 @@ body.sales-app .menu-folder-path strong {
 }
 
 @media (max-width: 599px) {
-  /* Phones: one row — photo, name, arrow */
-  body.sales-app .mfolder {
-    grid-template-columns: 48px minmax(0, 1fr) auto;
-    grid-template-areas: "media body chevron";
-    align-items: center;
-    min-height: 68px;
-    padding: 10px 10px 10px 10px;
-    gap: 12px;
-  }
-  body.sales-app .mfolder-media {
-    width: 48px;
-    height: 48px;
-    border-radius: 10px;
-  }
-  body.sales-app .mfolder-icon svg {
-    width: 24px;
-    height: 24px;
-  }
-  body.sales-app .mfolder-name {
-    font-size: 15px;
-  }
+
   body.sales-app .menu-folder-bar {
     min-height: 40px;
   }
+}
+
+/* Quantity −/+ : no text highlight on fast taps; "−" greys out at 1 (use the bin to remove) */
+.qty-controls button,
+.mc-qty-btn {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.qty-controls button:disabled,
+.mc-qty-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }

@@ -340,15 +340,21 @@ function TerminalBillForm({
     return calculateDeliveryCommission({
       saleType,
       deliveryCharge,
+      billAmount,
       commissionEnabled: commission.enabled,
       commissionRate: commission.rate,
+      commissionType: commission.type,
+      commissionTiers: commission.tiers,
       decimals: currencyDecimals,
     });
   }, [
     saleType,
     deliveryCharge,
+    billAmount,
     commission.enabled,
     commission.rate,
+    commission.type,
+    commission.tiers,
     currencyDecimals,
   ]);
 
@@ -1403,9 +1409,13 @@ function TerminalBillForm({
           </span>
           {!selectedBoy
             ? " (select delivery boy)"
-            : commission.enabled
-              ? ` (${commission.rate}%)`
-              : " (off)"}
+            : !commission.enabled
+              ? " (off)"
+              : commission.type === "DAILY_TARGET"
+                ? " (daily target — paid on the day's total in Collect)"
+                : commission.type === "BILL_TOTAL"
+                  ? ` (${commission.rate}% of bill)`
+                  : ` (${commission.rate}%)`}
         </div>
       ) : null}
 

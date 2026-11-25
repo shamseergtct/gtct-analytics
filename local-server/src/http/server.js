@@ -145,6 +145,13 @@ import {
   activateCloudBridge,
   deactivateCloudBridge,
 } from "../services/cloudDeliveryBridge.js";
+import {
+  readSplitReview,
+  confirmSplitShopPaid,
+  approveSplitCredit,
+  rejectSplitCredit,
+} from "../services/deliverySplitReview.js";
+import { getDb } from "../db/db.js";
 import { markDeliveryPayment } from '../services/deliveryPaymentReports.js';
 import { listDeliveryCashHandovers, confirmDeliveryCashHandover }
   from '../services/deliveryCashHandover.js';
@@ -2723,6 +2730,31 @@ export function createServer(config) {
           sendJson(res,200,reviewDeliveryCredit(config.testTenantId,
             decodeURIComponent(deliveryCreditMatch[1]),body.reportVersion,
             body.decision,body.note || '',auth));
+        } catch(err) { sendJson(res,err.status || 400,{error:err.message,code:err.code}); }
+        return;
+      }
+
+      // Rider multiple payment: cashier confirms the shop-paid part, approves/rejects credit.
+      const splitReviewMatch = path.match(/^\/v1\/delivery-review\/([^/]+)\/split$/);
+      if (method === 'POST' && splitReviewMatch) {
+        const auth = requireAuth(req, res, config, ['admin','cashier']);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth,'sales.payment.receive')) {
+          sendJson(res,403,{error:'Cashier/Admin payment permission required.'}); return;
+        }
+        try {
+          const body = await readBody(req);
+          const orderId = decodeURIComponent(splitReviewMatch[1]);
+          const action = String(body.action || '');
+          const result = action === 'CONFIRM_SHOP_PAID'
+            ? confirmSplitShopPaid(config.testTenantId, orderId, body, auth)
+            : action === 'APPROVE_CREDIT'
+              ? approveSplitCredit(config.testTenantId, orderId, body, auth)
+              : action === 'REJECT_CREDIT'
+                ? rejectSplitCredit(config.testTenantId, orderId, body, auth)
+                : null;
+          if (!result) { sendJson(res,400,{error:'Unknown action.',code:'INVALID_ACTION'}); return; }
+          sendJson(res,200,{ ok:true, review: readSplitReview(getDb(), config.testTenantId, orderId) });
         } catch(err) { sendJson(res,err.status || 400,{error:err.message,code:err.code}); }
         return;
       }

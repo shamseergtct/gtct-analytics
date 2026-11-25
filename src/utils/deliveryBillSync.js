@@ -93,6 +93,8 @@ async function syncOneBill(record, ctx) {
       name: record.deliveryBoyNameSnapshot,
       commissionEnabled: record.commissionEnabled,
       commissionRate: record.commissionRate,
+      commissionType: record.commissionType,
+      commissionTiers: record.commissionTiers,
     };
   const moneyCtx = {
     currency: currency || record.currency || "",

@@ -18,6 +18,7 @@ import {
   EXTERNAL_SALES_SOURCE,
   SPLIT_PAYMENT,
   calculateDeliveryCommission,
+  commissionTypeFields,
   externalSalesBillDocId,
   normalizeBillNumber,
   normalizeExternalSaleType,
@@ -183,6 +184,9 @@ export function buildExternalSalesBillPayload({
     deliveryCharge: chargeNum,
     commissionEnabled: boyCommission.enabled,
     commissionRate: boyCommission.rate,
+    commissionType: boyCommission.type,
+    commissionTiers: boyCommission.tiers,
+    billAmount: amountNum,
     decimals: currencyDecimals,
   });
 
@@ -217,6 +221,7 @@ export function buildExternalSalesBillPayload({
     commissionEnabled: commissionSnap.commissionEnabled,
     commissionRate: commissionSnap.commissionRate,
     commissionAmount: commissionSnap.commissionAmount,
+    ...commissionTypeFields(commissionSnap),
     notes: cleanString(notes),
     salesSource: EXTERNAL_SALES_SOURCE,
     entrySource: cleanString(entrySource) || EXTERNAL_ENTRY_SOURCE_MANUAL,

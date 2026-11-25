@@ -125,6 +125,8 @@ function mapItemRow(item, stationIds) {
       item.tax_applicable == null
         ? true
         : Boolean(Number(item.tax_applicable)),
+    openCustomize:
+      item.open_customize == null ? true : Boolean(Number(item.open_customize)),
     taxApplicable:
       item.tax_applicable == null
         ? true
@@ -347,6 +349,12 @@ function validateMenuPayload(input, { partial = false } = {}) {
         : input.tax_applicable != null
           ? Boolean(input.tax_applicable)
           : undefined,
+    openCustomize:
+      input.openCustomize != null
+        ? Boolean(input.openCustomize)
+        : input.open_customize != null
+          ? Boolean(Number(input.open_customize))
+          : undefined,
     sortOrder,
     stationIds,
     instructionModifiers:
@@ -542,6 +550,13 @@ export function upsertMenuItem(input = {}) {
         sortOrder,
         modifiersJson,
         targetsJson
+      );
+    }
+
+    if (parsed.openCustomize !== undefined) {
+      db.prepare(`UPDATE menu_items SET open_customize = ? WHERE item_id = ?`).run(
+        parsed.openCustomize ? 1 : 0,
+        itemId
       );
     }
 

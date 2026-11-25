@@ -19,10 +19,40 @@ import {
   readDeliveryLifecycle,
 } from "./deliveryLifecycle.js";
 import { markDeliveryPayment } from "./deliveryPaymentReports.js";
+import { readSplitReview } from "./deliverySplitReview.js";
+import { assignStaffRiderCommissionInTx } from "./deliveryCommissionSettings.js";
 import { log } from "../util/logger.js";
 
+/**
+ * Cash/bank the shop recorded that came FROM THE RIDER (cash handover or rider
+ * settlement), as opposed to money the customer paid at the counter.
+ */
+function riderHandedCents(shopId, orderId) {
+  try {
+    const row = getDb()
+      .prepare(
+        `SELECT COALESCE(SUM(a.cash_cents + a.bank_cents), 0) AS cents
+         FROM order_payment_allocations a
+         WHERE a.shop_id = ? AND a.order_id = ?
+           AND (a.allocation_id IN (SELECT allocation_id FROM delivery_cash_handovers
+                                     WHERE shop_id = ? AND order_id = ?)
+             OR a.allocation_id IN (SELECT allocation_id FROM delivery_rider_net_settlement_orders
+                                     WHERE shop_id = ? AND order_id = ?))`
+      )
+      .get(shopId, orderId, shopId, orderId, shopId, orderId);
+    return Number(row?.cents || 0);
+  } catch {
+    return 0;
+  }
+}
+
 /** Same payment truth Monitor uses (allocations + balances + credit). */
-function readShopPaymentSnapshot(shopId, orderId) {
+export function readShopPaymentSnapshot(shopId, orderId) {
+  const withSource = (snap) => {
+    // riderCashCents: recorded cash that the rider handed in; counterCents: paid at the counter.
+    const handed = Math.min(riderHandedCents(shopId, orderId), snap.cashCents + snap.bankCents);
+    return { ...snap, riderCashCents: handed, counterCents: snap.cashCents + snap.bankCents - handed };
+  };
   try {
     const payment = getOrderPayment(orderId, shopId);
     const status = String(payment.paymentStatus || "UNPAID").toUpperCase();
@@ -33,7 +63,7 @@ function readShopPaymentSnapshot(shopId, orderId) {
       )
       .get(shopId, orderId);
     if (shopCredit?.state === "APPROVED" && status !== "PAID") {
-      return {
+      return withSource({
         status: "CREDIT",
         cashCents: Number(payment.cashCents || 0),
         bankCents: Number(payment.bankCents || 0),
@@ -41,23 +71,130 @@ function readShopPaymentSnapshot(shopId, orderId) {
           payment.creditCents || payment.orderTotalCents || payment.paidCents || 0
         ),
         verified: true,
-      };
+      });
     }
-    return {
+    return withSource({
       status,
       cashCents: Number(payment.cashCents || 0),
       bankCents: Number(payment.bankCents || 0),
       creditCents: Number(payment.creditCents || 0),
       verified: status !== "UNPAID",
-    };
+    });
   } catch {
     return {
       status: "UNPAID",
       cashCents: 0,
       bankCents: 0,
       creditCents: 0,
+      riderCashCents: 0,
+      counterCents: 0,
       verified: false,
     };
+  }
+}
+
+/**
+ * Commission comes from the rider's GTCT Analytics profile: a percentage of each
+ * order's delivery charge, rounded per order (same as the Delivery App). Applied to
+ * riders that came from the cloud (cdb_…) as a new rule version from today; closed
+ * days keep their rule. POS-only riders keep their POS rules.
+ */
+const commissionNotes = new Map(); // riderUserId -> last logged error
+function shopDecimals(shopId) {
+  const s = getShopSettings(shopId) || {};
+  const d = Number(s.currencyDecimals ?? s.currency_decimals);
+  return Number.isInteger(d) && d >= 0 && d <= 4 ? d : 3;
+}
+
+/**
+ * GTCT Analytics rider commission -> POS commission rule (one type per rider):
+ *  DELIVERY_CHARGE (default) -> % of delivery charge, per order
+ *  BILL_TOTAL               -> % of the full bill (delivery charge included), per order
+ *  DAILY_TARGET             -> fixed amount by the day's delivered bill total (highest range)
+ */
+export function riderCommissionPolicy(r, decimals) {
+  const none = { method: "NONE", period: "DAILY" };
+  if (!r?.commissionEnabled) return none;
+  const type = String(r.commissionType || "DELIVERY_CHARGE").toUpperCase();
+  if (type === "DAILY_TARGET") {
+    const scale = 10 ** decimals;
+    const byThreshold = new Map();
+    for (const t of Array.isArray(r.commissionTiers) ? r.commissionTiers.slice(0, 20) : []) {
+      const from = Number(t?.fromAmount);
+      const amount = Number(t?.amount);
+      if (!Number.isFinite(from) || from <= 0 || !Number.isFinite(amount) || amount < 0) continue;
+      const thresholdMinor = Math.round(from * scale);
+      const rewardMinor = Math.round(amount * scale);
+      if (!Number.isSafeInteger(thresholdMinor) || thresholdMinor < 1 || !Number.isSafeInteger(rewardMinor)) continue;
+      byThreshold.set(thresholdMinor, { thresholdMinor, rewardMinor });
+    }
+    const tiers = [...byThreshold.values()].sort((a, b) => a.thresholdMinor - b.thresholdMinor);
+    return tiers.length ? { method: "TIERED_FIXED", period: "DAILY", basis: "TOTAL_BILL", tiers } : none;
+  }
+  const rate = Number(r.commissionRate);
+  const rateBps = Math.min(10000, Math.max(0, Math.round((Number.isFinite(rate) ? rate : 0) * 100)));
+  if (rateBps <= 0) return none;
+  const basis = type === "BILL_TOTAL" ? "TOTAL_BILL" : "DELIVERY_CHARGE";
+  return { method: "PERCENTAGE", period: "DAILY", basis, rateBps, rounding: "PER_ORDER" };
+}
+
+export function applyRiderCommissions(shopId, riders) {
+  if (!Array.isArray(riders)) return;
+  const db = getDb();
+  for (const r of riders.slice(0, 100)) {
+    const boyId = sanitizeBoyId(r?.deliveryBoyId);
+    if (!boyId) continue;
+    const userId = `cdb_${boyId}`.slice(0, 120);
+    const exists = db.prepare(`SELECT 1 FROM staff_users WHERE shop_id = ? AND user_id = ?`).get(shopId, userId);
+    if (!exists) continue; // created when the rider first takes an order
+    const policy = riderCommissionPolicy(r, shopDecimals(shopId));
+    try {
+      db.transaction(() =>
+        assignStaffRiderCommissionInTx(db, shopId, userId, policy, { role: "system", userId: "cloud_bridge" })
+      )();
+      commissionNotes.delete(userId);
+    } catch (err) {
+      // e.g. today's commission is already booked: the new rate starts next business day.
+      if (commissionNotes.get(userId) !== err.code) {
+        commissionNotes.set(userId, err.code);
+        log.warn("rider commission from cloud not applied yet", { riderUserId: userId, code: err.code, error: err.message });
+      }
+    }
+  }
+}
+
+/** The rider's multiple-payment split from a cloud payment report (null if none). */
+function riderSplitFromReport(report) {
+  if (!report || !(report.multi === true || String(report.status || "").toUpperCase() === "PARTIAL_SHOP")) {
+    return null;
+  }
+  const keys = ["cashCents", "shopPaidCents", "creditCents"];
+  if (!keys.some((k) => report[k] != null)) return null;
+  const out = {};
+  for (const k of keys) out[k] = Math.max(0, Math.round(Number(report[k]) || 0));
+  return out;
+}
+
+/* A rider payment the POS cannot accept is kept in the cloud and retried, but less
+   and less often (never dropped), and logged only now and then. */
+const paymentRetry = new Map(); // orderId -> { failures, nextAt }
+function paymentRetryDue(orderId) {
+  const r = paymentRetry.get(orderId);
+  return !r || Date.now() >= r.nextAt;
+}
+function notePaymentFailure(orderId, err) {
+  const r = paymentRetry.get(orderId) || { failures: 0, nextAt: 0 };
+  r.failures += 1;
+  const waitMs = Math.min(30 * 60 * 1000, 8000 * 2 ** Math.min(r.failures, 12));
+  r.nextAt = Date.now() + waitMs;
+  paymentRetry.set(orderId, r);
+  if (r.failures <= 3 || r.failures % 20 === 0) {
+    log.warn("cloud payment apply failed — needs attention", {
+      orderId,
+      error: err.message,
+      failures: r.failures,
+      nextTryInMinutes: Math.round(waitMs / 60000),
+    });
   }
 }
 
@@ -359,6 +496,27 @@ function buildPublishPayload(shopId, order) {
     taxName: bill?.taxName || "",
     shopPayment,
     paymentStatus: shopPayment.status,
+    // Rider multiple payment: the shop's review of each part (shown on the rider's phone).
+    splitReview: (() => {
+      try {
+        const r = readSplitReview(getDb(), shopId, order.orderId);
+        return r
+          ? {
+              reportVersion: r.reportVersion,
+              cashCents: r.cash.requiredCents,
+              shopPaidCents: r.shopPaid.requiredCents,
+              creditCents: r.credit.requiredCents,
+              cash: r.cash.state,
+              shopPaid: r.shopPaid.state,
+              credit: r.credit.state,
+              creditRejectNote: r.credit.rejectNote || "",
+              complete: r.complete,
+            }
+          : null;
+      } catch {
+        return null;
+      }
+    })(),
     claimRevision,
     prepRevision: order.expectedRevision || claimRevision,
     lines: (bill?.lines || []).map((line) => {
@@ -561,11 +719,19 @@ function applyPayment(shopId, row) {
   const db = getDb();
   const existing = db
     .prepare(
-      `SELECT report_type, version FROM delivery_order_payment_reports
+      `SELECT report_type, version, cash_cents, shop_paid_cents, credit_cents
+       FROM delivery_order_payment_reports
        WHERE shop_id = ? AND order_id = ?`
     )
     .get(shopId, orderId);
-  if (existing && String(existing.report_type) === kind) return true;
+  const split = kind === "PARTIAL_SHOP" ? riderSplitFromReport(report) : null;
+  const sameSplit = split
+    ? existing?.cash_cents != null &&
+      Number(existing.cash_cents) === split.cashCents &&
+      Number(existing.shop_paid_cents) === split.shopPaidCents &&
+      Number(existing.credit_cents) === split.creditCents
+    : true;
+  if (existing && String(existing.report_type) === kind && sameSplit) return true;
   // Cashier settlement already recorded — nothing for the rider report to apply.
   try {
     const payment = getOrderPayment(orderId, shopId);
@@ -584,7 +750,8 @@ function applyPayment(shopId, row) {
     orderId,
     kind,
     expectedVersion,
-    cloudDriverActor(driverUserId)
+    cloudDriverActor(driverUserId),
+    split ? { split } : {}
   );
   return true;
 }
@@ -630,6 +797,8 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
     }
   }
 
+  applyRiderCommissions(shopId, response.riders);
+
   const ackStatusIds = [];
   for (const row of response.pendingStatuses || []) {
     try {
@@ -644,13 +813,15 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
 
   const ackPaymentIds = [];
   for (const row of response.pendingPayments || []) {
+    const key = String(row.localOrderId || row.id || "");
+    if (!paymentRetryDue(key)) continue;
     try {
-      if (applyPayment(shopId, row)) ackPaymentIds.push(row.id);
+      if (applyPayment(shopId, row)) {
+        ackPaymentIds.push(row.id);
+        paymentRetry.delete(key);
+      }
     } catch (err) {
-      log.warn("cloud payment apply failed", {
-        orderId: row.localOrderId,
-        error: err.message,
-      });
+      notePaymentFailure(key, err);
     }
   }
 

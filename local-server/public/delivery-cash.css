@@ -493,3 +493,5 @@
   display:flex; justify-content:flex-end; gap:10px; flex-wrap:wrap;
   padding:12px 16px; border-top:1px solid #e4ebf4; background:#fff;
 }
+
+.cash-split-note { display:block; font-size:0.82rem; color:#8a5a00; font-weight:600; }
