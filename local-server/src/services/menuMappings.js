@@ -750,12 +750,68 @@ export function clearMenuItemImage(itemId, config) {
   return getMenuItem(itemId);
 }
 
-/** Delete a stored image only after no menu item still points at it. */
+/** Check the real file type from its first bytes (not just what the browser claimed). */
+function imageTypeFromBytes(buffer) {
+  if (buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return "jpg";
+  if (buffer.length > 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "png";
+  if (buffer.length > 12 && buffer.toString("ascii", 0, 4) === "RIFF" && buffer.toString("ascii", 8, 12) === "WEBP") return "webp";
+  return "";
+}
+
+/** Photo for a subcategory "folder" card on the Sales screen. */
+export function saveSubcategoryImage(subcategoryId, { base64Data }, config) {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT image_filename FROM menu_subcategories WHERE subcategory_id = ?`)
+    .get(subcategoryId);
+  if (!row) throw Object.assign(new Error("Subcategory not found"), { status: 404 });
+  const raw = String(base64Data || "").replace(/^data:[^;]+;base64,/, "");
+  const buffer = Buffer.from(raw, "base64");
+  if (!buffer.length) throw Object.assign(new Error("Empty image data"), { status: 400 });
+  if (buffer.length > 4_500_000) {
+    throw Object.assign(new Error("Image too large (max ~3.3MB)"), { status: 413 });
+  }
+  const ext = imageTypeFromBytes(buffer);
+  if (!ext) {
+    throw Object.assign(new Error("Unsupported image type (use JPEG, PNG, or WebP)"), { status: 400 });
+  }
+  ensureMenuImagesDir(config);
+  const safeId = String(subcategoryId).replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filename = `sub_${safeId}_${Date.now()}.${ext}`;
+  fs.writeFileSync(path.join(config.menuImagesDir, filename), buffer);
+  try {
+    db.prepare(
+      `UPDATE menu_subcategories SET image_filename = ?, updated_at = ? WHERE subcategory_id = ?`
+    ).run(filename, nowIso(), subcategoryId);
+  } catch (err) {
+    removeUnreferencedImageFile(filename, config);
+    throw err;
+  }
+  if (row.image_filename && row.image_filename !== filename) {
+    removeUnreferencedImageFile(row.image_filename, config);
+  }
+  return filename;
+}
+
+export function clearSubcategoryImage(subcategoryId, config) {
+  const db = getDb();
+  const row = db
+    .prepare(`SELECT image_filename FROM menu_subcategories WHERE subcategory_id = ?`)
+    .get(subcategoryId);
+  if (!row) throw Object.assign(new Error("Subcategory not found"), { status: 404 });
+  db.prepare(
+    `UPDATE menu_subcategories SET image_filename = NULL, updated_at = ? WHERE subcategory_id = ?`
+  ).run(nowIso(), subcategoryId);
+  if (row.image_filename) removeUnreferencedImageFile(row.image_filename, config);
+}
+
+/** Delete a stored image only after no menu item or subcategory still points at it. */
 function removeUnreferencedImageFile(filename, config) {
   if (!filename) return;
-  const stillUsed = getDb()
-    .prepare(`SELECT 1 FROM menu_items WHERE image_filename = ? LIMIT 1`)
-    .get(filename);
+  const db = getDb();
+  const stillUsed =
+    db.prepare(`SELECT 1 FROM menu_items WHERE image_filename = ? LIMIT 1`).get(filename) ||
+    db.prepare(`SELECT 1 FROM menu_subcategories WHERE image_filename = ? LIMIT 1`).get(filename);
   if (stillUsed) return;
   const filePath = resolveMenuImagePath(filename, config);
   if (!filePath) return;

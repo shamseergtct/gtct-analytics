@@ -102,6 +102,8 @@ function collectForm() {
     taxRegistrationNumber: $("f-tax-reg").value,
     timezone: $("f-timezone").value,
     dateFormat: $("f-date-format").value,
+    subcategoryDisplay:
+      document.querySelector('input[name="subcategory-display"]:checked')?.value || "cards",
     receipt: {
       showDisplayName: $("r-show-display").checked,
       showLegalName: $("r-show-legal").checked,
@@ -140,6 +142,10 @@ function fillForm(shop) {
   if ($("f-cloud-bridge-url")) $("f-cloud-bridge-url").value = shop.cloudBridgeUrl || "";
   $("f-timezone").value = shop.timezone || "UTC";
   $("f-date-format").value = shop.dateFormat || "YYYY-MM-DD";
+  const subDisplay = shop.subcategoryDisplay === "pills" ? "pills" : "cards";
+  document.querySelectorAll('input[name="subcategory-display"]').forEach((r) => {
+    r.checked = r.value === subDisplay;
+  });
 
   $("f-tax-enabled").checked = Boolean(shop.taxEnabled);
   $("f-tax-name").value = shop.taxName || "VAT";
@@ -826,6 +832,27 @@ function bindUi() {
   });
 
   $("shop-form").addEventListener("submit", saveShop);
+  // Sales screen style is outside the main form: save it as soon as it is chosen.
+  document.querySelectorAll('input[name="subcategory-display"]').forEach((radio) => {
+    radio.addEventListener("change", async () => {
+      if (!radio.checked) return;
+      const res = await api("/v1/shop-settings", {
+        method: "PUT",
+        body: JSON.stringify({ subcategoryDisplay: radio.value }),
+      });
+      if (res.ok) {
+        state.shop = res.json.shop;
+        setStatus(
+          radio.value === "cards"
+            ? "Saved — subcategories show as cards on the Sales screen."
+            : "Saved — subcategories show as pills on the Sales screen.",
+          true
+        );
+      } else {
+        setStatus(res.json?.error || "Could not save", false);
+      }
+    });
+  });
   $("shop-form").addEventListener("input", () => {
     markDirty();
     syncTaxUi();

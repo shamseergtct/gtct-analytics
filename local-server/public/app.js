@@ -1848,8 +1848,151 @@ async function saveChipOrder(host, kind) {
   renderCategories();
 }
 
+/* ---------- Subcategories as "folder" cards in the item grid ---------- */
+const ALL_IN_CATEGORY = "__ALL_ITEMS__";
+
+/** Shop Settings → Sales screen: "cards" (default) or "pills". Layout edit always uses pills. */
+function subcategoryCardsMode() {
+  if (state.layoutEditMode && canEditMenuLayout()) return false;
+  return state.config?.shop?.subcategoryDisplay !== "pills";
+}
+
+/** Subcategory names of a category, in Menu Setup order (only those with active items). */
+function orderedSubcategoriesFor(category) {
+  const parent = setupOrderIndex(state.categories, category);
+  const parentId = state.categories?.[parent]?.category_id;
+  return sortBySetupOrder(
+    [
+      ...new Set(
+        state.menu
+          .filter((i) => i.is_active && categoryForItem(i) === category)
+          .map(subcategoryForItem)
+          .filter(Boolean)
+      ),
+    ],
+    state.subcategories,
+    (row) => !parentId || row.category_id === parentId
+  );
+}
+
+function subcategoryRecord(category, name) {
+  const parent = state.categories?.[setupOrderIndex(state.categories, category)];
+  const needle = String(name || "").trim().toLowerCase();
+  return (state.subcategories || []).find(
+    (row) =>
+      String(row.name || "").trim().toLowerCase() === needle &&
+      (!parent || row.category_id === parent.category_id)
+  );
+}
+
+/** "◀ Back  Sandwiches › Burgers" line shown while inside a subcategory card. */
+function renderFolderBar() {
+  let bar = $("menu-folder-bar");
+  const inside =
+    subcategoryCardsMode() && state.category !== "ALL" && state.subcategory !== "ALL";
+  if (!inside) {
+    if (bar) bar.hidden = true;
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "menu-folder-bar";
+    bar.className = "menu-folder-bar";
+    $("subcategory-filters")?.after(bar);
+  }
+  bar.hidden = false;
+  const here = state.subcategory === ALL_IN_CATEGORY ? "All items" : titleCaseLabel(state.subcategory);
+  bar.innerHTML = `<button type="button" class="menu-folder-back" aria-label="Back to ${escapeHtml(titleCaseLabel(state.category))}">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span>Back</span></button>
+    <nav class="menu-folder-path" aria-label="You are here">
+      <button type="button" class="menu-folder-up">${escapeHtml(titleCaseLabel(state.category))}</button>
+      <span class="menu-folder-sep" aria-hidden="true">›</span>
+      <strong>${escapeHtml(here)}</strong>
+    </nav>`;
+  const goUp = () => {
+    state.subcategory = "ALL";
+    renderSubcategories();
+    renderMenu();
+    $("menu-grid")?.scrollTo?.({ top: 0 });
+  };
+  bar.querySelector(".menu-folder-back").addEventListener("click", goUp);
+  bar.querySelector(".menu-folder-up").addEventListener("click", goUp);
+}
+
+/** Folder cards for the open category (null when the grid should show items only). */
+function folderCardsForView() {
+  if (!subcategoryCardsMode()) return null;
+  if (state.category === "ALL" || state.subcategory !== "ALL") return null;
+  if (String(state.search || "").trim()) return null;
+  const subs = orderedSubcategoriesFor(state.category);
+  if (!subs.length) return null;
+  const counts = new Map();
+  let total = 0;
+  for (const item of state.menu) {
+    if (!item.is_active || categoryForItem(item) !== state.category) continue;
+    total += 1;
+    const sub = subcategoryForItem(item);
+    if (sub) counts.set(sub, (counts.get(sub) || 0) + 1);
+  }
+  return [
+    { key: ALL_IN_CATEGORY, name: "All items", count: total, all: true },
+    ...subs.map((name) => ({
+      key: name,
+      name: titleCaseLabel(name),
+      count: counts.get(name) || 0,
+      imageUrl: subcategoryRecord(state.category, name)?.image_url || null,
+    })),
+  ];
+}
+
+function buildFolderCard(folder) {
+  const theme = categoryTheme(state.category);
+  const wrap = document.createElement("div");
+  wrap.className = "mcard-wrap mfolder-wrap";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = `mfolder${folder.imageUrl ? " has-photo" : ""}${folder.all ? " is-all" : ""}`;
+  btn.style.setProperty("--cat-color", theme.dot);
+  btn.style.setProperty("--cat-bg", theme.bg);
+  btn.setAttribute("aria-label", `Open ${folder.name}, ${folder.count} items`);
+  const icon = folder.all
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+  btn.innerHTML = `
+    <span class="mfolder-media">${
+      folder.imageUrl
+        ? `<img src="${escapeHtml(folder.imageUrl)}" alt="" loading="lazy" />`
+        : `<span class="mfolder-icon">${icon}</span>`
+    }</span>
+    <span class="mfolder-body">
+      <span class="mfolder-name">${escapeHtml(folder.name)}</span>
+      <span class="mfolder-count">${folder.count} ${folder.count === 1 ? "item" : "items"}</span>
+    </span>
+    <span class="mfolder-chevron" aria-hidden="true">›</span>`;
+  const img = btn.querySelector("img");
+  img?.addEventListener("error", () => {
+    btn.classList.remove("has-photo");
+    img.parentElement.innerHTML = `<span class="mfolder-icon">${icon}</span>`;
+  });
+  btn.addEventListener("click", () => {
+    state.subcategory = folder.key;
+    renderSubcategories();
+    renderMenu();
+    $("menu-grid")?.scrollTo?.({ top: 0 });
+  });
+  wrap.appendChild(btn);
+  return wrap;
+}
+
 function renderSubcategories() {
   const host = $("subcategory-filters");
+  renderFolderBar();
+  if (subcategoryCardsMode()) {
+    host.hidden = true;
+    host.innerHTML = "";
+    return;
+  }
+  if (state.subcategory === ALL_IN_CATEGORY) state.subcategory = "ALL";
   if (state.category === "ALL") {
     host.hidden = true;
     host.innerHTML = "";
@@ -1995,7 +2138,11 @@ function visibleMenuItems() {
   if (!q) {
     return active.filter((item) => {
       if (state.category !== "ALL" && categoryForItem(item) !== state.category) return false;
-      if (state.subcategory !== "ALL" && subcategoryForItem(item) !== state.subcategory) {
+      if (
+        state.subcategory !== "ALL" &&
+        state.subcategory !== ALL_IN_CATEGORY &&
+        subcategoryForItem(item) !== state.subcategory
+      ) {
         return false;
       }
       return true;
@@ -2315,12 +2462,21 @@ function renderMenu() {
   const stockMode = Boolean(state.stockMode);
   const layoutEdit = Boolean(state.layoutEditMode) && canEditMenuLayout();
   ensureMenuSearchUi();
-  const items = visibleMenuItems();
+  let items = visibleMenuItems();
   syncMenuSearchUi(items.length);
+  renderFolderBar();
   const grid = $("menu-grid");
   grid.classList.toggle("is-layout-edit", layoutEdit);
   ensureLayoutHint(grid);
   grid.innerHTML = "";
+  const folders = folderCardsForView();
+  grid.classList.toggle("is-folder-view", Boolean(folders));
+  if (folders) {
+    for (const folder of folders) grid.appendChild(buildFolderCard(folder));
+    // Items that have no subcategory show straight after the folders.
+    items = items.filter((item) => !subcategoryForItem(item));
+    if (!items.length) return;
+  }
   if (!items.length) {
     grid.innerHTML = state.search.trim()
       ? `<div class="empty menu-empty"><strong>No item found for “${escapeHtml(state.search.trim())}”</strong><span>Check the spelling or try fewer letters.</span></div>`

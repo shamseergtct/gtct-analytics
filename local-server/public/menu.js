@@ -1790,6 +1790,65 @@ async function moveInOrder(ids, id, delta, url, extraBody = {}) {
   await loadAll();
 }
 
+/* ---------- Subcategory photo (shown on its card in Sales) ---------- */
+/** Shrink big photos before upload (cards are small), keeping JPEG/PNG/WebP. */
+async function shrinkPhoto(file, maxSide = 640) {
+  try {
+    const bitmap = await createImageBitmap(file);
+    const scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+    if (scale === 1 && file.size < 400_000) return await readFileBase64(file);
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(bitmap.width * scale);
+    canvas.height = Math.round(bitmap.height * scale);
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+  } catch {
+    return await readFileBase64(file);
+  }
+}
+
+function chooseSubcategoryPhoto(sub) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/jpeg,image/png,image/webp";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const err = validatePhotoFile(file);
+    if (err) {
+      toast(err, true);
+      return;
+    }
+    toast("Uploading photo…");
+    const base64Data = await shrinkPhoto(file);
+    const res = await api(`/v1/menu-subcategories/${encodeURIComponent(sub.subcategory_id)}/image`, {
+      method: "POST",
+      body: JSON.stringify({ base64Data }),
+    });
+    if (!res.ok) {
+      toast(res.json?.error || "Photo upload failed", true);
+      return;
+    }
+    state.flashOrderId = sub.subcategory_id;
+    await loadAll();
+    toast(`Photo saved for “${sub.name}”`);
+  });
+  input.click();
+}
+
+async function removeSubcategoryPhoto(sub) {
+  if (!window.confirm(`Remove the photo of “${sub.name}”?`)) return;
+  const res = await api(`/v1/menu-subcategories/${encodeURIComponent(sub.subcategory_id)}/image`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    toast(res.json?.error || "Could not remove the photo", true);
+    return;
+  }
+  await loadAll();
+  toast(`Photo removed from “${sub.name}”`);
+}
+
 function orderButtons(index, total, label) {
   return `<span class="order-btns" role="group" aria-label="Move ${escapeHtml(label)}">
     <button type="button" class="btn ghost small order-btn" data-act="move-up" ${index === 0 ? "disabled" : ""} aria-label="Move ${escapeHtml(label)} up">▲</button>
@@ -1928,6 +1987,18 @@ function renderCategoriesTab() {
                <button type="button" class="btn ghost small" data-act="cancel-sub">Cancel</button>
              </div>`
           : `${orderButtons(subIndex, shownSubs.length, sub.name)}
+             <span class="sub-photo-wrap">
+               <button type="button" class="sub-photo${sub.image_url ? " has-photo" : ""}" data-act="photo"
+                 title="${sub.image_url ? "Change photo" : "Add photo"}" aria-label="${sub.image_url ? "Change" : "Add"} photo for ${escapeHtml(sub.name)}">${
+                 sub.image_url
+                   ? `<img src="${escapeHtml(sub.image_url)}" alt="" />`
+                   : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>`
+               }</button>${
+                 sub.image_url
+                   ? `<button type="button" class="sub-photo-remove" data-act="photo-remove" aria-label="Remove photo" title="Remove photo">×</button>`
+                   : ""
+               }
+             </span>
              <strong style="flex:1">${escapeHtml(sub.name)}</strong>
              <span class="muted">${sub.itemCount || 0} items</span>
              <span class="badge status-${sub.is_active ? "active" : "inactive"}">● ${
@@ -1972,6 +2043,12 @@ function renderCategoriesTab() {
             moveInOrder(allSubIds, sub.subcategory_id, 1, "/v1/menu-subcategories/reorder", {
               categoryId: cat.category_id,
             })
+          );
+          row.querySelector('[data-act="photo"]').addEventListener("click", () =>
+            chooseSubcategoryPhoto(sub)
+          );
+          row.querySelector('[data-act="photo-remove"]')?.addEventListener("click", () =>
+            removeSubcategoryPhoto(sub)
           );
           row.querySelector('[data-act="edit-sub"]').addEventListener("click", () => {
             state.editingSubId = sub.subcategory_id;

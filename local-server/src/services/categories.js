@@ -25,6 +25,10 @@ function mapSubcategory(row) {
     subcategory_id: row.subcategory_id,
     category_id: row.category_id,
     name: row.name,
+    image_filename: row.image_filename || null,
+    image_url: row.image_filename
+      ? `/v1/menu-images/${encodeURIComponent(row.image_filename)}`
+      : null,
     is_active: row.is_active,
     sort_order: row.sort_order,
     created_at: row.created_at,

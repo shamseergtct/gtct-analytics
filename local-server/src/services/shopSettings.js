@@ -77,6 +77,7 @@ function mapRow(row) {
     cloudClientId: row.cloud_client_id || "",
     cloudBridgeEnabled: Boolean(Number(row.cloud_bridge_enabled || 0)),
     cloudBridgeUrl: row.cloud_bridge_url || "",
+    subcategoryDisplay: row.subcategory_display === "pills" ? "pills" : "cards",
 
     taxEnabled: flag(row, "tax_enabled", 0),
     taxName: row.tax_name || "VAT",
@@ -481,6 +482,16 @@ export function updateShopSettings(shopId, input = {}, { role = "admin" } = {}) 
     shopId
   );
 
+  if (Object.prototype.hasOwnProperty.call(input, "subcategoryDisplay")) {
+    const value = String(input.subcategoryDisplay || "").toLowerCase();
+    if (!["cards", "pills"].includes(value)) {
+      throw Object.assign(new Error("subcategoryDisplay must be cards or pills"), { status: 400 });
+    }
+    db.prepare(
+      `UPDATE shop_settings SET subcategory_display = ?, updated_at = ? WHERE shop_id = ?`
+    ).run(value, ts, shopId);
+  }
+
   if (
     Object.prototype.hasOwnProperty.call(input, "cloudClientId") ||
     Object.prototype.hasOwnProperty.call(input, "cloudBridgeEnabled") ||
@@ -520,6 +531,7 @@ export function updateShopSettings(shopId, input = {}, { role = "admin" } = {}) 
 /** Diff of sensitive fields for audit logging. */
 export function shopSettingsAuditDetail(before, after) {
   const keys = [
+    "subcategoryDisplay",
     "displayName",
     "legalName",
     "currencyCode",

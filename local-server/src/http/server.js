@@ -37,6 +37,8 @@ import {
   reorderMenuItems,
   updateMenuItemAvailability,
   saveMenuItemImage,
+  saveSubcategoryImage,
+  clearSubcategoryImage,
   clearMenuItemImage,
   resolveMenuImagePath,
 } from "../services/menuMappings.js";
@@ -721,6 +723,7 @@ export function createServer(config) {
             taxRatePercent: shop.taxRatePercent,
             timezone: shop.timezone,
             dateFormat: shop.dateFormat,
+            subcategoryDisplay: shop.subcategoryDisplay,
           },
         });
         return;
@@ -2292,6 +2295,38 @@ export function createServer(config) {
             detail: {},
           });
           sendJson(res, 200, { menuItem: item });
+        } catch (err) {
+          sendJson(res, err.status || 400, { error: err.message });
+        }
+        return;
+      }
+
+      if (
+        (method === "POST" || method === "DELETE") &&
+        path.startsWith("/v1/menu-subcategories/") &&
+        path.endsWith("/image")
+      ) {
+        const auth = requireAuth(req, res, config, ["admin"]);
+        if (!auth) return;
+        const id = decodeURIComponent(
+          path.slice("/v1/menu-subcategories/".length, -"/image".length)
+        );
+        try {
+          if (method === "POST") {
+            const body = await readBody(req, { maxBytes: 6_000_000 });
+            saveSubcategoryImage(id, { base64Data: body.base64Data }, config);
+          } else {
+            clearSubcategoryImage(id, config);
+          }
+          recordAudit({
+            actorRole: auth.role,
+            actorUserId: auth.userId || "",
+            action: method === "POST" ? "menu.subcategory.image.upload" : "menu.subcategory.image.clear",
+            entityType: "menu_subcategory",
+            entityId: id,
+            detail: {},
+          });
+          sendJson(res, 200, listCategories({ includeInactive: true }));
         } catch (err) {
           sendJson(res, err.status || 400, { error: err.message });
         }
