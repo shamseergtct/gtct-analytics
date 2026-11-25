@@ -882,7 +882,7 @@ export default function DeliveryApp() {
     setSelectedDraftIds(new Set(syncableDraftIds));
   }
 
-  // Resolve business date: shop operations shift → cached → today
+  // Resolve business date: restaurant POS shift → Analytics ops shift → cached → today
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -905,7 +905,18 @@ export default function DeliveryApp() {
           shiftUnsub();
           shiftUnsub = null;
         }
-        const opsId = String(settingsSnap.data()?.operationsShiftId || "").trim();
+        const settings = settingsSnap.data() || {};
+        // Restaurant pilot POS is source of truth when its shift is open.
+        const posDate = String(settings.restaurantPosBusinessDate || "").slice(0, 10);
+        const posOpen =
+          String(settings.restaurantPosShiftStatus || "").toUpperCase() === "OPEN" &&
+          /^\d{4}-\d{2}-\d{2}$/.test(posDate);
+        if (posOpen) {
+          setBusinessDate(posDate);
+          void setDeliveryMeta(`businessDate:${clientId}`, posDate);
+          return;
+        }
+        const opsId = String(settings.operationsShiftId || "").trim();
         if (!opsId) {
           (async () => {
             const cached = await getDeliveryMeta(`businessDate:${clientId}`);

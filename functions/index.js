@@ -709,6 +709,48 @@ exports.restaurantDeliveryBridge = onRequest(
     const ownAckId = (id) => !boundClientId || String(id).startsWith(`${clientId}_`);
     const now = Date.now();
 
+    // Keep Delivery App business date in lockstep with this shop's open POS shift.
+    if (body.businessShift && typeof body.businessShift === "object") {
+      const shiftStatus = String(body.businessShift.status || "").toUpperCase();
+      const shiftDate = String(body.businessShift.businessDate || "").slice(0, 10);
+      const shiftId = String(body.businessShift.shiftId || "").trim().slice(0, 80);
+      const settingsRef = db.collection("client_settings").doc(clientId);
+      if (
+        shiftStatus === "OPEN" &&
+        /^\d{4}-\d{2}-\d{2}$/.test(shiftDate)
+      ) {
+        const existing = await settingsRef.get();
+        const prev = existing.exists ? existing.data() || {} : {};
+        if (
+          prev.restaurantPosBusinessDate !== shiftDate ||
+          prev.restaurantPosShiftStatus !== "OPEN" ||
+          prev.restaurantPosShiftId !== shiftId
+        ) {
+          await settingsRef.set(
+            {
+              restaurantPosBusinessDate: shiftDate,
+              restaurantPosShiftStatus: "OPEN",
+              restaurantPosShiftId: shiftId,
+              restaurantPosShiftSyncedAt: now,
+            },
+            { merge: true }
+          );
+        }
+      } else if (shiftStatus === "CLOSED") {
+        const existing = await settingsRef.get();
+        const prev = existing.exists ? existing.data() || {} : {};
+        if (prev.restaurantPosShiftStatus !== "CLOSED") {
+          await settingsRef.set(
+            {
+              restaurantPosShiftStatus: "CLOSED",
+              restaurantPosShiftSyncedAt: now,
+            },
+            { merge: true }
+          );
+        }
+      }
+    }
+
     // POS answers to rider release requests. Applied before publishing so an
     // allowed order is offered to all riders again in this same sync.
     const releaseDecided = [];

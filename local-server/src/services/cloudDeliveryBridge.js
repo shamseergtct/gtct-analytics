@@ -26,6 +26,7 @@ import {
 import { markDeliveryPayment } from "./deliveryPaymentReports.js";
 import { readSplitReview } from "./deliverySplitReview.js";
 import { assignStaffRiderCommissionInTx } from "./deliveryCommissionSettings.js";
+import { getBusinessShift } from "./businessShifts.js";
 import { log } from "../util/logger.js";
 
 /**
@@ -787,9 +788,20 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
 
   // Cashier answers to rider "release order" requests (resent until the cloud confirms).
   const releaseDecisions = unsentReleaseDecisions(shopId);
+  // Riders follow this shop's open POS business date (not a stale Analytics shift).
+  const activeShift = getBusinessShift(shopId).active;
+  const businessShift = activeShift
+    ? {
+        shiftId: activeShift.shiftId,
+        businessDate: activeShift.businessDate,
+        status: "OPEN",
+        lastTokenNumber: activeShift.lastTokenNumber,
+      }
+    : { status: "CLOSED" };
   const response = await postBridge(cfg.url, cfg, {
     clientId: cfg.clientId,
     publishOrders,
+    businessShift,
     ...(releaseDecisions.length ? { releaseDecisions } : {}),
   });
   markReleaseDecisionsSent(shopId, response.releaseDecided);

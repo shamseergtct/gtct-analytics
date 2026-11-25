@@ -2569,7 +2569,11 @@ export function createServer(config) {
         if (!auth.userId) { sendJson(res, 403, { error: 'Admin login required.' }); return; }
         try {
           const body = await readBody(req);
-          sendJson(res, 201, { shift: openBusinessShift(config.testTenantId, body.businessDate, auth) });
+          const shift = openBusinessShift(config.testTenantId, body.businessDate, auth);
+          // Push the new POS business date to riders without waiting for the bridge loop.
+          resetCloudBridgeBackoff();
+          void syncCloudDeliveryBridge(config.testTenantId, config).catch(() => {});
+          sendJson(res, 201, { shift });
         } catch (err) { sendJson(res, err.status || 400, { error: err.message, code: err.code }); }
         return;
       }
@@ -2579,7 +2583,10 @@ export function createServer(config) {
         if (!auth.userId) { sendJson(res, 403, { error: 'Admin login required.' }); return; }
         try {
           const body = await readBody(req);
-          sendJson(res, 200, { shift: closeBusinessShift(config.testTenantId, body.shiftId, auth, body.confirm === true) });
+          const shift = closeBusinessShift(config.testTenantId, body.shiftId, auth, body.confirm === true);
+          resetCloudBridgeBackoff();
+          void syncCloudDeliveryBridge(config.testTenantId, config).catch(() => {});
+          sendJson(res, 200, { shift });
         } catch (err) { sendJson(res, err.status || 400, { error: err.message, code: err.code }); }
         return;
       }
