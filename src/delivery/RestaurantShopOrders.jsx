@@ -31,6 +31,7 @@ import {
 const acceptOrderFn = httpsCallable(functions, "acceptRestaurantDeliveryOrder");
 const updateStatusFn = httpsCallable(functions, "updateRestaurantDeliveryStatus");
 const reportPaymentFn = httpsCallable(functions, "reportRestaurantDeliveryPayment");
+const requestReleaseFn = httpsCallable(functions, "requestReleaseRestaurantDeliveryOrder");
 
 const TABS = [
   { id: "new", label: "New" },
@@ -98,6 +99,46 @@ function addressLine(order) {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+/** Customer name, tap-to-call phone and full address (shown before and after accept). */
+function CustomerDetails({ order }) {
+  const phone = String(order.customerPhone || "").trim();
+  const telHref = phone ? `tel:${phone.replace(/[^0-9+]/g, "")}` : "";
+  const address = addressLine(order);
+  return (
+    <div className="mt-3 space-y-1.5 rounded-2xl bg-white/[0.03] px-3 py-2.5 ring-1 ring-white/10">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            Customer
+          </div>
+          <div className="truncate text-sm font-semibold text-white">
+            {order.customerName || "—"}
+          </div>
+        </div>
+        {phone ? (
+          <a
+            href={telHref}
+            className="shrink-0 rounded-xl bg-teal-500/15 px-3 py-2 text-sm font-semibold tabular-nums text-teal-100 ring-1 ring-teal-400/30"
+          >
+            📞 {phone}
+          </a>
+        ) : (
+          <span className="shrink-0 text-xs text-slate-500">No phone</span>
+        )}
+      </div>
+      <div>
+        <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+          Address
+        </div>
+        <div className="text-sm text-slate-200">{address || "Address not entered"}</div>
+        {order.addressNote ? (
+          <div className="text-xs text-amber-200/90">{order.addressNote}</div>
+        ) : null}
+      </div>
+    </div>
+  );
 }
 
 /** POS stores split as "Order N" in instructions when the cart is split. */
@@ -553,6 +594,7 @@ function OrderCard({
   onAccept,
   onDeliver,
   onSavePayment,
+  onRequestRelease,
   expandedId,
   onToggleBill,
   currencyDecimals,
@@ -596,8 +638,22 @@ function OrderCard({
 
   // View tab always shows payment (needed to mark delivered) unless shop already paid.
   // Delivered tab only shows payment after Edit.
+  // Before accept the rider sees only customer + address (no amount / bill).
+  const showMoney = tab !== "new";
+  const release = order.releaseRequest || null;
+  const releasePending = release?.status === "PENDING";
+  const releaseRefused =
+    release?.status === "REJECTED" &&
+    String(release.deliveryBoyId || "") === String(deliveryBoy?.id || order.claimedByDeliveryBoyId || "");
+  const canRequestRelease =
+    tab === "view" &&
+    order.status === POOL_STATUS.CLAIMED &&
+    (order.deliveryLifecycle?.status || "PENDING") === "PENDING" &&
+    (payment.status || PAYMENT_STATUS.UNMARKED) === PAYMENT_STATUS.UNMARKED &&
+    !releasePending;
   const showPaymentForm =
     paymentEditable &&
+    !releasePending &&
     (tab === "view" || (tab === "delivered" && editing));
 
   const paymentForm = {
@@ -632,16 +688,16 @@ function OrderCard({
               {token || "TOKEN —"}
             </span>
           </div>
-          <div className="mt-1.5 truncate text-xs leading-relaxed text-slate-400">
-            {addressLine(order) || "Address not entered"}
-            {order.customerName ? ` · ${order.customerName}` : ""}
-          </div>
         </div>
         <span className="shrink-0 rounded-full bg-white/5 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-300 ring-1 ring-white/10">
           {poolStatusLabel(order.status)}
         </span>
       </header>
 
+      <CustomerDetails order={order} />
+
+      {showMoney ? (
+      <>
       <div className="mt-3.5 grid grid-cols-2 gap-2">
         <div className="rounded-2xl bg-white/[0.03] px-3 py-2.5 ring-1 ring-white/10">
           <div className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
@@ -818,6 +874,19 @@ function OrderCard({
           </div>
         </div>
       ) : null}
+      </>
+      ) : null}
+
+      {releasePending ? (
+        <div className="mt-3.5 rounded-2xl border border-amber-400/30 bg-amber-500/10 px-3 py-2.5 text-sm text-amber-100">
+          Release requested — waiting for the shop to allow it.
+        </div>
+      ) : releaseRefused && order.status === POOL_STATUS.CLAIMED ? (
+        <div className="mt-3.5 rounded-2xl border border-rose-400/30 bg-rose-500/10 px-3 py-2.5 text-sm text-rose-100">
+          Shop refused the release. Please deliver this order.
+          {release.note ? ` (${release.note})` : ""}
+        </div>
+      ) : null}
 
       {tab === "new" ? (
         <button
@@ -830,7 +899,7 @@ function OrderCard({
         </button>
       ) : null}
 
-      {canMarkDelivered && shopPay.settled ? (
+      {canMarkDelivered && shopPay.settled && !releasePending ? (
         <button
           type="button"
           disabled={busy}
@@ -963,6 +1032,17 @@ function OrderCard({
             </button>
           )}
         </div>
+      ) : null}
+
+      {canRequestRelease ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onRequestRelease(order)}
+          className="mt-3 w-full rounded-2xl border border-rose-400/30 bg-transparent px-3 py-2.5 text-sm font-semibold text-rose-200 transition hover:bg-rose-500/10 disabled:opacity-60"
+        >
+          Release order (give back)
+        </button>
       ) : null}
       </div>
     </article>
@@ -1127,6 +1207,22 @@ export default function RestaurantShopOrders({
       .sort(compareByRoadNumber);
   }, [newOrders, blockSuggest]);
 
+  function shopActionErrorMessage(err) {
+    const code = String(err?.code || "").replace(/^functions\//, "");
+    const raw = String(err?.message || "");
+    // Firebase callables format network failures as "internal [0]" (HTTP status 0 =
+    // no response: offline, blocked, or the function never answered).
+    if (
+      code === "internal" ||
+      code === "not-found" ||
+      code === "unavailable" ||
+      /^internal\s*\[\d+\]$/i.test(raw.trim())
+    ) {
+      return "Could not reach the server. Check your internet and try again. If it keeps happening, tell the shop (the server may need an update).";
+    }
+    return raw || "Action failed.";
+  }
+
   async function runAction(orderId, work, successMessage) {
     setBusyId(orderId);
     setError("");
@@ -1136,7 +1232,7 @@ export default function RestaurantShopOrders({
       if (successMessage) setNotice(successMessage);
       return true;
     } catch (err) {
-      setError(err?.message || "Action failed.");
+      setError(shopActionErrorMessage(err));
       return false;
     } finally {
       setBusyId("");
@@ -1182,6 +1278,23 @@ export default function RestaurantShopOrders({
         openBlockSuggest(order);
       }
     })();
+  }
+
+  function requestRelease(order) {
+    const reason = window.prompt(
+      `Release ${order.orderNumber}? The shop must allow it, then it goes back to New orders.\n\nReason (optional):`,
+      ""
+    );
+    if (reason === null) return;
+    void runAction(
+      order.id,
+      () =>
+        requestReleaseFn({
+          orderDocId: order.id,
+          reason: String(reason || "").slice(0, 200),
+        }),
+      `Release requested for ${order.orderNumber}. Waiting for the shop.`
+    );
   }
 
   async function savePaymentReport(order, payload) {
@@ -1449,6 +1562,7 @@ export default function RestaurantShopOrders({
                   onAccept={accept}
                   onDeliver={deliver}
                   onSavePayment={savePayment}
+                  onRequestRelease={requestRelease}
                 />
               ))}
             </div>
@@ -1517,9 +1631,14 @@ export default function RestaurantShopOrders({
                                 : ""}
                             </div>
                           </div>
-                          <div className="shrink-0 text-right text-sm font-semibold tabular-nums text-white">
-                            {formatPoolMoney(order)}
-                          </div>
+                          {order.customerPhone ? (
+                            <a
+                              href={`tel:${String(order.customerPhone).replace(/[^0-9+]/g, "")}`}
+                              className="shrink-0 text-right text-xs font-semibold tabular-nums text-teal-200"
+                            >
+                              📞 {order.customerPhone}
+                            </a>
+                          ) : null}
                         </div>
                         <button
                           type="button"

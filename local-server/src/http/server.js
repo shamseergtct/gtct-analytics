@@ -151,6 +151,7 @@ import {
   approveSplitCredit,
   rejectSplitCredit,
 } from "../services/deliverySplitReview.js";
+import { decideReleaseRequest } from "../services/deliveryReleaseRequests.js";
 import { getDb } from "../db/db.js";
 import { markDeliveryPayment } from '../services/deliveryPaymentReports.js';
 import { listDeliveryCashHandovers, confirmDeliveryCashHandover }
@@ -2730,6 +2731,23 @@ export function createServer(config) {
           sendJson(res,200,reviewDeliveryCredit(config.testTenantId,
             decodeURIComponent(deliveryCreditMatch[1]),body.reportVersion,
             body.decision,body.note || '',auth));
+        } catch(err) { sendJson(res,err.status || 400,{error:err.message,code:err.code}); }
+        return;
+      }
+
+      // Rider asked to give back an accepted order: cashier/admin allows or refuses.
+      const releaseMatch = path.match(/^\/v1\/delivery-review\/([^/]+)\/release$/);
+      if (method === 'POST' && releaseMatch) {
+        const auth = requireAuth(req, res, config, ['admin','cashier']);
+        if (!auth) return;
+        if (!auth.userId || !authAllows(auth,'sales.orders.view')) {
+          sendJson(res,403,{error:'Cashier/Admin permission required.'}); return;
+        }
+        try {
+          const body = await readBody(req);
+          const orderId = decodeURIComponent(releaseMatch[1]);
+          const result = decideReleaseRequest(config.testTenantId, orderId, body, auth);
+          sendJson(res,200,{ ok:true, ...result });
         } catch(err) { sendJson(res,err.status || 400,{error:err.message,code:err.code}); }
         return;
       }

@@ -630,6 +630,10 @@ function renderDeliveryCard(order, ctx) {
   } else if (review?.credit.state === "REJECTED") {
     rowPay.append(smallBadge("CREDIT REJECTED", "is-danger"));
   }
+  if (order.deliveryReleaseRequest) {
+    // Delivery boy wants to give the order back: the cashier must allow or refuse.
+    rowPay.append(smallBadge("RELEASE REQUEST", "is-danger"));
+  }
   if (life.status === "CANCEL_REQUESTED") {
     rowPay.append(smallBadge("CANCEL REQUESTED", "is-danger"));
   } else if (life.status === "CANCELLED") {
@@ -640,6 +644,56 @@ function renderDeliveryCard(order, ctx) {
   // Slot 7 — actions (pinned to bottom via CSS)
   appendActionsRow(article, order, ctx);
   return article;
+}
+
+/**
+ * Delivery boy asked (from the Delivery App) to give an accepted order back.
+ * Allow: the order is offered to all delivery boys again. Refuse: it stays with him.
+ */
+function appendReleaseRequestPanel(detailBody, order, ctx) {
+  const { api, onRefresh } = ctx;
+  const rr = order.deliveryReleaseRequest;
+  const who = rr.riderName || order.deliveryBoyName || "Delivery boy";
+  const box = node("div", "monitor-split-review monitor-release-request");
+  box.append(node("h3", "monitor-split-title", "Delivery boy wants to release this order"));
+  box.append(
+    node(
+      "p",
+      "monitor-meta",
+      `${who} accepted ${order.orderNumber} and asks to give it back.` +
+        (rr.reason ? ` Reason: ${rr.reason}` : "")
+    )
+  );
+  const actions = node("div", "monitor-split-actions");
+  const send = async (btn, decision, question) => {
+    const ok = await confirmNear(btn, question, { confirmLabel: "Confirm", cancelLabel: "Cancel" });
+    if (!ok) return;
+    btn.disabled = true;
+    const res = await api(
+      `/v1/delivery-review/${encodeURIComponent(order.orderId)}/release`,
+      "POST",
+      { requestId: rr.requestId, decision }
+    );
+    if (!res.ok) {
+      alert(res.json?.error || "Could not save.");
+      btn.disabled = false;
+      return;
+    }
+    await onRefresh();
+  };
+  const allow = node("button", "btn primary", "Allow release");
+  allow.type = "button";
+  allow.addEventListener("click", () =>
+    send(allow, "ALLOW", `Release ${order.orderNumber} from ${who}? It will show as a new order to all delivery boys.`)
+  );
+  const refuse = node("button", "btn ghost", "Refuse");
+  refuse.type = "button";
+  refuse.addEventListener("click", () =>
+    send(refuse, "REFUSE", `Refuse? ${order.orderNumber} stays with ${who}.`)
+  );
+  actions.append(allow, refuse);
+  box.append(actions);
+  detailBody.append(box);
 }
 
 /**
@@ -860,6 +914,7 @@ function appendDetailBody(detailBody, order, ctx) {
   ) {
     return;
   }
+  if (order.deliveryReleaseRequest) appendReleaseRequestPanel(detailBody, order, ctx);
   if (life.status === "CANCEL_REQUESTED" && life.reason) {
     detailBody.append(node("p", "monitor-meta", `Cancellation reason: ${life.reason}`));
   }

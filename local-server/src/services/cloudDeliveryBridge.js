@@ -9,6 +9,11 @@ import path from "node:path";
 import { getDb } from "../db/db.js";
 import { nowIso } from "../util/time.js";
 import { getShopSettings, updateShopSettings } from "./shopSettings.js";
+import {
+  markReleaseDecisionsSent,
+  recordReleaseRequest,
+  unsentReleaseDecisions,
+} from "./deliveryReleaseRequests.js";
 import { getDeliveryBillSnapshot } from "./deliveryPool.js";
 import { readOrderOperationalState } from "./orderOperationalState.js";
 import { getOrderPayment } from "./settlements.js";
@@ -780,10 +785,14 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
     buildPublishPayload(shopId, order)
   );
 
+  // Cashier answers to rider "release order" requests (resent until the cloud confirms).
+  const releaseDecisions = unsentReleaseDecisions(shopId);
   const response = await postBridge(cfg.url, cfg, {
     clientId: cfg.clientId,
     publishOrders,
+    ...(releaseDecisions.length ? { releaseDecisions } : {}),
   });
+  markReleaseDecisionsSent(shopId, response.releaseDecided);
 
   const ackClaimIds = [];
   for (const claim of response.pendingClaims || []) {
@@ -825,13 +834,26 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
     }
   }
 
-  if (ackClaimIds.length || ackStatusIds.length || ackPaymentIds.length) {
+  const ackReleaseIds = [];
+  for (const row of response.pendingReleases || []) {
+    try {
+      if (recordReleaseRequest(shopId, row)) ackReleaseIds.push(row.id);
+    } catch (err) {
+      log.warn("cloud release request not recorded", {
+        orderId: row.localOrderId,
+        error: err.message,
+      });
+    }
+  }
+
+  if (ackClaimIds.length || ackStatusIds.length || ackPaymentIds.length || ackReleaseIds.length) {
     await postBridge(cfg.url, cfg, {
       clientId: cfg.clientId,
       publishOrders: [],
       ackClaimIds,
       ackStatusIds,
       ackPaymentIds,
+      ...(ackReleaseIds.length ? { ackReleaseIds } : {}),
     });
   }
 
@@ -842,6 +864,7 @@ export async function syncCloudDeliveryBridge(shopId, envConfig = {}) {
     claimsApplied: ackClaimIds.length,
     statusesApplied: ackStatusIds.length,
     paymentsApplied: ackPaymentIds.length,
+    releaseRequests: ackReleaseIds.length,
   };
 }
 

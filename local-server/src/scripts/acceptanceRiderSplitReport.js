@@ -159,12 +159,15 @@ async function main() {
     pass('handover-cash-reported-as-rider-cash');
 
     // 4. Bridge: cloud split reaches the POS; a refused payment backs off instead of every 8 s.
-    const tD = totalOf(D); let pending = []; let calls = 0; let cloudClaims = []; let cloudStatuses = []; let cloudRiders = [];
+    const tD = totalOf(D); let pending = []; let calls = 0; let cloudClaims = []; let cloudStatuses = []; let cloudRiders = []; let cloudReleases = []; const cloudBodies = [];
     cloud = http.createServer((req, res) => {
       let body = ''; req.on('data', (c) => (body += c)); req.on('end', () => {
         calls += 1;
+        let parsed = {}; try { parsed = JSON.parse(body || '{}'); } catch { parsed = {}; }
+        cloudBodies.push(parsed);
+        const releaseDecided = (parsed.releaseDecisions || []).map((d) => d.requestId);
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({ ok:true, publishedCount:0, pendingClaims:cloudClaims, pendingStatuses:cloudStatuses, pendingPayments:pending, riders:cloudRiders }));
+        res.end(JSON.stringify({ ok:true, publishedCount:0, pendingClaims:cloudClaims, pendingStatuses:cloudStatuses, pendingPayments:pending, riders:cloudRiders, pendingReleases:cloudReleases, releaseDecided }));
       });
     });
     await new Promise((ok) => cloud.listen(19042, '127.0.0.1', ok));
@@ -365,6 +368,81 @@ async function main() {
     must(db.prepare(`SELECT COUNT(*) n FROM delivery_commission_policies WHERE rider_user_id=?`).get(riderId).n === localRule &&
       !db.prepare(`SELECT 1 FROM staff_users WHERE user_id='cdb_notHere'`).get(), 'POS-only riders and unknown boys untouched');
     pass('commission-follows-analytics-percentage-per-order');
+
+    // 10. Rider "release order": shop allows -> claim removed, cloud told; refuse -> stays.
+    const relOrders = [];
+    for (const n of ['K', 'L', 'M']) {
+      const o = await httpJson(config.port,'POST','/v1/test-orders',cashier,{ orderNumber:`REL-${n}`,
+        orderType:'DELIVERY', fulfillment:{ customerId, addressId, blockNumber:'44', roadNumber:'2',
+          buildingNumber:'1', expectedBlockRateCents:250, deliveryChargeCents:250 },
+        lines:[{ itemId:'item_orange_juice', quantity:1 }] });
+      const orderId = o.json.order.order_id; relOrders.push(orderId);
+      const board = await httpJson(config.port,'GET','/v1/prep-board?stationId=station_juice',cashier);
+      const t = board.json.tickets.find((x) => x.orderId === orderId);
+      await httpJson(config.port,'POST','/v1/prep-board/accept',cashier,{ orderId, stationId:'station_juice', expectedStatus:t.status, expectedRevision:t.revision });
+      const b2 = await httpJson(config.port,'GET','/v1/prep-board?stationId=station_juice',cashier);
+      const t2 = b2.json.tickets.find((x) => x.orderId === orderId);
+      await httpJson(config.port,'POST','/v1/prep-board/finish',cashier,{ orderId, stationId:'station_juice', expectedStatus:t2.status, expectedRevision:t2.revision });
+      const d = await httpJson(config.port,'GET',`/v1/order-monitor/${orderId}`,admin);
+      await httpJson(config.port,'POST',`/v1/order-monitor/${orderId}/ready`,cashier,{ expectedRevision:d.json.order.dispatch.revision });
+    }
+    const [K, L, M] = relOrders;
+    cloudStatuses = []; pending = []; cloudRiders = [];
+    cloudClaims = relOrders.map((id) => ({ id:`clientQA_${id}`, localOrderId:id, status:'CLAIMED',
+      claimedByDeliveryBoyId:'boyQA15', claimedByName:'Cloud Boy', claimedAt:Date.now() }));
+    await syncCloudDeliveryBridge(shopId, config);
+    const claimOf = (id) => db.prepare('SELECT driver_user_id d FROM order_delivery_claims WHERE order_id=?').get(id)?.d;
+    must(relOrders.every((id) => claimOf(id) === 'cdb_boyQA15'), 'cloud rider holds K, L, M');
+    cloudClaims = [];
+    // M: rider already reported cash -> release must be blocked.
+    markDeliveryPayment(shopId, M, 'CASH_WITH_BOY', 0, { ...actor, userId:'cdb_boyQA15' });
+    const relRow = (id, rq) => ({ id:`clientQA_${id}`, localOrderId:id, claimedByDeliveryBoyId:'boyQA15', claimedByName:'Cloud Boy',
+      releaseRequest:{ status:'PENDING', requestId:rq, reason:'Too far', deliveryBoyId:'boyQA15', deliveryBoyName:'Cloud Boy', requestedAt:Date.now() } });
+    cloudReleases = [relRow(K, 'rqK'), relRow(L, 'rqL'), relRow(M, 'rqM')];
+    cloudBodies.length = 0;
+    await syncCloudDeliveryBridge(shopId, config);
+    const acked = cloudBodies.flatMap((b) => b.ackReleaseIds || []);
+    must(acked.length === 3 && acked.includes(`clientQA_${K}`), `requests acknowledged ${JSON.stringify(acked)}`);
+    cloudReleases = [];
+    await syncCloudDeliveryBridge(shopId, config); // repeat delivery is harmless
+    must(db.prepare(`SELECT COUNT(*) n FROM delivery_release_requests WHERE status='PENDING'`).get().n === 3, 'three pending requests stored once');
+    const monK = await httpJson(config.port,'GET',`/v1/order-monitor/${K}`,admin);
+    const rrK = monK.json?.order?.deliveryReleaseRequest;
+    must(rrK?.requestId === 'rqK' && rrK.reason === 'Too far' && rrK.riderName === 'Cloud Boy', `board shows request ${JSON.stringify(rrK)}`);
+    // wrong request id / bad decision
+    let r = await httpJson(config.port,'POST',`/v1/delivery-review/${K}/release`,cashier,{ requestId:'nope', decision:'ALLOW' });
+    must(r.status === 404, `unknown request 404 (${r.status})`);
+    r = await httpJson(config.port,'POST',`/v1/delivery-review/${K}/release`,cashier,{ requestId:'rqK', decision:'MAYBE' });
+    must(r.status === 400, 'bad decision 400');
+    // Allow K
+    r = await httpJson(config.port,'POST',`/v1/delivery-review/${K}/release`,cashier,{ requestId:'rqK', decision:'ALLOW' });
+    must(r.status === 200 && r.json.status === 'APPROVED' && !claimOf(K), `K released ${r.status} ${r.json?.error}`);
+    r = await httpJson(config.port,'POST',`/v1/delivery-review/${K}/release`,cashier,{ requestId:'rqK', decision:'REFUSE' });
+    must(r.status === 409, 'answer only once');
+    // Refuse L
+    r = await httpJson(config.port,'POST',`/v1/delivery-review/${L}/release`,cashier,{ requestId:'rqL', decision:'REFUSE' });
+    must(r.status === 200 && claimOf(L) === 'cdb_boyQA15', 'L refused: stays with rider');
+    // M blocked (payment reported)
+    r = await httpJson(config.port,'POST',`/v1/delivery-review/${M}/release`,cashier,{ requestId:'rqM', decision:'ALLOW' });
+    must(r.status === 409 && r.json.code === 'RELEASE_BLOCKED' && claimOf(M) === 'cdb_boyQA15', `M blocked ${r.status} ${r.json?.code}`);
+    // Decisions go to the cloud, K is published again as a free order.
+    cloudBodies.length = 0;
+    await syncCloudDeliveryBridge(shopId, config);
+    const sent = cloudBodies[0]?.releaseDecisions || [];
+    must(sent.length === 2 && sent.some((d) => d.requestId === 'rqK' && d.decision === 'APPROVED' && d.id === `clientQA_${K}`) &&
+      sent.some((d) => d.requestId === 'rqL' && d.decision === 'REJECTED'), `decisions sent ${JSON.stringify(sent)}`);
+    must((cloudBodies[0].publishOrders || []).some((o) => o.localOrderId === K), 'K published again for all riders');
+    cloudBodies.length = 0;
+    await syncCloudDeliveryBridge(shopId, config);
+    must(!(cloudBodies[0]?.releaseDecisions || []).length, 'decisions not resent after the cloud confirmed');
+    const monK2 = await httpJson(config.port,'GET',`/v1/order-monitor/${K}`,admin);
+    must(!monK2.json?.order?.deliveryReleaseRequest, 'no badge after decision');
+    // K can be accepted again by another cloud rider.
+    cloudClaims = [{ id:`clientQA_${K}`, localOrderId:K, status:'CLAIMED', claimedByDeliveryBoyId:'boyQA99', claimedByName:'Other', claimedAt:Date.now() }];
+    await syncCloudDeliveryBridge(shopId, config);
+    must(claimOf(K) === 'cdb_boyQA99', 'released order taken by another rider');
+    cloudClaims = [];
+    pass('rider-release-request-allow-refuse-blocked');
 
     console.log(JSON.stringify({ ok:true, passed }));
   } finally {

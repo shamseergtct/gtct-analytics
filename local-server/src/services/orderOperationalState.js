@@ -8,6 +8,7 @@ import { getOrderPrepProgress } from './prepBoard.js';
 import { readDeliveryPaymentReport } from './deliveryPaymentReports.js';
 import { readDeliveryLifecycle } from './deliveryLifecycle.js';
 import { readSplitReview } from './deliverySplitReview.js';
+import { readPendingReleaseRequest } from './deliveryReleaseRequests.js';
 
 /**
  * Stage-1 temporary: prep station screens are not in daily use yet.
@@ -51,6 +52,9 @@ export function readOrderOperationalState(db, shopId, order) {
     ? readSplitReview(db, shopId, order.order_id) : null;
   const deliveryLifecycle = isDelivery && deliveryClaim
     ? readDeliveryLifecycle(db, shopId, order.order_id) : null;
+  // Rider asked (from the Delivery App) to give this order back.
+  const deliveryReleaseRequest = isDelivery && deliveryClaim
+    ? readPendingReleaseRequest(db, shopId, order.order_id) : null;
   const isOpenTest = order.status === 'OPEN' && Number(order.is_test) === 1;
   const kitchenOkForDispatch =
     !REQUIRE_PREP_FINISHED_FOR_DISPATCH || prep.allFinished;
@@ -83,6 +87,7 @@ export function readOrderOperationalState(db, shopId, order) {
     deliveryAcceptedAt: deliveryClaim?.accepted_at || null,
     deliveryPaymentReport,
     deliverySplitReview,
+    deliveryReleaseRequest,
     deliveryLifecycle,
     shopCreditAuthorization,
     preparation: prep,

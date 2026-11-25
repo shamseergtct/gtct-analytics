@@ -467,6 +467,8 @@ exports.acceptRestaurantDeliveryOrder = onCall(
           status: "PENDING",
           version: Number(order.deliveryLifecycle?.version || 0),
         },
+        // A release request belongs to the previous rider only.
+        releaseRequest: null,
       });
       return { alreadyAccepted: false, orderId: order.localOrderId };
     });
@@ -498,6 +500,9 @@ exports.updateRestaurantDeliveryStatus = onCall(
       if (order.status !== "CLAIMED") {
         throw new HttpsError("failed-precondition", "Order is not in delivery.");
       }
+      if (order.releaseRequest?.status === "PENDING") {
+        throw new HttpsError("failed-precondition", "Your release request is waiting for the shop.");
+      }
       const life = order.deliveryLifecycle || { status: "PENDING", version: 0 };
       if (Number(life.version || 0) !== expectedVersion) {
         throw new HttpsError("aborted", "Status changed. Refresh and retry.");
@@ -525,6 +530,58 @@ exports.updateRestaurantDeliveryStatus = onCall(
       }
     });
     return { ok: true };
+  }
+);
+
+/**
+ * Rider asks to give back an accepted order (before delivery / payment).
+ * The POS cashier allows or refuses through the bridge; on allow the order
+ * becomes AVAILABLE again for every rider.
+ */
+exports.requestReleaseRestaurantDeliveryOrder = onCall(
+  { region: "asia-south1" },
+  async (request) => {
+    const orderDocId = String(request.data?.orderDocId || "").trim();
+    const reason = String(request.data?.reason || "").replace(/[\x00-\x1f]/g, " ").trim().slice(0, 200);
+    if (!orderDocId) {
+      throw new HttpsError("invalid-argument", "orderDocId is required.");
+    }
+    const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(orderDocId);
+    const result = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(ref);
+      if (!snap.exists) throw new HttpsError("not-found", "Order not found.");
+      const order = snap.data() || {};
+      const actor = await assertDeliveryBoyCaller(request, order.clientId);
+      if (order.claimedByDeliveryBoyId !== actor.deliveryBoyId) {
+        throw new HttpsError("permission-denied", "Not your delivery.");
+      }
+      if (order.status !== "CLAIMED" || (order.deliveryLifecycle?.status || "PENDING") !== "PENDING") {
+        throw new HttpsError("failed-precondition", "Only an accepted order that is not delivered can be released.");
+      }
+      const pay = String(order.paymentReport?.status || "UNMARKED");
+      if (pay !== "UNMARKED") {
+        throw new HttpsError("failed-precondition", "Payment is already marked. Ask the shop.");
+      }
+      if (order.releaseRequest?.status === "PENDING") {
+        return { alreadyRequested: true, requestId: order.releaseRequest.requestId };
+      }
+      const now = Date.now();
+      const requestId = `${now}_${Math.random().toString(36).slice(2, 10)}`;
+      tx.update(ref, {
+        releaseRequest: {
+          status: "PENDING",
+          requestId,
+          reason,
+          deliveryBoyId: actor.deliveryBoyId,
+          deliveryBoyName: actor.deliveryBoyName,
+          requestedAt: now,
+        },
+        localReleaseApplied: false,
+        updatedAt: now,
+      });
+      return { alreadyRequested: false, requestId };
+    });
+    return { ok: true, ...result };
   }
 );
 
@@ -557,6 +614,9 @@ exports.reportRestaurantDeliveryPayment = onCall(
       }
       if (!["CLAIMED", "DELIVERED"].includes(order.status)) {
         throw new HttpsError("failed-precondition", "Accept the order first.");
+      }
+      if (order.releaseRequest?.status === "PENDING") {
+        throw new HttpsError("failed-precondition", "Your release request is waiting for the shop.");
       }
       const pay = order.paymentReport || { status: "UNMARKED", version: 0 };
       if (Number(pay.version || 0) !== expectedVersion) {
@@ -648,6 +708,61 @@ exports.restaurantDeliveryBridge = onRequest(
     // An activated POS may only acknowledge its own shop's orders.
     const ownAckId = (id) => !boundClientId || String(id).startsWith(`${clientId}_`);
     const now = Date.now();
+
+    // POS answers to rider release requests. Applied before publishing so an
+    // allowed order is offered to all riders again in this same sync.
+    const releaseDecided = [];
+    for (const d of (Array.isArray(body.releaseDecisions) ? body.releaseDecisions : []).slice(0, 100)) {
+      const id = String(d?.id || "");
+      const requestId = String(d?.requestId || "");
+      const decision = String(d?.decision || "").toUpperCase();
+      if (!id || !requestId || !id.startsWith(`${clientId}_`) || !ownAckId(id)) continue;
+      if (!["APPROVED", "REJECTED"].includes(decision)) continue;
+      const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(id);
+      await db.runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists) return;
+        const o = snap.data() || {};
+        const rr = o.releaseRequest;
+        if (!rr || rr.requestId !== requestId || rr.status !== "PENDING") return;
+        const note = String(d.note || "").slice(0, 200);
+        if (decision === "APPROVED" && o.status === "CLAIMED") {
+          tx.update(ref, {
+            status: "AVAILABLE",
+            claimedByDeliveryBoyId: "",
+            claimedByName: "",
+            claimedByUid: "",
+            claimedAt: null,
+            claimRevision: `${String(o.claimRevision || "0")}:released:${now}`,
+            paymentReport: { status: "UNMARKED", version: 0 },
+            deliveryLifecycle: {
+              status: "PENDING",
+              version: Number(o.deliveryLifecycle?.version || 0),
+            },
+            localClaimApplied: false,
+            localStatusApplied: true,
+            localPaymentApplied: true,
+            localReleaseApplied: true,
+            releaseRequest: { ...rr, status: "APPROVED", note, decidedAt: now },
+            lastReleasedByDeliveryBoyId: rr.deliveryBoyId || "",
+            updatedAt: now,
+          });
+        } else {
+          tx.update(ref, {
+            releaseRequest: {
+              ...rr,
+              status: decision === "APPROVED" ? "CLOSED" : "REJECTED",
+              note,
+              decidedAt: now,
+            },
+            localReleaseApplied: true,
+            updatedAt: now,
+          });
+        }
+      });
+      releaseDecided.push(requestId);
+    }
+
     const published = [];
     for (const order of Array.isArray(body.publishOrders) ? body.publishOrders : []) {
       const localOrderId = String(order.localOrderId || "").trim();
@@ -735,6 +850,9 @@ exports.restaurantDeliveryBridge = onRequest(
     const pendingPayments = clientOrders.filter(
       (row) => row.localPaymentApplied === false
     );
+    const pendingReleases = clientOrders.filter(
+      (row) => row.releaseRequest?.status === "PENDING" && row.localReleaseApplied === false
+    );
 
     for (const id of (Array.isArray(body.ackClaimIds) ? body.ackClaimIds : []).filter(ownAckId)) {
       const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
@@ -747,6 +865,10 @@ exports.restaurantDeliveryBridge = onRequest(
     for (const id of (Array.isArray(body.ackPaymentIds) ? body.ackPaymentIds : []).filter(ownAckId)) {
       const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
       await ref.set({ localPaymentApplied: true, updatedAt: now }, { merge: true });
+    }
+    for (const id of (Array.isArray(body.ackReleaseIds) ? body.ackReleaseIds : []).filter(ownAckId)) {
+      const ref = db.collection(RESTAURANT_DELIVERY_ORDERS).doc(String(id));
+      await ref.set({ localReleaseApplied: true, updatedAt: now }, { merge: true });
     }
 
     // Commission settings of the delivery boys working this shop's orders (from
@@ -791,6 +913,8 @@ exports.restaurantDeliveryBridge = onRequest(
       pendingClaims,
       pendingStatuses,
       pendingPayments,
+      pendingReleases,
+      releaseDecided,
       riders,
     });
   }

@@ -130,6 +130,7 @@ function wipeOrderChildren(db, shopId, orderIds) {
   byOrder("order_dispatch_readiness");
 
   // CASCADE tables — explicit delete is fine / clearer in summary
+  if (tableExists(db, "delivery_release_requests")) byOrder("delivery_release_requests");
   byOrder("delivery_credit_reviews");
   byOrder("delivery_order_lifecycle");
   byOrder("delivery_order_payment_reports");

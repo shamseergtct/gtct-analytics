@@ -719,3 +719,6 @@
 .monitor-split-bank { min-height: 44px; flex: 1 1 160px; border: 1px solid #d3dce7; border-radius: 10px; padding: 0 10px; background: #fff; }
 .monitor-split-summary { margin: 0; font-weight: 650; color: #5a6a80; }
 .monitor-split-summary.is-done { color: #1f7a4d; }
+
+/* Rider release (un-accept) request */
+.monitor-release-request { border-color: #f0b4b4; background: #fff6f5; }
