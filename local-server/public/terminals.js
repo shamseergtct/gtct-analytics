@@ -100,7 +100,8 @@ function renderLan() {
     offline.hidden = false;
     offline.textContent =
       "Other devices cannot connect yet: the app is running on this computer only. " +
-      "Make sure this PC is connected to the shop Wi-Fi or a LAN cable. The app switches to the network by itself within about a minute; then open this page again.";
+      "Connect this Mac to shop Wi-Fi or a LAN cable — it switches to the network by itself within about 15 seconds. " +
+      "On this Mac you can always use http://127.0.0.1:8787/. Phones need the new IP QR after a router change.";
     $("lan-status").textContent = lan.browseUrl ? `This computer only · ${lan.browseUrl}` : "This computer only.";
   }
   $("lan-note").textContent = [

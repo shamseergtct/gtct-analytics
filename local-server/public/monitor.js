@@ -12,17 +12,29 @@ const state = {
 };
 
 async function api(path, method = "GET", body) {
-  const response = await fetch(path, {
-    method,
-    credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      ...(body ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-  });
-  const json = await response.json().catch(() => ({}));
-  return { ok: response.ok, status: response.status, json };
+  const ac = new AbortController();
+  const timer = window.setTimeout(() => ac.abort(), 12000);
+  try {
+    const response = await fetch(path, {
+      method,
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: ac.signal,
+    });
+    const json = await response.json().catch(() => ({}));
+    return { ok: response.ok, status: response.status, json };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      return { ok: false, status: 0, json: { error: "Request timed out. Check Wi-Fi or open http://127.0.0.1:8787/ on this Mac." } };
+    }
+    return { ok: false, status: 0, json: { error: "Connection lost. Reconnecting…" } };
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 function boardApi(path, method = "GET", body) {
@@ -67,8 +79,9 @@ function filters() {
   return params.toString();
 }
 
-async function refresh({ quiet = false } = {}) {
-  if (!state.session || state.busy || document.hidden) return;
+async function refresh({ quiet = false, force = false } = {}) {
+  if (!state.session || document.hidden) return;
+  if (state.busy && !force) return;
   state.busy = true;
   try {
     if (!quiet) $("monitor-status").textContent = "Loading orders…";
@@ -89,10 +102,15 @@ async function refresh({ quiet = false } = {}) {
     $("prev-page").disabled = state.page <= 1;
     $("next-page").disabled = state.page * data.pageSize >= data.total;
   } catch {
-    $("monitor-status").textContent = "Connection lost. Refresh to try again.";
+    $("monitor-status").textContent = "Connection lost. Reconnecting when the network is back…";
   } finally {
     state.busy = false;
   }
+}
+
+function reconnectMonitor() {
+  if (!state.session || document.hidden) return;
+  void refresh({ quiet: true, force: true });
 }
 async function signIn() {
   const result = await api("/v1/session/login", "POST", {
@@ -147,4 +165,8 @@ $("next-page").addEventListener("click", () => {
 window.setInterval(() => {
   if (state.session && !document.hidden) void refresh({ quiet: true });
 }, 8000);
+window.addEventListener("online", reconnectMonitor);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) reconnectMonitor();
+});
 await startSession();

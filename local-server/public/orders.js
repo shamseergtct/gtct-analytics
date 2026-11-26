@@ -25,20 +25,38 @@ const state = {
 const $ = (id) => document.getElementById(id);
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    headers: {
-      Accept: "application/json",
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
-    },
-    ...options,
-  });
-  const text = await res.text();
-  let json = null;
-  if (text) {
-    try { json = JSON.parse(text); } catch { json = { raw: text }; }
+  const timeoutMs = Number(options.timeoutMs || 12000);
+  const { timeoutMs: _ignored, signal: outerSignal, ...fetchOpts } = options;
+  const ac = new AbortController();
+  const timer = window.setTimeout(() => ac.abort(), timeoutMs);
+  if (outerSignal) {
+    if (outerSignal.aborted) ac.abort();
+    else outerSignal.addEventListener("abort", () => ac.abort(), { once: true });
   }
-  return { ok: res.ok, status: res.status, json };
+  try {
+    const res = await fetch(path, {
+      credentials: "same-origin",
+      headers: {
+        Accept: "application/json",
+        ...(fetchOpts.body ? { "Content-Type": "application/json" } : {}),
+      },
+      ...fetchOpts,
+      signal: ac.signal,
+    });
+    const text = await res.text();
+    let json = null;
+    if (text) {
+      try { json = JSON.parse(text); } catch { json = { raw: text }; }
+    }
+    return { ok: res.ok, status: res.status, json };
+  } catch (err) {
+    if (err?.name === "AbortError") {
+      return { ok: false, status: 0, json: { error: "Request timed out. Check Wi-Fi or open http://127.0.0.1:8787/ on this Mac." } };
+    }
+    return { ok: false, status: 0, json: { error: "Connection lost. Reconnecting…" } };
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 /** Board module expects (path, method, body). */
@@ -121,12 +139,13 @@ function boardCtx() {
   };
 }
 
-async function loadBoard({ quiet = false } = {}) {
-  if (!canView() || state.boardBusy) return;
+async function loadBoard({ quiet = false, force = false } = {}) {
+  if (!canView()) return;
+  if (state.boardBusy && !force) return;
   state.boardBusy = true;
   if (!quiet) setStatus("Loading board…");
   try {
-    const result = await api(`/v1/order-monitor?${boardQueryString()}`);
+    const result = await api(`/v1/order-monitor?${boardQueryString()}`, { timeoutMs: 12000 });
     if (result.status === 401) {
       showLogin("Sign in to view orders.");
       return;
@@ -151,11 +170,19 @@ async function loadBoard({ quiet = false } = {}) {
     $("board-page-prev").disabled = data.page <= 1;
     $("board-page-next").disabled = data.page * data.pageSize >= data.total;
     if (!quiet) setStatus("");
+    else if (state._boardStatusWasError) setStatus("");
+    state._boardStatusWasError = false;
   } catch {
-    setStatus("Connection lost. Try again.");
+    state._boardStatusWasError = true;
+    setStatus("Connection lost. Reconnecting when the network is back…");
   } finally {
     state.boardBusy = false;
   }
+}
+
+function reconnectBoard() {
+  if (state.view !== "board" || !canView() || document.hidden) return;
+  void loadBoard({ quiet: true, force: true });
 }
 
 function canView() {
@@ -678,6 +705,10 @@ window.setInterval(() => {
   if (state.view !== "board" || !canView() || document.hidden) return;
   void loadBoard({ quiet: true });
 }, 8000);
+window.addEventListener("online", reconnectBoard);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) reconnectBoard();
+});
 $("orders-list").addEventListener("click", (event) => {
   const edit = event.target.closest("[data-edit]");
   if (edit) {
