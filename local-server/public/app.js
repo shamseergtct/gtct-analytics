@@ -4489,7 +4489,9 @@ function renderInstrChips() {
         state.selectedMod = m;
         state.selectedTargets = [];
         setKitchenStep(2);
-        showInstrFeedback(`Tap what to ${String(m).toLowerCase()}`);
+        showInstrFeedback(
+          `Tap one or more for ${String(m).toLowerCase()}, then Done`
+        );
       });
       modHost.appendChild(btn);
     }
@@ -4513,15 +4515,35 @@ function renderInstrChips() {
     return;
   }
 
-  // Step 2: tap one ingredient → add "<Action> <Ingredient>" and return to step 1.
+  // Step 2: tap several ingredients, then Done → "No Ketchup, Onion and Filfil".
+  const selected = new Set(
+    (state.selectedTargets || []).map((x) => String(x).trim().toLowerCase())
+  );
   for (const t of targets) {
+    const key = String(t).trim().toLowerCase();
+    const on = selected.has(key);
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = "chip kitchen-choice";
-    btn.textContent = t;
+    btn.className = `chip kitchen-choice${on ? " is-selected" : ""}`;
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.innerHTML = on
+      ? `<span class="kitchen-choice-check" aria-hidden="true">✓</span><span>${escapeHtml(t)}</span>`
+      : escapeHtml(t);
     btn.addEventListener("click", () => {
-      state.selectedTargets = [t];
-      addInstruction();
+      const next = [...(state.selectedTargets || [])];
+      const idx = next.findIndex(
+        (x) => String(x).trim().toLowerCase() === key
+      );
+      if (idx >= 0) next.splice(idx, 1);
+      else next.push(t);
+      state.selectedTargets = next;
+      renderInstrChips();
+      const count = next.length;
+      showInstrFeedback(
+        count
+          ? `${state.selectedMod} ${joinInstructionTargets(next)} — tap more or Done`
+          : `Tap one or more for ${String(state.selectedMod || "").toLowerCase()}`
+      );
     });
     targetHost.appendChild(btn);
   }

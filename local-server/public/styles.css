@@ -6336,6 +6336,12 @@ dialog[hidden] {
   font-weight: 900;
 }
 
+.kitchen-targets-ok {
+  margin-top: 12px;
+  min-height: 48px;
+  width: 100%;
+  max-width: 20rem;
+}
 .kitchen-targets-ok[hidden] {
   display: none !important;
 }
