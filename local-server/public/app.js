@@ -1530,6 +1530,33 @@ function cartLineNotePreview(line) {
   return bits.join(" · ");
 }
 
+function cartLineKitchenHtml(line) {
+  const kitchen = [...(line.instructions || [])].filter(Boolean);
+  const extras = (line.addons || [])
+    .map((a) => String(a?.name || "").trim())
+    .filter(Boolean);
+  const note = String(line.orderNote || "").trim();
+  const parts = [];
+  if (kitchen.length) {
+    parts.push(
+      `<span class="cart-line-note-label">Kitchen:</span> ${escapeHtml(kitchen.join(" · "))}`
+    );
+  }
+  if (extras.length) {
+    parts.push(
+      `<span class="cart-line-note-label">Extras:</span> ${escapeHtml(extras.join(" · "))}`
+    );
+  }
+  if (note) {
+    parts.push(
+      `<span class="cart-line-note-label">Note:</span> ${escapeHtml(note)}`
+    );
+  }
+  if (!parts.length) return "";
+  const title = cartLineNotePreview(line);
+  return `<p class="cart-line-note" title="${escapeHtml(title)}">${parts.join(" · ")}</p>`;
+}
+
 const SALES_TOOL_ICONS = {
   layout: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>',
   kb: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>',
@@ -3655,7 +3682,6 @@ function renderCart() {
     if (line.lineId === state.cartFocusLineId && state.cartFollowLatest) {
       el.classList.add("just-added");
     }
-    const notePreview = cartLineNotePreview(line);
     const unit = lineUnitCents(line);
     const lineTotal = formatPrice(unit * line.quantity);
     const nameHtml = escapeHtml(line.name);
@@ -3665,6 +3691,7 @@ function renderCart() {
       Number(line.priceCents) !== lineConfiguredPrice(line);
     const editHint =
       '<span class="cart-line-edit-hint" aria-hidden="true"><svg viewBox="0 0 20 20" width="14" height="14"><path fill="currentColor" d="M14.7 2.3a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4l-9.5 9.5-3.2.8a.5.5 0 0 1-.6-.6l.8-3.2 9.5-9.5z"/></svg></span>';
+    const noteHtml = cartLineKitchenHtml(line);
     el.innerHTML = `
       <div class="cart-line-row cart-line-row-primary">
         <span class="cart-line-title">
@@ -3675,11 +3702,7 @@ function renderCart() {
         </span>
         <strong class="cart-line-total">${lineTotal}</strong>
       </div>
-      ${
-        notePreview
-          ? `<p class="cart-line-note muted" title="${escapeHtml(notePreview)}">📝 ${escapeHtml(notePreview)}</p>`
-          : ""
-      }
+      ${noteHtml}
       <div class="cart-line-row cart-line-row-meta">
         <span class="cart-line-unit muted" title="${escapeHtml(formatPrice(unit))}">${formatPrice(unit)}</span>
         <div class="cart-line-toolbar">
