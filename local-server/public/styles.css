@@ -796,6 +796,33 @@ select {
   border-color: rgba(11, 83, 158, 0.28);
 }
 
+/* Main nav “Menu” (Setup + Delivery + Rider Cash — not settings-only). */
+.nav-menu-label-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 0 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--blue);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.nav-menu-label-btn:hover,
+.nav-pop[open] > .nav-menu-label-btn {
+  background: rgba(11, 83, 158, 0.08);
+  border-color: rgba(11, 83, 158, 0.28);
+}
+
+.nav-menu-label-btn span {
+  line-height: 1;
+}
+
 .nav-account-btn {
   display: inline-flex;
   align-items: center;
@@ -7598,15 +7625,99 @@ body.sales-app .menu-search-clear:hover {
   background: #d6dfea;
 }
 
-/* Tools: one quiet group; "on" = solid blue so the state is obvious */
+/* Tools row: subcategory context + compact Tools menu (Layout / Keyboard / Stock) */
 body.sales-app .sales-view-controls {
   display: inline-flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+body.sales-app .sales-folder-context {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+body.sales-app .sales-folder-context[hidden] {
+  display: none;
+}
+body.sales-app .sales-folder-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #142033;
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+body.sales-app .sales-tools-menu {
+  position: relative;
   flex: none;
-  gap: 4px;
-  padding: 3px;
+}
+body.sales-app .sales-tools-menu[hidden] {
+  display: none;
+}
+body.sales-app .sales-tools-menu > summary {
+  list-style: none;
+  cursor: pointer;
+}
+body.sales-app .sales-tools-menu > summary::-webkit-details-marker {
+  display: none;
+}
+body.sales-app .sales-tools-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 11rem;
+  padding: 6px;
   border: 1px solid #d3dce7;
   border-radius: 12px;
   background: #fff;
+  box-shadow: 0 10px 28px rgba(20, 32, 51, 0.14);
+}
+body.sales-app .sales-tools-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: #3b4a5e;
+  font-size: 0.86rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+body.sales-app .sales-tools-item svg {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+body.sales-app .sales-tools-item:hover {
+  background: #eef2f7;
+}
+body.sales-app .sales-tools-item.is-active,
+body.sales-app .sales-tools-item[aria-pressed="true"] {
+  background: #0b539e;
+  color: #fff;
 }
 body.sales-app .sales-view-btn {
   display: inline-flex;
@@ -7614,9 +7725,9 @@ body.sales-app .sales-view-btn {
   gap: 6px;
   min-height: 36px;
   padding: 0 10px;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
+  border: 1px solid #d3dce7;
+  border-radius: 10px;
+  background: #fff;
   color: #3b4a5e;
   font-size: 0.82rem;
   font-weight: 600;
@@ -7636,11 +7747,17 @@ body.sales-app .sales-view-btn svg {
   stroke-linecap: round;
   stroke-linejoin: round;
 }
+body.sales-app .sales-tools-summary svg {
+  fill: currentColor;
+  stroke: none;
+}
 body.sales-app .sales-view-btn:hover {
   background: #eef2f7;
 }
 body.sales-app .sales-view-btn.is-active,
-body.sales-app .sales-view-btn[aria-pressed="true"] {
+body.sales-app .sales-view-btn[aria-pressed="true"],
+body.sales-app .sales-tools-menu[open] > .sales-tools-summary,
+body.sales-app .sales-tools-summary.is-active {
   background: #0b539e;
   border-color: #0b539e;
   color: #fff;
@@ -7846,12 +7963,8 @@ body.sales-app .menu-empty strong {
     padding: 0 11px;
     font-size: 0.84rem;
   }
-  body.sales-app .sales-view-controls {
-    padding: 2px;
-  }
-  body.sales-app #sales-stock-btn {
-    height: 40px;
-    padding: 0 10px;
+  body.sales-app .sales-folder-title {
+    font-size: 0.88rem;
   }
   body.sales-app .menu-search-info {
     font-size: 0.84rem;
@@ -7982,34 +8095,25 @@ body.sales-app .mcard.is-folder.is-all {
   border-color: #b9c8da;
 }
 
-/* "◀ Back  Sandwiches › Burgers" line while a subcategory card is open */
-body.sales-app .menu-folder-bar {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: 44px;
-}
-body.sales-app .menu-folder-bar[hidden],
-body.sales-app .pane-toolbar.is-searching .menu-folder-bar {
-  display: none;
-}
+/* Back control shared by the tools-row subcategory context */
 body.sales-app .menu-folder-back {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-height: 40px;
-  padding: 0 14px 0 8px;
+  min-height: 36px;
+  padding: 0 12px 0 8px;
   border: 1px solid #d3dce7;
   border-radius: 10px;
   background: #fff;
   color: #0b539e;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   font-weight: 700;
   cursor: pointer;
+  flex: none;
 }
 body.sales-app .menu-folder-back svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2.4;
@@ -8019,41 +8123,9 @@ body.sales-app .menu-folder-back svg {
 body.sales-app .menu-folder-back:hover {
   background: #f2f6fb;
 }
-body.sales-app .menu-folder-path {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  font-size: 0.95rem;
-}
-body.sales-app .menu-folder-up {
-  padding: 6px 4px;
-  border: 0;
-  background: none;
-  color: #4d5c70;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-body.sales-app .menu-folder-up:hover {
-  color: #0b539e;
-  text-decoration: underline;
-}
-body.sales-app .menu-folder-sep {
-  color: #9aa7b8;
-}
-body.sales-app .menu-folder-path strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #142033;
-}
-
-@media (max-width: 599px) {
-
-  body.sales-app .menu-folder-bar {
-    min-height: 40px;
-  }
+body.sales-app .menu-folder-bar,
+body.sales-app .pane-toolbar.is-searching .menu-folder-bar {
+  display: none !important;
 }
 
 /* Quantity −/+ : no text highlight on fast taps; "−" greys out at 1 (use the bin to remove) */

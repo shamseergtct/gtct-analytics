@@ -1594,29 +1594,81 @@ function ensureSalesViewControls() {
   const host = document.querySelector(".sales-view-controls");
   if (!host) return;
 
+  // Left: Back + subcategory title (reuses the tools row instead of an extra line).
+  let folderCtx = $("sales-folder-context");
+  if (!folderCtx) {
+    folderCtx = document.createElement("div");
+    folderCtx.id = "sales-folder-context";
+    folderCtx.className = "sales-folder-context";
+    folderCtx.hidden = true;
+    host.appendChild(folderCtx);
+  }
+
+  // When finishing layout edit, keep Done as a top-level control (not buried in the menu).
+  let doneBtn = $("sales-layout-done-btn");
+  if (state.layoutEditMode && canEditMenuLayout()) {
+    if (!doneBtn) {
+      doneBtn = document.createElement("button");
+      doneBtn.type = "button";
+      doneBtn.id = "sales-layout-done-btn";
+      doneBtn.className = "btn ghost small sales-view-btn is-active";
+      doneBtn.textContent = "Done";
+      doneBtn.title = "Finish layout editing";
+      doneBtn.addEventListener("click", () => setLayoutEditMode(false));
+      host.appendChild(doneBtn);
+    }
+    doneBtn.hidden = false;
+  } else if (doneBtn) {
+    doneBtn.hidden = true;
+  }
+
+  // Right: Layout / Keyboard / Stock live in one compact menu.
+  let toolsMenu = $("sales-tools-menu");
+  if (!toolsMenu) {
+    toolsMenu = document.createElement("details");
+    toolsMenu.id = "sales-tools-menu";
+    toolsMenu.className = "sales-tools-menu";
+    toolsMenu.innerHTML = `
+      <summary class="sales-view-btn sales-tools-summary" aria-label="Sales tools">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>
+        <span>Tools</span>
+      </summary>
+      <div class="sales-tools-dropdown" role="menu"></div>`;
+    host.appendChild(toolsMenu);
+    toolsMenu.addEventListener("toggle", () => {
+      if (!toolsMenu.open) return;
+      const close = (event) => {
+        if (toolsMenu.contains(event.target)) return;
+        toolsMenu.open = false;
+        document.removeEventListener("pointerdown", close, true);
+      };
+      document.addEventListener("pointerdown", close, true);
+    });
+  }
+  const menuBody = toolsMenu.querySelector(".sales-tools-dropdown");
+  toolsMenu.hidden = Boolean(state.layoutEditMode);
+
   let layoutBtn = $("sales-layout-btn");
   if (canEditMenuLayout()) {
     if (!layoutBtn) {
       layoutBtn = document.createElement("button");
       layoutBtn.type = "button";
       layoutBtn.id = "sales-layout-btn";
-      layoutBtn.className = "btn ghost small sales-view-btn sales-layout-btn";
+      layoutBtn.className = "sales-tools-item";
+      layoutBtn.setAttribute("role", "menuitem");
       layoutBtn.innerHTML = `${SALES_TOOL_ICONS.layout}<span class="sales-layout-label">Layout</span>`;
       layoutBtn.title = "Edit menu layout";
       layoutBtn.addEventListener("click", () => {
+        toolsMenu.open = false;
         setLayoutEditMode(!state.layoutEditMode);
       });
-      host.appendChild(layoutBtn);
+      menuBody.appendChild(layoutBtn);
     }
     layoutBtn.hidden = false;
     layoutBtn.setAttribute("aria-pressed", state.layoutEditMode ? "true" : "false");
     layoutBtn.classList.toggle("is-active", Boolean(state.layoutEditMode));
-    layoutBtn.querySelector(".sales-layout-label").textContent = state.layoutEditMode
-      ? "Done"
-      : "Layout";
-    layoutBtn.title = state.layoutEditMode
-      ? "Finish layout editing"
-      : "Edit menu layout (hold and drag)";
+    layoutBtn.querySelector(".sales-layout-label").textContent = "Layout";
+    layoutBtn.title = "Edit menu layout (hold and drag)";
   } else if (layoutBtn) {
     layoutBtn.hidden = true;
     if (state.layoutEditMode) setLayoutEditMode(false);
@@ -1627,7 +1679,8 @@ function ensureSalesViewControls() {
     vkBtn = document.createElement("button");
     vkBtn.type = "button";
     vkBtn.id = "sales-vk-btn";
-    vkBtn.className = "btn ghost small sales-view-btn";
+    vkBtn.className = "sales-tools-item";
+    vkBtn.setAttribute("role", "menuitem");
     vkBtn.innerHTML = `${SALES_TOOL_ICONS.kb}<span>Keyboard</span>`;
     vkBtn.title = "Show on-screen keyboard for search and entry fields";
     vkBtn.addEventListener("click", () => {
@@ -1642,15 +1695,16 @@ function ensureSalesViewControls() {
       }
       state.virtualKeyboard?.setEnabled(state.virtualKeyboardOn);
       ensureSalesViewControls();
+      toolsMenu.open = false;
       setStatus(
         state.virtualKeyboardOn
           ? "On-screen keyboard on — tap a field to type."
           : "On-screen keyboard off."
       );
     });
-    host.appendChild(vkBtn);
+    menuBody.appendChild(vkBtn);
   }
-  vkBtn.hidden = Boolean(state.layoutEditMode);
+  vkBtn.hidden = false;
   vkBtn.setAttribute("aria-pressed", state.virtualKeyboardOn ? "true" : "false");
   vkBtn.classList.toggle("is-active", Boolean(state.virtualKeyboardOn));
 
@@ -1659,7 +1713,8 @@ function ensureSalesViewControls() {
     btn = document.createElement("button");
     btn.type = "button";
     btn.id = "sales-stock-btn";
-    btn.className = "btn ghost small sales-view-btn";
+    btn.className = "sales-tools-item";
+    btn.setAttribute("role", "menuitem");
     btn.innerHTML = `${SALES_TOOL_ICONS.stock}<span>Stock</span>`;
     btn.title = "Stock mode: mark items sold out / available";
     btn.addEventListener("click", () => {
@@ -1667,13 +1722,22 @@ function ensureSalesViewControls() {
       state.stockMode = !state.stockMode;
       btn.setAttribute("aria-pressed", state.stockMode ? "true" : "false");
       btn.classList.toggle("is-active", Boolean(state.stockMode));
+      toolsMenu.open = false;
       renderMenu();
+      ensureSalesViewControls();
     });
-    host.appendChild(btn);
+    menuBody.appendChild(btn);
   }
-  btn.hidden = Boolean(state.layoutEditMode);
+  btn.hidden = false;
   btn.setAttribute("aria-pressed", state.stockMode ? "true" : "false");
   btn.classList.toggle("is-active", Boolean(state.stockMode));
+
+  const summary = toolsMenu.querySelector(".sales-tools-summary");
+  if (summary) {
+    summary.classList.toggle("is-active", Boolean(state.virtualKeyboardOn || state.stockMode));
+  }
+
+  renderFolderBar();
 }
 
 function ensureStockModeControl() {
@@ -1887,38 +1951,38 @@ function subcategoryRecord(category, name) {
   );
 }
 
-/** "◀ Back  Sandwiches › Burgers" line shown while inside a subcategory card. */
+/** Back + subcategory title in the tools row (no extra line; category chip already shows parent). */
 function renderFolderBar() {
-  let bar = $("menu-folder-bar");
+  // Remove the old full-width breadcrumb row if a previous build left it in the DOM.
+  const legacy = $("menu-folder-bar");
+  if (legacy) legacy.remove();
+
+  const folderCtx = $("sales-folder-context");
+  if (!folderCtx) return;
+
   const inside =
     subcategoryCardsMode() && state.category !== "ALL" && state.subcategory !== "ALL";
   if (!inside) {
-    if (bar) bar.hidden = true;
+    folderCtx.hidden = true;
+    folderCtx.innerHTML = "";
     return;
   }
-  if (!bar) {
-    bar = document.createElement("div");
-    bar.id = "menu-folder-bar";
-    bar.className = "menu-folder-bar";
-    $("subcategory-filters")?.after(bar);
-  }
-  bar.hidden = false;
-  const here = state.subcategory === ALL_IN_CATEGORY ? "All items" : titleCaseLabel(state.subcategory);
-  bar.innerHTML = `<button type="button" class="menu-folder-back" aria-label="Back to ${escapeHtml(titleCaseLabel(state.category))}">
+
+  const here =
+    state.subcategory === ALL_IN_CATEGORY
+      ? "All items"
+      : titleCaseLabel(state.subcategory);
+  folderCtx.hidden = false;
+  folderCtx.innerHTML = `<button type="button" class="menu-folder-back" aria-label="Back to ${escapeHtml(titleCaseLabel(state.category))}">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg><span>Back</span></button>
-    <nav class="menu-folder-path" aria-label="You are here">
-      <button type="button" class="menu-folder-up">${escapeHtml(titleCaseLabel(state.category))}</button>
-      <span class="menu-folder-sep" aria-hidden="true">›</span>
-      <strong>${escapeHtml(here)}</strong>
-    </nav>`;
+    <strong class="sales-folder-title" title="${escapeHtml(here)}">${escapeHtml(here)}</strong>`;
   const goUp = () => {
     state.subcategory = "ALL";
     renderSubcategories();
     renderMenu();
     $("menu-grid")?.scrollTo?.({ top: 0 });
   };
-  bar.querySelector(".menu-folder-back").addEventListener("click", goUp);
-  bar.querySelector(".menu-folder-up").addEventListener("click", goUp);
+  folderCtx.querySelector(".menu-folder-back")?.addEventListener("click", goUp);
 }
 
 /** Folder cards for the open category (null when the grid should show items only). */
