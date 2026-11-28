@@ -66,31 +66,55 @@
       <main class="orders-page">
         <p id="orders-denied" class="error" hidden>You do not have permission to view orders.</p>
         <div id="orders-shell">
-          <section class="shift-bar" aria-label="Business shift" id="shift-bar">
-            <p id="shift-info" class="hint" aria-live="polite">Loading business shift…</p>
-            <div class="shift-actions" id="shift-actions" hidden>
-              <input id="shift-next-date" type="date" aria-label="Business date for next shift" hidden />
-              <button type="button" id="shift-open" class="btn ghost" hidden>Open Shift</button>
-              <button type="button" id="shift-close" class="btn ghost" hidden>Close Shift</button>
+          <div class="orders-chrome" aria-label="Orders controls">
+            <div class="orders-view-toggle" role="group" aria-label="Orders view">
+              <button type="button" id="view-list-btn" class="orders-view-btn" aria-pressed="true">List</button>
+              <button type="button" id="view-board-btn" class="orders-view-btn" aria-pressed="false">Board</button>
             </div>
-          </section>
-          <div class="orders-view-toggle" role="group" aria-label="Orders view">
-            <button type="button" id="view-list-btn" class="orders-view-btn" aria-pressed="true">List</button>
-            <button type="button" id="view-board-btn" class="orders-view-btn" aria-pressed="false">Board</button>
+            <section class="shift-bar" aria-label="Business shift" id="shift-bar">
+              <p id="shift-info" class="hint" aria-live="polite">Loading business shift…</p>
+              <div class="shift-actions" id="shift-actions" hidden>
+                <input id="shift-next-date" type="date" aria-label="Business date for next shift" hidden />
+                <button type="button" id="shift-open" class="btn ghost small" hidden>Open Shift</button>
+                <button type="button" id="shift-close" class="btn ghost small" hidden>Close Shift</button>
+              </div>
+            </section>
           </div>
           <div id="type-tabs" class="chips orders-type-tabs" role="tablist" aria-label="Order types"></div>
           <div class="orders-tools">
             <input id="order-search" type="search" placeholder="Search invoice, token, customer" aria-label="Search invoice, token or customer" />
-            <input id="order-date" type="date" aria-label="Order date" />
-            <button type="button" id="clear-filters" class="btn ghost">Clear</button>
+            <div class="orders-period-tools">
+              <label class="orders-sort-label" for="order-period">
+                Period
+                <select id="order-period" aria-label="Order period">
+                  <option value="shift" selected>Active shift</option>
+                  <option value="day">Single day</option>
+                  <option value="range">Date range</option>
+                </select>
+              </label>
+              <input id="order-date" type="date" aria-label="Order date" hidden />
+              <span id="order-range-fields" class="orders-range-fields" hidden>
+                <input id="order-date-from" type="date" aria-label="From date" />
+                <span class="orders-range-sep">to</span>
+                <input id="order-date-to" type="date" aria-label="To date" />
+              </span>
+              <button type="button" id="clear-filters" class="btn ghost">Clear</button>
+            </div>
           </div>
           <div id="delivery-tools" class="orders-tools" hidden>
+            <label class="orders-sort-label" for="delivery-sort">
+              Sort
+              <select id="delivery-sort" aria-label="Sort delivery orders">
+                <option value="token">Token number</option>
+                <option value="block-road">Block, then road</option>
+              </select>
+            </label>
             <input id="filter-block" type="text" placeholder="Block" aria-label="Block" />
             <input id="filter-road" type="text" placeholder="Road" aria-label="Road" />
             <input id="filter-building" type="text" placeholder="Building" aria-label="Building" />
             <div id="address-type-tabs" class="chips" role="tablist" aria-label="Address type"></div>
           </div>
-          <p id="orders-status" class="hint" aria-live="polite">Loading orders…</p>
+          <p id="orders-status" class="hint orders-status" aria-live="polite">Loading orders…</p>
           <div id="orders-list-panel">
             <div id="orders-list"></div>
             <div class="orders-pager">

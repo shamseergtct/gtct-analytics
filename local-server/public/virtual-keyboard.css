@@ -1,4 +1,4 @@
-/* On-screen keyboard / numpad for POS touch entry (iPad-style). */
+/* On-screen keyboard / numpad for POS touch entry — hug the keys, no empty tray. */
 .vk-panel {
   position: fixed;
   inset: auto 0 0 0;
@@ -18,8 +18,8 @@
   border: 0;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 8px calc(8px + env(safe-area-inset-bottom, 0px));
+  gap: 4px;
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 0px));
   background: #d5dae1;
   border-top: 1px solid #c2c8d0;
   box-shadow: 0 -10px 30px rgba(20, 32, 51, 0.16);
@@ -28,6 +28,7 @@
   touch-action: manipulation;
   font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   animation: vk-slide-up 0.16s ease-out;
+  box-sizing: border-box;
 }
 
 @keyframes vk-slide-up {
@@ -45,77 +46,40 @@
   display: none !important;
 }
 
-/* Top bar: what you are typing into + Clear + Hide */
-.vk-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  max-width: 1000px;
-  margin: 0 auto;
-  min-height: 40px;
-}
-
 .vk-title {
-  font-size: 0.9rem;
+  font-size: 0.85rem;
   font-weight: 700;
   color: #3b4656;
 }
 
-.vk-bar-actions {
-  display: inline-flex;
-  gap: 8px;
-}
-
-.vk-bar-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 40px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 10px;
-  background: #eef1f5;
-  color: #142033;
-  font: inherit;
-  font-size: 0.9rem;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.vk-bar-btn:active {
-  background: #fff;
-}
-
-/* Keys */
+/* Keys fill the panel edge-to-edge — no side gutters from max-width caps. */
 .vk-keys {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   width: 100%;
-  max-width: 1000px;
-  margin: 0 auto;
+  margin: 0;
+  box-sizing: border-box;
 }
 
 .vk-row {
   display: flex;
-  justify-content: center;
-  gap: 6px;
+  justify-content: stretch;
+  gap: 5px;
+  width: 100%;
 }
 
 .vk-key {
   flex: 1 1 0;
   min-width: 0;
-  max-width: 84px;
   height: 46px;
-  padding: 0 4px;
+  padding: 0 2px;
   border: 0;
-  border-radius: 10px;
+  border-radius: 8px;
   background: #fff;
   color: #142033;
   font: inherit;
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   font-weight: 500;
   box-shadow: 0 1px 0 rgba(20, 32, 51, 0.28);
   cursor: pointer;
@@ -129,21 +93,20 @@
 }
 
 .vk-row-digits .vk-key {
-  height: 38px;
-  font-size: 1.15rem;
+  height: 36px;
+  font-size: 1.05rem;
   background: #eef1f5;
 }
 
 .vk-key-action,
 .vk-key-muted {
   background: #b9c2ce;
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 600;
 }
 
 .vk-key-shift {
-  flex-grow: 1.5;
-  max-width: 132px;
+  flex: 1.45 1 0;
 }
 
 .vk-key-shift.is-on {
@@ -152,26 +115,23 @@
 }
 
 .vk-row-letters .vk-key-action:last-child {
-  flex-grow: 1.5;
-  max-width: 132px;
+  flex: 1.45 1 0;
 }
 
 .vk-key-wide {
-  flex-grow: 1.6;
-  max-width: 150px;
+  flex: 1.5 1 0;
 }
 
 .vk-key-space {
-  flex: 6 1 0;
-  max-width: 460px;
-  font-size: 1rem;
+  flex: 5 1 0;
+  font-size: 0.95rem;
   color: #3b4656;
 }
 
 .vk-key-done {
   background: #0b539e;
   color: #fff;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 
@@ -186,46 +146,139 @@
   background: transparent;
 }
 
-/* Number pad (prices, phone numbers) */
+/* Number pad fills the compact number tray. */
 .vk-numpad {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  max-width: 420px;
+  gap: 5px;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .vk-numpad .vk-key {
-  max-width: none;
   width: 100%;
-  height: 50px;
-  font-size: 1.5rem;
+  height: 48px;
+  font-size: 1.4rem;
 }
 
 .vk-numpad + .vk-row-bottom {
-  max-width: 420px;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
+}
+
+/* ABC → 123: classic number pad on the left, symbols beside it. */
+.vk-split-pad {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  gap: 8px;
+  width: 100%;
+  align-items: stretch;
+}
+
+.vk-split-pad .vk-numpad-main {
+  max-width: none;
+  width: 100%;
+  margin: 0;
+  gap: 5px;
+}
+
+.vk-symbol-side {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.vk-symbol-side-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  flex: 1 1 0;
+}
+
+.vk-symbol-side-row .vk-key {
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  min-height: 40px;
+  font-size: 1.15rem;
+}
+
+@media (max-width: 420px) {
+  .vk-split-pad {
+    grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+    gap: 6px;
+  }
+  .vk-symbol-side-row .vk-key {
+    min-height: 36px;
+    font-size: 1rem;
+  }
+}
+
+/* Text keyboard: full width on small screens; snug centred tray on large. */
+.vk-panel.vk-mode-text {
+  left: 0;
+  right: 0;
+  width: auto;
+}
+
+/* 123 split pad: wide enough for numpad + symbols side by side. */
+.vk-panel.vk-mode-symbols {
+  left: 50%;
+  right: auto;
+  width: min(560px, calc(100vw - 12px));
+  transform: translateX(-50%);
+  border-radius: 14px 14px 0 0;
+  border: 1px solid #c2c8d0;
+  border-bottom: 0;
+  animation: vk-slide-up-centered 0.16s ease-out;
+}
+
+/* Number / phone pad: shrink the tray to the pad — no empty grey wings. */
+.vk-panel.vk-mode-number,
+.vk-panel.vk-mode-decimal,
+.vk-panel.vk-mode-tel {
+  left: 50%;
+  right: auto;
+  width: min(340px, calc(100vw - 12px));
+  transform: translateX(-50%);
+  border-radius: 14px 14px 0 0;
+  border: 1px solid #c2c8d0;
+  border-bottom: 0;
+  animation: vk-slide-up-centered 0.16s ease-out;
 }
 
 /* Leave room for the keyboard so nothing useful hides behind it. */
 body.vk-open {
-  padding-bottom: var(--vk-h, 300px);
+  padding-bottom: var(--vk-h, 280px);
 }
 
 /* A dialog with the field being typed in moves up so it sits above the keyboard
    (it is not stretched; its own content scrolls). */
 dialog.vk-host[open] {
-  margin-bottom: calc(var(--vk-h, 300px) + 8px) !important;
-  max-height: calc(100vh - var(--vk-h, 300px) - 16px) !important;
-  max-height: calc(100dvh - var(--vk-h, 300px) - 16px) !important;
+  margin-bottom: calc(var(--vk-h, 280px) + 8px) !important;
+  max-height: calc(100vh - var(--vk-h, 280px) - 16px) !important;
+  max-height: calc(100dvh - var(--vk-h, 280px) - 16px) !important;
+}
+
+dialog.vk-host[open] .customize-scroll,
+dialog.vk-host[open] .review-dialog-inner,
+dialog.vk-host[open] .payment-body,
+dialog.vk-host[open] .unpaid-bill-body {
+  scroll-padding-bottom: 28px;
+  scroll-padding-top: 12px;
+}
+
+/* Keep focused fields clear of the keyboard overlay. */
+.vk-field-active {
+  scroll-margin-bottom: calc(var(--vk-h, 280px) + 20px);
+  scroll-margin-top: 16px;
 }
 
 body.vk-open .menu-grid,
 body.vk-open .ms-panel {
-  padding-bottom: calc(var(--vk-h, 300px) + 12px) !important;
-  scroll-padding-bottom: calc(var(--vk-h, 300px) + 12px);
+  padding-bottom: calc(var(--vk-h, 280px) + 12px) !important;
+  scroll-padding-bottom: calc(var(--vk-h, 280px) + 12px);
 }
 
 /* Sales screen: never shrink the whole screen (that left an empty strip and
@@ -235,7 +288,7 @@ body.sales-app.vk-open {
   padding-bottom: 0;
 }
 body.sales-app.vk-open .menu-grid {
-  padding-bottom: calc(var(--vk-h, 300px) + 12px) !important;
+  padding-bottom: calc(var(--vk-h, 280px) + 12px) !important;
 }
 
 /* While typing a search, show short cards (small picture strip) so the
@@ -254,17 +307,26 @@ body.sales-app.vk-open .mcard {
   height: auto !important;
 }
 
-/* On larger screens the keyboard is a compact centred tray, not full width. */
 @media (min-width: 900px) {
-  .vk-panel {
+  .vk-panel.vk-mode-text {
     left: 50%;
     right: auto;
-    width: min(820px, calc(100vw - 24px));
+    width: min(720px, calc(100vw - 24px));
     transform: translateX(-50%);
-    border-radius: 16px 16px 0 0;
+    border-radius: 14px 14px 0 0;
     border: 1px solid #c2c8d0;
     border-bottom: 0;
     animation: vk-slide-up-centered 0.16s ease-out;
+  }
+
+  .vk-panel.vk-mode-symbols {
+    width: min(620px, calc(100vw - 24px));
+  }
+
+  .vk-panel.vk-mode-number,
+  .vk-panel.vk-mode-decimal,
+  .vk-panel.vk-mode-tel {
+    width: min(360px, calc(100vw - 24px));
   }
 }
 
@@ -282,16 +344,28 @@ body.sales-app.vk-open .mcard {
 @media (max-width: 600px) {
   .vk-panel {
     padding-inline: 4px;
+    gap: 3px;
   }
-  .vk-row {
-    gap: 5px;
+  .vk-keys,
+  .vk-row,
+  .vk-numpad {
+    gap: 4px;
   }
   .vk-key {
     height: 44px;
     font-size: 1.05rem;
+    border-radius: 7px;
   }
   .vk-row-digits .vk-key {
-    height: 36px;
+    height: 34px;
+  }
+  .vk-numpad .vk-key {
+    height: 46px;
+  }
+  .vk-panel.vk-mode-number,
+  .vk-panel.vk-mode-decimal,
+  .vk-panel.vk-mode-tel {
+    width: min(320px, calc(100vw - 8px));
   }
 }
 
@@ -305,8 +379,17 @@ body.sales-app.vk-open .mcard {
 .vk-panel.vk-docked {
   right: auto;
   transform: none !important;
-  border-radius: 16px 16px 0 0;
+  border-radius: 14px 14px 0 0;
   border: 1px solid #c2c8d0;
   border-bottom: 0;
   animation-name: vk-slide-up;
+}
+
+.vk-panel.vk-docked.vk-mode-number,
+.vk-panel.vk-docked.vk-mode-decimal,
+.vk-panel.vk-docked.vk-mode-tel {
+  /* Still dock to the menu pane width when searching isn't involved. */
+  left: 50%;
+  transform: translateX(-50%) !important;
+  width: min(360px, calc(100% - 12px));
 }

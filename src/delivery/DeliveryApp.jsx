@@ -1951,6 +1951,7 @@ export default function DeliveryApp() {
           clientId={clientId}
           deliveryBoyId={deliveryBoyId}
           deliveryBoy={deliveryBoy}
+          businessDate={businessDate}
         />
       ) : (
         <>

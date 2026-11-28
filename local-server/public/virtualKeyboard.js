@@ -8,6 +8,14 @@ const LETTER_ROWS = [
   ["z", "x", "c", "v", "b", "n", "m"],
 ];
 
+/** Symbol keys beside the classic 3×3 number pad (ABC → 123). */
+const SYMBOL_SIDE_ROWS = [
+  ["+", "-", "#", "*"],
+  ["/", "=", "%", "@"],
+  ["&", "_", "(", ")"],
+  ["!", "?", ",", "'"],
+];
+
 const STATE = {
   enabled: true,
   target: null,
@@ -94,6 +102,7 @@ function modeTitle(mode) {
   if (mode === "tel") return "Phone pad";
   if (mode === "decimal") return "Number pad";
   if (mode === "number") return "Number pad";
+  if (mode === "symbols") return "Symbols";
   return "Keyboard";
 }
 
@@ -194,9 +203,40 @@ function ensureDom() {
   });
 }
 
+function escapeAttr(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function escapeHtmlLabel(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function keyButton(label, key, extraClass = "") {
   const cls = extraClass ? `vk-key ${extraClass}` : "vk-key";
-  return `<button type="button" class="${cls}" data-vk-key="${key}" aria-label="${label}">${label}</button>`;
+  return `<button type="button" class="${cls}" data-vk-key="${escapeAttr(key)}" aria-label="${escapeAttr(label)}">${escapeHtmlLabel(label)}</button>`;
+}
+
+function syncModeClass() {
+  const panel = STATE.panel;
+  if (!panel) return;
+  panel.classList.remove(
+    "vk-mode-text",
+    "vk-mode-number",
+    "vk-mode-decimal",
+    "vk-mode-tel",
+    "vk-mode-symbols"
+  );
+  // Symbols use the same full-width tray as the letter keyboard.
+  const mode =
+    STATE.mode === "symbols" || STATE.mode === "text" ? STATE.mode : STATE.mode;
+  panel.classList.add(`vk-mode-${mode === "symbols" ? "symbols" : mode}`);
 }
 
 function renderKeys() {
@@ -204,6 +244,7 @@ function renderKeys() {
   const host = STATE.keysHost;
   const mode = STATE.mode;
   STATE.titleEl.textContent = modeTitle(mode);
+  syncModeClass();
 
   if (mode === "tel" || mode === "number" || mode === "decimal") {
     const showDot = mode === "decimal";
@@ -222,6 +263,37 @@ function renderKeys() {
       </div>
       <div class="vk-row vk-row-bottom">
         ${keyButton("ABC", "mode-text", "vk-key-action")}
+        ${keyButton("Clear", "clear", "vk-key-action")}
+        ${keyButton("Done", "done", "vk-key-done vk-key-wide")}
+      </div>
+    `;
+    return;
+  }
+
+  if (mode === "symbols") {
+    const symbolRows = SYMBOL_SIDE_ROWS.map(
+      (row) =>
+        `<div class="vk-symbol-side-row">${row
+          .map((ch) => keyButton(ch, ch, "vk-key-muted"))
+          .join("")}</div>`
+    ).join("");
+    host.innerHTML = `
+      <div class="vk-split-pad" aria-label="Number pad and symbols">
+        <div class="vk-numpad vk-numpad-main">
+          ${[1, 2, 3, 4, 5, 6, 7, 8, 9]
+            .map((n) => keyButton(String(n), String(n)))
+            .join("")}
+          ${keyButton(".", ".", "vk-key-muted")}
+          ${keyButton("0", "0")}
+          ${keyButton("⌫", "backspace", "vk-key-action")}
+        </div>
+        <div class="vk-symbol-side" aria-label="Symbols">
+          ${symbolRows}
+        </div>
+      </div>
+      <div class="vk-row vk-row-bottom">
+        ${keyButton("ABC", "mode-text", "vk-key-action vk-key-wide")}
+        ${keyButton("space", "space", "vk-key-space")}
         ${keyButton("Clear", "clear", "vk-key-action")}
         ${keyButton("Done", "done", "vk-key-done vk-key-wide")}
       </div>
@@ -254,7 +326,7 @@ function renderKeys() {
     <div class="vk-row vk-row-digits">${digits}</div>
     ${rows}
     <div class="vk-row vk-row-bottom">
-      ${keyButton("123", "mode-num", "vk-key-action vk-key-wide")}
+      ${keyButton("123", "mode-symbols", "vk-key-action vk-key-wide")}
       ${keyButton("@", "@", "vk-key-muted")}
       ${keyButton("space", "space", "vk-key-space")}
       ${keyButton(".", ".", "vk-key-muted")}
@@ -292,11 +364,22 @@ function handleKey(key) {
   if (key === "mode-num") {
     STATE.mode = "decimal";
     renderKeys();
+    placePanel(el);
+    window.setTimeout(() => scrollTargetIntoView(el), 40);
+    return;
+  }
+  if (key === "mode-symbols") {
+    STATE.mode = "symbols";
+    renderKeys();
+    placePanel(el);
+    window.setTimeout(() => scrollTargetIntoView(el), 40);
     return;
   }
   if (key === "mode-text") {
     STATE.mode = "text";
     renderKeys();
+    placePanel(el);
+    window.setTimeout(() => scrollTargetIntoView(el), 40);
     return;
   }
   let text = key;
@@ -391,30 +474,89 @@ function scrollableParent(el) {
 }
 
 /**
- * Keep the field visible above the keyboard. Search boxes go near the top so
- * the results under them stay in view; other fields only move if covered.
+ * Keep the focused field fully above the keyboard — never covered.
+ * Search boxes go near the top so results under them stay in view.
  */
 function scrollTargetIntoView(el) {
   if (!el) return;
   syncKeyboardSpace();
-  const rect = el.getBoundingClientRect();
-  const visibleBottom = window.innerHeight - keyboardHeight() - 12;
+  el.classList.add("vk-field-active");
+  const kb = keyboardHeight();
+  const margin = 16;
+  const visibleBottom = window.innerHeight - kb - margin;
+  const visibleTop = 8;
   const isSearch =
     String(el.type || "").toLowerCase() === "search" ||
     String(el.getAttribute("data-vk") || "").toLowerCase() === "search";
-  let delta = 0;
-  if (isSearch && rect.top > 96) delta = rect.top - 96;
-  else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
-  else if (rect.top < 8) delta = rect.top - 8;
-  if (!delta) return;
-  const scroller = scrollableParent(el);
-  scroller.scrollBy({ top: delta, behavior: "smooth" });
-  if (scroller !== document.scrollingElement) {
-    window.setTimeout(() => {
-      const r = el.getBoundingClientRect();
-      const vb = window.innerHeight - keyboardHeight() - 12;
-      if (r.bottom > vb) window.scrollBy({ top: r.bottom - vb, behavior: "smooth" });
-    }, 250);
+
+  const nudge = () => {
+    const scroller = scrollableParent(el);
+    const rect = el.getBoundingClientRect();
+    let delta = 0;
+    if (isSearch && rect.top > 96) delta = rect.top - 96;
+    else if (rect.bottom > visibleBottom) delta = rect.bottom - visibleBottom;
+    else if (rect.top < visibleTop) delta = rect.top - visibleTop;
+    if (delta) scroller.scrollBy({ top: delta, behavior: "auto" });
+
+    // Prefer keeping the field in view inside nested dialog scrollers first.
+    try {
+      el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
+    } catch {
+      /* ignore */
+    }
+
+    // Always re-check against the keyboard top — never leave the field covered.
+    const r2 = el.getBoundingClientRect();
+    const s2 = scrollableParent(el);
+    if (r2.bottom > visibleBottom) {
+      s2.scrollBy({ top: r2.bottom - visibleBottom + 8, behavior: "auto" });
+    }
+    const r3 = el.getBoundingClientRect();
+    if (r3.top < visibleTop) {
+      s2.scrollBy({ top: r3.top - visibleTop - 8, behavior: "auto" });
+    }
+    return true;
+  };
+
+  nudge();
+  window.requestAnimationFrame(() => {
+    syncKeyboardSpace();
+    nudge();
+  });
+  window.setTimeout(() => {
+    syncKeyboardSpace();
+    nudge();
+  }, 80);
+  window.setTimeout(() => {
+    syncKeyboardSpace();
+    nudge();
+  }, 200);
+}
+
+/** Price / qty / phone values select on open so typing replaces; tap again to place caret. */
+function shouldSelectAllOnOpen(el, mode) {
+  if (el?.getAttribute?.("data-vk-select") === "off") return false;
+  if (el?.getAttribute?.("data-vk-select") === "on") return true;
+  if (mode === "decimal" || mode === "number" || mode === "tel") return true;
+  const id = String(el?.id || "").toLowerCase();
+  const cls = String(el?.className || "").toLowerCase();
+  if (/price|qty|quantity|amount|cash|bank|credit|charge|rate|phone|tel/.test(id)) {
+    return true;
+  }
+  if (/price|qty|amount|cash|bank|credit/.test(cls)) return true;
+  return false;
+}
+
+function selectValueForReplace(el) {
+  if (!el || !String(el.value || "")) return;
+  try {
+    el.select();
+  } catch {
+    try {
+      el.setSelectionRange(0, String(el.value).length);
+    } catch {
+      /* some input types ignore selection */
+    }
   }
 }
 
@@ -427,13 +569,14 @@ function restoreInputMode(el, saved) {
 function showKeyboard(el) {
   if (!STATE.enabled || !isEditableInput(el)) return;
   ensureDom();
+  const sameField = STATE.target === el && STATE.panel && !STATE.panel.hidden;
   if (STATE.target && STATE.target !== el) {
+    STATE.target.classList?.remove?.("vk-field-active");
     restoreInputMode(STATE.target, STATE.savedInputMode);
     STATE.savedInputMode = null;
   }
-  const switching = STATE.target === el;
   STATE.target = el;
-  if (!switching) {
+  if (!sameField) {
     STATE.mode = detectMode(el);
     STATE.shift = false;
     STATE.caps = false;
@@ -446,7 +589,14 @@ function showKeyboard(el) {
   bringPanelToFront(el);
   placePanel(el);
   document.body.classList.add("vk-open");
-  window.setTimeout(() => scrollTargetIntoView(el), 50);
+  // First open of this field: select current value so new digits replace it.
+  // A second tap on the same open field keeps the caret (allows deselect/edit).
+  if (!sameField && shouldSelectAllOnOpen(el, STATE.mode)) {
+    window.setTimeout(() => {
+      if (STATE.target === el) selectValueForReplace(el);
+    }, 0);
+  }
+  window.setTimeout(() => scrollTargetIntoView(el), 40);
 }
 
 function hideKeyboard({ blur = false } = {}) {
@@ -455,6 +605,7 @@ function hideKeyboard({ blur = false } = {}) {
   const saved = STATE.savedInputMode;
   STATE.target = null;
   STATE.savedInputMode = null;
+  target?.classList?.remove?.("vk-field-active");
   restoreInputMode(target, saved);
   if (STATE.panel) {
     STATE.panel.hidden = true;

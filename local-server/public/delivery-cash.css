@@ -174,13 +174,88 @@
 .cash-metric strong { display:block; font-size:.95rem; color:#152841; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .cash-metric small { display:block; margin-top:3px; font-size:.7rem; color:#8092a6; }
 .cash-heading-right { display:flex; align-items:end; gap:10px; flex-wrap:wrap; }
+.cash-panel-sub {
+  margin:4px 0 0;
+  font-size:.78rem;
+  font-weight:600;
+  color:#7a8ea3;
+}
+.cash-history-toolbar {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:end;
+  gap:10px 12px;
+  padding:12px 16px;
+  border-bottom:1px solid var(--line);
+  background:#f7fafd;
+}
+.cash-history-toolbar .cash-date-pill input,
+.cash-history-toolbar .cash-date-pill select,
+.cash-history-toolbar .btn {
+  box-sizing:border-box;
+  height:48px;
+  min-height:48px;
+  min-width:11rem;
+  border:1px solid #d5e1ef;
+  border-radius:999px;
+  padding:0 1rem;
+  background:#fff;
+  color:var(--ink);
+  text-transform:none;
+  letter-spacing:normal;
+  font:inherit;
+  font-weight:650;
+  font-size:.95rem;
+  line-height:1.2;
+}
+.cash-history-toolbar .cash-date-pill select {
+  -webkit-appearance:none;
+  appearance:none;
+  padding-right:2.4rem;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%235a6574' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 0.9rem center;
+  background-size:14px 14px;
+  cursor:pointer;
+}
+.cash-history-toolbar .btn {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--blue);
+  cursor:pointer;
+}
 .cash-date-pill {
   display:grid; gap:4px; font-size:.68rem; font-weight:750; letter-spacing:.04em;
   text-transform:uppercase; color:#6a7f96;
 }
+.cash-date-range {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:nowrap;
+}
+.cash-range-sep {
+  flex:0 0 auto;
+  font-size:.82rem;
+  font-weight:700;
+  letter-spacing:normal;
+  text-transform:none;
+  color:#6a7f96;
+}
 .cash-date-pill input {
-  min-height:38px; border:1px solid #d5e1ef; border-radius:9px; padding:6px 10px;
-  background:#fff; color:var(--ink); text-transform:none; letter-spacing:normal; font-weight:600;
+  min-height:44px;
+  min-width:10.5rem;
+  border:1px solid #d5e1ef;
+  border-radius:999px;
+  padding:6px 12px;
+  background:#fff;
+  color:var(--ink);
+  text-transform:none;
+  letter-spacing:normal;
+  font-weight:650;
+  font-size:.95rem;
+  box-sizing:border-box;
 }
 .cash-collect-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px 12px; margin-bottom:12px; }
 .cash-form-grid { margin-top:14px; }

@@ -112,6 +112,20 @@ export function listDeliveryCashHandovers(shopId, actor) {
     JOIN orders o ON o.order_id=h.order_id AND o.tenant_id=h.shop_id
     LEFT JOIN staff_users u ON u.shop_id=h.shop_id AND u.user_id=h.driver_user_id
     WHERE h.shop_id=? ORDER BY h.created_at DESC LIMIT 100`).all(shopId);
+  const deliveredBusinessDates = db.prepare(`SELECT DISTINCT o.business_date AS d
+    FROM orders o
+    JOIN delivery_order_lifecycle l
+      ON l.shop_id=o.tenant_id AND l.order_id=o.order_id AND l.status='DELIVERED'
+    WHERE o.tenant_id=? AND o.is_test=1 AND o.status='OPEN'
+      AND o.fulfillment_behavior='DELIVERY'
+      AND o.business_date IS NOT NULL AND o.business_date!=''
+    ORDER BY o.business_date DESC
+    LIMIT 120`).all(shopId).map((row) => row.d).filter(Boolean);
+  const settlementDates = db.prepare(`SELECT DISTINCT business_date AS d
+    FROM delivery_rider_net_settlements
+    WHERE shop_id=? AND business_date IS NOT NULL AND business_date!=''
+    ORDER BY business_date DESC
+    LIMIT 120`).all(shopId).map((row) => row.d).filter(Boolean);
   return {
     riders: riders.map(r=>({userId:r.user_id,fullName:r.full_name,
       isActive:Boolean(r.is_active)})),
@@ -144,6 +158,8 @@ export function listDeliveryCashHandovers(shopId, actor) {
       allocationId:r.allocation_id,confirmedByUserId:r.cashier_user_id,
       confirmedAt:r.created_at,customerName:r.customer_name||null,blockNumber:r.block_number||null,
       deliveryChargeMinor:Number(r.delivery_charge_cents||0),commissionMinor:0})),
+    deliveredBusinessDates,
+    settlementDates,
     note:'TEST ONLY — full delivered-order cash handover. Commission is not deducted.',
   };
 }

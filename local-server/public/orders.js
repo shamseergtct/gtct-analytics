@@ -15,6 +15,10 @@ const state = {
   behavior: "",
   orderTypeId: "",
   addressLabel: "",
+  /** Delivery only: "token" | "block-road" */
+  deliverySort: "token",
+  /** "shift" | "day" | "range" — default active shift */
+  period: "shift",
   register: null,
   boardBusy: false,
   expandedOrderIds: new Set(),
@@ -96,8 +100,22 @@ function applyViewChrome() {
   $("view-board-btn")?.classList.toggle("is-active", isBoard);
   if ($("orders-list-panel")) $("orders-list-panel").hidden = isBoard;
   if ($("orders-board-panel")) $("orders-board-panel").hidden = !isBoard;
-  if ($("delivery-tools")) {
-    $("delivery-tools").hidden = isBoard || state.behavior !== "DELIVERY";
+  syncDeliveryTools();
+}
+
+function syncDeliveryTools() {
+  const tools = $("delivery-tools");
+  if (!tools) return;
+  const delivery = state.behavior === "DELIVERY";
+  tools.hidden = !delivery;
+  tools.classList.toggle("delivery-tools-board", delivery && state.view === "board");
+  const sort = $("delivery-sort");
+  if (sort) sort.value = state.deliverySort === "block-road" ? "block-road" : "token";
+  // Block/road/building filters are list-oriented; keep them for list view.
+  for (const id of ["filter-block", "filter-road", "filter-building", "address-type-tabs"]) {
+    const el = $(id);
+    if (!el) continue;
+    el.hidden = state.view === "board";
   }
 }
 
@@ -113,16 +131,43 @@ function refreshCurrentView() {
   return loadOrders();
 }
 
+function appendPeriodParams(params) {
+  const period = state.period === "day" || state.period === "range" ? state.period : "shift";
+  params.set("period", period);
+  if (period === "day") {
+    const date = $("order-date")?.value || "";
+    if (date) params.set("date", date);
+  } else if (period === "range") {
+    const from = $("order-date-from")?.value || "";
+    const to = $("order-date-to")?.value || "";
+    if (from) params.set("dateFrom", from);
+    if (to) params.set("dateTo", to);
+  }
+}
+
+function syncPeriodUi() {
+  const period = state.period === "day" || state.period === "range" ? state.period : "shift";
+  state.period = period;
+  const select = $("order-period");
+  if (select) select.value = period;
+  const day = $("order-date");
+  const range = $("order-range-fields");
+  if (day) day.hidden = period !== "day";
+  if (range) range.hidden = period !== "range";
+}
+
 function boardQueryString() {
   const params = new URLSearchParams();
   params.set("page", String(state.boardPage));
   params.set("pageSize", "60");
   if (state.behavior) params.set("behavior", state.behavior);
   if (state.orderTypeId) params.set("orderTypeId", state.orderTypeId);
+  if (state.behavior === "DELIVERY") {
+    params.set("sort", state.deliverySort === "block-road" ? "block-road" : "token");
+  }
   const q = $("order-search").value.trim();
-  const date = $("order-date").value;
   if (q) params.set("q", q);
-  if (date) params.set("date", date);
+  appendPeriodParams(params);
   return params.toString();
 }
 
@@ -136,7 +181,26 @@ function boardCtx() {
     expandedOrderIds: state.expandedOrderIds,
     api: boardApi,
     onRefresh: loadBoard,
+    sortMode:
+      state.behavior === "DELIVERY" && state.deliverySort === "block-road"
+        ? "block-road"
+        : "token",
   };
+}
+
+function periodStatusHint(data) {
+  if (state.period === "shift") {
+    if (!state.activeShift) return "No active shift — open a shift, or choose Single day / Date range.";
+    if (!(data?.total > 0)) return `Active shift ${state.activeShift.businessDate} — no orders yet.`;
+    return "";
+  }
+  if (state.period === "day" && !$("order-date")?.value) {
+    return "Choose a day to show orders.";
+  }
+  if (state.period === "range" && (!$("order-date-from")?.value || !$("order-date-to")?.value)) {
+    return "Choose a from and to date.";
+  }
+  return "";
 }
 
 async function loadBoard({ quiet = false, force = false } = {}) {
@@ -169,8 +233,9 @@ async function loadBoard({ quiet = false, force = false } = {}) {
       : "No orders";
     $("board-page-prev").disabled = data.page <= 1;
     $("board-page-next").disabled = data.page * data.pageSize >= data.total;
-    if (!quiet) setStatus("");
-    else if (state._boardStatusWasError) setStatus("");
+    const hint = periodStatusHint(data);
+    if (!quiet) setStatus(hint);
+    else if (state._boardStatusWasError) setStatus(hint);
     state._boardStatusWasError = false;
   } catch {
     state._boardStatusWasError = true;
@@ -304,10 +369,10 @@ function queryString() {
   if (state.behavior) params.set("behavior", state.behavior);
   if (state.orderTypeId) params.set("orderTypeId", state.orderTypeId);
   const q = $("order-search").value.trim();
-  const date = $("order-date").value;
   if (q) params.set("q", q);
-  if (date) params.set("date", date);
+  appendPeriodParams(params);
   if (state.behavior === "DELIVERY") {
+    params.set("sort", state.deliverySort === "block-road" ? "block-road" : "token");
     const block = $("filter-block").value.trim();
     const road = $("filter-road").value.trim();
     const building = $("filter-building").value.trim();
@@ -330,9 +395,7 @@ function renderTabs() {
     const selected = tab.behavior === state.behavior && tab.orderTypeId === state.orderTypeId;
     return `<button type="button" class="chip" role="tab" aria-selected="${selected}" data-behavior="${escapeHtml(tab.behavior)}" data-type="${escapeHtml(tab.orderTypeId)}">${escapeHtml(tab.name)}</button>`;
   }).join("");
-  if ($("delivery-tools")) {
-    $("delivery-tools").hidden = state.view === "board" || state.behavior !== "DELIVERY";
-  }
+  syncDeliveryTools();
   const labels = ["", ...(state.register?.addressLabels || [])];
   if ($("address-type-tabs")) {
     $("address-type-tabs").innerHTML = labels.map((label) => {
@@ -411,6 +474,31 @@ function renderDelivery(groups) {
   return sections + incomplete;
 }
 
+function renderTypeBlocks(orders) {
+  const byType = new Map();
+  for (const order of orders) {
+    const key = String(order.fulfillmentBehavior || order.orderTypeName || "OTHER").toUpperCase();
+    if (!byType.has(key)) byType.set(key, []);
+    byType.get(key).push(order);
+  }
+  const typeOrder = ["DELIVERY", "TAKEAWAY", "COUNTER", "TABLE", "CAR_HOP"];
+  const keys = [...byType.keys()].sort((a, b) => {
+    const ia = typeOrder.indexOf(a);
+    const ib = typeOrder.indexOf(b);
+    if (ia === -1 && ib === -1) return a.localeCompare(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  });
+  return keys
+    .map((key) => {
+      const rows = byType.get(key);
+      const title = key.replaceAll("_", " ");
+      return `<section class="orders-type-block"><h2 class="orders-type-heading">${escapeHtml(title)} · ${rows.length}</h2>${renderCards(rows)}${renderTable(rows)}</section>`;
+    })
+    .join("");
+}
+
 function renderList() {
   const register = state.register;
   if (!register) return;
@@ -422,14 +510,20 @@ function renderList() {
   $("page-prev").disabled = register.page <= 1;
   $("page-next").disabled = register.page * register.pageSize >= register.total;
   if (!orders.length) {
-    $("orders-list").innerHTML = `<p class="hint">No accepted orders match these filters.</p>`;
-    setStatus("");
+    $("orders-list").innerHTML = `<p class="hint">${
+      periodStatusHint(register) || "No accepted orders match these filters."
+    }</p>`;
+    setStatus(periodStatusHint(register));
     return;
   }
-  $("orders-list").innerHTML = register.deliveryGroups
-    ? renderDelivery(register.deliveryGroups)
-    : renderTable(orders) + renderCards(orders);
-  setStatus("");
+  if (register.deliveryGroups) {
+    $("orders-list").innerHTML = renderDelivery(register.deliveryGroups);
+  } else if (!state.behavior) {
+    $("orders-list").innerHTML = renderTypeBlocks(orders);
+  } else {
+    $("orders-list").innerHTML = renderTable(orders) + renderCards(orders);
+  }
+  setStatus(periodStatusHint(register));
 }
 
 async function loadOrders() {
@@ -581,7 +675,7 @@ function showLogin(message = "") {
   $("login-error").textContent = message;
 }
 
-function showMain() {
+async function showMain() {
   $("login-view").hidden = true;
   $("main-view").hidden = false;
   $("session-role").textContent = state.fullName || state.role || "";
@@ -595,9 +689,11 @@ function showMain() {
   if (allowed) {
     state.view = resolveInitialView(state.role);
     persistView(state.view);
+    state.period = "shift";
+    syncPeriodUi();
     applyViewChrome();
+    await loadShift();
     void refreshCurrentView();
-    void loadShift();
   }
 }
 
@@ -621,7 +717,7 @@ async function login() {
   state.staff = Boolean(me.json.staff);
   state.permissions = me.json.permissions || [];
   state.fullName = me.json.fullName || "";
-  showMain();
+  void showMain();
 }
 
 $("login-btn").addEventListener("click", () => void login());
@@ -643,6 +739,15 @@ $("type-tabs").addEventListener("click", (event) => {
   state.orderTypeId = button.dataset.type || "";
   state.page = 1;
   state.boardPage = 1;
+  if (state.behavior !== "DELIVERY") state.deliverySort = "token";
+  syncDeliveryTools();
+  void refreshCurrentView();
+});
+$("delivery-sort")?.addEventListener("change", () => {
+  state.deliverySort =
+    $("delivery-sort").value === "block-road" ? "block-road" : "token";
+  state.page = 1;
+  state.boardPage = 1;
   void refreshCurrentView();
 });
 $("address-type-tabs").addEventListener("click", (event) => {
@@ -657,11 +762,29 @@ $("order-search").addEventListener("change", () => {
   state.boardPage = 1;
   void refreshCurrentView();
 });
-$("order-date").addEventListener("change", () => {
+$("order-period")?.addEventListener("change", () => {
+  const value = $("order-period").value;
+  state.period = value === "day" || value === "range" ? value : "shift";
+  syncPeriodUi();
+  if (state.period === "day" && !$("order-date").value && state.activeShift?.businessDate) {
+    $("order-date").value = state.activeShift.businessDate;
+  }
+  if (state.period === "range") {
+    const today = state.activeShift?.businessDate || "";
+    if (!$("order-date-from").value && today) $("order-date-from").value = today;
+    if (!$("order-date-to").value && today) $("order-date-to").value = today;
+  }
   state.page = 1;
   state.boardPage = 1;
   void refreshCurrentView();
 });
+for (const id of ["order-date", "order-date-from", "order-date-to"]) {
+  $(id)?.addEventListener("change", () => {
+    state.page = 1;
+    state.boardPage = 1;
+    void refreshCurrentView();
+  });
+}
 for (const id of ["filter-block", "filter-road", "filter-building"]) {
   $(id).addEventListener("change", () => {
     state.page = 1;
@@ -674,11 +797,19 @@ $("clear-filters").addEventListener("click", () => {
   state.behavior = "";
   state.orderTypeId = "";
   state.addressLabel = "";
+  state.deliverySort = "token";
+  state.period = "shift";
   $("order-search").value = "";
-  $("order-date").value = "";
+  if ($("order-date")) $("order-date").value = "";
+  if ($("order-date-from")) $("order-date-from").value = "";
+  if ($("order-date-to")) $("order-date-to").value = "";
+  if ($("order-period")) $("order-period").value = "shift";
+  if ($("delivery-sort")) $("delivery-sort").value = "token";
   $("filter-block").value = "";
   $("filter-road").value = "";
   $("filter-building").value = "";
+  syncPeriodUi();
+  syncDeliveryTools();
   void refreshCurrentView();
 });
 $("page-prev").addEventListener("click", () => {
@@ -738,8 +869,8 @@ async function loadShift() {
   const active = result.json.active;
   state.activeShift = active;
   $('shift-info').textContent = active
-    ? `Shift open · ${active.businessDate} · Next token ${String(active.nextTokenNumber).padStart(3, '0')}`
-    : `No active shift${result.json.requiresManualStart ? ' · Open a shift to take orders' : ''}`;
+    ? `${active.businessDate} · next ${String(active.nextTokenNumber).padStart(3, '0')}`
+    : `No shift${result.json.requiresManualStart ? ' — open to take orders' : ''}`;
   const admin = state.role === 'admin';
   $('shift-actions').hidden = !admin;
   $('shift-close').hidden = !admin || !active;
@@ -757,6 +888,7 @@ $('shift-close').addEventListener('click', async () => {
   });
   if (!result.ok) { setStatus(result.json?.error || 'Could not close shift.'); return; }
   await loadShift();
+  if (state.period === "shift") void refreshCurrentView();
 });
 $('shift-open').addEventListener('click', async () => {
   if (state.role !== 'admin' || state.activeShift) return;
@@ -767,6 +899,7 @@ $('shift-open').addEventListener('click', async () => {
   });
   if (!result.ok) { setStatus(result.json?.error || 'Could not open shift.'); return; }
   await loadShift();
+  if (state.period === "shift") void refreshCurrentView();
 });
 
 const session = await api("/v1/session/me");
@@ -775,7 +908,7 @@ if (session.ok && session.json?.authenticated) {
   state.staff = Boolean(session.json.staff);
   state.permissions = session.json.permissions || [];
   state.fullName = session.json.fullName || "";
-  showMain();
+  void showMain();
 } else {
   showLogin();
 }

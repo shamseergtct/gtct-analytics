@@ -68,6 +68,7 @@ const state = {
   permissions: [],
   payment: { orderId: "", confirming: false, fromPending: false, view: null, attempt: null, accounts: [] },
   pendingOrders: [],
+  unpaidBillOrderId: "",
   menu: [],
   stations: [],
   printers: [],
@@ -116,6 +117,7 @@ const state = {
   customizeDraft: null, // { lineId, isNew, quantity, instructions, addons, note, priceText, ... }
   customizeTab: "notes",
   kitchenStep: 1,
+  shopStandalone: [],
   priceBreakdownOpen: false,
   cartPriceBreakdownOpen: false,
   _customizeTrigger: null,
@@ -3184,6 +3186,7 @@ function buildCartCandidate(item, variant) {
     instructionModifiers: item.instructionModifiers || DEFAULT_MODIFIERS,
     instructionTargets: item.instructionTargets || DEFAULT_TARGETS,
     instructionStandalone: item.instructionStandalone || [],
+    instructionCustomized: Boolean(item.instructionCustomized),
     availableAddons: (item.addons || []).filter((a) => a.isActive),
     quantity: 1,
     instructions: [],
@@ -4491,12 +4494,29 @@ function currentLineOptions() {
   };
 }
 
+/**
+ * Standalone quick notes on Kitchen notes — always show the shop library.
+ * If the item was customized with an explicit standalone allowlist, respect it.
+ */
+function currentLineStandalone() {
+  const line = getEditingLine();
+  const shop = state.shopStandalone || [];
+  const fromItem = line?.instructionStandalone || [];
+  if (line?.instructionCustomized && fromItem.length) {
+    if (!shop.length) return fromItem;
+    const allow = new Set(fromItem.map((s) => String(s).trim().toLowerCase()));
+    return shop.filter((s) => allow.has(String(s).trim().toLowerCase()));
+  }
+  return shop.length ? shop : fromItem;
+}
+
 function renderInstrChips() {
   const { modifiers, targets } = currentLineOptions();
-  const line = getEditingLine();
   const modHost = $("mod-chips");
   const targetHost = $("target-chips");
   const standHost = $("standalone-chips");
+  const standEmpty = $("standalone-empty");
+  const standBlock = $("standalone-block");
   if (!modHost || !targetHost) return;
   modHost.innerHTML = "";
   targetHost.innerHTML = "";
@@ -4518,7 +4538,10 @@ function renderInstrChips() {
       });
       modHost.appendChild(btn);
     }
-    for (const s of line?.instructionStandalone || []) {
+    if (standBlock) standBlock.hidden = false;
+    const stands = currentLineStandalone();
+    if (standEmpty) standEmpty.hidden = stands.length > 0;
+    for (const s of stands) {
       if (!standHost) break;
       const btn = document.createElement("button");
       btn.type = "button";
@@ -4532,7 +4555,10 @@ function renderInstrChips() {
         ? `<span class="kitchen-choice-check" aria-hidden="true">✓</span><span>${escapeHtml(s)}</span>`
         : escapeHtml(s);
       btn.setAttribute("aria-pressed", already ? "true" : "false");
-      btn.addEventListener("click", () => addStandaloneInstruction(s));
+      btn.addEventListener("click", () => {
+        if (already) removeStandaloneInstruction(s);
+        else addStandaloneInstruction(s);
+      });
       standHost.appendChild(btn);
     }
     return;
@@ -4585,7 +4611,22 @@ function addStandaloneInstruction(text) {
   }
   draft.instructions.push(text);
   renderSelectedInstructions();
+  renderInstrChips();
   showInstrFeedback(`Added ${text}`);
+}
+
+function removeStandaloneInstruction(text) {
+  const draft = getDraft();
+  if (!draft) return;
+  const key = String(text || "").trim().toLowerCase();
+  const before = draft.instructions.length;
+  draft.instructions = draft.instructions.filter(
+    (i) => i.trim().toLowerCase() !== key
+  );
+  if (draft.instructions.length === before) return;
+  renderSelectedInstructions();
+  renderInstrChips();
+  showInstrFeedback(`Removed ${text}`);
 }
 
 function syncOrderNoteFromInput() {
@@ -6343,7 +6384,8 @@ function syncPaymentPrintChoice() {
   }
   box.disabled = false;
   if (!Object.prototype.hasOwnProperty.call(box.dataset, "userTouched")) {
-    box.checked = allow;
+    // Paid cashier receipt is opt-in; leave off unless the cashier checks it.
+    box.checked = false;
   }
 }
 
@@ -6866,10 +6908,11 @@ function sleep(ms) {
 }
 
 async function bootstrapData() {
-  const [menuRes, cfgRes, catRes] = await Promise.all([
+  const [menuRes, cfgRes, catRes, kitchenRes] = await Promise.all([
     api("/v1/menu-items?includeInactive=0"),
     api("/v1/config"),
     api("/v1/menu-categories?includeInactive=0"),
+    api("/v1/kitchen-library?includeInactive=0"),
   ]);
   if (!menuRes.ok) {
     if (menuRes.status === 401) showLogin("Session expired.");
@@ -6879,6 +6922,12 @@ async function bootstrapData() {
   state.menu = menuRes.json.menuItems || [];
   state.categories = catRes.ok ? catRes.json.categories || [] : [];
   state.subcategories = catRes.ok ? catRes.json.subcategories || [] : [];
+  state.shopStandalone = kitchenRes.ok
+    ? (kitchenRes.json?.library?.standalone || [])
+        .filter((s) => s.isActive !== false)
+        .map((s) => s.name)
+        .filter(Boolean)
+    : [];
   state.config = cfgRes.ok ? cfgRes.json : null;
   if (cfgRes.ok) {
     state.canAdjustAddonPrices = Boolean(state.config?.canAdjustAddonPrices);
@@ -6952,6 +7001,7 @@ function cartLineFromDraft(raw) {
     instructionModifiers: item?.instructionModifiers || DEFAULT_MODIFIERS,
     instructionTargets: item?.instructionTargets || DEFAULT_TARGETS,
     instructionStandalone: item?.instructionStandalone || [],
+    instructionCustomized: Boolean(item?.instructionCustomized),
     availableAddons: (item?.addons || []).filter((addon) => addon.isActive),
     quantity: Math.max(1, Number(raw.quantity) || 1),
     instructions,
@@ -7374,6 +7424,7 @@ async function openTakePayment(orderId, { fromPending = false } = {}) {
   state.payment.creditCustomer = null;
   ++paymentCreditSearchSeq;
   clearTimeout(paymentCreditSearchTimer);
+  delete $("payment-print-cashier")?.dataset.userTouched;
   $("payment-credit-search").value = "";
   $("payment-credit-results").hidden = true;
   $("payment-credit-results").replaceChildren();
@@ -7406,13 +7457,21 @@ async function openTakePayment(orderId, { fromPending = false } = {}) {
   resetEntryMode("CASH");
 }
 
+function leavePaymentDialog({ toast = "" } = {}) {
+  const fromPending = state.payment.fromPending;
+  $("payment-dialog")?.close();
+  void refreshPendingCount();
+  if (toast) setStatus(toast, true);
+  if (fromPending) void openPendingPayments();
+}
+
 function showPaidPayment(view) {
   state.payment.view = view;
   state.payment.confirming = false;
   clearPaymentAttempt(view.orderId || state.payment.orderId);
   showPaymentError("");
-  renderPayment(view);
-  void refreshPendingCount();
+  const orderLabel = view?.orderNumber ? `Order ${view.orderNumber}` : "Order";
+  leavePaymentDialog({ toast: `${orderLabel} paid.` });
 }
 
 async function confirmUnifiedPayment() {
@@ -7492,24 +7551,39 @@ async function confirmUnifiedPayment() {
     }
     state.payment.unifiedSubmission = null;
     const cashierPrint = result.json?.cashierPrint;
-    if (cashierPrint && cashierPrint.ok === false) {
-      showPaymentError(
-        `Payment recorded, but cashier receipt was not queued: ${cashierPrint.error || "printer missing"}. Assign a printer to CASHIER (or keep an active NETWORK printer).`
-      );
-    }
+    const printWarn =
+      cashierPrint && cashierPrint.ok === false
+        ? `Payment recorded, but cashier receipt was not queued: ${cashierPrint.error || "printer missing"}.`
+        : "";
     const updated = await readServerPayment(orderId);
     if (!updated.ok || !updated.json) {
       state.payment.uncertain = true;
       showPaymentError("Recorded. Reopen this order to refresh the balance.");
       return;
     }
+    clearPaymentAttempt(orderId);
+    void refreshPendingCount();
+    const due = Number(updated.json.unallocatedCents ?? updated.json.balanceCents ?? 0);
+    if (due <= 0 || updated.json.paymentStatus === "PAID") {
+      const orderLabel = updated.json.orderNumber
+        ? `Order ${updated.json.orderNumber}`
+        : "Order";
+      if (printWarn) {
+        leavePaymentDialog();
+        setStatus(printWarn, false);
+      } else {
+        leavePaymentDialog({ toast: `${orderLabel} paid.` });
+      }
+      return;
+    }
+    // Partial allocation — stay open so the rest can be recorded.
+    state.payment.view = updated.json;
     renderPayment(updated.json);
     resetEntryMode("CASH");
-    void refreshPendingCount();
-    if (!(cashierPrint && cashierPrint.ok === false)) showPaymentError("");
+    showPaymentError(printWarn);
   } finally {
     state.payment.confirming = false;
-    if (state.payment.view) renderPaymentEntry();
+    if ($("payment-dialog")?.open && state.payment.view) renderPaymentEntry();
   }
 }
 
@@ -7623,10 +7697,132 @@ function renderPendingOrders() {
         </div>
         <p>${escapeHtml(customer || "No customer on this order")}</p>
         <p class="pending-payment-due">${escapeHtml(money.format(order.balanceCents))}</p>
-        <button type="button" class="btn primary" data-pay-order="${escapeHtml(order.orderId)}">Take Payment</button>
+        <div class="pending-payment-actions">
+          <button type="button" class="btn ghost" data-view-bill="${escapeHtml(order.orderId)}">View bill</button>
+          <button type="button" class="btn primary" data-pay-order="${escapeHtml(order.orderId)}">Take Payment</button>
+        </div>
       </article>`;
     })
     .join("");
+}
+
+function unpaidBillLineNotes(line) {
+  const variant = line.variant_name || line.variantName || "";
+  const addons = line.addons || [];
+  const instructions = line.instructions || [];
+  return [
+    variant,
+    ...addons.map((addon) => {
+      const name = addon.name || "";
+      const qty = Number(addon.quantity || 1);
+      return qty > 1 ? `${name} × ${qty}` : name;
+    }),
+    ...instructions,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+async function openUnpaidBillDetails(orderId) {
+  if (!orderId) return;
+  const dialog = $("unpaid-bill-dialog");
+  const body = $("unpaid-bill-body");
+  const meta = $("unpaid-bill-meta");
+  const payBtn = $("unpaid-bill-pay");
+  if (!dialog || !body) return;
+  state.unpaidBillOrderId = orderId;
+  body.innerHTML = `<p class="muted">Loading bill…</p>`;
+  if (meta) meta.textContent = "";
+  if (payBtn) {
+    payBtn.hidden = false;
+    payBtn.dataset.orderId = orderId;
+  }
+  if (!dialog.open) dialog.showModal();
+
+  const [orderRes, payRes] = await Promise.all([
+    api(`/v1/orders/${encodeURIComponent(orderId)}`),
+    readServerPayment(orderId),
+  ]);
+  if (!dialog.open || state.unpaidBillOrderId !== orderId) return;
+  if (orderRes.status === 401 || payRes.status === 401) {
+    dialog.close();
+    showLogin("Session expired.");
+    return;
+  }
+
+  const order = orderRes.ok ? orderRes.json?.order : null;
+  const pay = payRes.ok ? payRes.json : null;
+  if (!order && !pay) {
+    body.innerHTML = `<p class="error">${escapeHtml(
+      orderRes.json?.error || payRes.json?.error || "Could not open this bill."
+    )}</p>`;
+    if (payBtn) payBtn.hidden = true;
+    return;
+  }
+
+  const money = paymentMoney(
+    pay || {
+      currencyCode: order?.currency_code,
+      currencyLabel: order?.currency_label,
+      currencyDecimals: order?.currency_decimals,
+    }
+  );
+  if (meta) {
+    meta.textContent = [
+      pay?.orderNumber || order?.order_number || "",
+      [pay?.customerName || order?.customer_name, pay?.customerPhone || order?.customer_phone]
+        .filter(Boolean)
+        .join(" · "),
+      order?.order_type_name || "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  const lines = (order?.lines || [])
+    .map((line) => {
+      const notes = unpaidBillLineNotes(line);
+      const name = line.item_name || line.itemName || "";
+      const qty = line.quantity;
+      const total = Number(line.line_total_cents ?? line.lineTotalCents ?? 0);
+      return `<li class="unpaid-bill-line">
+        <div class="unpaid-bill-line-main">
+          <strong>${escapeHtml(String(qty))} × ${escapeHtml(name)}</strong>
+          ${notes ? `<div class="unpaid-bill-line-notes">${escapeHtml(notes)}</div>` : ""}
+        </div>
+        <strong class="unpaid-bill-line-price">${escapeHtml(money.format(total))}</strong>
+      </li>`;
+    })
+    .join("");
+
+  const goodsCents = Number(order?.goods_cents ?? 0);
+  const taxCents = Number(order?.tax_cents ?? 0);
+  const deliveryCents = Number(order?.delivery_charge_cents ?? 0);
+  const totalCents = Number(
+    pay?.orderTotalCents ?? order?.total_cents ?? goodsCents + taxCents + deliveryCents
+  );
+  const dueCents = Number(
+    pay?.unallocatedCents ?? pay?.balanceCents ?? totalCents
+  );
+  const taxRow =
+    taxCents !== 0
+      ? `<div class="unpaid-bill-row"><span>${escapeHtml(order?.tax_name || "Tax")}</span><span>${escapeHtml(money.format(taxCents))}</span></div>`
+      : "";
+  const deliveryRow =
+    deliveryCents !== 0
+      ? `<div class="unpaid-bill-row"><span>Delivery</span><span>${escapeHtml(money.format(deliveryCents))}</span></div>`
+      : "";
+
+  body.innerHTML = `
+    <ul class="unpaid-bill-lines">${
+      lines || `<li class="muted">No items on this bill.</li>`
+    }</ul>
+    <div class="unpaid-bill-summary">
+      <div class="unpaid-bill-row"><span>Subtotal</span><span>${escapeHtml(money.format(goodsCents))}</span></div>
+      ${taxRow}${deliveryRow}
+      <div class="unpaid-bill-row unpaid-bill-total"><span>Total</span><strong>${escapeHtml(money.format(totalCents))}</strong></div>
+      <div class="unpaid-bill-row"><span>Still due</span><strong>${escapeHtml(money.format(dueCents))}</strong></div>
+    </div>`;
 }
 
 async function openPendingPayments() {
@@ -7792,9 +7988,24 @@ function bindUi() {
   });
   $("pending-backdrop")?.addEventListener("click", () => setPendingDrawer(false));
   $("pending-payments-list")?.addEventListener("click", (event) => {
+    const viewBtn = event.target.closest("[data-view-bill]");
+    if (viewBtn) {
+      void openUnpaidBillDetails(viewBtn.dataset.viewBill);
+      return;
+    }
     const button = event.target.closest("[data-pay-order]");
     if (!button) return;
     void openTakePayment(button.dataset.payOrder, { fromPending: true });
+  });
+  $("unpaid-bill-close")?.addEventListener("click", () => $("unpaid-bill-dialog")?.close());
+  $("unpaid-bill-pay")?.addEventListener("click", () => {
+    const orderId =
+      $("unpaid-bill-pay")?.dataset.orderId || state.unpaidBillOrderId || "";
+    $("unpaid-bill-dialog")?.close();
+    if (orderId) void openTakePayment(orderId, { fromPending: true });
+  });
+  $("unpaid-bill-dialog")?.addEventListener("close", () => {
+    state.unpaidBillOrderId = "";
   });
   $("payment-offer-later")?.addEventListener("click", () => $("payment-offer-dialog")?.close());
   $("payment-offer-take")?.addEventListener("click", () => {
@@ -7807,8 +8018,7 @@ function bindUi() {
     void beginEdit(orderId);
   });
   $("payment-back")?.addEventListener("click", () => {
-    $("payment-dialog")?.close();
-    if (state.payment.fromPending) void openPendingPayments();
+    leavePaymentDialog();
   });
   $("payment-confirm")?.addEventListener("click", () => {
     void confirmUnifiedPayment();

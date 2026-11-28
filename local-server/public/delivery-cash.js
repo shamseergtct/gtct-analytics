@@ -12,7 +12,7 @@ const $ = (id) => document.getElementById(id);
 let refreshBusy = false;
 let selectedRiderId = null; // No rider selected; no cash confirmation in overview.
 let expandedBoyId = null;
-let snapshot = { riders: [], pending: [], history: [] };
+let snapshot = { riders: [], pending: [], history: [], deliveredBusinessDates: [], settlementDates: [] };
 const submissions = new Map(); // Preserve an uncertain network retry's submission ID.
 let shopDisplayName = 'Shop';
 let printPreview = null;
@@ -498,15 +498,25 @@ function showRiders() {
         const pending = pendingFor(r.userId);
         const pendingMinor = pending.reduce((sum, o) => sum + Number(o.amountCents || 0), 0);
         const sample = pending[0] || historyFor(r.userId)[0];
-        const dec = sample?.currencyDecimals ?? 3;
-        const cc = sample?.currencyCode || 'BHD';
+        const dayEntry = riderDaySummaries.get(r.userId) || null;
+        const overview = dayEntry?.preview?.overview || (
+          selectedRiderId === r.userId && batchSnapshot?.preview?.riderUserId === r.userId
+            ? batchSnapshot.preview.overview
+            : null
+        );
         const selected = selectedRiderId === r.userId;
         const expanded = expandedBoyId === r.userId;
-        const overview =
-          selected && batchSnapshot?.preview?.riderUserId === r.userId
-            ? batchSnapshot.preview.overview
-            : null;
-        const available = selected ? batchAvailable(batchSnapshot?.preview) : null;
+        const dec = overview?.currencyDecimals ?? dayEntry?.preview?.currencyDecimals ?? sample?.currencyDecimals ?? 3;
+        const cc = overview?.currencyCode || dayEntry?.preview?.currencyCode || sample?.currencyCode || 'BHD';
+        const totalMinor = overview
+          ? Number(overview.totalDeliveredMinor || 0)
+          : pendingMinor;
+        const shopPaidMinor = overview ? Number(overview.directShopPaidMinor || 0) : 0;
+        const creditMinor = overview ? Number(overview.customerCreditAllocatedMinor || 0) : 0;
+        const commissionMinor = summaryCommissionMinor(dayEntry, r.userId);
+        const balanceMinor = Number.isSafeInteger(dayEntry?.preview?.grossMinor)
+          ? Number(dayEntry.preview.grossMinor)
+          : pendingMinor;
         const tr = document.createElement('tr');
         tr.className = 'cash-summary-row';
         if (selected) tr.classList.add('is-selected');
@@ -520,24 +530,11 @@ function showRiders() {
           <td class="num"></td>
           <td class="chev"><span class="cash-chevron" aria-hidden="true">▾</span></td>`;
         tr.querySelector('.boy-name').textContent = r.fullName || 'Delivery Boy';
-        tr.children[1].textContent = overview
-          ? moneyLabel(overview.totalDeliveredMinor, dec, cc)
-          : pending.length
-            ? moneyLabel(pendingMinor, dec, cc)
-            : '—';
-        tr.children[2].textContent = overview
-          ? moneyLabel(overview.directShopPaidMinor, dec, cc)
-          : '—';
-        tr.children[3].textContent = overview
-          ? moneyLabel(overview.customerCreditAllocatedMinor, dec, cc)
-          : '—';
-        tr.children[4].textContent =
-          selected && available && Number.isSafeInteger(available.amount)
-            ? moneyLabel(available.amount, dec, cc)
-            : '—';
-        tr.children[5].textContent = pending.length
-          ? moneyLabel(pendingMinor, dec, cc)
-          : '—';
+        tr.children[1].textContent = moneyLabel(totalMinor, dec, cc);
+        tr.children[2].textContent = moneyLabel(shopPaidMinor, dec, cc);
+        tr.children[3].textContent = moneyLabel(creditMinor, dec, cc);
+        tr.children[4].textContent = moneyLabel(commissionMinor, dec, cc);
+        tr.children[5].textContent = moneyLabel(balanceMinor, dec, cc);
         tr.addEventListener('click', (e) => {
           e.preventDefault();
           if (expandedBoyId === r.userId && selectedRiderId === r.userId) {
@@ -580,12 +577,7 @@ function showRiders() {
     if (selectedRiderId) select.value = selectedRiderId;
   }
 
-  if ($('collections-count')) {
-    const n = selectedRiderId
-      ? (batchSnapshot?.history || []).filter((x) => x.riderUserId === selectedRiderId).length
-      : 0;
-    $('collections-count').textContent = String(n);
-  }
+  syncHistoryRiderOptions();
 }
 // Invoice details are display-only; commission on a daily target is never
 // allocated to individual orders without an explicit allocation in accounting.
@@ -729,12 +721,179 @@ async function refresh(showMessage = true) {
       riders: Array.isArray(result.json.riders) ? result.json.riders : [],
       pending: result.json.pending,
       history: result.json.history,
+      deliveredBusinessDates: Array.isArray(result.json.deliveredBusinessDates)
+        ? result.json.deliveredBusinessDates
+        : [],
+      settlementDates: Array.isArray(result.json.settlementDates)
+        ? result.json.settlementDates
+        : [],
     };
     render();
-    if (isCommissionAdmin) {renderRiderDates();await loadBatch();}
+    if (isCommissionAdmin) {
+      renderRiderDates();
+      syncHistoryRiderOptions();
+      syncHistoryRangeFromBusinessDates();
+      await Promise.all([loadBatch(), loadRiderDaySummaries(), loadPaymentHistory()]);
+    }
     if (showMessage) notice('Rider cash list refreshed. Select a rider to settle.');
   } catch { notice('Cannot load rider cash. Check local server connection.', 'bad'); }
   finally { refreshBusy = false; $('refresh').disabled = false; }
+}
+
+function summaryCommissionMinor(entry, riderUserId) {
+  const preview = entry?.preview
+    || (selectedRiderId === riderUserId ? batchSnapshot?.preview : null);
+  if (!preview) return 0;
+  if (preview.accrual?.paid) return 0;
+  if (preview.accrual && Number.isSafeInteger(preview.accrual.amountMinor)) {
+    return Math.max(0, Number(preview.accrual.amountMinor));
+  }
+  const closing = entry?.closing
+    || (selectedRiderId === riderUserId ? batchClosing : null);
+  if (
+    closing?.canAccrue &&
+    Number.isSafeInteger(closing.estimatedCommissionMinor) &&
+    closing.estimatedCommissionMinor > 0
+  ) {
+    return Number(closing.estimatedCommissionMinor);
+  }
+  return 0;
+}
+
+function summaryDatesInRange() {
+  const from = batchDateFrom() || batchDateTo();
+  const to = batchDateTo();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) return [];
+  const dateSet = new Set();
+  const consider = (date) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return;
+    if (from && date < from) return;
+    if (to && date > to) return;
+    dateSet.add(date);
+  };
+  for (const date of snapshot.deliveredBusinessDates || []) consider(date);
+  for (const date of snapshot.settlementDates || []) consider(date);
+  for (const order of snapshot.pending || []) consider(order.businessDate);
+  // Always include the settlement "to" day so the selected day still loads.
+  consider(to);
+  return [...dateSet].sort();
+}
+
+function emptyRiderOverview(currencyCode = 'BHD', currencyDecimals = 3) {
+  return {
+    totalDeliveredBills: 0,
+    totalDeliveredMinor: 0,
+    directShopPaidMinor: 0,
+    customerCreditAllocatedMinor: 0,
+    currencyCode,
+    currencyDecimals,
+  };
+}
+
+function mergeRiderDayPreviews(previews) {
+  const usable = previews.filter(Boolean);
+  if (!usable.length) return null;
+  const first = usable[0];
+  const overview = emptyRiderOverview(
+    first.currencyCode || first.overview?.currencyCode || 'BHD',
+    first.currencyDecimals ?? first.overview?.currencyDecimals ?? 3
+  );
+  let grossMinor = 0;
+  let invoiceCount = 0;
+  let accrualAmount = 0;
+  let accrualPaid = true;
+  let hasAccrual = false;
+  for (const preview of usable) {
+    const ov = preview.overview || emptyRiderOverview();
+    overview.totalDeliveredBills += Number(ov.totalDeliveredBills || 0);
+    overview.totalDeliveredMinor += Number(ov.totalDeliveredMinor || 0);
+    overview.directShopPaidMinor += Number(ov.directShopPaidMinor || 0);
+    overview.customerCreditAllocatedMinor += Number(ov.customerCreditAllocatedMinor || 0);
+    if (ov.currencyCode) overview.currencyCode = ov.currencyCode;
+    if (Number.isInteger(ov.currencyDecimals)) overview.currencyDecimals = ov.currencyDecimals;
+    grossMinor += Number(preview.grossMinor || 0);
+    invoiceCount += Number(preview.invoiceCount || 0);
+    if (preview.accrual) {
+      hasAccrual = true;
+      accrualAmount += Number(preview.accrual.amountMinor || 0);
+      if (!preview.accrual.paid) accrualPaid = false;
+    }
+  }
+  return {
+    riderUserId: first.riderUserId,
+    businessDate: `${batchDateFrom() || batchDateTo()}…${batchDateTo()}`,
+    currencyCode: overview.currencyCode,
+    currencyDecimals: overview.currencyDecimals,
+    overview,
+    invoiceCount,
+    grossMinor,
+    orders: [],
+    accrual: hasAccrual
+      ? { amountMinor: accrualAmount, paid: accrualPaid }
+      : null,
+    snapshotHash: first.snapshotHash || '',
+  };
+}
+
+async function fetchRiderDayPreview(riderUserId, date) {
+  const result = await batchRequest(
+    `${BATCH_API}?riderUserId=${encodeURIComponent(riderUserId)}&businessDate=${encodeURIComponent(date)}`
+  );
+  let closing = null;
+  if (result?.preview) {
+    try {
+      closing = await batchRequest(
+        `/v1/delivery-commissions/${encodeURIComponent(riderUserId)}/closing-preview?businessDate=${encodeURIComponent(date)}`
+      );
+    } catch (error) {
+      closing = { error: error.message };
+    }
+  }
+  return { preview: result.preview || null, closing };
+}
+
+async function loadRiderDaySummaries() {
+  if (!isCommissionAdmin) {
+    riderDaySummaries = new Map();
+    return;
+  }
+  const dates = summaryDatesInRange();
+  if (!dates.length) {
+    riderDaySummaries = new Map();
+    showRiders();
+    return;
+  }
+  const epoch = ++summaryLoadEpoch;
+  const riders = getRiders();
+  const rows = await Promise.all(
+    riders.map(async (r) => {
+      try {
+        const dayRows = await Promise.all(
+          dates.map(async (date) => {
+            try {
+              return await fetchRiderDayPreview(r.userId, date);
+            } catch {
+              return null;
+            }
+          })
+        );
+        const merged = mergeRiderDayPreviews(dayRows.map((row) => row?.preview).filter(Boolean));
+        if (!merged) return [r.userId, null];
+        // Prefer unpaid accrued/estimated commission from any day in range.
+        const closing =
+          dayRows.find((row) => {
+            const amount = Number(row?.closing?.estimatedCommissionMinor || 0);
+            return row?.closing?.canAccrue && amount > 0;
+          })?.closing || dayRows.find((row) => row?.closing)?.closing || null;
+        return [r.userId, { preview: merged, closing }];
+      } catch {
+        return [r.userId, null];
+      }
+    })
+  );
+  if (epoch !== summaryLoadEpoch) return;
+  riderDaySummaries = new Map(rows);
+  showRiders();
 }
 $('refresh').addEventListener('click', () => void refresh());
 $('rider-search').addEventListener('input', () => showRiders());
@@ -765,21 +924,275 @@ void (async () => {
  */
 let isCommissionAdmin = false;
 let batchSnapshot = null;
+/** Settlement rows for Payment history (may be range-filtered). */
+let paymentHistoryRows = [];
+let paymentHistoryLoadEpoch = 0;
+/** Per-rider day quotes for Delivery Boy Summary (userId -> { preview, closing }). */
+let riderDaySummaries = new Map();
+let summaryLoadEpoch = 0;
 let batchClosing = null;
 let batchLoadEpoch = 0;
 let batchConfirmBusy = false;
 let batchRetryBody = null;
 let batchTenderDraft = null;
+/** When set, New Collection form is editing an existing settlement tender. */
+let tenderCorrection = null;
 let tenderBanks = [];
 const correctionRetries = new Map();
 const BATCH_API = '/v1/delivery-rider-settlements';
 
+function todayIsoDate() {
+  const local = new Date();
+  return [local.getFullYear(), String(local.getMonth()+1).padStart(2,'0'),
+    String(local.getDate()).padStart(2,'0')].join('-');
+}
+
 function batchDayDefault() {
   // Do not assume yesterday is the only date eligible for collection.
   // Once the selected rider's pending dates load, select their oldest date.
-  const local = new Date();
-  $('batch-day').value = [local.getFullYear(), String(local.getMonth()+1).padStart(2,'0'),
-    String(local.getDate()).padStart(2,'0')].join('-');
+  const today = todayIsoDate();
+  if ($('batch-day-from')) $('batch-day-from').value = today;
+  $('batch-day').value = today;
+  syncHistoryRangeFromBusinessDates();
+}
+
+function syncHistoryRangeFromBusinessDates() {
+  const from = batchDateFrom() || todayIsoDate();
+  const to = batchDateTo() || todayIsoDate();
+  if ($('history-day-from') && !$('history-day-from').value) $('history-day-from').value = from;
+  if ($('history-day-to') && !$('history-day-to').value) $('history-day-to').value = to;
+  if ($('history-day-from') && $('history-day-to') && !$('history-day-from').dataset.touched) {
+    $('history-day-from').value = from;
+    $('history-day-to').value = to;
+  }
+}
+
+function historyDateFrom() {
+  return String($('history-day-from')?.value || batchDateFrom() || '').trim();
+}
+
+function historyDateTo() {
+  return String($('history-day-to')?.value || batchDateTo() || '').trim();
+}
+
+function syncHistoryRiderOptions() {
+  const select = $('history-rider');
+  if (!select) return;
+  const previous = select.value;
+  select.replaceChildren();
+  select.append(new Option('All riders', ''));
+  for (const r of getRiders()) {
+    select.append(
+      new Option(
+        `${r.fullName || 'Delivery Boy'}${r.isActive === false ? ' (inactive)' : ''}`,
+        r.userId
+      )
+    );
+  }
+  if (previous && [...select.options].some((o) => o.value === previous)) {
+    select.value = previous;
+  } else if (selectedRiderId) {
+    select.value = selectedRiderId;
+  }
+}
+
+function paymentHistoryRiderId() {
+  return String($('history-rider')?.value || '').trim();
+}
+
+function renderPaymentHistoryCard(entry) {
+  const riderName =
+    getRiders().find((r) => r.userId === entry.riderUserId)?.fullName ||
+    'Delivery Boy';
+  const tender = entry.tender || {
+    cashMinor: entry.shopCashMinor,
+    bankMinor: 0,
+    bankAccountId: null,
+    version: 0,
+    note: '',
+  };
+  const card = element('article', 'cash-collection-card');
+  const head = element('div', 'cash-collection-card-head');
+  head.append(
+    element('strong', '', `${riderName} · ${entry.businessDate}`),
+    element(
+      'time',
+      '',
+      `${entry.invoiceCount} bill${entry.invoiceCount === 1 ? '' : 's'}${
+        entry.confirmedAt ? ` · ${new Date(entry.confirmedAt).toLocaleString()}` : ''
+      }`
+    )
+  );
+  card.append(head);
+  const metrics = element('div', 'cash-collection-metrics');
+  const cells = [
+    [
+      'Payable',
+      moneyLabel(entry.grossMinor, entry.currencyDecimals, entry.currencyCode),
+      Number(entry.commissionMinor) > 0
+        ? `Comm. ${moneyLabel(entry.commissionMinor, entry.currencyDecimals, entry.currencyCode)}`
+        : '',
+    ],
+    ['Cash', moneyLabel(tender.cashMinor, entry.currencyDecimals, entry.currencyCode), ''],
+    [
+      'Bank',
+      moneyLabel(tender.bankMinor, entry.currencyDecimals, entry.currencyCode),
+      tender.note || '',
+    ],
+    ['Net received', moneyLabel(entry.shopCashMinor, entry.currencyDecimals, entry.currencyCode), 'Settled'],
+  ];
+  for (const [label, value, note] of cells) {
+    const cell = element('div', 'cash-metric');
+    cell.append(element('span', '', label), element('strong', '', value));
+    if (note) cell.append(element('small', '', note));
+    metrics.append(cell);
+  }
+  card.append(metrics);
+  const breakdown = element('details', 'cash-history-breakdown');
+  breakdown.append(element('summary', '', `View ${entry.invoiceCount} invoice details`));
+  breakdown.append(
+    element(
+      'p',
+      'cash-bill-footnote',
+      entry.commissionAllocationNote ||
+        'Commission is recorded at settlement level; no invoice split is assumed.'
+    )
+  );
+  for (const inv of entry.orders || []) {
+    const invoice = element('div', 'cash-bill-line');
+    const billHead = element('div', 'cash-bill-line-head');
+    billHead.append(
+      element('strong', '', inv.orderNumber),
+      element('strong', '', money(inv.amountMinor, entry.currencyDecimals, entry.currencyCode))
+    );
+    invoice.append(billHead, invoiceDetails(inv, entry.currencyCode, entry.currencyDecimals, true));
+    breakdown.append(invoice);
+  }
+  if (!Array.isArray(entry.orders)) {
+    breakdown.append(
+      element('p', 'cash-bill-footnote', 'Invoice details unavailable for this older history record.')
+    );
+  }
+  card.append(breakdown);
+  if (isCommissionAdmin) {
+    const editBtn = element('button', 'btn ghost', 'Edit payment');
+    editBtn.type = 'button';
+    editBtn.addEventListener('click', () => editCollectionPayment(entry, tender));
+    card.append(editBtn);
+  }
+  return card;
+}
+
+function renderPaymentHistory() {
+  const host = $('batch-history');
+  if (!host) return;
+  host.replaceChildren();
+  const riderId = paymentHistoryRiderId();
+  const items = (paymentHistoryRows.length
+    ? paymentHistoryRows
+    : batchSnapshot?.history || []
+  ).filter((entry) => !riderId || entry.riderUserId === riderId);
+  if ($('collections-count')) $('collections-count').textContent = String(items.length);
+  if (!items.length) {
+    host.append(
+      element(
+        'p',
+        'cash-empty',
+        riderId
+          ? 'No payment history for this rider in the selected range.'
+          : 'No payment history in the selected range.'
+      )
+    );
+    return;
+  }
+  for (const entry of items) host.append(renderPaymentHistoryCard(entry));
+}
+
+async function loadPaymentHistory() {
+  if (!isCommissionAdmin) {
+    paymentHistoryRows = [];
+    renderPaymentHistory();
+    return;
+  }
+  syncHistoryRangeFromBusinessDates();
+  let from = historyDateFrom();
+  let to = historyDateTo();
+  if (from && to && from > to) {
+    const swap = from;
+    from = to;
+    to = swap;
+    if ($('history-day-from')) $('history-day-from').value = from;
+    if ($('history-day-to')) $('history-day-to').value = to;
+  }
+  const epoch = ++paymentHistoryLoadEpoch;
+  const riderId = paymentHistoryRiderId();
+  const params = new URLSearchParams();
+  if (from) params.set('dateFrom', from);
+  if (to) params.set('dateTo', to);
+  // Include invoice details for the focused rider when one is chosen.
+  if (riderId) params.set('riderUserId', riderId);
+  try {
+    const result = await batchRequest(`${BATCH_API}?${params.toString()}`);
+    if (epoch !== paymentHistoryLoadEpoch) return;
+    paymentHistoryRows = Array.isArray(result.history) ? result.history : [];
+    renderPaymentHistory();
+  } catch (error) {
+    if (epoch !== paymentHistoryLoadEpoch) return;
+    paymentHistoryRows = [];
+    const host = $('batch-history');
+    if (host) {
+      host.replaceChildren();
+      host.append(element('p', 'cash-empty', error.message || 'Could not load payment history.'));
+    }
+    if ($('collections-count')) $('collections-count').textContent = '0';
+  }
+}
+
+function focusPaymentHistory() {
+  syncHistoryRangeFromBusinessDates();
+  if (selectedRiderId && $('history-rider')) $('history-rider').value = selectedRiderId;
+  const panel = $('payment-history-panel');
+  panel?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  void loadPaymentHistory();
+}
+
+function batchDateFrom() {
+  return String($('batch-day-from')?.value || '').trim();
+}
+
+function batchDateTo() {
+  return String($('batch-day')?.value || '').trim();
+}
+
+function syncBatchDateRange(preferredDay = '') {
+  const fromEl = $('batch-day-from');
+  const toEl = $('batch-day');
+  if (!fromEl || !toEl) return;
+  let from = batchDateFrom();
+  let to = batchDateTo();
+  const pick = String(preferredDay || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(pick)) {
+    if (!from || pick < from) from = pick;
+    if (!to || pick > to) to = pick;
+    to = pick;
+  }
+  if (from && to && from > to) {
+    if (pick === from) to = from;
+    else from = to;
+  }
+  if (!from && to) from = to;
+  if (!to && from) to = from;
+  fromEl.value = from;
+  toEl.value = to;
+}
+
+function dateInBatchRange(date) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return false;
+  const from = batchDateFrom();
+  const to = batchDateTo();
+  if (from && date < from) return false;
+  if (to && date > to) return false;
+  return true;
 }
 function riderPendingDays(riderId) {
   const grouped = new Map();
@@ -795,17 +1208,23 @@ function renderRiderDates() {
   host.replaceChildren();
   if (!selectedRiderId) { host.hidden = true; return; }
   const days=riderPendingDays(selectedRiderId);
-  host.hidden = days.length === 0;
-  for (const [date,count] of days) {
+  const visible = days.filter(([date]) => dateInBatchRange(date));
+  host.hidden = visible.length === 0;
+  for (const [date,count] of visible) {
     const b=element('button','cash-day-chip',`${date} · ${count}`);
     b.type='button';b.setAttribute('aria-pressed',String(date===$('batch-day').value));
-    b.addEventListener('click',()=>{$('batch-day').value=date;resetBatchDecision();void loadBatch();});
+    b.addEventListener('click',()=>{
+      syncBatchDateRange(date);
+      resetBatchDecision();
+      renderRiderDates();
+      void loadBatch();
+    });
     host.append(b);
   }
 }
 function selectPendingDayForRider(){
   const days=riderPendingDays(selectedRiderId);
-  if (days.length) $('batch-day').value=days[0][0];
+  if (days.length) syncBatchDateRange(days[0][0]);
   renderRiderDates();
 }
 let activeShift=null;
@@ -948,18 +1367,17 @@ function renderTender(p,net) {
     }
   }
   const valid=tenderMatchesForm(d,p,net);
-  const el=$('batch-tender-status');
-  if (el) {
-    const err = Boolean(d) && !valid;
-    el.hidden = !err;
-    el.className = 'cash-tender-info' + (err ? ' is-error' : '');
-    el.textContent = err
-      ? 'Cash + Bank must equal Balance. Select a bank account when bank amount is used.'
-      : '';
+  if ($('batch-tender-status')) {
+    $('batch-tender-status').hidden = true;
+    $('batch-tender-status').textContent = '';
   }
   return valid;
 }
 function handleTenderField(type) {
+  if (tenderCorrection) {
+    handleCorrectionTenderField(type);
+    return;
+  }
   const p=batchSnapshot?.preview;
   if(!p||!batchTenderDraft||batchRetryBody)return;
   const available=batchAvailable(p);
@@ -968,12 +1386,6 @@ function handleTenderField(type) {
     const field=$(`batch-tender-${type}`);
     const value=parseMinorInput(field.value,p);
     if(value===null||value>net){
-      const st=$('batch-tender-status');
-      if (st) {
-        st.hidden=false;
-        st.textContent='Enter a valid amount not greater than Balance.';
-        st.className='cash-tender-info is-error';
-      }
       $('batch-confirm').disabled=true;return;
     }
     if(type==='cash'){batchTenderDraft.cashMinor=value;batchTenderDraft.bankMinor=net-value;}
@@ -989,6 +1401,7 @@ function resetBatchDecision() {
   batchTenderDraft = null;
   batchSnapshot = null;
   batchClosing = null;
+  clearTenderCorrection({ rerender: false });
   $('batch-pay-commission').checked = false;
   renderBatch();
 }
@@ -1021,66 +1434,215 @@ function batchAvailable(p) {
       explanation:`Saved Rider rule: ${batchMoney(batchClosing.estimatedCommissionMinor,p)} daily commission. Expense and payable will be booked once when this collection is confirmed. No second approval.`};
   return {amount:0, auto:false, explanation:batchUnavailableReason(p,batchClosing)};
 }
-function makeTenderCorrectionEditor(entry,tender) {
-  const wrap=element('details','cash-tender-edit');
-  const summary=element('summary','','Edit collection payment methods · audited correction');
-  wrap.append(summary);
-  const info=element('p','cash-correction-notice',
-    'Only Cash/Bank classification and reference may be corrected. Invoice totals, rider and commission remain immutable.');
-  wrap.append(info);
-  const grid=element('div','cash-tender-edit-grid');
-  function field(label,text,type='text') {
-    const l=element('label','',label),el=document.createElement(type==='select'?'select':'input');
-    if(type!=='select'){el.type='text';el.inputMode='decimal';}
-    l.append(el);grid.append(l);return el;
-  }
-  const cash=field('Cash received',null);
-  const bank=field('Bank received',null);
-  const account=field('Operational bank account',null,'select');
-  const note=field('Reference / note',null);
-  cash.value=minorInputValue(tender.cashMinor,entry);
-  bank.value=minorInputValue(tender.bankMinor,entry);
-  note.value=tender.note||'';
-  banksOptions(account,tender.bankAccountId);
-  bank.addEventListener('change',()=>{
-    const n=parseMinorInput(bank.value,entry);
-    if(n!==null&&n<=entry.shopCashMinor)cash.value=minorInputValue(entry.shopCashMinor-n,entry);
-  });
-  cash.addEventListener('change',()=>{
-    const n=parseMinorInput(cash.value,entry);
-    if(n!==null&&n<=entry.shopCashMinor)bank.value=minorInputValue(entry.shopCashMinor-n,entry);
-  });
-  wrap.append(grid);
-  const actions=element('div','cash-tender-edit-actions');
-  const save=element('button','btn ghost','Save audited correction');save.type='button';
-  const status=element('span','cash-correction-notice','');
-  actions.append(save,status);wrap.append(actions);
-  save.addEventListener('click',async()=>{
-    const cashMinor=parseMinorInput(cash.value,entry),bankMinor=parseMinorInput(bank.value,entry);
-    if(cashMinor===null||bankMinor===null||cashMinor+bankMinor!==entry.shopCashMinor ||
-       (bankMinor>0&&!tenderBanks.some(a=>a.accountId===account.value))){
-      status.textContent='Cash + Bank must equal original net receipt and an active Operational bank account is required.';return;
-    }
-    const fields={cashMinor,bankMinor,bankAccountId:bankMinor?account.value:null,note:note.value.trim()};
-    const existing=correctionRetries.get(entry.settlementId);
-    const payload={expectedTenderVersion:tender.version,tender:fields,
-      submissionId:existing?.submissionId||`correct_${crypto.randomUUID().replaceAll('-','')}`};
-    if(existing&&JSON.stringify(existing)!==JSON.stringify(payload)){
-      status.textContent='Previous correction outcome uncertain. Refresh before changing values.';return;
-    }
-    if(!existing && !confirm(`Correct settlement ${entry.settlementId}? Changes are audited; original invoice payments and commission will not change.`))return;
-    correctionRetries.set(entry.settlementId,payload);save.disabled=true;
-    try {
-      await batchRequest(`${BATCH_API}/${encodeURIComponent(entry.settlementId)}/correct-tender`,'POST',payload);
-      correctionRetries.delete(entry.settlementId);
-      status.textContent='Correction recorded; refreshing history.';
-      await refresh(false);
-      batchNotice('Payment method correction recorded in audit history.','good');
-    } catch(e) {status.textContent=e.message+' — retry same values, or refresh to inspect the record.';save.disabled=false;}
-  });
-  return wrap;
+function correctionMoneyContext(entry = tenderCorrection?.entry) {
+  if (!entry) return null;
+  return {
+    currencyCode: entry.currencyCode,
+    currencyDecimals: entry.currencyDecimals,
+  };
 }
+
+function updateCollectionFormMode() {
+  const title = $('batch-panel-title');
+  const confirmBtn = $('batch-confirm');
+  const cancelBtn = $('batch-cancel-edit');
+  const editing = Boolean(tenderCorrection);
+  if (title) title.textContent = editing ? 'Edit collection' : 'New Collection';
+  if (confirmBtn) confirmBtn.textContent = editing ? 'Save payment edit' : 'Save Collection';
+  if (cancelBtn) cancelBtn.hidden = !editing;
+  if ($('collect-rider')) $('collect-rider').disabled = editing || batchConfirmBusy;
+}
+
+function clearTenderCorrection({ rerender = true } = {}) {
+  tenderCorrection = null;
+  updateCollectionFormMode();
+  if ($('collect-rider')) $('collect-rider').disabled = false;
+  if (rerender) renderBatch();
+}
+
+function fillCorrectionForm() {
+  const entry = tenderCorrection?.entry;
+  const draft = batchTenderDraft;
+  if (!entry || !draft) return;
+  const p = correctionMoneyContext(entry);
+  const net = Number(entry.shopCashMinor || 0);
+  setBatchText('batch-total-bills', entry.invoiceCount ?? '—');
+  setBatchText('batch-total', batchMoney(entry.grossMinor, p));
+  setBatchText('batch-shop-paid', '—');
+  setBatchText('batch-credit', '—');
+  setBatchText('batch-count', entry.invoiceCount ?? '—');
+  setBatchText('batch-gross', batchMoney(entry.grossMinor, p));
+  setBatchText('batch-commission', batchMoney(entry.commissionMinor || 0, p));
+  setBatchText('batch-net', batchMoney(net, p));
+  if ($('collect-rider')) $('collect-rider').value = entry.riderUserId || '';
+  if ($('batch-pay-commission')) {
+    $('batch-pay-commission').checked = Number(entry.commissionMinor || 0) > 0;
+    $('batch-pay-commission').disabled = true;
+  }
+  const busy = batchConfirmBusy;
+  for (const [id, value] of [
+    ['batch-tender-cash', draft.cashMinor],
+    ['batch-tender-bank', draft.bankMinor],
+  ]) {
+    const el = $(id);
+    if (!el) continue;
+    el.disabled = busy;
+    if (document.activeElement !== el) el.value = minorInputValue(value, p);
+  }
+  if ($('batch-tender-bank-account')) {
+    $('batch-tender-bank-account').disabled = busy || !draft.bankMinor;
+    banksOptions($('batch-tender-bank-account'), draft.bankAccountId);
+  }
+  if ($('batch-tender-note')) {
+    $('batch-tender-note').disabled = busy;
+    if (document.activeElement !== $('batch-tender-note')) {
+      $('batch-tender-note').value = draft.note || '';
+    }
+  }
+  const rem = net - Number(draft.cashMinor || 0) - Number(draft.bankMinor || 0);
+  setBatchText('batch-tender-remaining', batchMoney(rem, p));
+  if ($('batch-commission-detail')) {
+    $('batch-commission-detail').hidden = true;
+    $('batch-commission-detail').textContent = '';
+  }
+  if ($('batch-tender-status')) {
+    $('batch-tender-status').hidden = true;
+    $('batch-tender-status').textContent = '';
+  }
+  const valid =
+    Number.isSafeInteger(draft.cashMinor) &&
+    Number.isSafeInteger(draft.bankMinor) &&
+    draft.cashMinor + draft.bankMinor === net &&
+    (!draft.bankMinor ||
+      (draft.bankAccountId && tenderBanks.some((a) => a.accountId === draft.bankAccountId)));
+  if ($('batch-confirm')) $('batch-confirm').disabled = busy || !valid;
+  updateCollectionFormMode();
+}
+
+function editCollectionPayment(entry, tender) {
+  if (!isCommissionAdmin || !entry?.settlementId) return;
+  const pay = tender || entry.tender || {
+    cashMinor: entry.shopCashMinor,
+    bankMinor: 0,
+    bankAccountId: null,
+    note: '',
+    version: 0,
+  };
+  tenderCorrection = {
+    entry,
+    tender: pay,
+    expectedTenderVersion: Number(pay.version || 0),
+  };
+  selectedRiderId = entry.riderUserId || null;
+  if (entry.businessDate) syncBatchDateRange(entry.businessDate);
+  batchRetryBody = null;
+  batchTenderDraft = {
+    key: `correct:${entry.settlementId}`,
+    cashMinor: Number(pay.cashMinor || 0),
+    bankMinor: Number(pay.bankMinor || 0),
+    bankAccountId: pay.bankAccountId || '',
+    note: pay.note || '',
+  };
+  if ($('batch-panel')) $('batch-panel').hidden = false;
+  fillCorrectionForm();
+  showRiders();
+  $('batch-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function handleCorrectionTenderField(type) {
+  const entry = tenderCorrection?.entry;
+  if (!entry || !batchTenderDraft || batchConfirmBusy) return;
+  const p = correctionMoneyContext(entry);
+  const net = Number(entry.shopCashMinor || 0);
+  if (type === 'cash' || type === 'bank') {
+    const value = parseMinorInput($(`batch-tender-${type}`).value, p);
+    if (value === null || value > net) {
+      if ($('batch-confirm')) $('batch-confirm').disabled = true;
+      return;
+    }
+    if (type === 'cash') {
+      batchTenderDraft.cashMinor = value;
+      batchTenderDraft.bankMinor = net - value;
+    } else {
+      batchTenderDraft.bankMinor = value;
+      batchTenderDraft.cashMinor = net - value;
+    }
+    if (batchTenderDraft.bankMinor === 0) batchTenderDraft.bankAccountId = '';
+  } else if (type === 'account') {
+    batchTenderDraft.bankAccountId = $('batch-tender-bank-account').value;
+  } else if (type === 'note') {
+    batchTenderDraft.note = $('batch-tender-note').value.trim();
+  }
+  fillCorrectionForm();
+}
+
+async function confirmTenderCorrection() {
+  if (batchConfirmBusy || !isCommissionAdmin || !tenderCorrection?.entry || !batchTenderDraft) return;
+  const entry = tenderCorrection.entry;
+  const p = correctionMoneyContext(entry);
+  const net = Number(entry.shopCashMinor || 0);
+  const cashMinor = batchTenderDraft.cashMinor;
+  const bankMinor = batchTenderDraft.bankMinor;
+  if (
+    !Number.isSafeInteger(cashMinor) ||
+    !Number.isSafeInteger(bankMinor) ||
+    cashMinor + bankMinor !== net ||
+    (bankMinor > 0 && !tenderBanks.some((a) => a.accountId === batchTenderDraft.bankAccountId))
+  ) {
+    batchNotice('Cash + Bank must equal Balance. Select a bank account when bank is used.', 'bad');
+    return;
+  }
+  const fields = {
+    cashMinor,
+    bankMinor,
+    bankAccountId: bankMinor ? batchTenderDraft.bankAccountId : null,
+    note: batchTenderDraft.note || '',
+  };
+  const existing = correctionRetries.get(entry.settlementId);
+  const payload = {
+    expectedTenderVersion: tenderCorrection.expectedTenderVersion,
+    tender: fields,
+    submissionId: existing?.submissionId || `correct_${crypto.randomUUID().replaceAll('-', '')}`,
+  };
+  if (existing && JSON.stringify(existing) !== JSON.stringify(payload)) {
+    batchNotice('Previous correction is pending. Refresh before changing values.', 'bad');
+    return;
+  }
+  if (
+    !existing &&
+    !confirm(
+      `Save payment edit for ${entry.businessDate}?\nCash ${batchMoney(cashMinor, p)} · Bank ${batchMoney(bankMinor, p)}`
+    )
+  ) {
+    return;
+  }
+  correctionRetries.set(entry.settlementId, payload);
+  batchConfirmBusy = true;
+  fillCorrectionForm();
+  try {
+    await batchRequest(
+      `${BATCH_API}/${encodeURIComponent(entry.settlementId)}/correct-tender`,
+      'POST',
+      payload
+    );
+    correctionRetries.delete(entry.settlementId);
+    batchConfirmBusy = false;
+    clearTenderCorrection({ rerender: false });
+    await refresh(false);
+    batchNotice('Payment edit saved.', 'good');
+  } catch (error) {
+    batchConfirmBusy = false;
+    fillCorrectionForm();
+    batchNotice(`${error.message}. Retry the same values, or refresh.`, 'bad');
+  }
+}
+
 function renderBatch() {
+  if (tenderCorrection) {
+    fillCorrectionForm();
+    return;
+  }
+  updateCollectionFormMode();
   const p = batchSnapshot?.preview || null;
   const o = p?.overview;
   setBatchText('batch-total-bills', o?.totalDeliveredBills ?? '—');
@@ -1091,13 +1653,9 @@ function renderBatch() {
   setBatchText('batch-gross',p ? batchMoney(p.grossMinor,p) : '—');
   const available = batchAvailable(p);
   setBatchText('batch-commission',p ? batchMoney(available.amount,p) : '—');
-  {
-    const detail = $('batch-commission-detail');
-    if (detail) {
-      const show = Boolean(p) && available.amount <= 0 && available.explanation;
-      detail.hidden = !show;
-      detail.textContent = show ? available.explanation : '';
-    }
+  if ($('batch-commission-detail')) {
+    $('batch-commission-detail').hidden = true;
+    $('batch-commission-detail').textContent = '';
   }
   const opt = $('batch-pay-commission');
   opt.disabled = !p?.invoiceCount || !Number.isSafeInteger(available.amount) ||
@@ -1124,57 +1682,7 @@ function renderBatch() {
     item.append(heading,invoiceDetails(inv,p.currencyCode,p.currencyDecimals));
     rows.append(item);
   }
-  const history = $('batch-history'); history.replaceChildren();
-  const items = (batchSnapshot?.history || []).filter(x=>x.riderUserId === selectedRiderId).slice(0,100);
-  if ($('collections-count')) $('collections-count').textContent = String(items.length);
-  if (!items.length) {
-    history.append(element('p','cash-empty',selectedRiderId ? 'No collections for this rider yet.' : 'Select a rider to view collections.'));
-  }
-  const riderName = getRiders().find((r) => r.userId === selectedRiderId)?.fullName || 'Rider';
-  for (const entry of items) {
-    const tender=entry.tender||{cashMinor:entry.shopCashMinor,bankMinor:0,bankAccountId:null,version:0,note:''};
-    const card = element('article', 'cash-collection-card');
-    const head = element('div', 'cash-collection-card-head');
-    head.append(
-      element('strong', '', `${riderName} · ${entry.businessDate}`),
-      element('time', '', `${entry.invoiceCount} bill${entry.invoiceCount === 1 ? '' : 's'}`)
-    );
-    card.append(head);
-    const metrics = element('div', 'cash-collection-metrics');
-    const cells = [
-      ['Payable', moneyLabel(entry.grossMinor, entry.currencyDecimals, entry.currencyCode),
-        Number(entry.commissionMinor) > 0
-          ? `Comm. ${moneyLabel(entry.commissionMinor, entry.currencyDecimals, entry.currencyCode)}`
-          : ''],
-      ['Cash', moneyLabel(tender.cashMinor, entry.currencyDecimals, entry.currencyCode), ''],
-      ['Bank', moneyLabel(tender.bankMinor, entry.currencyDecimals, entry.currencyCode),
-        tender.note || ''],
-      ['Remaining', moneyLabel(0, entry.currencyDecimals, entry.currencyCode), 'Settled'],
-    ];
-    for (const [label, value, note] of cells) {
-      const cell = element('div', 'cash-metric');
-      cell.append(element('span', '', label), element('strong', '', value));
-      if (note) cell.append(element('small', '', note));
-      metrics.append(cell);
-    }
-    card.append(metrics);
-    const breakdown=element('details','cash-history-breakdown');
-    breakdown.append(element('summary','',`View ${entry.invoiceCount} invoice details`));
-    breakdown.append(element('p','cash-bill-footnote',entry.commissionAllocationNote ||
-      'Commission is recorded at settlement level; no invoice split is assumed.'));
-    for(const inv of entry.orders || []) {
-      const invoice=element('div','cash-bill-line');
-      const billHead=element('div','cash-bill-line-head');
-      billHead.append(element('strong','',inv.orderNumber),element('strong','',
-        money(inv.amountMinor,entry.currencyDecimals,entry.currencyCode)));
-      invoice.append(billHead,invoiceDetails(inv,entry.currencyCode,entry.currencyDecimals,true));
-      breakdown.append(invoice);
-    }
-    if (!Array.isArray(entry.orders)) breakdown.append(element('p','cash-bill-footnote','Invoice details unavailable for this older history record.'));
-    card.append(breakdown);
-    card.append(makeTenderCorrectionEditor(entry,tender));
-    history.append(card);
-  }
+  renderPaymentHistory();
   // Keep summary table in sync when preview loads.
   showRiders();
   // Fail closed when a configured commission is positive but cannot yet be
@@ -1213,7 +1721,14 @@ async function loadBatch() {
         batchClosing = {error:error.message};
       }
     }
+    if (rider) {
+      riderDaySummaries.set(rider, {
+        preview: result.preview || null,
+        closing: batchClosing,
+      });
+    }
     renderBatch();
+    showRiders();
     const available=batchAvailable(result.preview);
     if(!batchRetryBody && result.preview && available.amount>0 && available.amount<=result.preview.grossMinor){
       $('batch-pay-commission').checked=true; renderBatch();
@@ -1242,6 +1757,10 @@ async function loadBatch() {
 }
 async function confirmBatch() {
   if (batchConfirmBusy || !isCommissionAdmin) return;
+  if (tenderCorrection) {
+    await confirmTenderCorrection();
+    return;
+  }
   const p = batchSnapshot?.preview;
   if (!p?.invoiceCount || p.riderUserId !== selectedRiderId || p.businessDate !== $('batch-day').value) return;
   const available = batchAvailable(p);
@@ -1285,13 +1804,47 @@ async function confirmBatch() {
     batchNotice(`${error.message}. If the connection failed, retry without changing the selection or amounts.`, 'bad');
   }
 }
-$('batch-day').addEventListener('change', () => {resetBatchDecision();renderRiderDates();void loadBatch();});
+function onBatchDateChange() {
+  syncBatchDateRange($('batch-day').value);
+  resetBatchDecision();
+  renderRiderDates();
+  if ($('history-day-from') && !$('history-day-from').dataset.touched) {
+    $('history-day-from').value = batchDateFrom();
+  }
+  if ($('history-day-to') && !$('history-day-to').dataset.touched) {
+    $('history-day-to').value = batchDateTo();
+  }
+  void Promise.all([loadBatch(), loadRiderDaySummaries(), loadPaymentHistory()]);
+}
+$('batch-day-from')?.addEventListener('change', onBatchDateChange);
+$('batch-day').addEventListener('change', onBatchDateChange);
+$('view-payment-history')?.addEventListener('click', () => focusPaymentHistory());
+$('history-refresh')?.addEventListener('click', () => void loadPaymentHistory());
+$('history-rider')?.addEventListener('change', () => void loadPaymentHistory());
+$('history-day-from')?.addEventListener('change', () => {
+  if ($('history-day-from')) $('history-day-from').dataset.touched = '1';
+  void loadPaymentHistory();
+});
+$('history-day-to')?.addEventListener('change', () => {
+  if ($('history-day-to')) $('history-day-to').dataset.touched = '1';
+  void loadPaymentHistory();
+});
 $('shift-close').addEventListener('click',()=>void changeShift('close'));
 $('shift-open').addEventListener('click',()=>void changeShift('open'));
 $('batch-refresh').addEventListener('click', () => {resetBatchDecision();void refresh();});
-$('batch-pay-commission').addEventListener('change', () => {batchRetryBody=null;renderBatch();});
+$('batch-cancel-edit')?.addEventListener('click', () => {
+  clearTenderCorrection({ rerender: false });
+  batchTenderDraft = null;
+  void loadBatch();
+});
+$('batch-pay-commission').addEventListener('change', () => {
+  if (tenderCorrection) return;
+  batchRetryBody=null;
+  renderBatch();
+});
 $('batch-confirm').addEventListener('click', () => void confirmBatch());
 $('collect-rider')?.addEventListener('change', () => {
+  if (tenderCorrection) return;
   selectRider($('collect-rider').value || null);
 });
 

@@ -117,6 +117,47 @@ export function getKitchenLibrary(shopId = DEFAULT_SHOP, opts = {}) {
   };
 }
 
+/**
+ * New kitchen-library options are on for every item by default.
+ * Staff hide them later by unchecking in each item's Menu editor.
+ * - modifiers/targets: attach to customized items (shop-default items already inherit all active)
+ * - standalone: attach to every item (shop defaults also inherit all active standalones)
+ */
+function enableNewKitchenOptionOnItems(kind, optionId) {
+  const db = getDb();
+  if (kind === "modifier") {
+    const items = db
+      .prepare(
+        `SELECT item_id FROM menu_items WHERE COALESCE(instruction_customized, 0) = 1`
+      )
+      .all();
+    const link = db.prepare(
+      `INSERT OR IGNORE INTO menu_item_allowed_modifiers (item_id, modifier_id) VALUES (?, ?)`
+    );
+    for (const row of items) link.run(row.item_id, optionId);
+    return;
+  }
+  if (kind === "target") {
+    const items = db
+      .prepare(
+        `SELECT item_id FROM menu_items WHERE COALESCE(instruction_customized, 0) = 1`
+      )
+      .all();
+    const link = db.prepare(
+      `INSERT OR IGNORE INTO menu_item_allowed_targets (item_id, target_id) VALUES (?, ?)`
+    );
+    for (const row of items) link.run(row.item_id, optionId);
+    return;
+  }
+  if (kind === "standalone") {
+    const items = db.prepare(`SELECT item_id FROM menu_items`).all();
+    const link = db.prepare(
+      `INSERT OR IGNORE INTO menu_item_allowed_standalone (item_id, standalone_id) VALUES (?, ?)`
+    );
+    for (const row of items) link.run(row.item_id, optionId);
+  }
+}
+
 function upsertNamed(table, idCol, prefix, shopId, input, { role } = {}) {
   if (role !== "admin") {
     throw Object.assign(new Error("Admin role required"), { status: 403 });
@@ -155,6 +196,7 @@ function upsertNamed(table, idCol, prefix, shopId, input, { role } = {}) {
         ? Number(existing.sort_order || 0)
         : 0;
 
+  const created = !existing;
   if (existing) {
     db.prepare(
       `UPDATE ${table} SET name = ?, name_norm = ?, is_active = ?, sort_order = ?, updated_at = ?
@@ -168,7 +210,10 @@ function upsertNamed(table, idCol, prefix, shopId, input, { role } = {}) {
     ).run(id, shopId, name, nameNorm, isActive ? 1 : 0, sortOrder, ts, ts);
   }
   syncShopJson(shopId);
-  return db.prepare(`SELECT * FROM ${table} WHERE ${idCol} = ?`).get(id);
+  return {
+    row: db.prepare(`SELECT * FROM ${table} WHERE ${idCol} = ?`).get(id),
+    created,
+  };
 }
 
 function findIdByName(table, idCol, shopId, name) {
@@ -187,12 +232,16 @@ export function upsertModifier(shopId, input, opts) {
     input.modifierId ||
     input.id ||
     (name ? findIdByName("kitchen_modifiers", "modifier_id", shopId, name) : null);
-  return mapMod(
-    upsertNamed("kitchen_modifiers", "modifier_id", "mod", shopId, {
-      ...input,
-      id,
-    }, opts)
+  const { row, created } = upsertNamed(
+    "kitchen_modifiers",
+    "modifier_id",
+    "mod",
+    shopId,
+    { ...input, id },
+    opts
   );
+  if (created) enableNewKitchenOptionOnItems("modifier", row.modifier_id);
+  return mapMod(row);
 }
 
 export function upsertTarget(shopId, input, opts) {
@@ -201,12 +250,16 @@ export function upsertTarget(shopId, input, opts) {
     input.targetId ||
     input.id ||
     (name ? findIdByName("kitchen_targets", "target_id", shopId, name) : null);
-  return mapTgt(
-    upsertNamed("kitchen_targets", "target_id", "tgt", shopId, {
-      ...input,
-      id,
-    }, opts)
+  const { row, created } = upsertNamed(
+    "kitchen_targets",
+    "target_id",
+    "tgt",
+    shopId,
+    { ...input, id },
+    opts
   );
+  if (created) enableNewKitchenOptionOnItems("target", row.target_id);
+  return mapTgt(row);
 }
 
 export function upsertStandalone(shopId, input, opts) {
@@ -215,12 +268,16 @@ export function upsertStandalone(shopId, input, opts) {
     input.standaloneId ||
     input.id ||
     (name ? findIdByName("kitchen_standalone", "standalone_id", shopId, name) : null);
-  return mapStand(
-    upsertNamed("kitchen_standalone", "standalone_id", "std", shopId, {
-      ...input,
-      id,
-    }, opts)
+  const { row, created } = upsertNamed(
+    "kitchen_standalone",
+    "standalone_id",
+    "std",
+    shopId,
+    { ...input, id },
+    opts
   );
+  if (created) enableNewKitchenOptionOnItems("standalone", row.standalone_id);
+  return mapStand(row);
 }
 
 export function setOptionActive(table, idCol, id, isActive, { role } = {}) {
@@ -283,18 +340,16 @@ export function getItemInstructionConfig(itemId, shopId = DEFAULT_SHOP) {
     );
     modifiers = allMods.filter((m) => modIds.has(m.modifierId));
     targets = allTgts.filter((t) => tgtIds.has(t.targetId));
-    standalone = allStand.filter((s) => stdIds.has(s.standaloneId));
+    // Empty standalone links = inherit shop library (same as defaults).
+    // Once any standalone is saved on the item, only those stay available.
+    standalone =
+      stdIds.size === 0
+        ? allStand
+        : allStand.filter((s) => stdIds.has(s.standaloneId));
   } else {
-    // Shop defaults: all active modifiers/targets; no standalones unless linked
-    const stdIds = new Set(
-      db
-        .prepare(
-          `SELECT standalone_id FROM menu_item_allowed_standalone WHERE item_id = ?`
-        )
-        .all(itemId)
-        .map((r) => r.standalone_id)
-    );
-    standalone = allStand.filter((s) => stdIds.has(s.standaloneId));
+    // Shop defaults: every active modifier, target, and standalone note.
+    // Uncheck per item only after switching that item to Customize.
+    standalone = allStand;
   }
 
   const blocked = db

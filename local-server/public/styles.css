@@ -6292,8 +6292,23 @@ dialog[hidden] {
   padding: 0;
 }
 
+.standalone-block {
+  margin-top: 0.85rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line);
+}
+
+.standalone-block .step-heading {
+  margin: 0 0 0.45rem;
+}
+
 #standalone-chips.kitchen-choice-chips {
-  margin-top: 10px;
+  margin-top: 0;
+}
+
+.standalone-empty {
+  margin: 0.25rem 0 0;
+  font-size: 0.86rem;
 }
 
 .customize-dialog .kitchen-choice,
@@ -6983,7 +6998,7 @@ body.customize-open {
   background: #fff;
 }
 
-.pending-payment-card div {
+.pending-payment-card > div:not(.pending-payment-actions) {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6997,6 +7012,85 @@ body.customize-open {
 .pending-payment-due {
   font-size: 1.15rem;
   font-weight: 800;
+}
+
+.pending-payment-actions {
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  gap: 0.45rem;
+  margin-top: 0.25rem;
+}
+
+.pending-payment-actions .btn {
+  flex: 1;
+  min-height: 42px;
+}
+
+.unpaid-bill-body {
+  padding: 0.75rem 1rem 0.35rem;
+  max-height: min(60vh, 28rem);
+  overflow: auto;
+}
+
+.unpaid-bill-lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.unpaid-bill-line {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.unpaid-bill-line:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.unpaid-bill-line-main {
+  min-width: 0;
+}
+
+.unpaid-bill-line-notes {
+  margin-top: 0.2rem;
+  color: #0b539e;
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.unpaid-bill-line-price {
+  flex: none;
+  white-space: nowrap;
+}
+
+.unpaid-bill-summary {
+  margin-top: 0.85rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.unpaid-bill-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.92rem;
+}
+
+.unpaid-bill-total {
+  font-size: 1.05rem;
 }
 
 .payment-order-number {

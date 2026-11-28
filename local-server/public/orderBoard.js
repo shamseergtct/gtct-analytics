@@ -118,14 +118,64 @@ export function boardLane(order) {
   return "pending";
 }
 
+/** Lowest token first within a type / lane block. */
 export function compareOrders(a, b) {
   const tokenA = Number(a.tokenNumber);
   const tokenB = Number(b.tokenNumber);
-  if (Number.isFinite(tokenA) && Number.isFinite(tokenB) && tokenA !== tokenB) return tokenB - tokenA;
-  return String(b.orderNumber || "").localeCompare(String(a.orderNumber || ""), undefined, {
+  const aOk = Number.isFinite(tokenA) && a.tokenNumber != null && a.tokenNumber !== "";
+  const bOk = Number.isFinite(tokenB) && b.tokenNumber != null && b.tokenNumber !== "";
+  if (aOk && bOk && tokenA !== tokenB) return tokenA - tokenB;
+  if (aOk && !bOk) return -1;
+  if (!aOk && bOk) return 1;
+  return String(a.orderNumber || "").localeCompare(String(b.orderNumber || ""), undefined, {
     numeric: true,
     sensitivity: "base",
   });
+}
+
+/** Same block, then same road, then token — for Delivery board/list. */
+export function compareByBlockRoad(a, b) {
+  const block = String(a.blockNumber || "").localeCompare(String(b.blockNumber || ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (block) return block;
+  const road = String(a.roadNumber || "").localeCompare(String(b.roadNumber || ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+  if (road) return road;
+  const building = String(a.buildingNumber || "").localeCompare(
+    String(b.buildingNumber || ""),
+    undefined,
+    { numeric: true, sensitivity: "base" }
+  );
+  if (building) return building;
+  return compareOrders(a, b);
+}
+
+function appendSortedCards(grid, rows, ctx, sortMode) {
+  const compare = sortMode === "block-road" ? compareByBlockRoad : compareOrders;
+  const sorted = [...rows].sort(compare);
+  if (sortMode !== "block-road") {
+    for (const order of sorted) grid.append(renderOrderCard(order, ctx));
+    return;
+  }
+  let lastKey = null;
+  for (const order of sorted) {
+    const key = `${order.blockNumber || "—"}|${order.roadNumber || "—"}`;
+    if (key !== lastKey) {
+      lastKey = key;
+      const label = [
+        order.blockNumber ? `Block ${order.blockNumber}` : "Block not recorded",
+        order.roadNumber ? `Road ${order.roadNumber}` : null,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      grid.append(node("p", "monitor-route-group", label));
+    }
+    grid.append(renderOrderCard(order, ctx));
+  }
 }
 
 function smallBadge(value, className) {
@@ -1141,7 +1191,8 @@ export function boardFingerprint(orders) {
  * @param {{ session: object, expandedOrderIds: Set, api: Function, onRefresh: Function }} ctx
  */
 export function renderBoard(host, orders, ctx) {
-  const nextFp = boardFingerprint(orders);
+  const sortMode = ctx?.sortMode === "block-road" ? "block-road" : "token";
+  const nextFp = `${boardFingerprint(orders)}|${sortMode}`;
   if (host.dataset.boardFp === nextFp && host.childElementCount > 0) {
     return false;
   }
@@ -1172,8 +1223,12 @@ export function renderBoard(host, orders, ctx) {
     const typeCount = LANE_ORDER.reduce((n, lane) => n + buckets[lane.key].length, 0);
     const section = node("section", "monitor-type-section");
     section.append(node("h2", "monitor-type-heading", `${titleCase(type)} · ${typeCount}`));
+    // Delivery + block/road sort: use route order inside each lane.
+    // All other types (and Delivery by token): token number ascending.
+    const laneSort =
+      type === "DELIVERY" && sortMode === "block-road" ? "block-road" : "token";
     for (const lane of LANE_ORDER) {
-      const rows = buckets[lane.key].sort(compareOrders);
+      const rows = buckets[lane.key];
       if (!rows.length) continue;
       const label = type === "DELIVERY" ? lane.deliveryLabel : lane.otherLabel;
       const isDone = lane.key === "delivered";
@@ -1187,13 +1242,13 @@ export function renderBoard(host, orders, ctx) {
         sum.textContent = `${label} (${rows.length}) – Show`;
         wrap.append(sum);
         const grid = node("div", "monitor-lane-grid");
-        for (const order of rows) grid.append(renderOrderCard(order, ctx));
+        appendSortedCards(grid, rows, ctx, laneSort);
         wrap.append(grid);
         laneEl.append(wrap);
       } else {
         laneEl.append(laneHeading(label, rows.length));
         const grid = node("div", "monitor-lane-grid");
-        for (const order of rows) grid.append(renderOrderCard(order, ctx));
+        appendSortedCards(grid, rows, ctx, laneSort);
         laneEl.append(grid);
       }
       section.append(laneEl);

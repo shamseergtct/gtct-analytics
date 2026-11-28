@@ -17,7 +17,7 @@
     <link rel="stylesheet" href="/styles.css?v=sales-ui-customize-clear" />
     <meta http-equiv="Cache-Control" content="no-cache" />
     <link rel="stylesheet" href="/delivery-navigation.css" />
-    <link rel="stylesheet" href="/virtual-keyboard.css" />
+    <link rel="stylesheet" href="/virtual-keyboard.css?v=vk-split-pad" />
     <link rel="stylesheet" href="/mobile.css" />
   </head>
   <body class="sales-app">
@@ -583,7 +583,11 @@
             <div id="kitchen-step-1" class="kitchen-step">
               <p class="step-heading" id="kitchen-step-label"><span class="step-num" aria-hidden="true">1</span> What change?</p>
               <div id="mod-chips" class="chips kitchen-choice-chips" role="group" aria-label="What change"></div>
-              <div id="standalone-chips" class="chips kitchen-choice-chips" aria-label="Quick notes"></div>
+              <div id="standalone-block" class="standalone-block">
+                <p class="step-heading" id="standalone-step-label">Quick notes</p>
+                <div id="standalone-chips" class="chips kitchen-choice-chips" role="group" aria-label="Quick notes"></div>
+                <p id="standalone-empty" class="muted standalone-empty" hidden>No standalone notes in the kitchen library yet.</p>
+              </div>
             </div>
             <div id="kitchen-step-2" class="kitchen-step" hidden>
               <button type="button" id="kitchen-step-back" class="kitchen-change-action">← Change action</button>
@@ -765,7 +769,7 @@
               <span>Remaining after entry</span><strong id="payment-remaining">—</strong>
             </div>
             <label id="payment-print-wrap" class="check-row review-print-choice">
-              <input id="payment-print-cashier" type="checkbox" checked />
+              <input id="payment-print-cashier" type="checkbox" />
               <span>Print paid cashier receipt</span>
             </label>
           </div>
@@ -776,6 +780,23 @@
           <button type="button" id="payment-back" class="btn ghost">Back to Sales</button>
           <button type="button" id="payment-renew" class="btn ghost" hidden>Prepare a new confirmation</button>
           <button type="button" id="payment-confirm" class="btn primary payment-confirm">Record Payment</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="unpaid-bill-dialog" class="review-dialog" aria-labelledby="unpaid-bill-title">
+      <div class="review-dialog-inner">
+        <header class="review-dialog-head">
+          <div class="review-dialog-title">
+            <h3 id="unpaid-bill-title">Bill details</h3>
+            <span class="banner compact test-badge">TEST</span>
+          </div>
+          <p id="unpaid-bill-meta" class="review-meta"></p>
+        </header>
+        <div id="unpaid-bill-body" class="unpaid-bill-body"></div>
+        <div class="dialog-actions review-footer">
+          <button type="button" id="unpaid-bill-close" class="btn ghost">Close</button>
+          <button type="button" id="unpaid-bill-pay" class="btn primary">Take Payment</button>
         </div>
       </div>
     </dialog>
@@ -791,7 +812,7 @@
     </dialog>
 
     <script defer src="/delivery-navigation.js"></script>
-    <script type="module" src="/app.js?v=sales-ui-customize-clear"></script>
+    <script type="module" src="/app.js?v=standalone-always"></script>
       <script defer src="/scroll-nav.js"></script>
   </body>
 </html>

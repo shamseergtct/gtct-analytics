@@ -3032,7 +3032,8 @@ export function createServer(config) {
         try {
           if(method==='GET'){
             sendJson(res,200,listRiderNetSettlements(config.testTenantId,auth,
-              url.searchParams.get('riderUserId')||'',url.searchParams.get('businessDate')||''));
+              url.searchParams.get('riderUserId')||'',url.searchParams.get('businessDate')||'',
+              url.searchParams.get('dateFrom')||'',url.searchParams.get('dateTo')||''));
           }else{
             const body=await readBody(req);
             if(body.shopId && body.shopId!==config.testTenantId){

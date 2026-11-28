@@ -393,6 +393,9 @@ function DeliveredTotals({ summary, currencyDecimals, currencyCode }) {
     { label: "Customer credit", value: summary.credit },
     ...(summary.unmarked > 0 ? [{ label: "Payment not marked", value: summary.unmarked }] : []),
     { label: "Commission", value: summary.commission },
+    ...(summary.alreadySettled > 0
+      ? [{ label: "Already settled with shop", value: summary.alreadySettled }]
+      : []),
   ];
   const shopOwesRider = summary.balanceToShop < 0;
   return (
@@ -490,12 +493,14 @@ export function splitDeliveredOrder(order) {
   riderCash = Math.max(riderCash, riderHanded);
   // The shop's records win: never count more than the order total.
   riderCash = Math.min(riderCash, Math.max(0, total - shopPaid - credit));
+  const handed = Math.min(riderHanded, riderCash);
   const unmarked = Math.max(0, total - riderCash - shopPaid - credit);
-  return { total, riderCash, shopPaid, credit, unmarked };
+  return { total, riderCash, riderHanded: handed, shopPaid, credit, unmarked };
 }
 
 function summarizeShopOrders(orders, deliveryBoy) {
   let collection = 0;
+  let alreadySettled = 0;
   let shopPaid = 0;
   let credit = 0;
   let unmarked = 0;
@@ -508,6 +513,7 @@ function summarizeShopOrders(orders, deliveryBoy) {
     const parts = splitDeliveredOrder(order);
     all += parts.total / scale;
     collection += parts.riderCash / scale;
+    alreadySettled += parts.riderHanded / scale;
     shopPaid += parts.shopPaid / scale;
     credit += parts.credit / scale;
     unmarked += parts.unmarked / scale;
@@ -515,21 +521,28 @@ function summarizeShopOrders(orders, deliveryBoy) {
   }
   commission += dailyTargetTotal(orders, deliveryBoy);
   collection = roundMoney(collection, decimals);
+  alreadySettled = roundMoney(alreadySettled, decimals);
   shopPaid = roundMoney(shopPaid, decimals);
   credit = roundMoney(credit, decimals);
   unmarked = roundMoney(unmarked, decimals);
   commission = roundMoney(commission, decimals);
   all = roundMoney(all, decimals);
+  // Remaining cash still owed to the shop after commission and cash already handed in.
+  const balanceToShop = roundMoney(
+    collection - alreadySettled - commission,
+    decimals
+  );
   return {
     count: orders.length,
     collection,
+    alreadySettled,
     shopPaid,
     credit,
     unmarked,
     commission,
     all,
     // Negative = the shop owes the rider (e.g. commission on shop-paid orders).
-    balanceToShop: roundMoney(collection - commission, decimals),
+    balanceToShop,
   };
 }
 
@@ -1049,10 +1062,17 @@ function OrderCard({
   );
 }
 
+function matchesActiveShift(order, businessDate) {
+  const shiftDay = String(businessDate || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(shiftDay)) return true;
+  return String(order?.businessDate || "").slice(0, 10) === shiftDay;
+}
+
 export default function RestaurantShopOrders({
   clientId,
   deliveryBoyId,
   deliveryBoy = null,
+  businessDate = "",
 }) {
   const [tab, setTab] = useState("new");
   const [deliveredPane, setDeliveredPane] = useState("totals"); // totals | orders
@@ -1064,6 +1084,7 @@ export default function RestaurantShopOrders({
   const [busyId, setBusyId] = useState("");
   const [expandedId, setExpandedId] = useState("");
   const [notice, setNotice] = useState("");
+  const activeShiftDate = String(businessDate || "").slice(0, 10);
 
   useEffect(() => {
     if (!clientId || !deliveryBoyId) {
@@ -1092,6 +1113,7 @@ export default function RestaurantShopOrders({
             o.id,
             o.status,
             o.tokenNumber ?? "",
+            o.businessDate || "",
             o.paymentReport?.status || "",
             o.paymentReport?.version ?? "",
             o.shopPayment?.status || "",
@@ -1112,7 +1134,9 @@ export default function RestaurantShopOrders({
       for (const row of [...availableRows, ...mineRows]) {
         byId.set(row.id, row);
       }
-      const rows = Array.from(byId.values());
+      const rows = Array.from(byId.values()).filter((row) =>
+        matchesActiveShift(row, activeShiftDate)
+      );
       rows.sort(
         (a, b) => Number(b.publishedAt || 0) - Number(a.publishedAt || 0)
       );
@@ -1156,7 +1180,7 @@ export default function RestaurantShopOrders({
       unsubAvailable();
       unsubMine();
     };
-  }, [clientId, deliveryBoyId]);
+  }, [clientId, deliveryBoyId, activeShiftDate]);
 
   const newOrders = useMemo(
     () => orders.filter((o) => o.status === POOL_STATUS.AVAILABLE),
@@ -1514,7 +1538,11 @@ export default function RestaurantShopOrders({
                   Delivered
                 </h2>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  Settlement and order history
+                  Active shift
+                  {/^\d{4}-\d{2}-\d{2}$/.test(activeShiftDate)
+                    ? ` · ${activeShiftDate}`
+                    : ""}{" "}
+                  · settlement and order history
                 </p>
               </div>
             </div>
@@ -1559,9 +1587,12 @@ export default function RestaurantShopOrders({
               {tab === "new" ? "New orders" : "Accepted orders"}
             </h2>
             <p className="mt-0.5 text-xs text-slate-500">
+              {/^\d{4}-\d{2}-\d{2}$/.test(activeShiftDate)
+                ? `Active shift · ${activeShiftDate} · `
+                : ""}
               {tab === "new"
-                ? "Ready shop deliveries waiting for accept"
-                : "Orders you accepted · mark delivered when done"}
+                ? "ready shop deliveries waiting for accept"
+                : "orders you accepted · mark delivered when done"}
             </p>
           </div>
         )}
@@ -1572,7 +1603,9 @@ export default function RestaurantShopOrders({
               {filterActive
                 ? "No orders match this block / road filter."
                 : tab === "new"
-                  ? "No new shop deliveries right now."
+                  ? /^\d{4}-\d{2}-\d{2}$/.test(activeShiftDate)
+                    ? `No new shop deliveries for shift ${activeShiftDate}.`
+                    : "No new shop deliveries right now."
                   : tab === "view"
                     ? "No accepted shop deliveries yet."
                     : "No delivered shop orders yet."}

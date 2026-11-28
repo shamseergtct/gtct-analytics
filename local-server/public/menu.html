@@ -9,7 +9,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png" />
     <link rel="stylesheet" href="/styles.css" />
     <link rel="stylesheet" href="/menu-setup.css" />
-    <link rel="stylesheet" href="/virtual-keyboard.css" />
+    <link rel="stylesheet" href="/virtual-keyboard.css?v=vk-split-pad" />
   </head>
   <body class="menu-setup-page">
     <div id="app">
@@ -273,7 +273,7 @@
                         <button type="button" id="instr-customize" class="btn ghost small">Customize</button>
                       </div>
                     </div>
-                    <p id="instr-mode-hint" class="muted" style="margin:0 0 8px">Using shop defaults (all active modifiers &amp; targets).</p>
+                    <p id="instr-mode-hint" class="muted" style="margin:0 0 8px">Using shop defaults (all active modifiers, targets, and standalone notes).</p>
                     <p id="instr-summary" class="instr-summary">Shop defaults apply to this item.</p>
                     <div id="instr-custom-fields" hidden>
                     <p class="check-group-label">Allowed modifiers <button type="button" class="linkish" id="mods-select-all">Select all</button> <button type="button" class="linkish" id="mods-clear">Clear</button></p>
@@ -289,7 +289,7 @@
                     <div class="editor-section-head">
                       <h3>Add-ons</h3>
                     </div>
-                    <p class="muted" style="margin:0 0 8px">Tick to allow on this item. Item price is optional. Leave it blank to use the library price. If neither price is set, Sales asks for a price when the add-on is selected.</p>
+                    <p class="muted" style="margin:0 0 8px">New extras are on for every item by default. Untick to hide on this item. Item price is optional — leave blank to use the library price. If neither price is set, Sales asks for a price when the add-on is selected.</p>
                     <div id="item-addon-checks" class="addon-assign-list"></div>
                   </div>
                 </section>

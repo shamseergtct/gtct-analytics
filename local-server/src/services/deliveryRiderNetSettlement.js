@@ -199,15 +199,22 @@ function quote(db,shopId,riderId,day){
     snapshotHash:digest({shopId,riderId,day,currencyCode,currencyDecimals,receipt}),
     note:'Gross customer paid cash is NOT physical shop cash. Net shop cash is gross less approved commission offset.'};
 }
-export function listRiderNetSettlements(shopId,actor,riderId,day){
+export function listRiderNetSettlements(shopId,actor,riderId,day,dateFrom='',dateTo=''){
   admin(actor);const db=getDb();
   const roster=listDeliveryCashHandovers(shopId,actor).riders;
   const filtered=roster.map(r=>({userId:r.userId,fullName:r.fullName,isActive:r.isActive}));
   // Historical gross is sourced from immutable settlement lines. Customer/address/charge
   // labels are read-only order metadata (not a separately frozen address snapshot).
   // Daily/tier commission belongs to the SETTLEMENT, never an invented invoice split.
-  const historyRows=db.prepare(`SELECT * FROM delivery_rider_net_settlements
-    WHERE shop_id=? ORDER BY created_at DESC LIMIT 100`).all(shopId);
+  const from = String(dateFrom || '').trim();
+  const to = String(dateTo || '').trim();
+  const useRange = /^\d{4}-\d{2}-\d{2}$/.test(from) && /^\d{4}-\d{2}-\d{2}$/.test(to);
+  const historyRows = useRange
+    ? db.prepare(`SELECT * FROM delivery_rider_net_settlements
+        WHERE shop_id=? AND business_date>=? AND business_date<=?
+        ORDER BY business_date DESC, created_at DESC LIMIT 300`).all(shopId, from <= to ? from : to, from <= to ? to : from)
+    : db.prepare(`SELECT * FROM delivery_rider_net_settlements
+        WHERE shop_id=? ORDER BY created_at DESC LIMIT 100`).all(shopId);
   const invoiceLines=db.prepare(`SELECT l.order_id,o.order_number,o.token_number,o.customer_name,
       o.block_number,o.delivery_charge_cents,l.gross_minor
     FROM delivery_rider_net_settlement_orders l

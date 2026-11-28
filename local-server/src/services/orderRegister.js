@@ -4,6 +4,7 @@ import { listOrderTypes } from "./orderSetup.js";
 import { getOrder } from "./orders.js";
 import { getOrderPayment } from "./settlements.js";
 import { readOrderOperationalState } from "./orderOperationalState.js";
+import { getBusinessShift } from "./businessShifts.js";
 
 const BEHAVIORS = new Set(["COUNTER", "TAKEAWAY", "DELIVERY", "TABLE", "CAR_HOP"]);
 const DEFAULT_PAGE_SIZE = 40;
@@ -126,6 +127,26 @@ function summary(row) {
   };
 }
 
+function compareTokenAsc(a, b) {
+  const tokenA = Number(a.tokenNumber);
+  const tokenB = Number(b.tokenNumber);
+  const aOk = Number.isFinite(tokenA) && a.tokenNumber != null;
+  const bOk = Number.isFinite(tokenB) && b.tokenNumber != null;
+  if (aOk && bOk && tokenA !== tokenB) return tokenA - tokenB;
+  if (aOk && !bOk) return -1;
+  if (!aOk && bOk) return 1;
+  return String(a.orderNumber || "").localeCompare(String(b.orderNumber || ""), undefined, {
+    numeric: true,
+  });
+}
+
+function compareLocaleNumeric(a, b) {
+  return String(a || "").localeCompare(String(b || ""), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
+}
+
 function groupDelivery(orders) {
   const blocks = [];
   const incomplete = [];
@@ -157,6 +178,19 @@ function groupDelivery(orders) {
     }
     building.orders.push(order);
   }
+  blocks.sort((a, b) => compareLocaleNumeric(a.blockNumber, b.blockNumber));
+  for (const block of blocks) {
+    block.roads.sort((a, b) => compareLocaleNumeric(a.roadNumber, b.roadNumber));
+    for (const road of block.roads) {
+      road.buildings.sort((a, b) =>
+        compareLocaleNumeric(a.buildingNumber, b.buildingNumber)
+      );
+      for (const building of road.buildings) {
+        building.orders.sort(compareTokenAsc);
+      }
+    }
+  }
+  incomplete.sort(compareTokenAsc);
   return {
     blocks: blocks.map(({ blockNumber, roads }) => ({
       blockNumber,
@@ -178,11 +212,65 @@ function filtersFrom(shopId, query) {
     fail(400, "Page size is invalid.");
   }
   const pageSize = Math.min(requestedSize, MAX_PAGE_SIZE);
+  const shop = getShopSettings(shopId);
+  const periodRaw = clean(query.get("period"), 20).toLowerCase();
   const date = clean(query.get("date"), 10);
+  const dateFrom = clean(query.get("dateFrom"), 10);
+  const dateTo = clean(query.get("dateTo"), 10);
+  // Default to the open business shift when the client does not pick a period.
+  let period = "shift";
+  if (periodRaw === "day" || periodRaw === "range" || periodRaw === "all") {
+    period = periodRaw;
+  } else if (periodRaw === "shift" || periodRaw === "") {
+    period = "shift";
+  }
+  // Legacy clients that only send `date` are treated as a single-day filter.
+  if (!periodRaw && date) period = "day";
+
   let range = null;
-  if (date) {
-    const shop = getShopSettings(shopId);
-    range = dayRange(date, shop.timezone);
+  let businessDate = "";
+  let dateFromValue = "";
+  let dateToValue = "";
+  let shiftId = "";
+  let emptyResult = false;
+
+  if (period === "shift") {
+    const active = getBusinessShift(shopId).active;
+    if (active?.shiftId) {
+      shiftId = active.shiftId;
+      businessDate = active.businessDate || "";
+    } else {
+      emptyResult = true;
+    }
+  } else if (period === "day") {
+    const day = date || dateFrom;
+    if (day) {
+      range = dayRange(day, shop.timezone);
+      businessDate = day;
+    } else {
+      emptyResult = true;
+    }
+  } else if (period === "range") {
+    const from = dateFrom || date;
+    const to = dateTo || dateFrom || date;
+    if (from && to) {
+      if (from > to) fail(400, "From date must be on or before the to date.");
+      const start = dayRange(from, shop.timezone);
+      const end = dayRange(to, shop.timezone);
+      range = { start: start.start, end: end.end };
+      dateFromValue = from;
+      dateToValue = to;
+    } else {
+      emptyResult = true;
+    }
+  }
+
+  const sortRaw = clean(query.get("sort"), 20).toLowerCase();
+  let sort = "token";
+  if (behavior === "DELIVERY") {
+    sort = sortRaw === "token" ? "token" : "block-road";
+  } else if (sortRaw === "block-road") {
+    sort = "block-road";
   }
   return {
     behavior,
@@ -192,10 +280,16 @@ function filtersFrom(shopId, query) {
     road: clean(query.get("road"), 20),
     building: clean(query.get("building"), 20),
     addressLabel: clean(query.get("addressLabel"), 40),
+    sort,
+    period,
+    shiftId,
+    emptyResult,
     page,
     pageSize,
     range,
-    businessDate: date,
+    businessDate,
+    dateFrom: dateFromValue,
+    dateTo: dateToValue,
   };
 }
 
@@ -226,7 +320,24 @@ function whereClause(shopId, filters) {
     clauses.push("LOWER(COALESCE(o.address_label, '')) = LOWER(?)");
     params.push(filters.addressLabel);
   }
-  if (filters.range) {
+  if (filters.emptyResult) {
+    clauses.push("1 = 0");
+  } else if (filters.shiftId) {
+    clauses.push("o.business_shift_id = ?");
+    params.push(filters.shiftId);
+  } else if (filters.period === "range" && filters.dateFrom && filters.dateTo && filters.range) {
+    // Inclusive business-date window; legacy rows without a business date use created_at.
+    clauses.push(`(
+      (o.business_date IS NOT NULL AND o.business_date >= ? AND o.business_date <= ?)
+      OR (o.business_date IS NULL AND o.created_at >= ? AND o.created_at < ?)
+    )`);
+    params.push(
+      filters.dateFrom,
+      filters.dateTo,
+      filters.range.start,
+      filters.range.end
+    );
+  } else if (filters.range) {
     // New orders belong to the opening shift business date even after midnight.
     // Historical pre-shift orders remain searchable by their creation date.
     clauses.push("(o.business_date = ? OR (o.business_date IS NULL AND o.created_at >= ? AND o.created_at < ?))");
@@ -293,10 +404,15 @@ export function listOrderRegister(shopId, query) {
   const total = Number(
     db.prepare(`SELECT COUNT(*) AS n FROM orders o WHERE ${where.sql}`).get(...where.params).n
   );
-  const orderBy =
-    filters.behavior === "DELIVERY"
-      ? `${numericRank("o.block_number")}, ${numericRank("o.road_number")}, ${numericRank("o.building_number")}, o.created_at DESC`
-      : "o.created_at DESC";
+  const tokenOrder = `${numericRank("o.token_number")}, o.created_at ASC, o.order_number ASC`;
+  const typeThenToken = `o.fulfillment_behavior ASC, ${tokenOrder}`;
+  const blockThenRoad = `${numericRank("o.block_number")}, ${numericRank("o.road_number")}, ${numericRank("o.building_number")}, ${tokenOrder}`;
+  let orderBy = typeThenToken;
+  if (filters.behavior === "DELIVERY") {
+    orderBy = filters.sort === "token" ? tokenOrder : blockThenRoad;
+  } else if (filters.behavior) {
+    orderBy = tokenOrder;
+  }
   const offset = (filters.page - 1) * filters.pageSize;
   const rows = db
     .prepare(
@@ -334,10 +450,19 @@ export function listOrderRegister(shopId, query) {
     page: filters.page,
     pageSize: filters.pageSize,
     total,
+    sort: filters.sort,
+    period: filters.period,
+    businessDate: filters.businessDate || "",
+    dateFrom: filters.dateFrom || "",
+    dateTo: filters.dateTo || "",
+    shiftId: filters.shiftId || "",
     orderTypes: types,
     addressLabels: labels,
     orders: rows,
-    deliveryGroups: filters.behavior === "DELIVERY" ? groupDelivery(rows) : null,
+    deliveryGroups:
+      filters.behavior === "DELIVERY" && filters.sort === "block-road"
+        ? groupDelivery(rows)
+        : null,
   };
 }
 

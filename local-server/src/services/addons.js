@@ -212,6 +212,13 @@ export function upsertAddon(shopId, input = {}, { role } = {}) {
       ts,
       ts
     );
+    // New extras are available on every item until unchecked in that item's editor.
+    const items = db.prepare(`SELECT item_id FROM menu_items`).all();
+    const link = db.prepare(
+      `INSERT OR IGNORE INTO menu_item_addons (item_id, addon_id, price_override_cents)
+       VALUES (?, ?, NULL)`
+    );
+    for (const row of items) link.run(row.item_id, addonId);
   }
   return getAddon(addonId);
 }

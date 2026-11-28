@@ -605,7 +605,7 @@ function renderCheckGrid(hostId, options, selectedIds, idKey, onToggle) {
       onToggle(id, e.target.checked);
       markDirty();
     });
-    if (!state.instructionCustomized && hostId !== "item-stand-checks") {
+    if (!state.instructionCustomized) {
       label.querySelector("input").disabled = true;
     }
     host.appendChild(label);
@@ -617,8 +617,8 @@ function updateInstrModeHint() {
   const custom = state.instructionCustomized;
   if (hint) {
     hint.textContent = custom
-      ? "Customized for this item — only checked options appear on Sales."
-      : "Using shop defaults (all active modifiers and targets).";
+      ? "Customized for this item — uncheck anything that should not appear on Sales. New library options stay checked until you uncheck them."
+      : "Using shop defaults (all active modifiers, targets, and standalone notes).";
   }
   const fields = $("instr-custom-fields");
   if (fields) fields.hidden = !custom;
@@ -1089,10 +1089,29 @@ function openEditor(item = null, { keepTab = false } = {}) {
     state.formVariants = [];
     state.formIngredients = [];
     state.instructionCustomized = false;
-    state.selectedModIds = new Set();
-    state.selectedTargetIds = new Set();
-    state.selectedStandIds = new Set();
+    state.selectedModIds = new Set(
+      (state.kitchenLibrary.modifiers || [])
+        .filter((m) => m.isActive)
+        .map((m) => m.modifierId)
+    );
+    state.selectedTargetIds = new Set(
+      (state.kitchenLibrary.targets || [])
+        .filter((t) => t.isActive)
+        .map((t) => t.targetId)
+    );
+    state.selectedStandIds = new Set(
+      (state.kitchenLibrary.standalone || [])
+        .filter((s) => s.isActive)
+        .map((s) => s.standaloneId)
+    );
     state.addonAssignments = new Map();
+    for (const a of state.addons || []) {
+      if (!a.isActive) continue;
+      state.addonAssignments.set(a.addonId, {
+        enabled: true,
+        overrideText: "",
+      });
+    }
     $("editor-title").textContent = "Create Menu Item";
     if ($("editor-subtitle")) {
       $("editor-subtitle").hidden = true;
@@ -2399,13 +2418,28 @@ function bindUi() {
 
   $("instr-use-defaults")?.addEventListener("click", () => {
     state.instructionCustomized = false;
-    state.selectedModIds = new Set();
-    state.selectedTargetIds = new Set();
+    state.selectedModIds = new Set(
+      (state.kitchenLibrary.modifiers || [])
+        .filter((m) => m.isActive)
+        .map((m) => m.modifierId)
+    );
+    state.selectedTargetIds = new Set(
+      (state.kitchenLibrary.targets || [])
+        .filter((t) => t.isActive)
+        .map((t) => t.targetId)
+    );
+    state.selectedStandIds = new Set(
+      (state.kitchenLibrary.standalone || [])
+        .filter((s) => s.isActive)
+        .map((s) => s.standaloneId)
+    );
     markDirty();
     renderItemCustomization();
   });
   $("instr-customize")?.addEventListener("click", () => {
     state.instructionCustomized = true;
+    // Start from the full active library when leaving shop defaults with an empty set.
+    // Keep any intentional exclusions if this item was already customized.
     if (!state.selectedModIds.size) {
       for (const m of state.kitchenLibrary.modifiers.filter((x) => x.isActive)) {
         state.selectedModIds.add(m.modifierId);
@@ -2414,6 +2448,11 @@ function bindUi() {
     if (!state.selectedTargetIds.size) {
       for (const t of state.kitchenLibrary.targets.filter((x) => x.isActive)) {
         state.selectedTargetIds.add(t.targetId);
+      }
+    }
+    if (!state.selectedStandIds.size) {
+      for (const s of state.kitchenLibrary.standalone.filter((x) => x.isActive)) {
+        state.selectedStandIds.add(s.standaloneId);
       }
     }
     markDirty();

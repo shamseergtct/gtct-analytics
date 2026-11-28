@@ -49,10 +49,15 @@
         <h2>Rider cash collection</h2>
       </div>
       <div class="cash-heading-right">
-        <label class="cash-date-pill">
+        <div class="cash-date-pill" role="group" aria-label="Business date range">
           <span>Business date</span>
-          <input id="batch-day" type="date">
-        </label>
+          <div class="cash-date-range">
+            <input id="batch-day-from" type="date" aria-label="From business date" />
+            <span class="cash-range-sep">to</span>
+            <input id="batch-day" type="date" aria-label="To business date" />
+          </div>
+        </div>
+        <button type="button" class="btn ghost" id="view-payment-history">Payment history</button>
         <button type="button" class="btn ghost" id="refresh">↻ Refresh</button>
       </div>
     </section>
@@ -95,19 +100,39 @@
       </div>
     </section>
 
-    <section class="card-panel cash-collections-panel" aria-label="Collections">
+    <section class="card-panel cash-collections-panel" id="payment-history-panel" aria-label="Payment history">
       <div class="cash-panel-title-row">
-        <div class="cash-panel-title">Collections</div>
+        <div>
+          <div class="cash-panel-title">Payment history</div>
+          <p class="cash-panel-sub">Confirmed rider collections in the selected business date range.</p>
+        </div>
         <span id="collections-count" class="cash-pill">0</span>
       </div>
+      <div class="cash-history-toolbar" role="group" aria-label="Payment history filters">
+        <label class="cash-date-pill cash-history-range">
+          <span>History range</span>
+          <div class="cash-date-range">
+            <input id="history-day-from" type="date" aria-label="History from date" />
+            <span class="cash-range-sep">to</span>
+            <input id="history-day-to" type="date" aria-label="History to date" />
+          </div>
+        </label>
+        <label class="cash-date-pill">
+          <span>Rider</span>
+          <select id="history-rider" aria-label="Filter payment history by rider">
+            <option value="">All riders</option>
+          </select>
+        </label>
+        <button type="button" id="history-refresh" class="btn ghost">Show history</button>
+      </div>
       <div id="batch-history" class="cash-collection-cards">
-        <p class="cash-empty">Select a rider to view confirmed collections.</p>
+        <p class="cash-empty">Choose a date range and tap Show history.</p>
       </div>
     </section>
 
     <section class="card-panel cash-batch" id="batch-panel" hidden aria-label="New collection">
       <div class="cash-panel-title-row">
-        <div class="cash-panel-title">New Collection</div>
+        <div class="cash-panel-title" id="batch-panel-title">New Collection</div>
         <button id="batch-refresh" type="button" class="btn ghost small">Refresh</button>
       </div>
 
@@ -196,6 +221,7 @@
       <div id="batch-tender-form" hidden></div>
 
       <div class="cash-batch-actions">
+        <button id="batch-cancel-edit" type="button" class="btn ghost" hidden>Cancel edit</button>
         <button id="batch-confirm" type="button" class="btn primary" disabled>Save Collection</button>
       </div>
     </section>

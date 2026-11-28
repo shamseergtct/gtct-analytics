@@ -180,6 +180,15 @@
   overflow-x: hidden;
   max-width: 100%;
 }
+.monitor-route-group {
+  grid-column: 1 / -1;
+  margin: 0.15rem 0 0;
+  padding: 0.2rem 0;
+  font-size: 0.86rem;
+  font-weight: 750;
+  color: #3b4656;
+  border-bottom: 1px solid #e4ebf4;
+}
 .monitor-list.is-list .monitor-lane-grid { grid-template-columns: 1fr; }
 @media (max-width: 690px) {
   .monitor-type-section { padding: 10px; }
